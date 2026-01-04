@@ -1,0 +1,1 @@
+# Define Shadowheart's D&D attributes and personality profile
