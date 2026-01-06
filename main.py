@@ -5,7 +5,7 @@ Reads character attributes and generates dialogue using LLM API (阿里云百炼
 
 import os
 from dotenv import load_dotenv
-from characters.shadowheart import SHADOWHEART_ATTRIBUTES
+from characters.shadowheart import SHADOWHEART_ATTRIBUTES, create_prompt
 
 # Load environment variables from .env file
 load_dotenv()
@@ -24,44 +24,7 @@ def load_character_attributes():
     return SHADOWHEART_ATTRIBUTES
 
 
-def create_character_prompt(attributes):
-    """Create a detailed prompt for the LLM based on character attributes"""
-    prompt = f"""You are {attributes['name']}, a {attributes['race']} {attributes['class']} in the world of Dungeons & Dragons.
-
-**Character Profile:**
-- Race: {attributes['race']}
-- Class: {attributes['class']} ({attributes['subclass']})
-- Deity: {attributes['deity']}
-- Level: {attributes['level']}
-
-**Ability Scores:**
-- Strength: {attributes['ability_scores']['STR']} (+{attributes['ability_modifiers']['STR']})
-- Dexterity: {attributes['ability_scores']['DEX']} (+{attributes['ability_modifiers']['DEX']})
-- Constitution: {attributes['ability_scores']['CON']} (+{attributes['ability_modifiers']['CON']})
-- Intelligence: {attributes['ability_scores']['INT']} (+{attributes['ability_modifiers']['INT']})
-- Wisdom: {attributes['ability_scores']['WIS']} (+{attributes['ability_modifiers']['WIS']})
-- Charisma: {attributes['ability_scores']['CHA']} (+{attributes['ability_modifiers']['CHA']})
-
-**Personality:**
-{chr(10).join('- ' + trait for trait in attributes['personality']['traits'])}
-
-**Ideals:** {attributes['personality']['ideals']}
-**Bonds:** {attributes['personality']['bonds']}
-**Flaws:** {attributes['personality']['flaws']}
-
-**Background:** {attributes['background']['description']}
-
-**Dialogue Style:**
-- Tone: {attributes['dialogue_style']['tone']}
-- Speech Patterns: {', '.join(attributes['dialogue_style']['speech_patterns'])}
-
-**Task:** Say your first line of dialogue to someone you've just met. Make it mysterious, guarded, but show a hint of your true nature. Keep it brief (1-2 sentences). Speak as Shadowheart would, referencing your devotion to Shar if appropriate.
-Output strictly in Chinese (Simplified). The tone should be similar to the official Chinese localization of Baldur's Gate 3 (elegant, archaic, and cold).
-"""
-    return prompt
-
-
-def generate_dialogue_with_bailian(prompt, api_key=None):
+def generate_dialogue_with_bailian(prompt, api_key=None, conversation_history=None):
     """Generate dialogue using 阿里云百炼 API (DashScope)"""
     if dashscope is None or Generation is None:
         raise ImportError("dashscope package is required. Install it with: pip install dashscope")
@@ -78,24 +41,35 @@ def generate_dialogue_with_bailian(prompt, api_key=None):
     # dashscope SDK 会自动使用正确的 API endpoint
     dashscope.api_key = api_key
     
-    # Call DashScope API
+    # Build messages with conversation history
     messages = [
         {
             "role": "system",
             "content": "You are a role-playing assistant that generates authentic character dialogue for D&D characters."
-        },
-        {
-            "role": "user",
-            "content": prompt
         }
     ]
     
+    # Add conversation history if provided (convert to proper format)
+    if conversation_history:
+        for msg in conversation_history:
+            if isinstance(msg, dict) and "role" in msg and "content" in msg:
+                messages.append({
+                    "role": msg["role"],
+                    "content": str(msg["content"])
+                })
+    
+    # Add current prompt
+    messages.append({
+        "role": "user",
+        "content": prompt
+    })
+    
     response = Generation.call(
         model="qwen-plus",  # 使用通义千问模型
-        messages=messages,
+        messages=messages,  # type: ignore
         result_format='message',  # 重要：指定返回格式为 message
         temperature=0.8,  # 稍微有创造性，让对话更自然
-        max_tokens=150,
+        max_tokens=200,  # 增加 token 限制以支持更长的对话
     )
     
     # 检查响应是否为 None
@@ -146,6 +120,19 @@ def generate_dialogue_with_bailian(prompt, api_key=None):
         raise Exception("API 响应中的 message 没有 content 字段")
 
 
+def create_conversation_prompt(attributes, user_input):
+    """Create a prompt for conversation based on character attributes and user input"""
+    base_prompt = create_prompt(attributes)
+    
+    # Replace the task section with the actual user input
+    conversation_prompt = base_prompt.replace(
+        "**Task:** Say your first line of dialogue to someone you've just met. Make it mysterious, guarded, but show a hint of your true nature. Keep it brief (1-2 sentences). Speak as Shadowheart would, referencing your devotion to Shar if appropriate.",
+        f"**Current Situation:** The player says to you: \"{user_input}\"\n\n**Task:** Respond to the player as Shadowheart would. Stay in character and follow all the rules above."
+    )
+    
+    return conversation_prompt
+
+
 def main():
     """Main function to load attributes and generate dialogue"""
     print("=" * 60)
@@ -167,17 +154,62 @@ def main():
         print(f"  {ability}: {score} (+{modifier:+d})")
     print()
     
-    # Create prompt and generate dialogue
-    print("Generating dialogue...")
+    # Generate initial greeting
+    print("Generating initial greeting...")
     try:
-        prompt = create_character_prompt(attributes)
+        # 从角色文件中获取 prompt 模板
+        prompt = create_prompt(attributes)
         dialogue = generate_dialogue_with_bailian(prompt)
         
         print("=" * 60)
-        print(f"{attributes['name']} says:")
-        print("=" * 60)
+        print(f"{attributes['name']} ：")
         print(f'"{dialogue}"')
         print("=" * 60)
+        print()
+        
+        # Start interactive conversation
+        print("💬 开始与影心对话（输入 'quit' 或 'exit' 退出）")
+        print("=" * 60)
+        print()
+        
+        conversation_history = []
+        
+        while True:
+            try:
+                # Get user input
+                user_input = input("你: ").strip()
+                
+                if not user_input:
+                    continue
+                
+                if user_input.lower() in ['quit', 'exit', '退出', 'q']:
+                    print("\n再见！")
+                    break
+                
+                # Generate response
+                print(f"\n{attributes['name']}: ", end="", flush=True)
+                conversation_prompt = create_conversation_prompt(attributes, user_input)
+                response = generate_dialogue_with_bailian(conversation_prompt, conversation_history=conversation_history)
+                
+                # Remove quotes if present
+                response = response.strip('"').strip("'")
+                print(f'"{response}"')
+                print()
+                
+                # Update conversation history
+                conversation_history.append({"role": "user", "content": user_input})
+                conversation_history.append({"role": "assistant", "content": response})
+                
+                # Keep only last 10 exchanges to avoid token limit
+                if len(conversation_history) > 20:
+                    conversation_history = conversation_history[-20:]
+                    
+            except KeyboardInterrupt:
+                print("\n\n再见！")
+                break
+            except Exception as e:
+                print(f"\n❌ 错误: {e}")
+                print("请重试...\n")
         
     except ImportError as e:
         print(f"❌ 导入错误: {e}")
