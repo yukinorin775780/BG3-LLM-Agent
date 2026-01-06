@@ -19,15 +19,8 @@ SHADOWHEART_ATTRIBUTES = {
         "CHA": 12,  # Charisma
     },
     
-    # Ability Score Modifiers
-    "ability_modifiers": {
-        "STR": 1,
-        "DEX": 2,
-        "CON": 2,
-        "INT": 0,
-        "WIS": 2,
-        "CHA": 1,
-    },
+    # Ability Score Modifiers (calculated dynamically, see calculate_ability_modifier function)
+    # Formula: (ability_score - 10) // 2
     
     # Skills (Proficiency in Cleric skills)
     "skills": {
@@ -106,6 +99,34 @@ SHADOWHEART_ATTRIBUTES = {
 }
 
 
+def calculate_ability_modifier(ability_score):
+    """
+    Calculate D&D 5e ability modifier from ability score.
+    
+    Formula: (ability_score - 10) // 2
+    
+    Args:
+        ability_score: The ability score (typically 1-20)
+    
+    Returns:
+        int: The ability modifier
+    """
+    return (ability_score - 10) // 2
+
+
+def get_ability_modifiers(ability_scores):
+    """
+    Calculate all ability modifiers from ability scores.
+    
+    Args:
+        ability_scores: Dictionary of ability scores (e.g., {"STR": 13, "DEX": 14, ...})
+    
+    Returns:
+        dict: Dictionary of ability modifiers with same keys
+    """
+    return {ability: calculate_ability_modifier(score) for ability, score in ability_scores.items()}
+
+
 def create_prompt(attributes=None):
     """
     Create a detailed prompt for the LLM based on character attributes.
@@ -123,13 +144,16 @@ def create_prompt(attributes=None):
     if attributes is None:
         attributes = SHADOWHEART_ATTRIBUTES
     
-    # Extract ability scores and modifiers
-    wis_score = attributes['ability_scores']['WIS']
-    wis_mod = attributes['ability_modifiers']['WIS']
-    int_score = attributes['ability_scores']['INT']
-    int_mod = attributes['ability_modifiers']['INT']
-    cha_score = attributes['ability_scores']['CHA']
-    cha_mod = attributes['ability_modifiers']['CHA']
+    # Extract ability scores and calculate modifiers dynamically
+    ability_scores = attributes['ability_scores']
+    ability_modifiers = get_ability_modifiers(ability_scores)
+    
+    wis_score = ability_scores['WIS']
+    wis_mod = ability_modifiers['WIS']
+    int_score = ability_scores['INT']
+    int_mod = ability_modifiers['INT']
+    cha_score = ability_scores['CHA']
+    cha_mod = ability_modifiers['CHA']
     
     # Generate attribute-based behavioral descriptions
     attribute_insights = []
@@ -207,12 +231,12 @@ def create_prompt(attributes=None):
 - Level: {attributes['level']}
 
 **Ability Scores:**
-- Strength: {attributes['ability_scores']['STR']} (+{attributes['ability_modifiers']['STR']})
-- Dexterity: {attributes['ability_scores']['DEX']} (+{attributes['ability_modifiers']['DEX']})
-- Constitution: {attributes['ability_scores']['CON']} (+{attributes['ability_modifiers']['CON']})
-- Intelligence: {attributes['ability_scores']['INT']} (+{attributes['ability_modifiers']['INT']})
-- Wisdom: {attributes['ability_scores']['WIS']} (+{attributes['ability_modifiers']['WIS']}) [PRIMARY STAT]
-- Charisma: {attributes['ability_scores']['CHA']} (+{attributes['ability_modifiers']['CHA']})
+- Strength: {ability_scores['STR']} ({ability_modifiers['STR']:+d})
+- Dexterity: {ability_scores['DEX']} ({ability_modifiers['DEX']:+d})
+- Constitution: {ability_scores['CON']} ({ability_modifiers['CON']:+d})
+- Intelligence: {ability_scores['INT']} ({ability_modifiers['INT']:+d})
+- Wisdom: {ability_scores['WIS']} ({ability_modifiers['WIS']:+d}) [PRIMARY STAT]
+- Charisma: {ability_scores['CHA']} ({ability_modifiers['CHA']:+d})
 
 **How Your Attributes Affect Your Behavior:**
 {attribute_behavior}

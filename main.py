@@ -5,7 +5,7 @@ Reads character attributes and generates dialogue using LLM API (阿里云百炼
 
 import os
 from dotenv import load_dotenv
-from characters.shadowheart import SHADOWHEART_ATTRIBUTES, create_prompt
+from characters.shadowheart import SHADOWHEART_ATTRIBUTES, create_prompt, get_ability_modifiers
 
 # Load environment variables from .env file
 load_dotenv()
@@ -149,8 +149,9 @@ def main():
     
     # Display key attributes
     print("Key Attributes:")
+    ability_modifiers = get_ability_modifiers(attributes['ability_scores'])
     for ability, score in attributes['ability_scores'].items():
-        modifier = attributes['ability_modifiers'][ability]
+        modifier = ability_modifiers[ability]
         print(f"  {ability}: {score} (+{modifier:+d})")
     print()
     
