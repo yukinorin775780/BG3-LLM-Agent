@@ -4,19 +4,17 @@ Reads character attributes and generates dialogue using LLM API (阿里云百炼
 """
 
 import os
+import sys
+import json
 from dotenv import load_dotenv
 from characters.shadowheart import SHADOWHEART_ATTRIBUTES, create_prompt, get_ability_modifiers
+from core.engine import generate_dialogue
 
 # Load environment variables from .env file
 load_dotenv()
 
-try:
-    import dashscope
-    from dashscope import Generation
-except ImportError:
-    print("Warning: dashscope package not found. Please install it with: pip install dashscope")
-    dashscope = None
-    Generation = None
+# 定义记忆文件保存的位置
+MEMORY_FILE = "data/shadowheart_memory.json"
 
 
 def load_character_attributes():
@@ -24,113 +22,29 @@ def load_character_attributes():
     return SHADOWHEART_ATTRIBUTES
 
 
-def generate_dialogue_with_bailian(prompt, api_key=None, conversation_history=None):
-    """Generate dialogue using 阿里云百炼 API (DashScope)"""
-    if dashscope is None or Generation is None:
-        raise ImportError("dashscope package is required. Install it with: pip install dashscope")
-    
-    # Get API key from environment or parameter
-    api_key = api_key or os.getenv("BAILIAN_API_KEY") or os.getenv("DASHSCOPE_API_KEY")
-    if not api_key:
-        raise ValueError(
-            "百炼 API key not found. Please set BAILIAN_API_KEY or DASHSCOPE_API_KEY in .env file "
-            "or pass it as a parameter."
-        )
-    
-    # Set API key for dashscope
-    # dashscope SDK 会自动使用正确的 API endpoint
-    dashscope.api_key = api_key
-    
-    # Build messages with conversation history
-    messages = [
-        {
-            "role": "system",
-            "content": "You are a role-playing assistant that generates authentic character dialogue for D&D characters."
-        }
-    ]
-    
-    # Add conversation history if provided (convert to proper format)
-    if conversation_history:
-        for msg in conversation_history:
-            if isinstance(msg, dict) and "role" in msg and "content" in msg:
-                messages.append({
-                    "role": msg["role"],
-                    "content": str(msg["content"])
-                })
-    
-    # Add current prompt
-    messages.append({
-        "role": "user",
-        "content": prompt
-    })
-    
-    response = Generation.call(
-        model="qwen-plus",  # 使用通义千问模型
-        messages=messages,  # type: ignore
-        result_format='message',  # 重要：指定返回格式为 message
-        temperature=0.8,  # 稍微有创造性，让对话更自然
-        max_tokens=200,  # 增加 token 限制以支持更长的对话
-    )
-    
-    # 检查响应是否为 None
-    if response is None:
-        raise Exception("API 调用返回 None，请检查网络连接和 API Key")
-    
-    # Check if response is successful
-    status_code = getattr(response, 'status_code', None)
-    
-    # 如果状态码不是 200，打印详细错误信息
-    if status_code != 200:
-        error_msg = getattr(response, 'message', None)
-        request_id = getattr(response, 'request_id', None)
-        code = getattr(response, 'code', None)
-        raise Exception(
-            f"API 调用失败\n"
-            f"  状态码: {status_code}\n"
-            f"  错误信息: {error_msg}\n"
-            f"  错误代码: {code}\n"
-            f"  请求ID: {request_id}"
-        )
-    
-    # 安全地访问响应数据
-    output = getattr(response, 'output', None)
-    if not output:
-        # 打印响应结构以便调试
-        raise Exception(
-            f"API 响应中没有 output 数据\n"
-            f"  响应类型: {type(response)}\n"
-            f"  响应属性: {[attr for attr in dir(response) if not attr.startswith('_')]}"
-        )
-    
-    choices = getattr(output, 'choices', None)
-    if not choices:
-        raise Exception("API 响应中没有 choices 数据")
-    if len(choices) == 0:
-        raise Exception("API 响应的 choices 列表为空")
-    
-    first_choice = choices[0]
-    message = getattr(first_choice, 'message', None)
-    if not message:
-        raise Exception("API 响应中没有 message 数据")
-    
-    content = getattr(message, 'content', None)
-    if content:
-        return content.strip() if isinstance(content, str) else str(content)
-    else:
-        raise Exception("API 响应中的 message 没有 content 字段")
+def load_memory():
+    """从本地文件读取记忆"""
+    if os.path.exists(MEMORY_FILE):
+        try:
+            with open(MEMORY_FILE, 'r', encoding='utf-8') as f:
+                history = json.load(f)
+                print(f"🧠 [System] 成功唤醒记忆，共读取 {len(history)} 条往事...")
+                return history
+        except Exception as e:
+            print(f"⚠️ [System] 记忆文件读取失败: {e}")
+    return []
 
 
-def create_conversation_prompt(attributes, user_input):
-    """Create a prompt for conversation based on character attributes and user input"""
-    base_prompt = create_prompt(attributes)
-    
-    # Replace the task section with the actual user input
-    conversation_prompt = base_prompt.replace(
-        "**Task:** Say your first line of dialogue to someone you've just met. Make it mysterious, guarded, but show a hint of your true nature. Keep it brief (1-2 sentences). Speak as Shadowheart would, referencing your devotion to Shar if appropriate.",
-        f"**Current Situation:** The player says to you: \"{user_input}\"\n\n**Task:** Respond to the player as Shadowheart would. Stay in character and follow all the rules above."
-    )
-    
-    return conversation_prompt
+def save_memory(history):
+    """把记忆写入本地文件"""
+    try:
+        # 确保目录存在
+        os.makedirs(os.path.dirname(MEMORY_FILE), exist_ok=True)
+        with open(MEMORY_FILE, 'w', encoding='utf-8') as f:
+            json.dump(history, f, ensure_ascii=False, indent=2)
+        print("💾 [System] 记忆已固化至莎尔的卷轴中。")
+    except Exception as e:
+        print(f"❌ [System] 存档失败: {e}")
 
 
 def main():
@@ -153,27 +67,43 @@ def main():
     for ability, score in attributes['ability_scores'].items():
         modifier = ability_modifiers[ability]
         print(f"  {ability}: {score} (+{modifier:+d})")
-    print()
+    print()     
     
     # Generate initial greeting
     print("Generating initial greeting...")
     try:
-        # 从角色文件中获取 prompt 模板
-        prompt = create_prompt(attributes)
-        dialogue = generate_dialogue_with_bailian(prompt)
+        # 1. 在循环开始前，生成一次 System Prompt（影心的人设）
+        system_prompt = create_prompt(attributes)
+        
+        # 2. 【关键修改】启动时尝试加载旧记忆
+        # 如果没有旧记忆，就从空列表开始
+        conversation_history = load_memory()
         
         print("=" * 60)
-        print(f"{attributes['name']} ：")
-        print(f'"{dialogue}"')
+        # 如果是新对话（没记忆），生成并打印开场白
+        if not conversation_history:
+            # 生成初始问候（使用空的对话历史）
+            dialogue = generate_dialogue(system_prompt, conversation_history=conversation_history)
+            
+            # 清理引号
+            if dialogue:
+                dialogue = dialogue.strip('"').strip("'")
+            
+            print(f"{attributes['name']} (Looking at you warily):")
+            print(f'"{dialogue}"')
+            
+            # 把初始问候加入对话历史
+            conversation_history.append({"role": "assistant", "content": dialogue})
+        else:
+            # 如果有记忆，显示不同的开场白
+            print(f"{attributes['name']} (Remembers you): *Nods slightly acknowledging your return*")
         print("=" * 60)
         print()
         
         # Start interactive conversation
-        print("💬 开始与影心对话（输入 'quit' 或 'exit' 退出）")
+        print("💬 开始与影心对话（输入 'quit' 或 'exit' 退出并存档）")
         print("=" * 60)
         print()
-        
-        conversation_history = []
         
         while True:
             try:
@@ -183,29 +113,43 @@ def main():
                 if not user_input:
                     continue
                 
+                # 退出指令
                 if user_input.lower() in ['quit', 'exit', '退出', 'q']:
+                    # 【关键修改】退出前自动存档
+                    save_memory(conversation_history)
                     print("\n再见！")
                     break
                 
-                # Generate response
-                print(f"\n{attributes['name']}: ", end="", flush=True)
-                conversation_prompt = create_conversation_prompt(attributes, user_input)
-                response = generate_dialogue_with_bailian(conversation_prompt, conversation_history=conversation_history)
+                # 1. 存入用户输入
+                conversation_history.append({"role": "user", "content": user_input})
                 
-                # Remove quotes if present
-                response = response.strip('"').strip("'")
-                print(f'"{response}"')
+                # 2. 生成回复 (注意：这里我们传入整个历史)
+                print(f"\n{attributes['name']}: ", end="", flush=True)
+                response = generate_dialogue(system_prompt, conversation_history=conversation_history)
+                
+                # 处理一下回复格式
+                if response:
+                    response = response.strip('"').strip("'")
+                    print(f'"{response}"')
+                else:
+                    print("（没有回应）")
                 print()
                 
-                # Update conversation history
-                conversation_history.append({"role": "user", "content": user_input})
+                # 3. 存入 AI 回复
                 conversation_history.append({"role": "assistant", "content": response})
                 
-                # Keep only last 10 exchanges to avoid token limit
+                # 4. 【可选】每轮对话都自动存档（防止程序崩了丢失记忆）
+                # save_memory(conversation_history)
+                
+                # 5. 滚动窗口：防止 Token 爆炸（保留最近 20 轮）
+                # 注意：这里我们只是截断"发给 AI"的列表，还是截断"存储"的列表？
+                # 为了简单，我们暂时让记忆文件也保持在 20 轮以内，避免文件无限膨胀
                 if len(conversation_history) > 20:
                     conversation_history = conversation_history[-20:]
                     
             except KeyboardInterrupt:
+                # 强制中断也要存档
+                save_memory(conversation_history)
                 print("\n\n再见！")
                 break
             except Exception as e:
@@ -217,8 +161,6 @@ def main():
         print("\n请安装必要的依赖包:")
         print("  pip install dashscope python-dotenv")
         
-    except ValueError as e:
-        print(f"❌ 配置错误: {e}")
         print("\n要使用百炼 API，你需要:")
         print("1. 安装 dashscope 包: pip install dashscope")
         print("2. 在项目根目录创建 .env 文件")
