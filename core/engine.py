@@ -1,6 +1,7 @@
 import os
 from openai import OpenAI
 import sys
+import re
 from dotenv import load_dotenv
 
 # 加载环境变量（必须在获取环境变量之前调用）
@@ -72,3 +73,38 @@ def generate_dialogue(system_prompt, conversation_history=None):
     except Exception as e:
         print(f"\n[Engine Error]: {e}")
         return "（影心似乎陷入了沉思，没有回应……）"
+
+
+def parse_approval_change(response_text):
+    """
+    Parse the approval change tag from LLM response.
+    
+    Extracts [APPROVAL: +X], [APPROVAL: -X], or [APPROVAL: 0] from the beginning
+    of the response text and returns the score change and cleaned text.
+    
+    Args:
+        response_text (str): Raw text from LLM (e.g., "[APPROVAL: +5] Hmph, not bad.")
+    
+    Returns:
+        tuple: (score_change: int, cleaned_text: str)
+            - score_change: Integer representing the approval change (e.g., 5, -2, 0)
+            - cleaned_text: The dialogue with the approval tag removed
+    """
+    if not response_text:
+        return 0, ""
+    
+    # Pattern to match [APPROVAL: +X], [APPROVAL: -X], or [APPROVAL: 0]
+    pattern = r'^\[APPROVAL:\s*([+-]?\d+)\]\s*'
+    match = re.match(pattern, response_text)
+    
+    if match:
+        # Extract the number (could be "+5", "-3", "0", etc.)
+        score_str = match.group(1)
+        score_change = int(score_str)  # int() handles "+5", "-3", "0" correctly
+        
+        # Remove the approval tag from the text
+        cleaned_text = re.sub(pattern, '', response_text).strip()
+        return score_change, cleaned_text
+    else:
+        # No approval tag found, return 0 change and original text
+        return 0, response_text.strip()

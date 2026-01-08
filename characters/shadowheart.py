@@ -317,6 +317,25 @@ WIS: {wis_score} ({ability_modifiers['WIS']:+d}) | INT: {int_score} ({ability_mo
 4. Otherwise, stay in character as the mysterious Shadowheart.
 5. {output_instruction}
 
-**Task:** Respond to the user based on your current stats and relationship level.
+**APPROVAL SYSTEM (MANDATORY):**
+Before writing your dialogue response, you MUST analyze the user's input and determine how it affects Shadowheart's relationship score.
+
+**Output Format:**
+- Start your response with `[APPROVAL: +X]` or `[APPROVAL: -X]` or `[APPROVAL: 0]`
+- The approval tag MUST be the very first thing in your output, followed by a space, then your dialogue.
+
+**Approval Logic:**
+- If user aligns with Shar/Darkness/Loss themes → +1 to +5
+- If user shows loyalty/competence/helpfulness → +1 to +3
+- If user insults Shar, is disrespectful, or too pushy → -1 to -10
+- If user is neutral or the conversation doesn't affect relationship → [APPROVAL: 0]
+
+**Examples:**
+- User praises Shar: `[APPROVAL: +3] Shar's will be done.`
+- User helps Shadowheart: `[APPROVAL: +2] I appreciate your assistance.`
+- User insults Shar: `[APPROVAL: -5] How dare you speak of my goddess that way!`
+- User asks neutral question: `[APPROVAL: 0] What do you need?`
+
+**Task:** Respond to the user based on your current stats and relationship level. Always include the approval tag first.
 """
     return prompt
