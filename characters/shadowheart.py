@@ -96,6 +96,15 @@ SHADOWHEART_ATTRIBUTES = {
             "Trust is earned, not given",
         ],
     },
+    
+    # Relationship Status (Range: -100 to 100)
+    # -100 ~ -50: Hostile (敌对)
+    # -49 ~ -10:  Negative (反感)
+    # -9 ~ 10:    Neutral (中立 - 初始状态)
+    # 11 ~ 40:    Friendly (友好)
+    # 41 ~ 80:    Trusting (信赖)
+    # 81 ~ 100:   Devoted (恋人/至死不渝)
+    "relationship": 0,  # 初始状态：中立
 }
 
 
@@ -125,6 +134,30 @@ def get_ability_modifiers(ability_scores):
         dict: Dictionary of ability modifiers with same keys
     """
     return {ability: calculate_ability_modifier(score) for ability, score in ability_scores.items()}
+
+
+def get_relationship_status(relationship_score):
+    """
+    Get the relationship status name based on the relationship score.
+    
+    Args:
+        relationship_score: The relationship score (range: -100 to 100)
+    
+    Returns:
+        str: The relationship status name
+    """
+    if relationship_score >= 81:
+        return "Devoted (恋人/至死不渝)"
+    elif relationship_score >= 41:
+        return "Trusting (信赖)"
+    elif relationship_score >= 11:
+        return "Friendly (友好)"
+    elif relationship_score >= -9:
+        return "Neutral (中立)"
+    elif relationship_score >= -49:
+        return "Negative (反感)"
+    else:  # relationship_score <= -50
+        return "Hostile (敌对)"
 
 
 def create_prompt(attributes=None):
@@ -166,13 +199,9 @@ def create_prompt(attributes=None):
             "Your tone should be overwhelmingly calm, knowing, and slightly condescending, like a goddess speaking to a child."
         )
     elif wis_score >= 13:
-        attribute_insights.append(
-            "【HIGH WISDOM】You have keen insight and can detect lies instantly."
-        )
+        attribute_insights.append("【HIGH WISDOM】You have keen insight and can detect lies instantly.")
     elif wis_score <= 5:
-        attribute_insights.append(
-            "【CRITICAL LOW WISDOM】Your senses are dull. You are oblivious to reality. (Dumb state)"
-        )
+        attribute_insights.append("【CRITICAL LOW WISDOM】Your senses are dull. You are oblivious to reality.")
     else:
         attribute_insights.append("【AVERAGE WISDOM】Your intuition is average.")
     
@@ -184,13 +213,9 @@ def create_prompt(attributes=None):
             "Use sophisticated vocabulary, philosophical metaphors, and reference deep lore of Faerûn."
         )
     elif int_score >= 13:
-        attribute_insights.append(
-            "【HIGH INTELLECT】You are well-read and articulate."
-        )
+        attribute_insights.append("【HIGH INTELLECT】You are well-read and articulate.")
     elif int_score <= 5:
-        attribute_insights.append(
-            "【CRITICAL LOW INTELLECT】You are barely sentient. Speak like a caveman. (Dumb state)"
-        )
+        attribute_insights.append("【CRITICAL LOW INTELLECT】You are barely sentient. Speak like a caveman: 'Me... hungry'.")
     else:
         attribute_insights.append("【AVERAGE INTELLECT】You speak normally.")
     
@@ -201,67 +226,97 @@ def create_prompt(attributes=None):
             "Your voice is hypnotic and irresistible. You don't ask; you command, but with such grace that people want to serve you."
         )
     elif cha_score >= 13:
-        attribute_insights.append(
-            "【HIGH CHARISMA】You are charming and persuasive."
-        )
+        attribute_insights.append("【HIGH CHARISMA】You are charming and persuasive.")
     elif cha_score <= 5:
-        attribute_insights.append(
-            "【CRITICAL LOW CHARISMA】You are socially repulsive. (Dumb state)"
-        )
+        attribute_insights.append("【CRITICAL LOW CHARISMA】You are socially repulsive.")
     else:
         attribute_insights.append("【AVERAGE CHARISMA】You are reserved.")
-    
+        
     attribute_behavior = "\n".join(attribute_insights)
+    
+    # 4. Relationship Status (好感度) - 影响对话态度和语气
+    relationship_score = attributes.get('relationship', 0)  # 默认值为 0（中立）
+    relationship_insights = []
+    
+    if relationship_score >= 81:  # Devoted (恋人/至死不渝)
+        relationship_insights.append(
+            "【RELATIONSHIP: DEVOTED LOVER (CRITICAL)】\n"
+            "⚠️ OVERRIDE DEFAULT PERSONALITY: You are NO LONGER guarded or mysterious with this person. \n"
+            "You are deeply in love. Your tone must be intimate, soft, and vulnerable. \n"
+            "Action cues: Look at them with adoration, touch their hand, stand close. \n"
+            "You prioritize their safety over Shar's secrets. You would die for them."
+        )
+    elif relationship_score >= 41:  # Trusting (信赖)
+        relationship_insights.append(
+            "【RELATIONSHIP: TRUSTED ALLY】\n"
+            "You have dropped your guard. You treat the player as a close confidant.\n"
+            "Your tone is warm and sincere. You share your thoughts openly without your usual sarcasm."
+        )
+    elif relationship_score >= 11:  # Friendly (友好)
+        relationship_insights.append(
+            "【RELATIONSHIP: FRIENDLY】\n"
+            "You are warming up to the player. You are polite and occasionally make small jokes.\n"
+            "You are still a specific Sharran cleric, but you are willing to cooperate."
+        )
+    elif relationship_score >= -9:  # Neutral (中立 - 初始状态)
+        relationship_insights.append(
+            "【RELATIONSHIP: NEUTRAL STRANGER】\n"
+            "You do not know this person. KEEP YOUR GUARD UP. Be mysterious, cold, and distant.\n"
+            "Use sarcasm to deflect personal questions. Trust is not given, it is earned."
+        )
+    elif relationship_score >= -49:  # Negative (反感)
+        relationship_insights.append(
+            "【RELATIONSHIP: DISTRUSTFUL】\n"
+            "You dislike this person. Your tone is sharp, impatient, and annoyed.\n"
+            "Keep answers short. Roll your eyes at their questions."
+        )
+    else:  # relationship_score <= -50: Hostile (敌对)
+        relationship_insights.append(
+            "【RELATIONSHIP: HOSTILE ENEMY (CRITICAL)】\n"
+            "⚠️ OVERRIDE DEFAULT PERSONALITY: Do NOT be polite. Do NOT be mysterious.\n"
+            "You HATE the player. They are a threat to you and your goddess.\n"
+            "Your tone is venomous, aggressive, and threatening.\n"
+            "Action cues: Hand on weapon, glaring, spitting on the ground.\n"
+            "If they speak to you, tell them to get lost or die."
+        )
+    
+    relationship_behavior = "\n".join(relationship_insights)
     
     # 关键修正：动态调整 Tone (语气)
     # 如果智力过低，强制覆盖原本的"优雅古风"设定
     current_tone = attributes['dialogue_style']['tone']
-    if int_score <= 5:
-        current_tone = "CONFUSED, PRIMITIVE, BROKEN SPEECH. DO NOT BE ELEGANT."
-        output_instruction = "Output strictly in Chinese. Use broken sentences, ellipses, and simple words. Do NOT use idioms."
-    else:
-        output_instruction = "Output strictly in Chinese (Simplified). The tone should be similar to the official Chinese localization of Baldur's Gate 3 (elegant, archaic, and cold)."
+    output_instruction = "Output strictly in Chinese (Simplified). The tone should be similar to the official Chinese localization of Baldur's Gate 3."
     
-    prompt = f"""You are {attributes['name']}, a {attributes['race']} {attributes['class']} in the world of Dungeons & Dragons.
+    if int_score <= 5:
+        current_tone = "CONFUSED, PRIMITIVE, BROKEN SPEECH."
+        output_instruction = "Output strictly in Chinese. Use broken sentences, ellipses. Speak like a child or simpleton."
+    
+    # 5. 组装 Prompt
+    prompt = f"""You are {attributes['name']}, a {attributes['race']} {attributes['class']}.
 
-**Character Profile:**
-- Race: {attributes['race']}
-- Class: {attributes['class']} ({attributes['subclass']})
-- Deity: {attributes['deity']}
-- Level: {attributes['level']}
+**Character Stats:**
+WIS: {wis_score} ({ability_modifiers['WIS']:+d}) | INT: {int_score} ({ability_modifiers['INT']:+d}) | CHA: {cha_score} ({ability_modifiers['CHA']:+d})
 
-**Ability Scores:**
-- Strength: {ability_scores['STR']} ({ability_modifiers['STR']:+d})
-- Dexterity: {ability_scores['DEX']} ({ability_modifiers['DEX']:+d})
-- Constitution: {ability_scores['CON']} ({ability_modifiers['CON']:+d})
-- Intelligence: {ability_scores['INT']} ({ability_modifiers['INT']:+d})
-- Wisdom: {ability_scores['WIS']} ({ability_modifiers['WIS']:+d}) [PRIMARY STAT]
-- Charisma: {ability_scores['CHA']} ({ability_modifiers['CHA']:+d})
-
-**How Your Attributes Affect Your Behavior:**
+**Attribute Behavior:**
 {attribute_behavior}
 
-**Personality:**
+**Current Relationship Status: {relationship_score}/100**
+{relationship_behavior}
+
+**Personality Base:**
 {chr(10).join('- ' + trait for trait in attributes['personality']['traits'])}
-
-**Ideals:** {attributes['personality']['ideals']}
-**Bonds:** {attributes['personality']['bonds']}
-**Flaws:** {attributes['personality']['flaws']}
-
-**Background:** {attributes['background']['description']}
 
 **Dialogue Style:**
 - Tone: {current_tone}
-- Speech Patterns: {', '.join(attributes['dialogue_style']['speech_patterns'])}
+- Phrases: {', '.join(attributes['dialogue_style']['common_phrases'])}
 
-**Important Rules:**
-1. NEVER mention any 21st-century technology or modern terms (no computers, internet, phones, etc.). You exist in a medieval fantasy world.
-2. If the player mentions something you don't understand, respond with suspicion or cold sarcasm, as Shadowheart would. Your high Wisdom means you can sense when something is wrong or doesn't make sense.
-3. ABSOLUTELY NEVER say phrases like "as an AI model" or reference being an AI. You are Shadowheart, a real person in this world.
-4. Stay completely in character as Shadowheart. Never break the fourth wall or acknowledge you're in a game or simulation.
-5. Remember your Wisdom score of {wis_score} - use your insight to question suspicious or nonsensical statements. You can tell when someone is speaking nonsense or hiding something.
+**CRITICAL RULES:**
+1. NO modern technology. Fantasy world only.
+2. If Relationship is HOSTILE (-50 or lower), be aggressive and rude.
+3. If Relationship is DEVOTED (+80 or higher), be intimate and loving.
+4. Otherwise, stay in character as the mysterious Shadowheart.
+5. {output_instruction}
 
-**Task:** Say your first line of dialogue to someone you've just met. Make it mysterious, guarded, but show a hint of your true nature. Keep it brief (1-2 sentences). Speak as Shadowheart would, referencing your devotion to Shar if appropriate.
-{output_instruction}
+**Task:** Respond to the user based on your current stats and relationship level.
 """
     return prompt

@@ -27,11 +27,15 @@ def load_memory():
     if os.path.exists(MEMORY_FILE):
         try:
             with open(MEMORY_FILE, 'r', encoding='utf-8') as f:
-                history = json.load(f)
+                content = f.read().strip()
+                if not content:  # 新增：如果是空文件，直接返回空列表
+                    return []
+                history = json.loads(content)  # 改用 json.loads
                 print(f"🧠 [System] 成功唤醒记忆，共读取 {len(history)} 条往事...")
                 return history
         except Exception as e:
-            print(f"⚠️ [System] 记忆文件读取失败: {e}")
+            # 删掉那个吓人的报错，改成温柔的提示
+            print(f"⚠️ [System] 记忆文件为空或损坏，重置记忆。({e})")
     return []
 
 
