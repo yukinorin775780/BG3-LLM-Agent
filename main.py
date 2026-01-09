@@ -7,7 +7,7 @@ import os
 import sys
 import json
 from dotenv import load_dotenv
-from characters.shadowheart import SHADOWHEART_ATTRIBUTES, create_prompt, get_ability_modifiers
+from characters.loader import load_character
 from core.engine import generate_dialogue, parse_approval_change
 
 # Load environment variables from .env file
@@ -16,43 +16,100 @@ load_dotenv()
 # 定义记忆文件保存的位置
 MEMORY_FILE = "data/shadowheart_memory.json"
 
-
-def load_character_attributes():
-    """Load Shadowheart's attributes from the character file"""
-    return SHADOWHEART_ATTRIBUTES
+# 角色名称
+CHARACTER_NAME = "shadowheart"
 
 
-def load_memory():
-    """从本地文件读取记忆"""
+def calculate_ability_modifier(ability_score):
+    """
+    Calculate D&D 5e ability modifier from ability score.
+    
+    Formula: (ability_score - 10) // 2
+    
+    Args:
+        ability_score: The ability score (typically 1-20)
+    
+    Returns:
+        int: The ability modifier
+    """
+    return (ability_score - 10) // 2
+
+
+def get_ability_modifiers(ability_scores):
+    """
+    Calculate all ability modifiers from ability scores.
+    
+    Args:
+        ability_scores: Dictionary of ability scores (e.g., {"STR": 13, "DEX": 14, ...})
+    
+    Returns:
+        dict: Dictionary of ability modifiers with same keys
+    """
+    return {ability: calculate_ability_modifier(score) for ability, score in ability_scores.items()}
+
+
+
+
+def load_memory(default_relationship_score=0):
+    """
+    从本地文件读取记忆，支持优先级系统。
+    
+    优先级（从高到低）：
+    1. 记忆文件中的 relationship_score（如果存在）
+    2. 传入的 default_relationship_score（通常来自 YAML 配置）
+    3. 默认值 0
+    
+    Args:
+        default_relationship_score: 默认关系值，通常从 YAML 配置文件中读取
+    
+    Returns:
+        dict: 包含 relationship_score 和 history 的字典
+    """
+    # 尝试从记忆文件读取
     if os.path.exists(MEMORY_FILE):
         try:
             with open(MEMORY_FILE, 'r', encoding='utf-8') as f:
                 content = f.read().strip()
-                if not content:  # 新增：如果是空文件，直接返回默认值
-                    return {"relationship_score": 0, "history": []}
+                if not content:  # 如果是空文件，使用默认值
+                    print(f"🧠 [System] 记忆文件为空，使用 YAML 配置的关系值: {default_relationship_score}")
+                    return {"relationship_score": default_relationship_score, "history": []}
                 
                 data = json.loads(content)
                 
                 # 向后兼容：如果文件是列表格式（旧格式），转换为新格式
                 if isinstance(data, list):
                     print(f"🧠 [System] 检测到旧格式记忆文件，正在转换...")
-                    return {"relationship_score": 0, "history": data}
+                    print(f"💕 [System] 使用 YAML 配置的关系值: {default_relationship_score}")
+                    return {"relationship_score": default_relationship_score, "history": data}
                 
                 # 新格式：包含 relationship_score 和 history
                 if isinstance(data, dict):
-                    relationship_score = data.get("relationship_score", 0)
+                    # 优先使用记忆文件中的关系值，如果没有则使用默认值
+                    relationship_score = data.get("relationship_score")
+                    if relationship_score is None:
+                        # 记忆文件中没有关系值，使用 YAML 配置的值
+                        relationship_score = default_relationship_score
+                        print(f"🧠 [System] 记忆文件中没有关系值，使用 YAML 配置: {relationship_score}")
+                    else:
+                        # 使用记忆文件中的关系值（最高优先级）
+                        print(f"🧠 [System] 成功唤醒记忆，共读取 {len(data.get('history', []))} 条往事...")
+                        print(f"💕 [System] 当前关系值（来自记忆）: {relationship_score}/100")
+                    
                     history = data.get("history", [])
-                    print(f"🧠 [System] 成功唤醒记忆，共读取 {len(history)} 条往事...")
-                    print(f"💕 [System] 当前关系值: {relationship_score}/100")
                     return {"relationship_score": relationship_score, "history": history}
                 
-                # 如果格式不对，返回默认值
-                return {"relationship_score": 0, "history": []}
+                # 如果格式不对，使用默认值
+                print(f"⚠️ [System] 记忆文件格式错误，使用 YAML 配置的关系值: {default_relationship_score}")
+                return {"relationship_score": default_relationship_score, "history": []}
                 
         except Exception as e:
-            # 删掉那个吓人的报错，改成温柔的提示
-            print(f"⚠️ [System] 记忆文件为空或损坏，重置记忆。({e})")
-    return {"relationship_score": 0, "history": []}
+            # 记忆文件读取失败，使用 YAML 配置的值
+            print(f"⚠️ [System] 记忆文件读取失败，使用 YAML 配置的关系值: {default_relationship_score} ({e})")
+            return {"relationship_score": default_relationship_score, "history": []}
+    
+    # 记忆文件不存在，使用 YAML 配置的值
+    print(f"🧠 [System] 未找到记忆文件，使用 YAML 配置的关系值: {default_relationship_score}")
+    return {"relationship_score": default_relationship_score, "history": []}
 
 
 def save_memory(memory_data):
@@ -73,9 +130,10 @@ def main():
     print("BG3 LLM Agent - Shadowheart Dialogue Generator")
     print("=" * 60)
     
-    # Load character attributes
+    # Load character
     print("Loading Shadowheart's attributes...")
-    attributes = load_character_attributes()
+    character = load_character(CHARACTER_NAME)
+    attributes = character.data  # 保留对原始数据的引用，用于显示
     print(f"✓ Loaded attributes for {attributes['name']}")
     print(f"  - {attributes['race']} {attributes['class']} (Level {attributes['level']})")
     print(f"  - Deity: {attributes['deity']}")
@@ -92,17 +150,16 @@ def main():
     # Generate initial greeting
     print("Generating initial greeting...")
     try:
-        # 1. 在循环开始前，生成一次 System Prompt（影心的人设）
-        system_prompt = create_prompt(attributes)
-        
-        # 2. 【关键修改】启动时尝试加载旧记忆
-        # 如果没有旧记忆，就从空列表开始
-        memory_data = load_memory()
+        # 1. 【关键修改】启动时尝试加载旧记忆
+        # 优先级：记忆文件 > YAML 配置 > 默认值 0
+        # 从 YAML 配置中获取初始关系值作为默认值
+        default_relationship = attributes.get('relationship', 0)
+        memory_data = load_memory(default_relationship_score=default_relationship)
         relationship_score = memory_data["relationship_score"]
         conversation_history = memory_data["history"]
         
-        # 同步 attributes 中的关系值
-        attributes['relationship'] = relationship_score
+        # 2. 生成 System Prompt（使用 Character 对象的 render_prompt 方法）
+        system_prompt = character.render_prompt(relationship_score)
         
         print("=" * 60)
         # 如果是新对话（没记忆），生成并打印开场白
@@ -115,7 +172,6 @@ def main():
             
             # 更新关系值
             relationship_score += approval_change
-            attributes['relationship'] = relationship_score
             
             # 清理引号
             if cleaned_dialogue:
@@ -160,8 +216,7 @@ def main():
                 conversation_history.append({"role": "user", "content": user_input})
                 
                 # 2. 更新 system prompt 以反映当前关系值（因为关系值可能已改变）
-                attributes['relationship'] = relationship_score
-                system_prompt = create_prompt(attributes)
+                system_prompt = character.render_prompt(relationship_score)
                 
                 # 3. 生成回复 (注意：这里我们传入整个历史)
                 print(f"\n{attributes['name']}: ", end="", flush=True)
@@ -176,7 +231,6 @@ def main():
                     relationship_score += approval_change
                     # 限制关系值在 -100 到 100 之间
                     relationship_score = max(-100, min(100, relationship_score))
-                    attributes['relationship'] = relationship_score
                     
                     # 打印系统调试信息
                     change_str = f"+{approval_change}" if approval_change > 0 else str(approval_change)
