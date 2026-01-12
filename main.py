@@ -6,9 +6,11 @@ Reads character attributes and generates dialogue using LLM API (阿里云百炼
 import os
 import sys
 import json
+from typing import Optional
 from dotenv import load_dotenv
 from characters.loader import load_character
 from core.engine import generate_dialogue, parse_approval_change
+from core.dice import roll_d20
 
 # Load environment variables from .env file
 load_dotenv()
@@ -46,6 +48,102 @@ def get_ability_modifiers(ability_scores):
         dict: Dictionary of ability modifiers with same keys
     """
     return {ability: calculate_ability_modifier(score) for ability, score in ability_scores.items()}
+
+
+def normalize_ability_name(ability_name: str) -> Optional[str]:
+    """
+    Normalize ability name to standard format (STR, DEX, CON, INT, WIS, CHA).
+    Handles common abbreviations and case variations.
+    
+    Args:
+        ability_name: User input ability name (e.g., "wis", "CHA", "charisma")
+    
+    Returns:
+        Optional[str]: Standardized ability name (STR, DEX, CON, INT, WIS, CHA) or None if not found
+    """
+    ability_name = ability_name.upper().strip()
+    
+    # Mapping of common abbreviations to standard names
+    ability_map = {
+        "STR": "STR", "STRENGTH": "STR",
+        "DEX": "DEX", "DEXTERITY": "DEX",
+        "CON": "CON", "CONSTITUTION": "CON",
+        "INT": "INT", "INTELLIGENCE": "INT",
+        "WIS": "WIS", "WISDOM": "WIS",
+        "CHA": "CHA", "CHARISMA": "CHA"
+    }
+    
+    return ability_map.get(ability_name)
+
+
+def handle_command(user_input: str, attributes: dict) -> Optional[str]:
+    """
+    Handle user commands (commands starting with '/').
+    
+    Supported commands:
+    - /roll <ability> <dc>: Roll a D20 check with the specified ability modifier
+    
+    Args:
+        user_input: The user's input string
+        attributes: Character attributes dictionary containing ability_scores
+    
+    Returns:
+        Optional[str]: Roll result narrative string if a roll occurred, None otherwise
+    """
+    if not user_input.startswith('/'):
+        return None
+    
+    parts = user_input.split()
+    if len(parts) < 2:
+        print("❌ [System] 命令格式错误。用法: /roll <ability> <dc>")
+        print("   例如: /roll wis 12 或 /roll cha 15")
+        return None
+    
+    command = parts[0].lower()
+    
+    if command == '/roll':
+        if len(parts) < 3:
+            print("❌ [System] /roll 命令需要两个参数: <ability> <dc>")
+            print("   例如: /roll wis 12 或 /roll cha 15")
+            return None
+        
+        ability_name = parts[1]
+        try:
+            dc = int(parts[2])
+        except ValueError:
+            print(f"❌ [System] DC 必须是数字，收到: {parts[2]}")
+            return None
+        
+        # Normalize ability name
+        normalized_ability = normalize_ability_name(ability_name)
+        if not normalized_ability:
+            print(f"❌ [System] 未知的能力值: {ability_name}")
+            print("   支持的能力值: STR, DEX, CON, INT, WIS, CHA")
+            return None
+        
+        # Get ability score and calculate modifier
+        ability_scores = attributes.get('ability_scores', {})
+        if normalized_ability not in ability_scores:
+            print(f"❌ [System] 角色没有 {normalized_ability} 能力值")
+            return None
+        
+        ability_score = ability_scores[normalized_ability]
+        modifier = calculate_ability_modifier(ability_score)
+        
+        # Roll the dice
+        result = roll_d20(dc, modifier)
+        
+        # Print the result
+        print(f"\n{result['log_str']}\n")
+        
+        # Generate narrative result string for LLM injection
+        roll_summary = f"Skill Check Result: {result['result_type'].value} (Rolled {result['total']} vs DC {dc})."
+        return roll_summary
+    
+    else:
+        print(f"❌ [System] 未知命令: {command}")
+        print("   支持的命令: /roll")
+        return None
 
 
 
@@ -193,6 +291,9 @@ def main():
         print("=" * 60)
         print()
         
+        # State management for pending roll results
+        pending_roll_result = None
+        
         while True:
             try:
                 # Get user input
@@ -212,8 +313,25 @@ def main():
                     print("\n再见！")
                     break
                 
-                # 1. 存入用户输入
-                conversation_history.append({"role": "user", "content": user_input})
+                # 检查是否是命令（以 '/' 开头）
+                if user_input.startswith('/'):
+                    roll_result = handle_command(user_input, attributes)
+                    if roll_result is not None:
+                        # Store the roll result for injection into next dialogue
+                        pending_roll_result = roll_result
+                    continue  # 命令执行后不发送到 LLM，继续等待下一个输入
+                
+                # 1. 准备用户输入（注入 roll result 如果存在）
+                if pending_roll_result is not None:
+                    # Prepend the roll result to user input
+                    user_content = f"[SYSTEM INFO: {pending_roll_result}]\n\n{user_input}"
+                    # Reset pending roll result after using it
+                    pending_roll_result = None
+                else:
+                    user_content = user_input
+                
+                # 存入用户输入（可能包含 injected roll result）
+                conversation_history.append({"role": "user", "content": user_content})
                 
                 # 2. 更新 system prompt 以反映当前关系值（因为关系值可能已改变）
                 system_prompt = character.render_prompt(relationship_score)
