@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 from characters.loader import load_character
 from core.engine import generate_dialogue, parse_approval_change
 from core.dice import roll_d20
+from core.dm import analyze_intent
 
 # Load environment variables from .env file
 load_dotenv()
@@ -321,29 +322,46 @@ def main():
                         pending_roll_result = roll_result
                     continue  # 命令执行后不发送到 LLM，继续等待下一个输入
                 
-                # 1. 准备用户输入（注入 roll result 如果存在）
+                # 【DM Layer】分析玩家意图
+                try:
+                    intent_data = analyze_intent(user_input)
+                    # 记录意图判定
+                    print(f"🎲 [DM] 判定意图: {intent_data['action_type']} (DC {intent_data['difficulty_class']})")
+                except Exception as e:
+                    # 如果 DM 分析失败，使用默认值并继续
+                    print(f"⚠️ [DM] 意图分析失败: {e}")
+                    intent_data = {
+                        'action_type': 'NONE',
+                        'difficulty_class': 0,
+                        'reason': 'DM analysis failed'
+                    }
+                
+                # 1. 更新 system prompt 以反映当前关系值（因为关系值可能已改变）
+                system_prompt = character.render_prompt(relationship_score)
+                
+                # 2. 创建临时消息列表（用于发送给 LLM，包含注入的系统信息）
+                messages_to_send = conversation_history.copy()
+                
+                # 3. 准备用户输入（注入 roll result 如果存在，仅用于本次生成）
                 if pending_roll_result is not None:
-                    # Prepend the roll result to user input
-                    user_content = f"[SYSTEM INFO: {pending_roll_result}]\n\n{user_input}"
+                    # Prepend the roll result to user input for LLM context
+                    user_content_for_llm = f"[SYSTEM INFO: {pending_roll_result}]\n\n{user_input}"
                     # Reset pending roll result after using it
                     pending_roll_result = None
                 else:
-                    user_content = user_input
+                    user_content_for_llm = user_input
                 
-                # 存入用户输入（可能包含 injected roll result）
-                conversation_history.append({"role": "user", "content": user_content})
+                # 4. 将用户消息添加到临时列表（用于发送给 LLM）
+                messages_to_send.append({"role": "user", "content": user_content_for_llm})
                 
-                # 2. 更新 system prompt 以反映当前关系值（因为关系值可能已改变）
-                system_prompt = character.render_prompt(relationship_score)
-                
-                # 3. 生成回复 (注意：这里我们传入整个历史)
+                # 5. 生成回复（使用临时列表，包含注入的系统信息）
                 print(f"\n{attributes['name']}: ", end="", flush=True)
-                response = generate_dialogue(system_prompt, conversation_history=conversation_history)
+                response = generate_dialogue(system_prompt, conversation_history=messages_to_send)
                 
-                # 4. 解析 approval change
+                # 6. 解析 approval change
                 approval_change, cleaned_response = parse_approval_change(response)
                 
-                # 5. 更新关系值
+                # 7. 更新关系值
                 if approval_change != 0:
                     old_score = relationship_score
                     relationship_score += approval_change
@@ -355,7 +373,7 @@ def main():
                     print(f"\n💕 [System] 关系值变化: {change_str} (当前: {relationship_score}/100)")
                     print(f"{attributes['name']}: ", end="", flush=True)
                 
-                # 6. 处理一下回复格式
+                # 8. 处理一下回复格式
                 if cleaned_response:
                     cleaned_response = cleaned_response.strip('"').strip("'")
                     print(f'"{cleaned_response}"')
@@ -363,7 +381,10 @@ def main():
                     print("（没有回应）")
                 print()
                 
-                # 7. 存入 AI 回复（存储清理后的文本，不包含 approval tag）
+                # 9. 【Memory Hygiene】保存干净的对话历史（不包含系统注入标签）
+                # 只保存原始用户输入，不包含 [SYSTEM INFO: ...]
+                conversation_history.append({"role": "user", "content": user_input})
+                # 保存清理后的 AI 回复（不包含 approval tag）
                 conversation_history.append({"role": "assistant", "content": cleaned_response})
                 
                 # 8. 【可选】每轮对话都自动存档（防止程序崩了丢失记忆）
