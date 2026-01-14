@@ -16,11 +16,14 @@ class CheckResult(Enum):
     CRITICAL_FAILURE = "CRITICAL_FAILURE"
 
 
-def roll_d20(dc: int, modifier: int = 0) -> Dict[str, Any]:
+def roll_d20(dc: int, modifier: int = 0, roll_type: str = 'normal') -> Dict[str, Any]:
     """
     Simulates rolling a 20-sided die (D20) with D&D 5e mechanics.
     
     Rules:
+    - Normal: Roll 1d20
+    - Advantage: Roll 2d20, take the HIGHER value
+    - Disadvantage: Roll 2d20, take the LOWER value
     - Natural 20: Automatic success (CRITICAL SUCCESS), regardless of DC
     - Natural 1: Automatic failure (CRITICAL FAILURE)
     - Otherwise: Total = Raw Roll + Modifier. Success if Total >= DC
@@ -28,17 +31,32 @@ def roll_d20(dc: int, modifier: int = 0) -> Dict[str, Any]:
     Args:
         dc: Difficulty Class (target number to beat)
         modifier: Modifier to add to the roll (e.g., ability modifier, proficiency bonus)
+        roll_type: Type of roll - 'normal', 'advantage', or 'disadvantage'
     
     Returns:
         Dictionary containing:
             - total: Final calculated score (raw_roll + modifier)
-            - raw_roll: The dice roll result (1-20)
+            - raw_roll: The dice roll result used (1-20)
+            - rolls: List of all raw rolls (single value for normal, two values for adv/disadv)
             - is_success: Boolean indicating if the check succeeded
             - result_type: CheckResult enum value
             - log_str: Pre-formatted string for UI display
     """
-    # Roll the die
-    raw_roll = random.randint(1, 20)
+    # Normalize roll_type
+    roll_type = roll_type.lower()
+    if roll_type not in ['normal', 'advantage', 'disadvantage']:
+        roll_type = 'normal'
+    
+    # Roll the die(s)
+    if roll_type == 'normal':
+        rolls = [random.randint(1, 20)]
+        raw_roll = rolls[0]
+    elif roll_type == 'advantage':
+        rolls = [random.randint(1, 20), random.randint(1, 20)]
+        raw_roll = max(rolls)  # Take the higher value
+    else:  # disadvantage
+        rolls = [random.randint(1, 20), random.randint(1, 20)]
+        raw_roll = min(rolls)  # Take the lower value
     
     # Calculate total (for display purposes, even if crit rules override)
     total = raw_roll + modifier
@@ -48,25 +66,30 @@ def roll_d20(dc: int, modifier: int = 0) -> Dict[str, Any]:
         # Natural 20: Critical Success (automatic success)
         result_type = CheckResult.CRITICAL_SUCCESS
         is_success = True
-        log_str = f"🎲 ({raw_roll}) + {modifier:+d} = {total} vs DC {dc} [CRITICAL SUCCESS]"
     elif raw_roll == 1:
         # Natural 1: Critical Failure (automatic failure)
         result_type = CheckResult.CRITICAL_FAILURE
         is_success = False
-        log_str = f"🎲 ({raw_roll}) + {modifier:+d} = {total} vs DC {dc} [CRITICAL FAILURE]"
     else:
         # Normal roll: compare total to DC
         is_success = total >= dc
         if is_success:
             result_type = CheckResult.SUCCESS
-            log_str = f"🎲 ({raw_roll}) + {modifier:+d} = {total} vs DC {dc} [SUCCESS]"
         else:
             result_type = CheckResult.FAILURE
-            log_str = f"🎲 ({raw_roll}) + {modifier:+d} = {total} vs DC {dc} [FAILURE]"
+    
+    # Format log string based on roll type
+    if roll_type == 'normal':
+        log_str = f"🎲 ({raw_roll}) + {modifier:+d} = {total} vs DC {dc} [{result_type.value}]"
+    elif roll_type == 'advantage':
+        log_str = f"🎲 [ADV] ({rolls[0]}, {rolls[1]}) -> {raw_roll} + {modifier:+d} = {total} vs DC {dc} [{result_type.value}]"
+    else:  # disadvantage
+        log_str = f"🎲 [DIS] ({rolls[0]}, {rolls[1]}) -> {raw_roll} + {modifier:+d} = {total} vs DC {dc} [{result_type.value}]"
     
     return {
         "total": total,
         "raw_roll": raw_roll,
+        "rolls": rolls,
         "is_success": is_success,
         "result_type": result_type,
         "log_str": log_str

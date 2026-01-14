@@ -77,7 +77,7 @@ def normalize_ability_name(ability_name: str) -> Optional[str]:
     return ability_map.get(ability_name)
 
 
-def handle_command(user_input: str, attributes: dict) -> Optional[str]:
+def handle_command(user_input: str, attributes: dict, relationship_score: int = 0, action_type: str = 'NONE') -> Optional[str]:
     """
     Handle user commands (commands starting with '/').
     
@@ -87,6 +87,8 @@ def handle_command(user_input: str, attributes: dict) -> Optional[str]:
     Args:
         user_input: The user's input string
         attributes: Character attributes dictionary containing ability_scores
+        relationship_score: Current relationship score (for determining advantage/disadvantage)
+        action_type: Current action type from DM analysis (for determining advantage/disadvantage)
     
     Returns:
         Optional[str]: Roll result narrative string if a roll occurred, None otherwise
@@ -131,8 +133,17 @@ def handle_command(user_input: str, attributes: dict) -> Optional[str]:
         ability_score = ability_scores[normalized_ability]
         modifier = calculate_ability_modifier(ability_score)
         
+        # Determine roll type based on relationship and action
+        roll_type = determine_roll_type(action_type, relationship_score)
+        
+        # Visual feedback for advantage/disadvantage
+        if roll_type == 'advantage':
+            print(f"🌟 [System] High relationship grants ADVANTAGE on {action_type}!")
+        elif roll_type == 'disadvantage':
+            print("💀 [System] Low relationship imposes DISADVANTAGE!")
+        
         # Roll the dice
-        result = roll_d20(dc, modifier)
+        result = roll_d20(dc, modifier, roll_type=roll_type)
         
         # Print the result
         print(f"\n{result['log_str']}\n")
@@ -223,11 +234,88 @@ def save_memory(memory_data):
         print(f"❌ [System] 存档失败: {e}")
 
 
+def load_player_profile():
+    """
+    Load player profile from data/player.json.
+    
+    Returns:
+        dict: Player profile data
+    
+    Raises:
+        FileNotFoundError: If player.json doesn't exist
+        json.JSONDecodeError: If JSON is malformed
+    """
+    player_file = "data/player.json"
+    if not os.path.exists(player_file):
+        raise FileNotFoundError(f"Player profile not found: {player_file}")
+    
+    with open(player_file, 'r', encoding='utf-8') as f:
+        player_data = json.load(f)
+    
+    return player_data
+
+
+def get_ability_for_action(action_type: str) -> str:
+    """
+    Map action type to the corresponding ability score.
+    
+    Args:
+        action_type: The action type from DM analysis (e.g., "PERSUASION", "DECEPTION")
+    
+    Returns:
+        str: Ability score abbreviation (STR, DEX, CON, INT, WIS, CHA)
+    """
+    action_to_ability = {
+        "DECEPTION": "CHA",
+        "PERSUASION": "CHA",
+        "INTIMIDATION": "CHA",
+        "INSIGHT": "WIS",
+        "ATTACK": "STR",  # Default to STR, could be weapon-dependent
+        "NONE": "CHA"  # Default fallback
+    }
+    return action_to_ability.get(action_type, "CHA")
+
+
+def determine_roll_type(action_type: str, relationship_score: int) -> str:
+    """
+    Determine roll type (normal/advantage/disadvantage) based on action and relationship.
+    
+    Args:
+        action_type: The action type from DM analysis (e.g., "PERSUASION", "DECEPTION")
+        relationship_score: Current relationship score with the NPC
+    
+    Returns:
+        str: 'normal', 'advantage', or 'disadvantage'
+    """
+    # Advantage: PERSUASION or DECEPTION with high relationship (>= 30)
+    if action_type in ["PERSUASION", "DECEPTION"] and relationship_score >= 30:
+        return 'advantage'
+    
+    # Disadvantage: Low relationship (<= -20)
+    if relationship_score <= -20:
+        return 'disadvantage'
+    
+    return 'normal'
+
+
 def main():
     """Main function to load attributes and generate dialogue"""
     print("=" * 60)
     print("BG3 LLM Agent - Shadowheart Dialogue Generator")
     print("=" * 60)
+    
+    # Load player profile
+    print("Loading player profile...")
+    try:
+        player_data = load_player_profile()
+        print(f"✓ Loaded player profile: {player_data['name']}")
+        print(f"  - {player_data['race']} {player_data['class']} (Level {player_data['level']})")
+        print()
+    except Exception as e:
+        print(f"⚠️ [System] Failed to load player profile: {e}")
+        print("  Continuing without player profile...")
+        player_data = None
+        print()
     
     # Load character
     print("Loading Shadowheart's attributes...")
@@ -292,20 +380,21 @@ def main():
         print("=" * 60)
         print()
         
-        # State management for pending roll results
-        pending_roll_result = None
-        
         while True:
             try:
-                # Get user input
+                # ==========================================
+                # Step 1: Get User Input
+                # ==========================================
                 user_input = input("你: ").strip()
                 
                 if not user_input:
                     continue
                 
-                # 退出指令
+                # ==========================================
+                # Step 2: Command Interceptor
+                # ==========================================
                 if user_input.lower() in ['quit', 'exit', '退出', 'q']:
-                    # 【关键修改】退出前自动存档
+                    # Exit command
                     memory_data = {
                         "relationship_score": relationship_score,
                         "history": conversation_history
@@ -314,19 +403,26 @@ def main():
                     print("\n再见！")
                     break
                 
-                # 检查是否是命令（以 '/' 开头）
                 if user_input.startswith('/'):
-                    roll_result = handle_command(user_input, attributes)
+                    # Handle commands (e.g., /roll)
+                    current_action = 'NONE'  # Commands don't use DM analysis
+                    roll_result = handle_command(user_input, attributes, relationship_score, current_action)
                     if roll_result is not None:
                         # Store the roll result for injection into next dialogue
-                        pending_roll_result = roll_result
-                    continue  # 命令执行后不发送到 LLM，继续等待下一个输入
+                        print(f"💡 [System] Roll result stored. Type your dialogue to use it.")
+                    continue  # Skip the rest of the loop for commands
                 
-                # 【DM Layer】分析玩家意图
+                # ==========================================
+                # Step 3: NORMAL DIALOGUE FLOW
+                # ==========================================
+                
+                # Step A: DM Analysis
                 try:
                     intent_data = analyze_intent(user_input)
+                    action_type = intent_data['action_type']
+                    dc = intent_data['difficulty_class']
                     # 记录意图判定
-                    print(f"🎲 [DM] 判定意图: {intent_data['action_type']} (DC {intent_data['difficulty_class']})")
+                    print(f"🎲 [DM] 判定意图: {action_type} (DC {dc})")
                 except Exception as e:
                     # 如果 DM 分析失败，使用默认值并继续
                     print(f"⚠️ [DM] 意图分析失败: {e}")
@@ -335,26 +431,62 @@ def main():
                         'difficulty_class': 0,
                         'reason': 'DM analysis failed'
                     }
+                    action_type = 'NONE'
+                    dc = 0
                 
-                # 1. 更新 system prompt 以反映当前关系值（因为关系值可能已改变）
+                # Step B: Auto-Roll Logic
+                system_info = None
+                if action_type != "NONE" and dc > 0:
+                    # Check if player_data is available
+                    if player_data is None:
+                        print("⚠️ [System] Player profile not loaded. Cannot perform auto-roll.")
+                    else:
+                        # Get ability score for this action
+                        ability_name = get_ability_for_action(action_type)
+                        player_ability_scores = player_data.get('ability_scores', {})
+                        
+                        if ability_name not in player_ability_scores:
+                            print(f"⚠️ [System] Player doesn't have {ability_name} ability score.")
+                        else:
+                            # Get modifier from player stats
+                            ability_score = player_ability_scores[ability_name]
+                            modifier = calculate_ability_modifier(ability_score)
+                            
+                            # Determine roll type (advantage/disadvantage)
+                            roll_type = determine_roll_type(action_type, relationship_score)
+                            
+                            # Visual feedback for advantage/disadvantage
+                            if roll_type == 'advantage':
+                                print(f"🌟 [System] High relationship grants ADVANTAGE on {action_type}!")
+                            elif roll_type == 'disadvantage':
+                                print("💀 [System] Low relationship imposes DISADVANTAGE!")
+                            
+                            # Execute roll
+                            result = roll_d20(dc, modifier, roll_type=roll_type)
+                            
+                            # Print result
+                            print(f"\n{result['log_str']}\n")
+                            
+                            # Create system info string for injection
+                            system_info = f"Skill Check Result: {result['result_type'].value} (Rolled {result['total']} vs DC {dc})."
+                
+                # Step C: Generation
+                # Update system prompt to reflect current relationship score
                 system_prompt = character.render_prompt(relationship_score)
                 
-                # 2. 创建临时消息列表（用于发送给 LLM，包含注入的系统信息）
+                # Create temporary messages list (for sending to LLM, with injected system info)
                 messages_to_send = conversation_history.copy()
                 
-                # 3. 准备用户输入（注入 roll result 如果存在，仅用于本次生成）
-                if pending_roll_result is not None:
-                    # Prepend the roll result to user input for LLM context
-                    user_content_for_llm = f"[SYSTEM INFO: {pending_roll_result}]\n\n{user_input}"
-                    # Reset pending roll result after using it
-                    pending_roll_result = None
+                # Prepare user input (inject system info if exists)
+                if system_info is not None:
+                    user_content_for_llm = f"[SYSTEM INFO: {system_info}]\n\n{user_input}"
                 else:
                     user_content_for_llm = user_input
                 
-                # 4. 将用户消息添加到临时列表（用于发送给 LLM）
+                # Add user message to temporary list
                 messages_to_send.append({"role": "user", "content": user_content_for_llm})
                 
-                # 5. 生成回复（使用临时列表，包含注入的系统信息）
+                # Generate reply
                 print(f"\n{attributes['name']}: ", end="", flush=True)
                 response = generate_dialogue(system_prompt, conversation_history=messages_to_send)
                 
