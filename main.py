@@ -298,6 +298,90 @@ def determine_roll_type(action_type: str, relationship_score: int) -> str:
     return 'normal'
 
 
+def calculate_passive_dc(action_type: str, npc_attributes: dict) -> int | None:
+    """
+    Calculate passive DC based on NPC's stats (Phase 1: Rules Overrule).
+    
+    This function calculates the DC that the player must beat based on the NPC's
+    actual ability scores, overriding the DM AI's DC estimate.
+    
+    Args:
+        action_type: The action type from DM analysis (e.g., "PERSUASION", "DECEPTION")
+        npc_attributes: NPC character attributes dictionary containing ability_scores
+    
+    Returns:
+        int | None: Calculated DC if applicable, None to use DM's default DC
+    """
+    # Get NPC's WIS modifier
+    ability_scores = npc_attributes.get('ability_scores', {})
+    wis_score = ability_scores.get('WIS', 10)
+    wis_mod = (wis_score - 10) // 2
+    
+    # Calculate passive DC based on action type
+    if action_type == "DECEPTION":
+        # Passive Insight: 10 + WIS modifier (detecting lies)
+        return 10 + wis_mod
+    elif action_type == "PERSUASION":
+        # Passive Insight/Skepticism: 10 + WIS modifier (judging honesty)
+        return 10 + wis_mod
+    elif action_type == "INTIMIDATION":
+        # Passive Willpower: 10 + WIS modifier (resisting threats)
+        return 10 + wis_mod
+    else:
+        # For other action types, use DM's default DC
+        return None
+
+
+def get_situational_bonus(history: list, action_type: str, current_message: str = "") -> tuple[int, str]:
+    """
+    Calculate situational bonus based on conversation context (Simple Keyword Matching).
+    
+    This function checks the current user message (and optionally history) for keywords 
+    that indicate shared context or past bonds, which grant bonuses to social skill checks.
+    
+    Args:
+        history: List of conversation history dicts with 'role' and 'content' keys
+        action_type: The action type from DM analysis (e.g., "PERSUASION", "DECEPTION")
+        current_message: The current user input message (optional, checked first)
+    
+    Returns:
+        tuple[int, str]: (bonus, reason) - bonus amount and explanation
+    """
+    # Check current message first, then fall back to last message in history
+    message_to_check = current_message
+    
+    if not message_to_check:
+        # Get the last user message from history
+        for msg in reversed(history):
+            if msg.get('role') == 'user':
+                message_to_check = msg.get('content', '')
+                break
+    
+    if not message_to_check:
+        return (0, "")
+    
+    # Convert to lowercase for matching
+    message_lower = message_to_check.lower()
+    
+    # Rule 1: Shared Context (Shared Faith/Knowledge)
+    # Keywords: ["shar", "莎尔", "lady of loss"]
+    # Applies to: PERSUASION or DECEPTION
+    if action_type in ["PERSUASION", "DECEPTION"]:
+        shared_faith_keywords = ["shar", "莎尔", "lady of loss"]
+        if any(keyword in message_lower for keyword in shared_faith_keywords):
+            return (2, "Shared Faith/Knowledge")
+    
+    # Rule 2: Past Bond
+    # Keywords: ["ship", "nautiloid", "飞船", "螺壳舰"]
+    # Applies to: All action types
+    past_bond_keywords = ["ship", "nautiloid", "飞船", "螺壳舰"]
+    if any(keyword in message_lower for keyword in past_bond_keywords):
+        return (2, "Past Bond")
+    
+    # Default: No bonus
+    return (0, "")
+
+
 def main():
     """Main function to load attributes and generate dialogue"""
     print("=" * 60)
@@ -434,6 +518,12 @@ def main():
                     action_type = 'NONE'
                     dc = 0
                 
+                # Phase 1: Rules Overrule - Calculate DC from NPC stats
+                rule_dc = calculate_passive_dc(action_type, attributes)
+                if rule_dc is not None:
+                    dc = rule_dc
+                    print(f"🛡️ [System] DC Auto-Calculated: {dc} (Based on Shadowheart's Stats)")
+                
                 # Step B: Auto-Roll Logic
                 system_info = None
                 if action_type != "NONE" and dc > 0:
@@ -451,6 +541,12 @@ def main():
                             # Get modifier from player stats
                             ability_score = player_ability_scores[ability_name]
                             modifier = calculate_ability_modifier(ability_score)
+                            
+                            # Calculate situational bonus (check current user input)
+                            bonus, reason = get_situational_bonus(conversation_history, action_type, user_input)
+                            if bonus != 0:
+                                modifier += bonus
+                                print(f"💍 [System] Situational Bonus: +{bonus} ({reason})")
                             
                             # Determine roll type (advantage/disadvantage)
                             roll_type = determine_roll_type(action_type, relationship_score)

@@ -92,4 +92,4 @@ dialogue_style:
 # 11 ~ 40:    Friendly (友好)
 # 41 ~ 80:    Trusting (信赖)
 # 81 ~ 100:   Devoted (恋人/至死不渝)
-relationship: 50  # 初始状态：中立
+relationship: 0  # 初始状态：中立
