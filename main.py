@@ -8,10 +8,34 @@ import sys
 import json
 from typing import Optional
 from dotenv import load_dotenv
+from rich.console import Console
+from rich.panel import Panel
+from rich.theme import Theme
+from rich.text import Text
+from rich.rule import Rule
+from rich.table import Table
 from characters.loader import load_character
 from core.engine import generate_dialogue, parse_approval_change
-from core.dice import roll_d20
+from core.dice import roll_d20, CheckResult
 from core.dm import analyze_intent
+
+# Create custom theme for BG3 UI
+bg3_theme = Theme({
+    "info": "dim cyan",
+    "warning": "yellow",
+    "error": "bold red",
+    "success": "bold green",
+    "failure": "bold red",
+    "critical": "bold yellow reverse blink",
+    "npc": "bold purple",
+    "player": "bold white",
+    "dm": "italic grey50",
+    "stat": "bold blue",
+    "item": "bold magenta",
+})
+
+# Initialize console with custom theme
+console = Console(theme=bg3_theme)
 
 # Load environment variables from .env file
 load_dotenv()
@@ -98,36 +122,36 @@ def handle_command(user_input: str, attributes: dict, relationship_score: int = 
     
     parts = user_input.split()
     if len(parts) < 2:
-        print("❌ [System] 命令格式错误。用法: /roll <ability> <dc>")
-        print("   例如: /roll wis 12 或 /roll cha 15")
+        console.print("[error]❌ 命令格式错误。用法: /roll <ability> <dc>[/error]")
+        console.print("[info]   例如: /roll wis 12 或 /roll cha 15[/info]")
         return None
     
     command = parts[0].lower()
     
     if command == '/roll':
         if len(parts) < 3:
-            print("❌ [System] /roll 命令需要两个参数: <ability> <dc>")
-            print("   例如: /roll wis 12 或 /roll cha 15")
+            console.print("[error]❌ /roll 命令需要两个参数: <ability> <dc>[/error]")
+            console.print("[info]   例如: /roll wis 12 或 /roll cha 15[/info]")
             return None
         
         ability_name = parts[1]
         try:
             dc = int(parts[2])
         except ValueError:
-            print(f"❌ [System] DC 必须是数字，收到: {parts[2]}")
+            console.print(f"[error]❌ DC 必须是数字，收到: [stat]{parts[2]}[/stat][/error]")
             return None
         
         # Normalize ability name
         normalized_ability = normalize_ability_name(ability_name)
         if not normalized_ability:
-            print(f"❌ [System] 未知的能力值: {ability_name}")
-            print("   支持的能力值: STR, DEX, CON, INT, WIS, CHA")
+            console.print(f"[error]❌ 未知的能力值: [item]{ability_name}[/item][/error]")
+            console.print("[info]   支持的能力值: STR, DEX, CON, INT, WIS, CHA[/info]")
             return None
         
         # Get ability score and calculate modifier
         ability_scores = attributes.get('ability_scores', {})
         if normalized_ability not in ability_scores:
-            print(f"❌ [System] 角色没有 {normalized_ability} 能力值")
+            console.print(f"[error]❌ 角色没有 [stat]{normalized_ability}[/stat] 能力值[/error]")
             return None
         
         ability_score = ability_scores[normalized_ability]
@@ -138,23 +162,34 @@ def handle_command(user_input: str, attributes: dict, relationship_score: int = 
         
         # Visual feedback for advantage/disadvantage
         if roll_type == 'advantage':
-            print(f"🌟 [System] High relationship grants ADVANTAGE on {action_type}!")
+            console.print(f"[warning]🌟 High relationship grants ADVANTAGE on [item]{action_type}[/item]![/warning]")
         elif roll_type == 'disadvantage':
-            print("💀 [System] Low relationship imposes DISADVANTAGE!")
+            console.print("[warning]💀 Low relationship imposes DISADVANTAGE![/warning]")
         
         # Roll the dice
         result = roll_d20(dc, modifier, roll_type=roll_type)
         
-        # Print the result
-        print(f"\n{result['log_str']}\n")
+        # Determine result style
+        if result['result_type'] == CheckResult.CRITICAL_SUCCESS:
+            res_style = "critical"
+        elif result['result_type'] == CheckResult.CRITICAL_FAILURE:
+            res_style = "critical"
+        elif result['result_type'] == CheckResult.SUCCESS:
+            res_style = "success"
+        else:
+            res_style = "failure"
+        
+        # Print the result with styled output
+        console.print(f"   └─ [{res_style}]{result['log_str']}[/{res_style}]")
+        console.print()
         
         # Generate narrative result string for LLM injection
         roll_summary = f"Skill Check Result: {result['result_type'].value} (Rolled {result['total']} vs DC {dc})."
         return roll_summary
     
     else:
-        print(f"❌ [System] 未知命令: {command}")
-        print("   支持的命令: /roll")
+        console.print(f"[error]❌ 未知命令: [item]{command}[/item][/error]")
+        console.print("[info]   支持的命令: /roll[/info]")
         return None
 
 
@@ -181,16 +216,24 @@ def load_memory(default_relationship_score=0):
             with open(MEMORY_FILE, 'r', encoding='utf-8') as f:
                 content = f.read().strip()
                 if not content:  # 如果是空文件，使用默认值
-                    print(f"🧠 [System] 记忆文件为空，使用 YAML 配置的关系值: {default_relationship_score}")
-                    return {"relationship_score": default_relationship_score, "history": []}
+                    console.print(f"[info]🧠 记忆文件为空，使用 YAML 配置的关系值: [stat]{default_relationship_score}[/stat][/info]")
+                    return {
+                        "relationship_score": default_relationship_score,
+                        "history": [],
+                        "npc_state": {"status": "NORMAL", "duration": 0}
+                    }
                 
                 data = json.loads(content)
                 
                 # 向后兼容：如果文件是列表格式（旧格式），转换为新格式
                 if isinstance(data, list):
-                    print(f"🧠 [System] 检测到旧格式记忆文件，正在转换...")
-                    print(f"💕 [System] 使用 YAML 配置的关系值: {default_relationship_score}")
-                    return {"relationship_score": default_relationship_score, "history": data}
+                    console.print(f"[info]🧠 检测到旧格式记忆文件，正在转换...[/info]")
+                    console.print(f"[info]💕 使用 YAML 配置的关系值: [stat]{default_relationship_score}[/stat][/info]")
+                    return {
+                        "relationship_score": default_relationship_score,
+                        "history": data,
+                        "npc_state": {"status": "NORMAL", "duration": 0}
+                    }
                 
                 # 新格式：包含 relationship_score 和 history
                 if isinstance(data, dict):
@@ -199,27 +242,45 @@ def load_memory(default_relationship_score=0):
                     if relationship_score is None:
                         # 记忆文件中没有关系值，使用 YAML 配置的值
                         relationship_score = default_relationship_score
-                        print(f"🧠 [System] 记忆文件中没有关系值，使用 YAML 配置: {relationship_score}")
+                        console.print(f"[info]🧠 记忆文件中没有关系值，使用 YAML 配置: [stat]{relationship_score}[/stat][/info]")
                     else:
                         # 使用记忆文件中的关系值（最高优先级）
-                        print(f"🧠 [System] 成功唤醒记忆，共读取 {len(data.get('history', []))} 条往事...")
-                        print(f"💕 [System] 当前关系值（来自记忆）: {relationship_score}/100")
+                        console.print(f"[info]🧠 成功唤醒记忆，共读取 [stat]{len(data.get('history', []))}[/stat] 条往事...[/info]")
+                        console.print(f"[info]💕 当前关系值（来自记忆）: [stat]{relationship_score}/100[/stat][/info]")
                     
                     history = data.get("history", [])
-                    return {"relationship_score": relationship_score, "history": history}
+                    # Get npc_state or use default
+                    npc_state = data.get("npc_state", {"status": "NORMAL", "duration": 0})
+                    return {
+                        "relationship_score": relationship_score,
+                        "history": history,
+                        "npc_state": npc_state
+                    }
                 
                 # 如果格式不对，使用默认值
-                print(f"⚠️ [System] 记忆文件格式错误，使用 YAML 配置的关系值: {default_relationship_score}")
-                return {"relationship_score": default_relationship_score, "history": []}
+                console.print(f"[warning]⚠️ 记忆文件格式错误，使用 YAML 配置的关系值: [stat]{default_relationship_score}[/stat][/warning]")
+                return {
+                    "relationship_score": default_relationship_score,
+                    "history": [],
+                    "npc_state": {"status": "NORMAL", "duration": 0}
+                }
                 
         except Exception as e:
             # 记忆文件读取失败，使用 YAML 配置的值
-            print(f"⚠️ [System] 记忆文件读取失败，使用 YAML 配置的关系值: {default_relationship_score} ({e})")
-            return {"relationship_score": default_relationship_score, "history": []}
+            console.print(f"[warning]⚠️ 记忆文件读取失败，使用 YAML 配置的关系值: [stat]{default_relationship_score}[/stat] ({e})[/warning]")
+            return {
+                "relationship_score": default_relationship_score,
+                "history": [],
+                "npc_state": {"status": "NORMAL", "duration": 0}
+            }
     
     # 记忆文件不存在，使用 YAML 配置的值
-    print(f"🧠 [System] 未找到记忆文件，使用 YAML 配置的关系值: {default_relationship_score}")
-    return {"relationship_score": default_relationship_score, "history": []}
+    console.print(f"[info]🧠 未找到记忆文件，使用 YAML 配置的关系值: [stat]{default_relationship_score}[/stat][/info]")
+    return {
+        "relationship_score": default_relationship_score,
+        "history": [],
+        "npc_state": {"status": "NORMAL", "duration": 0}
+    }
 
 
 def save_memory(memory_data):
@@ -229,9 +290,9 @@ def save_memory(memory_data):
         os.makedirs(os.path.dirname(MEMORY_FILE), exist_ok=True)
         with open(MEMORY_FILE, 'w', encoding='utf-8') as f:
             json.dump(memory_data, f, ensure_ascii=False, indent=2)
-        print("💾 [System] 记忆已固化至莎尔的卷轴中。")
+        console.print("[info]💾 记忆已固化至莎尔的卷轴中。[/info]")
     except Exception as e:
-        print(f"❌ [System] 存档失败: {e}")
+        console.print(f"[error]❌ 存档失败: {e}[/error]")
 
 
 def load_player_profile():
@@ -384,42 +445,42 @@ def get_situational_bonus(history: list, action_type: str, current_message: str 
 
 def main():
     """Main function to load attributes and generate dialogue"""
-    print("=" * 60)
-    print("BG3 LLM Agent - Shadowheart Dialogue Generator")
-    print("=" * 60)
+    # Clear screen and show title
+    console.clear()
+    console.print(Rule("[bold purple]BG3 LLM Agent - Shadowheart Dialogue Generator[/bold purple]", style="bold purple"))
+    console.print()
     
     # Load player profile
-    print("Loading player profile...")
-    try:
-        player_data = load_player_profile()
-        print(f"✓ Loaded player profile: {player_data['name']}")
-        print(f"  - {player_data['race']} {player_data['class']} (Level {player_data['level']})")
-        print()
-    except Exception as e:
-        print(f"⚠️ [System] Failed to load player profile: {e}")
-        print("  Continuing without player profile...")
-        player_data = None
-        print()
+    with console.status("[info]Loading player profile...[/info]", spinner="dots"):
+        try:
+            player_data = load_player_profile()
+            console.print(f"[info]✓[/info] Loaded player profile: [player]{player_data['name']}[/player]")
+            console.print(f"  - [stat]{player_data['race']} {player_data['class']}[/stat] (Level [stat]{player_data['level']}[/stat])")
+            console.print()
+        except Exception as e:
+            console.print(f"[error]⚠️ Failed to load player profile: {e}[/error]")
+            console.print("[info]  Continuing without player profile...[/info]")
+            player_data = None
+            console.print()
     
     # Load character
-    print("Loading Shadowheart's attributes...")
-    character = load_character(CHARACTER_NAME)
-    attributes = character.data  # 保留对原始数据的引用，用于显示
-    print(f"✓ Loaded attributes for {attributes['name']}")
-    print(f"  - {attributes['race']} {attributes['class']} (Level {attributes['level']})")
-    print(f"  - Deity: {attributes['deity']}")
-    print()
+    with console.status("[info]Loading Shadowheart's attributes...[/info]", spinner="dots"):
+        character = load_character(CHARACTER_NAME)
+        attributes = character.data  # 保留对原始数据的引用，用于显示
+    console.print(f"[info]✓[/info] Loaded attributes for [npc]{attributes['name']}[/npc]")
+    console.print(f"  - [stat]{attributes['race']} {attributes['class']}[/stat] (Level [stat]{attributes['level']}[/stat])")
+    console.print(f"  - Deity: [item]{attributes['deity']}[/item]")
+    console.print()
     
     # Display key attributes
-    print("Key Attributes:")
+    console.print("[info]Key Attributes:[/info]")
     ability_modifiers = get_ability_modifiers(attributes['ability_scores'])
     for ability, score in attributes['ability_scores'].items():
         modifier = ability_modifiers[ability]
-        print(f"  {ability}: {score} (+{modifier:+d})")
-    print()     
+        console.print(f"  [stat]{ability}: {score}[/stat] ([stat]+{modifier:+d}[/stat])")
+    console.print()     
     
     # Generate initial greeting
-    print("Generating initial greeting...")
     try:
         # 1. 【关键修改】启动时尝试加载旧记忆
         # 优先级：记忆文件 > YAML 配置 > 默认值 0
@@ -428,15 +489,43 @@ def main():
         memory_data = load_memory(default_relationship_score=default_relationship)
         relationship_score = memory_data["relationship_score"]
         conversation_history = memory_data["history"]
+        npc_state = memory_data.get("npc_state", {"status": "NORMAL", "duration": 0})
         
         # 2. 生成 System Prompt（使用 Character 对象的 render_prompt 方法）
         system_prompt = character.render_prompt(relationship_score)
         
-        print("=" * 60)
+        # Create dashboard panel
+        def render_dashboard():
+            """Render the top dashboard panel"""
+            dashboard_table = Table.grid(padding=(0, 2))
+            dashboard_table.add_column(style="stat")
+            dashboard_table.add_column(style="npc")
+            dashboard_table.add_column(style="stat")
+            dashboard_table.add_column(style="warning")
+            
+            player_name = player_data['name'] if player_data else "Unknown"
+            state_name = npc_state.get("status", "NORMAL")
+            state_duration = npc_state.get("duration", 0)
+            state_display = f"{state_name}"
+            if state_duration > 0:
+                state_display += f" ({state_duration} turns)"
+            
+            dashboard_table.add_row(
+                f"Player: [player]{player_name}[/player]",
+                f"NPC: [npc]{attributes['name']}[/npc]",
+                f"Relationship: [stat]{relationship_score}/100[/stat]",
+                f"State: [warning]{state_display}[/warning]"
+            )
+            return Panel(dashboard_table, title="[bold]Game Status[/bold]", border_style="blue")
+        
+        console.print(render_dashboard())
+        console.print()
+        
         # 如果是新对话（没记忆），生成并打印开场白
         if not conversation_history:
+            with console.status("[npc]Shadowheart is thinking...[/npc]", spinner="dots"):
             # 生成初始问候（使用空的对话历史）
-            dialogue = generate_dialogue(system_prompt, conversation_history=conversation_history)
+                dialogue = generate_dialogue(system_prompt, conversation_history=conversation_history)
             
             # 解析 approval change（初始问候通常不会有变化，但为了统一处理）
             approval_change, cleaned_dialogue = parse_approval_change(dialogue)
@@ -448,28 +537,41 @@ def main():
             if cleaned_dialogue:
                 cleaned_dialogue = cleaned_dialogue.strip('"').strip("'")
             
-            print(f"{attributes['name']} (Looking at you warily):")
-            print(f'"{cleaned_dialogue}"')
+            # Display NPC dialogue in a panel
+            console.print(Panel(
+                cleaned_dialogue,
+                title="[npc]Shadowheart[/npc] (Looking at you warily)",
+                style="npc",
+                width=80
+            ))
+            console.print()
             
             # 把初始问候加入对话历史（存储清理后的文本）
             conversation_history.append({"role": "assistant", "content": cleaned_dialogue})
         else:
             # 如果有记忆，显示不同的开场白
-            print(f"{attributes['name']} (Remembers you): *Nods slightly acknowledging your return*")
-        print("=" * 60)
-        print()
+            console.print(Panel(
+                "*Nods slightly acknowledging your return*",
+                title="[npc]Shadowheart[/npc] (Remembers you)",
+                style="npc",
+                width=80
+            ))
+            console.print()
         
         # Start interactive conversation
-        print("💬 开始与影心对话（输入 'quit' 或 'exit' 退出并存档）")
-        print("=" * 60)
-        print()
+        console.print(Rule("[info]💬 开始与影心对话（输入 'quit' 或 'exit' 退出并存档）[/info]", style="info"))
+        console.print()
         
         while True:
             try:
+                # Update dashboard
+                console.print(render_dashboard())
+                console.print()
+                
                 # ==========================================
                 # Step 1: Get User Input
                 # ==========================================
-                user_input = input("你: ").strip()
+                user_input = console.input("[player]You > [/player]").strip()
                 
                 if not user_input:
                     continue
@@ -481,10 +583,11 @@ def main():
                     # Exit command
                     memory_data = {
                         "relationship_score": relationship_score,
-                        "history": conversation_history
+                        "history": conversation_history,
+                        "npc_state": npc_state
                     }
                     save_memory(memory_data)
-                    print("\n再见！")
+                    console.print("\n[info]再见！[/info]")
                     break
                 
                 if user_input.startswith('/'):
@@ -493,23 +596,71 @@ def main():
                     roll_result = handle_command(user_input, attributes, relationship_score, current_action)
                     if roll_result is not None:
                         # Store the roll result for injection into next dialogue
-                        print(f"💡 [System] Roll result stored. Type your dialogue to use it.")
+                        console.print(f"[info]💡 Roll result stored. Type your dialogue to use it.[/info]")
                     continue  # Skip the rest of the loop for commands
                 
                 # ==========================================
-                # Step 3: NORMAL DIALOGUE FLOW
+                # Step 3: STATE CHECK (Before Normal Dialogue)
+                # ==========================================
+                auto_success = False
+                
+                # Rule - SILENT: Skip LLM, print message, decrement duration
+                if npc_state.get("status") == "SILENT" and npc_state.get("duration", 0) > 0:
+                    duration = npc_state["duration"]
+                    console.print(f"[warning]❄️ 状态: 拒绝交流 (剩余 {duration} 回合)[/warning]")
+                    console.print(Panel(
+                        "(她转过身去，完全无视了你的存在。)",
+                        title="[npc]Shadowheart[/npc]",
+                        style="npc",
+                        width=80
+                    ))
+                    console.print()
+                    
+                    # Decrement duration
+                    npc_state["duration"] -= 1
+                    if npc_state["duration"] <= 0:
+                        npc_state["status"] = "NORMAL"
+                        npc_state["duration"] = 0
+                        console.print("[info]💫 状态恢复: NORMAL[/info]")
+                        console.print()
+                    
+                    # Save state and continue (skip LLM)
+                    memory_data = {
+                        "relationship_score": relationship_score,
+                        "history": conversation_history,
+                        "npc_state": npc_state
+                    }
+                    save_memory(memory_data)
+                    continue
+                
+                # Rule - VULNERABLE: Auto-success, decrement duration
+                if npc_state.get("status") == "VULNERABLE" and npc_state.get("duration", 0) > 0:
+                    duration = npc_state["duration"]
+                    auto_success = True
+                    console.print(f"[warning]✨ 状态: 心防失守 (剩余 {duration} 回合) -> 自动成功！[/warning]")
+                    
+                    # Decrement duration
+                    npc_state["duration"] -= 1
+                    if npc_state["duration"] <= 0:
+                        npc_state["status"] = "NORMAL"
+                        npc_state["duration"] = 0
+                        console.print("[info]💫 状态恢复: NORMAL[/info]")
+                
+                # ==========================================
+                # Step 4: NORMAL DIALOGUE FLOW
                 # ==========================================
                 
                 # Step A: DM Analysis
                 try:
-                    intent_data = analyze_intent(user_input)
+                    with console.status("[dm]🎲 DM is analyzing fate...[/dm]", spinner="dots"):
+                        intent_data = analyze_intent(user_input)
                     action_type = intent_data['action_type']
                     dc = intent_data['difficulty_class']
                     # 记录意图判定
-                    print(f"🎲 [DM] 判定意图: {action_type} (DC {dc})")
+                    console.print(f"[dm]🎲 判定意图: [item]{action_type}[/item] (DC [stat]{dc}[/stat])[/dm]")
                 except Exception as e:
                     # 如果 DM 分析失败，使用默认值并继续
-                    print(f"⚠️ [DM] 意图分析失败: {e}")
+                    console.print(f"[error]⚠️ [DM] 意图分析失败: {e}[/error]")
                     intent_data = {
                         'action_type': 'NONE',
                         'difficulty_class': 0,
@@ -522,49 +673,84 @@ def main():
                 rule_dc = calculate_passive_dc(action_type, attributes)
                 if rule_dc is not None:
                     dc = rule_dc
-                    print(f"🛡️ [System] DC Auto-Calculated: {dc} (Based on Shadowheart's Stats)")
+                    console.print(f"[info]🛡️ DC Auto-Calculated: [stat]{dc}[/stat] (Based on Shadowheart's Stats)[/info]")
                 
                 # Step B: Auto-Roll Logic
                 system_info = None
                 if action_type != "NONE" and dc > 0:
-                    # Check if player_data is available
-                    if player_data is None:
-                        print("⚠️ [System] Player profile not loaded. Cannot perform auto-roll.")
-                    else:
-                        # Get ability score for this action
-                        ability_name = get_ability_for_action(action_type)
-                        player_ability_scores = player_data.get('ability_scores', {})
+                    # Check if auto_success is active (VULNERABLE state)
+                    if auto_success:
+                        # Skip dice roll, force CRITICAL SUCCESS
+                        result_type = CheckResult.CRITICAL_SUCCESS
+                        system_info = f"Action: {action_type} | Result: CRITICAL SUCCESS (Auto). She is vulnerable."
+                        console.print(f"[success]🎯 Auto-Success: [item]{action_type}[/item] -> [critical]CRITICAL SUCCESS[/critical][/success]")
+                        console.print()
                         
-                        if ability_name not in player_ability_scores:
-                            print(f"⚠️ [System] Player doesn't have {ability_name} ability score.")
+                        # Grant +1 relationship bonus for auto-success
+                        relationship_score += 1
+                        relationship_score = max(-100, min(100, relationship_score))
+                        console.print(f"[info]💕 Relationship +1 (Vulnerable State Bonus)[/info]")
+                    else:
+                        # Normal roll logic
+                        # Check if player_data is available
+                        if player_data is None:
+                            console.print("[error]⚠️ Player profile not loaded. Cannot perform auto-roll.[/error]")
                         else:
-                            # Get modifier from player stats
-                            ability_score = player_ability_scores[ability_name]
-                            modifier = calculate_ability_modifier(ability_score)
+                            # Get ability score for this action
+                            ability_name = get_ability_for_action(action_type)
+                            player_ability_scores = player_data.get('ability_scores', {})
                             
-                            # Calculate situational bonus (check current user input)
-                            bonus, reason = get_situational_bonus(conversation_history, action_type, user_input)
-                            if bonus != 0:
-                                modifier += bonus
-                                print(f"💍 [System] Situational Bonus: +{bonus} ({reason})")
-                            
-                            # Determine roll type (advantage/disadvantage)
-                            roll_type = determine_roll_type(action_type, relationship_score)
-                            
-                            # Visual feedback for advantage/disadvantage
-                            if roll_type == 'advantage':
-                                print(f"🌟 [System] High relationship grants ADVANTAGE on {action_type}!")
-                            elif roll_type == 'disadvantage':
-                                print("💀 [System] Low relationship imposes DISADVANTAGE!")
-                            
-                            # Execute roll
-                            result = roll_d20(dc, modifier, roll_type=roll_type)
-                            
-                            # Print result
-                            print(f"\n{result['log_str']}\n")
-                            
-                            # Create system info string for injection
-                            system_info = f"Skill Check Result: {result['result_type'].value} (Rolled {result['total']} vs DC {dc})."
+                            if ability_name not in player_ability_scores:
+                                console.print(f"[error]⚠️ Player doesn't have [stat]{ability_name}[/stat] ability score.[/error]")
+                            else:
+                                # Get modifier from player stats
+                                ability_score = player_ability_scores[ability_name]
+                                modifier = calculate_ability_modifier(ability_score)
+                                
+                                # Calculate situational bonus (check current user input)
+                                bonus, reason = get_situational_bonus(conversation_history, action_type, user_input)
+                                if bonus != 0:
+                                    modifier += bonus
+                                    console.print(f"[warning]💍 Situational Bonus: +[stat]{bonus}[/stat] ([item]{reason}[/item])[/warning]")
+                                
+                                # Determine roll type (advantage/disadvantage)
+                                roll_type = determine_roll_type(action_type, relationship_score)
+                                
+                                # Visual feedback for advantage/disadvantage
+                                if roll_type == 'advantage':
+                                    console.print(f"[warning]🌟 High relationship grants ADVANTAGE on [item]{action_type}[/item]![/warning]")
+                                elif roll_type == 'disadvantage':
+                                    console.print("[warning]💀 Low relationship imposes DISADVANTAGE![/warning]")
+                                
+                                # Execute roll
+                                result = roll_d20(dc, modifier, roll_type=roll_type)
+                                
+                                # Determine result style
+                                if result['result_type'] == CheckResult.CRITICAL_SUCCESS:
+                                    res_style = "critical"
+                                elif result['result_type'] == CheckResult.CRITICAL_FAILURE:
+                                    res_style = "critical"
+                                elif result['result_type'] == CheckResult.SUCCESS:
+                                    res_style = "success"
+                                else:
+                                    res_style = "failure"
+                                
+                                # Print result with styled output
+                                console.print(f"   └─ [{res_style}]{result['log_str']}[/{res_style}]")
+                                console.print()
+                                
+                                # Trigger state changes based on critical rolls
+                                if result['result_type'] == CheckResult.CRITICAL_SUCCESS:
+                                    # Natural 20: Set VULNERABLE state
+                                    npc_state = {"status": "VULNERABLE", "duration": 3}
+                                    console.print(f"[critical]🔥 CRITICAL! She is now VULNERABLE for 3 turns![/critical]")
+                                elif result['result_type'] == CheckResult.CRITICAL_FAILURE:
+                                    # Natural 1: Set SILENT state
+                                    npc_state = {"status": "SILENT", "duration": 2}
+                                    console.print(f"[critical]❄️ CRITICAL FAIL! She is now SILENT for 2 turns![/critical]")
+                                
+                                # Create system info string for injection
+                                system_info = f"Skill Check Result: {result['result_type'].value} (Rolled {result['total']} vs DC {dc})."
                 
                 # Step C: Generation
                 # Update system prompt to reflect current relationship score
@@ -582,9 +768,9 @@ def main():
                 # Add user message to temporary list
                 messages_to_send.append({"role": "user", "content": user_content_for_llm})
                 
-                # Generate reply
-                print(f"\n{attributes['name']}: ", end="", flush=True)
-                response = generate_dialogue(system_prompt, conversation_history=messages_to_send)
+                # Generate reply with spinner
+                with console.status("[npc]Shadowheart is thinking...[/npc]", spinner="dots"):
+                    response = generate_dialogue(system_prompt, conversation_history=messages_to_send)
                 
                 # 6. 解析 approval change
                 approval_change, cleaned_response = parse_approval_change(response)
@@ -598,16 +784,26 @@ def main():
                     
                     # 打印系统调试信息
                     change_str = f"+{approval_change}" if approval_change > 0 else str(approval_change)
-                    print(f"\n💕 [System] 关系值变化: {change_str} (当前: {relationship_score}/100)")
-                    print(f"{attributes['name']}: ", end="", flush=True)
+                    console.print(f"[info]💕 关系值变化: [stat]{change_str}[/stat] (当前: [stat]{relationship_score}/100[/stat])[/info]")
                 
                 # 8. 处理一下回复格式
                 if cleaned_response:
                     cleaned_response = cleaned_response.strip('"').strip("'")
-                    print(f'"{cleaned_response}"')
+                    # Display NPC dialogue in a panel
+                    console.print(Panel(
+                        cleaned_response,
+                        title="[npc]Shadowheart[/npc]",
+                        style="npc",
+                        width=80
+                    ))
                 else:
-                    print("（没有回应）")
-                print()
+                    console.print(Panel(
+                        "（没有回应）",
+                        title="[npc]Shadowheart[/npc]",
+                        style="npc",
+                        width=80
+                    ))
+                console.print()
                 
                 # 9. 【Memory Hygiene】保存干净的对话历史（不包含系统注入标签）
                 # 只保存原始用户输入，不包含 [SYSTEM INFO: ...]
@@ -615,14 +811,15 @@ def main():
                 # 保存清理后的 AI 回复（不包含 approval tag）
                 conversation_history.append({"role": "assistant", "content": cleaned_response})
                 
-                # 8. 【可选】每轮对话都自动存档（防止程序崩了丢失记忆）
-                # memory_data = {
-                #     "relationship_score": relationship_score,
-                #     "history": conversation_history
-                # }
-                # save_memory(memory_data)
+                # Save npc_state to memory after each turn
+                memory_data = {
+                    "relationship_score": relationship_score,
+                    "history": conversation_history,
+                    "npc_state": npc_state
+                }
+                save_memory(memory_data)
                 
-                # 9. 滚动窗口：防止 Token 爆炸（保留最近 20 轮）
+                # 10. 滚动窗口：防止 Token 爆炸（保留最近 20 轮）
                 # 注意：这里我们只是截断"发给 AI"的列表，还是截断"存储"的列表？
                 # 为了简单，我们暂时让记忆文件也保持在 20 轮以内，避免文件无限膨胀
                 if len(conversation_history) > 20:
@@ -632,40 +829,45 @@ def main():
                 # 强制中断也要存档
                 memory_data = {
                     "relationship_score": relationship_score,
-                    "history": conversation_history
+                    "history": conversation_history,
+                    "npc_state": npc_state
                 }
                 save_memory(memory_data)
-                print("\n\n再见！")
+                console.print("\n\n[info]再见！[/info]")
                 break
             except Exception as e:
-                print(f"\n❌ 错误: {e}")
-                print("请重试...\n")
+                console.print(f"\n[error]❌ 错误: {e}[/error]")
+                console.print("[info]请重试...[/info]\n")
         
     except ImportError as e:
-        print(f"❌ 导入错误: {e}")
-        print("\n请安装必要的依赖包:")
-        print("  pip install dashscope python-dotenv")
+        console.print(f"[error]❌ 导入错误: {e}[/error]")
+        console.print("\n[info]请安装必要的依赖包:[/info]")
+        console.print("[stat]  pip install dashscope python-dotenv rich[/stat]")
         
-        print("\n要使用百炼 API，你需要:")
-        print("1. 安装 dashscope 包: pip install dashscope")
-        print("2. 在项目根目录创建 .env 文件")
-        print("3. 添加你的 API key: BAILIAN_API_KEY=your-api-key")
-        print("\n或者使用模拟响应进行测试:")
+        console.print("\n[info]要使用百炼 API，你需要:[/info]")
+        console.print("[stat]1. 安装 dashscope 包: pip install dashscope[/stat]")
+        console.print("[stat]2. 在项目根目录创建 .env 文件[/stat]")
+        console.print("[stat]3. 添加你的 API key: BAILIAN_API_KEY=your-api-key[/stat]")
+        console.print("\n[info]或者使用模拟响应进行测试:[/info]")
         
         # Fallback mock dialogue
-        print("\n" + "=" * 60)
-        print("Mock Dialogue (API not configured):")
-        print("=" * 60)
-        print('"Shar\'s will be done. I sense there\'s more to you than meets the eye, '
-              'just as there is more to me. Trust is earned, not given freely."')
-        print("=" * 60)
+        console.print()
+        console.print(Rule("[info]Mock Dialogue (API not configured)[/info]", style="info"))
+        console.print(Panel(
+            'Shar\'s will be done. I sense there\'s more to you than meets the eye, '
+            'just as there is more to me. Trust is earned, not given freely.',
+            title="[npc]Shadowheart[/npc]",
+            style="npc",
+            width=80
+        ))
+        console.print(Rule(style="info"))
         
     except Exception as e:
-        print(f"❌ 意外错误: {e}")
-        print(f"错误类型: {type(e).__name__}")
+        console.print(f"[error]❌ 意外错误: {e}[/error]")
+        console.print(f"[error]错误类型: {type(e).__name__}[/error]")
         import traceback
-        print("\n详细错误信息:")
-        traceback.print_exc()
+        console.print("\n[error]详细错误信息:[/error]")
+        console.print(traceback.format_exc())
 
 
 if __name__ == "__main__":
