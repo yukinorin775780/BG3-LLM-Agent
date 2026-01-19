@@ -263,6 +263,7 @@ def main():
     with ui.create_spinner("[info]Loading Shadowheart's attributes...[/info]", spinner="dots"):
         character = load_character(CHARACTER_NAME)
         attributes = character.data  # 保留对原始数据的引用，用于显示
+        situational_bonuses = attributes.get('situational_bonuses', [])
     ui.print_system_info(f"✓ Loaded attributes for {attributes['name']}")
     ui.print(f"  - {attributes['race']} {attributes['class']} (Level {attributes['level']})")
     ui.print(f"  - Deity: {attributes['deity']}")
@@ -325,6 +326,8 @@ def main():
         
         while True:
             try:
+                states_config = attributes.get('states', {})
+
                 # Update dashboard
                 ui.print(ui.show_dashboard(player_name, attributes['name'], relationship_score, npc_state))
                 ui.print()
@@ -364,43 +367,45 @@ def main():
                 # Step 3: STATE CHECK (Before Normal Dialogue)
                 # ==========================================
                 auto_success = False
-                
-                # Rule - SILENT: Skip LLM, print message, decrement duration
-                if npc_state.get("status") == "SILENT" and npc_state.get("duration", 0) > 0:
+
+                current_status = npc_state.get("status", "NORMAL")
+                state_config = states_config.get(current_status)
+                if state_config and npc_state.get("duration", 0) > 0:
                     duration = npc_state["duration"]
-                    ui.print_state_effect("SILENT", duration, "拒绝交流")
-                    ui.print_npc_response("Shadowheart", "(她转过身去，完全无视了你的存在。)")
-                    
-                    # Update state using mechanics
-                    new_status, new_duration = mechanics.update_npc_state(npc_state["status"], npc_state["duration"])
-                    npc_state["status"] = new_status
-                    npc_state["duration"] = new_duration
-                    
-                    if new_status == "NORMAL":
-                        ui.print_state_effect("NORMAL", 0, "状态恢复")
-                    
-                    # Save state and continue (skip LLM)
-                    memory_data = {
-                        "relationship_score": relationship_score,
-                        "history": conversation_history,
-                        "npc_state": npc_state
-                    }
-                    save_memory(memory_data, ui=ui)
-                    continue
-                
-                # Rule - VULNERABLE: Auto-success, decrement duration
-                if npc_state.get("status") == "VULNERABLE" and npc_state.get("duration", 0) > 0:
-                    duration = npc_state["duration"]
-                    auto_success = True
-                    ui.print_state_effect("VULNERABLE", duration, "心防失守")
-                    
-                    # Update state using mechanics
-                    new_status, new_duration = mechanics.update_npc_state(npc_state["status"], npc_state["duration"])
-                    npc_state["status"] = new_status
-                    npc_state["duration"] = new_duration
-                    
-                    if new_status == "NORMAL":
-                        ui.print_state_effect("NORMAL", 0, "状态恢复")
+                    description = state_config.get("description", current_status)
+                    effect = state_config.get("effect")
+                    if effect == "skip_generation":
+                        ui.print_state_effect(current_status, duration, description)
+                        ui.print_npc_response("Shadowheart", state_config.get("message", ""))
+
+                        # Update state using mechanics
+                        new_status, new_duration = mechanics.update_npc_state(npc_state["status"], npc_state["duration"])
+                        npc_state["status"] = new_status
+                        npc_state["duration"] = new_duration
+
+                        if new_status == "NORMAL":
+                            ui.print_state_effect("NORMAL", 0, "状态恢复")
+
+                        # Save state and continue (skip LLM)
+                        memory_data = {
+                            "relationship_score": relationship_score,
+                            "history": conversation_history,
+                            "npc_state": npc_state
+                        }
+                        save_memory(memory_data, ui=ui)
+                        continue
+
+                    if effect == "auto_success":
+                        auto_success = True
+                        ui.print_state_effect(current_status, duration, description)
+
+                        # Update state using mechanics
+                        new_status, new_duration = mechanics.update_npc_state(npc_state["status"], npc_state["duration"])
+                        npc_state["status"] = new_status
+                        npc_state["duration"] = new_duration
+
+                        if new_status == "NORMAL":
+                            ui.print_state_effect("NORMAL", 0, "状态恢复")
                 
                 # ==========================================
                 # Step 4: NORMAL DIALOGUE FLOW
@@ -463,7 +468,12 @@ def main():
                                 modifier = mechanics.calculate_ability_modifier(ability_score)
                                 
                                 # Calculate situational bonus (check current user input)
-                                bonus, reason = mechanics.get_situational_bonus(conversation_history, action_type, user_input)
+                                bonus, reason = mechanics.get_situational_bonus(
+                                    conversation_history,
+                                    action_type,
+                                    situational_bonuses,
+                                    user_input
+                                )
                                 if bonus != 0:
                                     modifier += bonus
                                     ui.print_situational_bonus(bonus, reason)

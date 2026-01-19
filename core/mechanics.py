@@ -159,16 +159,23 @@ def calculate_passive_dc(action_type: str, npc_attributes: dict) -> Optional[int
         return None
 
 
-def get_situational_bonus(history: list, action_type: str, current_message: str = "") -> tuple[int, str]:
+def get_situational_bonus(
+    history: list,
+    action_type: str,
+    rules_config: list,
+    current_message: str = ""
+) -> tuple[int, str]:
     """
-    Calculate situational bonus based on conversation context (Simple Keyword Matching).
+    Calculate situational bonus based on conversation context (Data-Driven Rules).
     
-    This function checks the current user message (and optionally history) for keywords 
-    that indicate shared context or past bonds, which grant bonuses to social skill checks.
+    This function checks the current user message (and optionally history) for keywords
+    defined in rules_config that indicate shared context or past bonds, which grant bonuses
+    to social skill checks.
     
     Args:
         history: List of conversation history dicts with 'role' and 'content' keys
         action_type: The action type from DM analysis (e.g., "PERSUASION", "DECEPTION")
+        rules_config: List of situational bonus rules loaded from config
         current_message: The current user input message (optional, checked first)
     
     Returns:
@@ -190,23 +197,24 @@ def get_situational_bonus(history: list, action_type: str, current_message: str 
     # Convert to lowercase for matching
     message_lower = message_to_check.lower()
     
-    # Rule 1: Shared Context (Shared Faith/Knowledge)
-    # Keywords: ["shar", "莎尔", "lady of loss"]
-    # Applies to: PERSUASION or DECEPTION
-    if action_type in ["PERSUASION", "DECEPTION"]:
-        shared_faith_keywords = ["shar", "莎尔", "lady of loss"]
-        if any(keyword in message_lower for keyword in shared_faith_keywords):
-            return (2, "Shared Faith/Knowledge")
+    total_bonus = 0
+    reasons = []
     
-    # Rule 2: Past Bond
-    # Keywords: ["ship", "nautiloid", "飞船", "螺壳舰"]
-    # Applies to: All action types
-    past_bond_keywords = ["ship", "nautiloid", "飞船", "螺壳舰"]
-    if any(keyword in message_lower for keyword in past_bond_keywords):
-        return (2, "Past Bond")
+    for rule in rules_config or []:
+        applicable_actions = rule.get("applicable_actions", [])
+        if "ALL" not in applicable_actions and action_type not in applicable_actions:
+            continue
+        
+        trigger_type = rule.get("trigger_type")
+        if trigger_type == "keyword_match":
+            keywords = rule.get("keywords", [])
+            if any(keyword in message_lower for keyword in keywords):
+                total_bonus += rule.get("bonus_value", 0)
+                description = rule.get("description")
+                if description:
+                    reasons.append(description)
     
-    # Default: No bonus
-    return (0, "")
+    return (total_bonus, ", ".join(reasons))
 
 
 def update_npc_state(current_status: str, duration: int) -> tuple[str, int]:

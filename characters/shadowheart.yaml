@@ -93,3 +93,45 @@ dialogue_style:
 # 41 ~ 80:    Trusting (信赖)
 # 81 ~ 100:   Devoted (恋人/至死不渝)
 relationship: 0  # 初始状态：中立
+
+# Contextual Bonus Rules (Data-Driven)
+# Configured by Technical Designers
+situational_bonuses:
+  - id: "shared_faith"
+    description: "Shared Faith/Knowledge (Shar)"
+    trigger_type: "keyword_match"
+    keywords:
+      - "shar"
+      - "莎尔"
+      - "lady of loss"
+      - "darkness"
+    applicable_actions:
+      - "PERSUASION"
+      - "DECEPTION"
+    bonus_value: 2
+
+  - id: "past_bond_nautiloid"
+    description: "Shared Trauma (Nautiloid)"
+    trigger_type: "keyword_match"
+    keywords:
+      - "ship"
+      - "nautiloid"
+      - "飞船"
+      - "螺壳舰"
+      - "mind flayer"
+    applicable_actions: ["ALL"]
+    bonus_value: 2
+
+# State Machine Configurations
+states:
+  VULNERABLE:
+    duration: 3
+    description: "心防失守"
+    effect: "auto_success" # Special flag for main.py logic
+    message: "(She seems shaken and defenseless against your words.)"
+    
+  SILENT:
+    duration: 2
+    description: "拒绝交流"
+    effect: "skip_generation" # Special flag to skip LLM
+    message: "(She turns away, ignoring you completely.)"
