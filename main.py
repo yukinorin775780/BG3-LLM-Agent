@@ -133,7 +133,8 @@ def load_memory(default_relationship_score=0, ui: Optional[GameRenderer] = None)
                     return {
                         "relationship_score": default_relationship_score,
                         "history": [],
-                        "npc_state": {"status": "NORMAL", "duration": 0}
+                        "npc_state": {"status": "NORMAL", "duration": 0},
+                        "flags": {}
                     }
                 
                 data = json.loads(content)
@@ -146,7 +147,8 @@ def load_memory(default_relationship_score=0, ui: Optional[GameRenderer] = None)
                     return {
                         "relationship_score": default_relationship_score,
                         "history": data,
-                        "npc_state": {"status": "NORMAL", "duration": 0}
+                        "npc_state": {"status": "NORMAL", "duration": 0},
+                        "flags": {}
                     }
                 
                 # 新格式：包含 relationship_score 和 history
@@ -167,10 +169,12 @@ def load_memory(default_relationship_score=0, ui: Optional[GameRenderer] = None)
                     history = data.get("history", [])
                     # Get npc_state or use default
                     npc_state = data.get("npc_state", {"status": "NORMAL", "duration": 0})
+                    flags = data.get("flags", {})
                     return {
                         "relationship_score": relationship_score,
                         "history": history,
-                        "npc_state": npc_state
+                        "npc_state": npc_state,
+                        "flags": flags
                     }
                 
                 # 如果格式不对，使用默认值
@@ -179,7 +183,8 @@ def load_memory(default_relationship_score=0, ui: Optional[GameRenderer] = None)
                 return {
                     "relationship_score": default_relationship_score,
                     "history": [],
-                    "npc_state": {"status": "NORMAL", "duration": 0}
+                    "npc_state": {"status": "NORMAL", "duration": 0},
+                    "flags": {}
                 }
                 
         except Exception as e:
@@ -189,7 +194,8 @@ def load_memory(default_relationship_score=0, ui: Optional[GameRenderer] = None)
             return {
                 "relationship_score": default_relationship_score,
                 "history": [],
-                "npc_state": {"status": "NORMAL", "duration": 0}
+                "npc_state": {"status": "NORMAL", "duration": 0},
+                "flags": {}
             }
     
     # 记忆文件不存在，使用 YAML 配置的值
@@ -198,7 +204,8 @@ def load_memory(default_relationship_score=0, ui: Optional[GameRenderer] = None)
     return {
         "relationship_score": default_relationship_score,
         "history": [],
-        "npc_state": {"status": "NORMAL", "duration": 0}
+        "npc_state": {"status": "NORMAL", "duration": 0},
+        "flags": {}
     }
 
 
@@ -287,9 +294,10 @@ def main():
         relationship_score = memory_data["relationship_score"]
         conversation_history = memory_data["history"]
         npc_state = memory_data.get("npc_state", {"status": "NORMAL", "duration": 0})
+        flags = memory_data.get("flags", {})
         
         # 2. 生成 System Prompt（使用 Character 对象的 render_prompt 方法）
-        system_prompt = character.render_prompt(relationship_score)
+        system_prompt = character.render_prompt(relationship_score, flags=flags)
         
         # Display dashboard
         player_name = player_data['name'] if player_data else "Unknown"
@@ -348,7 +356,8 @@ def main():
                     memory_data = {
                         "relationship_score": relationship_score,
                         "history": conversation_history,
-                        "npc_state": npc_state
+                        "npc_state": npc_state,
+                        "flags": flags
                     }
                     save_memory(memory_data, ui=ui)
                     ui.print("\n[info]再见！[/info]")
@@ -390,7 +399,8 @@ def main():
                         memory_data = {
                             "relationship_score": relationship_score,
                             "history": conversation_history,
-                            "npc_state": npc_state
+                            "npc_state": npc_state,
+                            "flags": flags
                         }
                         save_memory(memory_data, ui=ui)
                         continue
@@ -472,6 +482,7 @@ def main():
                                     conversation_history,
                                     action_type,
                                     situational_bonuses,
+                                    flags,
                                     user_input
                                 )
                                 if bonus != 0:
@@ -503,9 +514,14 @@ def main():
                                 # Create system info string for injection
                                 system_info = f"Skill Check Result: {result['result_type'].value} (Rolled {result['total']} vs DC {dc})."
                 
+                # Temporary debug trigger for flags
+                if "reveal secret" in user_input.lower() or "我发现了秘密" in user_input:
+                    mechanics.update_flags("flags.knows_secret = True", flags)
+                    ui.print_system_info("🚩 DEBUG: Flag Updated 'knows_secret' = True")
+
                 # Step C: Generation
-                # Update system prompt to reflect current relationship score
-                system_prompt = character.render_prompt(relationship_score)
+                # Update system prompt to reflect current relationship score and flags
+                system_prompt = character.render_prompt(relationship_score, flags=flags)
                 
                 # Create temporary messages list (for sending to LLM, with injected system info)
                 messages_to_send = conversation_history.copy()
@@ -554,7 +570,8 @@ def main():
                 memory_data = {
                     "relationship_score": relationship_score,
                     "history": conversation_history,
-                    "npc_state": npc_state
+                    "npc_state": npc_state,
+                    "flags": flags
                 }
                 save_memory(memory_data, ui=ui)
                 
@@ -569,7 +586,8 @@ def main():
                 memory_data = {
                     "relationship_score": relationship_score,
                     "history": conversation_history,
-                    "npc_state": npc_state
+                    "npc_state": npc_state,
+                    "flags": flags
                 }
                 save_memory(memory_data, ui=ui)
                 ui.print("\n\n[info]再见！[/info]")

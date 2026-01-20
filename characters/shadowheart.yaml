@@ -122,6 +122,20 @@ situational_bonuses:
     applicable_actions: ["ALL"]
     bonus_value: 2
 
+  - id: "shared_secret_artifact"
+    description: "Shared Secret (The Artifact)"
+    trigger_type: "keyword_match"
+    keywords:
+      - "box"
+      - "artifact"
+      - "prism"
+      - "盒子"
+      - "遗物"
+    # This rule ONLY applies if the player has the flag
+    condition: "flags.knows_secret == True"
+    applicable_actions: ["ALL"]
+    bonus_value: 5
+
 # State Machine Configurations
 states:
   VULNERABLE:

@@ -196,18 +196,27 @@ class Character:
         self.data = data
         self.loader = loader
         
-    def render_prompt(self, relationship_score: int) -> str:
+    def render_prompt(self, relationship_score: int, flags: Optional[dict] = None) -> str:
         """
-        Render the system prompt for this character based on current relationship.
+        Render the system prompt for this character based on current relationship and flags.
+        
+        Args:
+            relationship_score: Current relationship score with the player
+            flags: Dictionary of persistent world-state flags (defaults to empty dict)
         """
         # 我们需要在渲染时，把最新的 relationship_score 注入到 attributes 里
         # 但不要直接修改 self.data，以免污染原始数据，所以 copy 一份
         current_attributes = self.data.copy()
         current_attributes['relationship'] = relationship_score
         
+        # Ensure flags is a dict (default to empty)
+        if flags is None:
+            flags = {}
+        
         return self.loader.render_prompt(
             name=self.name,
-            attributes=current_attributes
+            attributes=current_attributes,
+            flags=flags
         )
 
 # =========================================================================

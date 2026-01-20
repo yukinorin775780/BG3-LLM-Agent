@@ -3,6 +3,7 @@ Game Mechanics Module (Model Layer)
 Pure logic and calculation functions - no UI dependencies
 """
 
+import ast
 from typing import Optional
 
 
@@ -159,10 +160,87 @@ def calculate_passive_dc(action_type: str, npc_attributes: dict) -> Optional[int
         return None
 
 
+def check_condition(condition_str: str, flags: dict) -> bool:
+    """
+    Safely evaluate a simple condition string against flags.
+    
+    Supports formats like: "flags.some_flag == True"
+    Returns True for empty/None conditions.
+    """
+    if not condition_str or not condition_str.strip():
+        return True
+    
+    condition = condition_str.strip()
+    operator = None
+    if "==" in condition:
+        lhs, rhs = condition.split("==", 1)
+        operator = "=="
+    elif "!=" in condition:
+        lhs, rhs = condition.split("!=", 1)
+        operator = "!="
+    else:
+        return False
+    
+    lhs = lhs.strip()
+    rhs = rhs.strip()
+    if not lhs.startswith("flags."):
+        return False
+    
+    key = lhs[len("flags."):].strip()
+    if not key:
+        return False
+    
+    try:
+        rhs_value = ast.literal_eval(rhs)
+    except Exception:
+        rhs_value = rhs.strip('"').strip("'")
+    
+    current_value = flags.get(key)
+    if operator == "==":
+        return current_value == rhs_value
+    return current_value != rhs_value
+
+
+def update_flags(effect_str: str, flags: dict) -> dict:
+    """
+    Apply a flag update string to the flags dict in place.
+    
+    Supports formats like: "flags.some_flag = True"
+    """
+    if not effect_str or not effect_str.strip():
+        return flags
+    
+    effect = effect_str.strip()
+    if "=" not in effect:
+        return flags
+    
+    lhs, rhs = effect.split("=", 1)
+    lhs = lhs.strip()
+    rhs = rhs.strip()
+    if not lhs.startswith("flags."):
+        return flags
+    
+    key = lhs[len("flags."):].strip()
+    if not key:
+        return flags
+    
+    try:
+        rhs_value = ast.literal_eval(rhs)
+    except Exception:
+        rhs_value = rhs.strip('"').strip("'")
+    
+    old_value = flags.get(key)
+    flags[key] = rhs_value
+    if old_value != rhs_value:
+        print(f"[flags] {key}: {old_value} -> {rhs_value}")
+    return flags
+
+
 def get_situational_bonus(
     history: list,
     action_type: str,
     rules_config: list,
+    flags: dict,
     current_message: str = ""
 ) -> tuple[int, str]:
     """
@@ -176,6 +254,7 @@ def get_situational_bonus(
         history: List of conversation history dicts with 'role' and 'content' keys
         action_type: The action type from DM analysis (e.g., "PERSUASION", "DECEPTION")
         rules_config: List of situational bonus rules loaded from config
+        flags: Persistent world-state flags dictionary
         current_message: The current user input message (optional, checked first)
     
     Returns:
@@ -201,6 +280,10 @@ def get_situational_bonus(
     reasons = []
     
     for rule in rules_config or []:
+        condition = rule.get("condition")
+        if not check_condition(condition, flags):
+            continue
+        
         applicable_actions = rule.get("applicable_actions", [])
         if "ALL" not in applicable_actions and action_type not in applicable_actions:
             continue
