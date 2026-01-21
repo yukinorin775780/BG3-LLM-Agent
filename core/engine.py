@@ -75,6 +75,61 @@ def generate_dialogue(system_prompt, conversation_history=None):
         return "（影心似乎陷入了沉思，没有回应……）"
 
 
+def update_summary(current_summary: str, recent_history: list) -> str:
+    """
+    Generate or update a story summary using the LLM.
+    
+    Takes the previous summary and recent conversation history, then uses the LLM
+    to condense the recent events into the summary, keeping it concise and in
+    third-person perspective.
+    
+    Args:
+        current_summary: The existing story summary (empty string for first summary)
+        recent_history: List of recent conversation messages to summarize
+    
+    Returns:
+        str: The updated summary string
+    """
+    # Format recent history for the prompt
+    history_text = ""
+    for msg in recent_history:
+        role = msg.get('role', 'unknown')
+        content = msg.get('content', '')
+        if role == 'user':
+            history_text += f"Player: {content}\n"
+        elif role == 'assistant':
+            history_text += f"Shadowheart: {content}\n"
+    
+    # Construct the prompt
+    if current_summary:
+        prompt = f"""Here is the previous story summary: '{current_summary}'
+
+Here are the recent events:
+{history_text}
+
+Please condense the recent events into the summary, keeping it concise and in third-person perspective. 
+Update the summary to include these new events while maintaining continuity."""
+    else:
+        prompt = f"""Here are recent events:
+{history_text}
+
+Please create a concise story summary in third-person perspective, capturing the key events and relationship dynamics."""
+    
+    try:
+        messages = [{"role": "user", "content": prompt}]
+        completion = client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=messages,  # type: ignore
+            temperature=0.3,  # Lower temperature for more consistent summarization
+            max_tokens=300  # Keep summaries concise
+        )
+        content = completion.choices[0].message.content
+        return content.strip() if content else current_summary
+    except Exception as e:
+        print(f"\n[Engine Error] Summary generation failed: {e}")
+        return current_summary  # Return existing summary on error
+
+
 def parse_approval_change(response_text):
     """
     Parse the approval change tag from LLM response.

@@ -9,7 +9,7 @@ import json
 from typing import Optional
 from dotenv import load_dotenv
 from characters.loader import load_character
-from core.engine import generate_dialogue, parse_approval_change
+from core.engine import generate_dialogue, parse_approval_change, update_summary
 from core.dice import roll_d20, CheckResult
 from core.dm import analyze_intent
 from core import mechanics
@@ -134,7 +134,8 @@ def load_memory(default_relationship_score=0, ui: Optional[GameRenderer] = None)
                         "relationship_score": default_relationship_score,
                         "history": [],
                         "npc_state": {"status": "NORMAL", "duration": 0},
-                        "flags": {}
+                        "flags": {},
+                        "summary": ""
                     }
                 
                 data = json.loads(content)
@@ -148,7 +149,8 @@ def load_memory(default_relationship_score=0, ui: Optional[GameRenderer] = None)
                         "relationship_score": default_relationship_score,
                         "history": data,
                         "npc_state": {"status": "NORMAL", "duration": 0},
-                        "flags": {}
+                        "flags": {},
+                        "summary": ""
                     }
                 
                 # 新格式：包含 relationship_score 和 history
@@ -170,11 +172,13 @@ def load_memory(default_relationship_score=0, ui: Optional[GameRenderer] = None)
                     # Get npc_state or use default
                     npc_state = data.get("npc_state", {"status": "NORMAL", "duration": 0})
                     flags = data.get("flags", {})
+                    summary = data.get("summary", "")
                     return {
                         "relationship_score": relationship_score,
                         "history": history,
                         "npc_state": npc_state,
-                        "flags": flags
+                        "flags": flags,
+                        "summary": summary
                     }
                 
                 # 如果格式不对，使用默认值
@@ -296,9 +300,10 @@ def main():
         conversation_history = memory_data["history"]
         npc_state = memory_data.get("npc_state", {"status": "NORMAL", "duration": 0})
         flags = memory_data.get("flags", {})
+        summary = memory_data.get("summary", "")
         
         # 2. 生成 System Prompt（使用 Character 对象的 render_prompt 方法）
-        system_prompt = character.render_prompt(relationship_score, flags=flags)
+        system_prompt = character.render_prompt(relationship_score, flags=flags, summary=summary)
         
         # Display dashboard
         player_name = player_data['name'] if player_data else "Unknown"
@@ -358,7 +363,8 @@ def main():
                         "relationship_score": relationship_score,
                         "history": conversation_history,
                         "npc_state": npc_state,
-                        "flags": flags
+                        "flags": flags,
+                        "summary": summary
                     }
                     save_memory(memory_data, ui=ui)
                     ui.print("\n[info]再见！[/info]")
@@ -521,8 +527,8 @@ def main():
                     ui.print_system_info(msg)
 
                 # Step C: Generation
-                # Update system prompt to reflect current relationship score and flags
-                system_prompt = character.render_prompt(relationship_score, flags=flags)
+                # Update system prompt to reflect current relationship score, flags, and summary
+                system_prompt = character.render_prompt(relationship_score, flags=flags, summary=summary)
                 
                 # Create temporary messages list (for sending to LLM, with injected system info)
                 messages_to_send = conversation_history.copy()
@@ -567,20 +573,32 @@ def main():
                 # 保存清理后的 AI 回复（不包含 approval tag）
                 conversation_history.append({"role": "assistant", "content": cleaned_response})
                 
+                # 10. 【Rolling Memory Summarization】防止 Token 爆炸
+                MAX_HISTORY = 10
+                if len(conversation_history) > MAX_HISTORY:
+                    # Take the oldest 4 messages to summarize
+                    messages_to_summarize = conversation_history[:4]
+                    
+                    # Generate or update summary
+                    with ui.create_spinner("📝 Consolidating memories...", spinner="dots"):
+                        new_summary_text = update_summary(summary, messages_to_summarize)
+                        summary = new_summary_text
+                    
+                    # Remove those 4 messages from conversation_history
+                    conversation_history = conversation_history[4:]
+                    
+                    # Log the consolidation
+                    ui.print_system_info(f"🧠 Memory Consolidated: {summary[:100]}..." if len(summary) > 100 else f"🧠 Memory Consolidated: {summary}")
+                
                 # Save npc_state to memory after each turn
                 memory_data = {
                     "relationship_score": relationship_score,
                     "history": conversation_history,
                     "npc_state": npc_state,
-                    "flags": flags
+                    "flags": flags,
+                    "summary": summary
                 }
                 save_memory(memory_data, ui=ui)
-                
-                # 10. 滚动窗口：防止 Token 爆炸（保留最近 20 轮）
-                # 注意：这里我们只是截断"发给 AI"的列表，还是截断"存储"的列表？
-                # 为了简单，我们暂时让记忆文件也保持在 20 轮以内，避免文件无限膨胀
-                if len(conversation_history) > 20:
-                    conversation_history = conversation_history[-20:]
                     
             except KeyboardInterrupt:
                 # 强制中断也要存档

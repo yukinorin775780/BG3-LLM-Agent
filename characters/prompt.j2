@@ -15,6 +15,11 @@
 {% set output_instruction = "Output strictly in Chinese. Use broken sentences, ellipses. Speak like a child or simpleton." %}
 {% endif %}
 
+{% if summary %}
+[PREVIOUSLY ON...]
+The story so far: {{ summary }}
+{% endif %}
+
 You are {{ attributes.name }}, a {{ attributes.race }} {{ attributes.class }}.
 
 **Character Stats:**

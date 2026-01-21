@@ -196,13 +196,14 @@ class Character:
         self.data = data
         self.loader = loader
         
-    def render_prompt(self, relationship_score: int, flags: Optional[dict] = None) -> str:
+    def render_prompt(self, relationship_score: int, flags: Optional[dict] = None, summary: str = "") -> str:
         """
-        Render the system prompt for this character based on current relationship and flags.
+        Render the system prompt for this character based on current relationship, flags, and summary.
         
         Args:
             relationship_score: Current relationship score with the player
             flags: Dictionary of persistent world-state flags (defaults to empty dict)
+            summary: Story summary for context (defaults to empty string)
         """
         # 我们需要在渲染时，把最新的 relationship_score 注入到 attributes 里
         # 但不要直接修改 self.data，以免污染原始数据，所以 copy 一份
@@ -216,7 +217,8 @@ class Character:
         return self.loader.render_prompt(
             name=self.name,
             attributes=current_attributes,
-            flags=flags
+            flags=flags,
+            summary=summary
         )
 
 # =========================================================================
