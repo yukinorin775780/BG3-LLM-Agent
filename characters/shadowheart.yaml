@@ -149,3 +149,17 @@ states:
     description: "拒绝交流"
     effect: "skip_generation" # Special flag to skip LLM
     message: "(She turns away, ignoring you completely.)"
+
+# Dialogue Triggers (Events that change world state)
+dialogue_triggers:
+  - id: "unlock_secret_manual"
+    description: "Player reveals they know the secret"
+    trigger_type: "keyword_match"
+    keywords:
+      - "reveal secret"
+      - "我发现了秘密"
+      - "我知道真相"
+    effects:
+      - "flags.knows_secret = True"
+    # Optional system message to show in UI
+    system_message: "🚩 [Story Event] You have revealed your knowledge of the artifact."

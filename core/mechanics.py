@@ -300,6 +300,45 @@ def get_situational_bonus(
     return (total_bonus, ", ".join(reasons))
 
 
+def process_dialogue_triggers(user_input: str, triggers_config: list, flags: dict) -> list[str]:
+    """
+    Process dialogue triggers based on user input and update flags accordingly.
+    
+    This function checks user input against configured triggers and applies
+    their effects (typically flag updates). Returns system messages to display.
+    
+    Args:
+        user_input: The current user input message
+        triggers_config: List of trigger configurations from YAML
+        flags: Persistent world-state flags dictionary (modified in place)
+    
+    Returns:
+        list[str]: List of system messages to display (empty if no triggers matched)
+    """
+    if not user_input or not triggers_config:
+        return []
+    
+    message_lower = user_input.lower()
+    system_messages = []
+    
+    for trigger in triggers_config:
+        trigger_type = trigger.get("trigger_type")
+        if trigger_type == "keyword_match":
+            keywords = trigger.get("keywords", [])
+            if any(keyword.lower() in message_lower for keyword in keywords):
+                # Apply all effects
+                effects = trigger.get("effects", [])
+                for effect_str in effects:
+                    update_flags(effect_str, flags)
+                
+                # Collect system message if provided
+                system_message = trigger.get("system_message")
+                if system_message:
+                    system_messages.append(system_message)
+    
+    return system_messages
+
+
 def update_npc_state(current_status: str, duration: int) -> tuple[str, int]:
     """
     Update NPC state by decrementing duration and resetting to NORMAL if needed.

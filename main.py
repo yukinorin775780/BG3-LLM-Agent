@@ -271,6 +271,7 @@ def main():
         character = load_character(CHARACTER_NAME)
         attributes = character.data  # 保留对原始数据的引用，用于显示
         situational_bonuses = attributes.get('situational_bonuses', [])
+        dialogue_triggers = attributes.get('dialogue_triggers', [])
     ui.print_system_info(f"✓ Loaded attributes for {attributes['name']}")
     ui.print(f"  - {attributes['race']} {attributes['class']} (Level {attributes['level']})")
     ui.print(f"  - Deity: {attributes['deity']}")
@@ -514,10 +515,10 @@ def main():
                                 # Create system info string for injection
                                 system_info = f"Skill Check Result: {result['result_type'].value} (Rolled {result['total']} vs DC {dc})."
                 
-                # Temporary debug trigger for flags
-                if "reveal secret" in user_input.lower() or "我发现了秘密" in user_input:
-                    mechanics.update_flags("flags.knows_secret = True", flags)
-                    ui.print_system_info("🚩 DEBUG: Flag Updated 'knows_secret' = True")
+                # Process dialogue triggers (generic trigger system)
+                trigger_messages = mechanics.process_dialogue_triggers(user_input, dialogue_triggers, flags)
+                for msg in trigger_messages:
+                    ui.print_system_info(msg)
 
                 # Step C: Generation
                 # Update system prompt to reflect current relationship score and flags
