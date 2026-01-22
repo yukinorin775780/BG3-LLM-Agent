@@ -163,3 +163,37 @@ dialogue_triggers:
       - "flags.knows_secret = True"
     # Optional system message to show in UI
     system_message: "🚩 [Story Event] You have revealed your knowledge of the artifact."
+
+# Quest Definitions
+quests:
+  - id: "investigate_shadowheart"
+    title: "The Cleric's Secret"
+    description: "Shadowheart is hiding something."
+    stages:
+      - id: "start"
+        description: "Ask Shadowheart about the mysterious box."
+        condition: "True"
+        status: "ACTIVE"
+        
+      - id: "revealed"
+        description: "You know she has a Sharran artifact. [bold]Objective: Press her for answers.[/]"
+        condition: "flags.knows_secret == True"
+        status: "ACTIVE"  # Still active!
+        
+      - id: "confessed"
+        description: "Shadowheart admitted the artifact is a burden from Shar."
+        condition: "flags.artifact_confessed == True"
+        status: "COMPLETED" # Now it is done.
+        
+  - id: "find_sharran_temple"
+    title: "The Temple of Loss"
+    description: "Shadowheart mentioned a place of worship nearby."
+    stages:
+      - id: "start"
+        description: "Locate the hidden entrance to the Sharran Temple."
+        condition: "True" # Always active
+        status: "ACTIVE"
+      - id: "entered"
+        description: "Explore the depths of the temple."
+        condition: "flags.entered_temple == True"
+        status: "ACTIVE"

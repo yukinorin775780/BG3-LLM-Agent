@@ -3,12 +3,14 @@ UI Renderer Module (View Layer)
 Handles all Rich/UI rendering - no game logic
 """
 
-from rich.console import Console
+from typing import Optional
+from rich.console import Console, Group
 from rich.panel import Panel
 from rich.theme import Theme
 from rich.text import Text
 from rich.rule import Rule
 from rich.table import Table
+from rich.box import HEAVY
 from core.dice import CheckResult
 
 
@@ -41,19 +43,21 @@ class GameRenderer:
         self.console.print(Rule(f"[bold purple]{title_text}[/bold purple]", style="bold purple"))
         self.console.print()
     
-    def show_dashboard(self, player_name: str, npc_name: str, relationship: int, npc_state: dict) -> Panel:
+    def show_dashboard(self, player_name: str, npc_name: str, relationship: int, npc_state: dict, active_quests: Optional[list] = None) -> Group:
         """
-        Render the top dashboard panel showing game status.
+        Render the dashboard panels showing game status and quest journal.
         
         Args:
             player_name: Player's name
             npc_name: NPC's name
             relationship: Current relationship score
             npc_state: NPC state dict with 'status' and 'duration'
+            active_quests: List of active quest objects (optional)
         
         Returns:
-            Panel: The rendered dashboard panel
+            Group: A Group containing the status panel and quest panel
         """
+        # Panel 1: Status Panel
         dashboard_table = Table.grid(padding=(0, 2))
         dashboard_table.add_column(style="stat")
         dashboard_table.add_column(style="npc")
@@ -72,7 +76,40 @@ class GameRenderer:
             f"Relationship: [stat]{relationship}/100[/stat]",
             f"State: [warning]{state_display}[/warning]"
         )
-        return Panel(dashboard_table, title="[bold]Game Status[/bold]", border_style="blue")
+        
+        status_panel = Panel(dashboard_table, title="[bold]Game Status[/bold]", border_style="blue")
+        
+        # Panel 2: Quest Panel
+        if active_quests:
+            quest_content = []
+            for quest in active_quests:
+                quest_title = quest.get("title", "Unknown Quest")
+                stage_desc = quest.get("stage_description", "")
+                quest_status = quest.get("status", "ACTIVE")
+                
+                if quest_status == "COMPLETED":
+                    # Completed quests: Green checkmark, dimmed text
+                    quest_line = f"✅ [bold green]{quest_title}[/bold green]: [dim]{stage_desc}[/dim]"
+                else:
+                    # Active quests: Fire icon, bright gold text
+                    quest_line = f"🔥 [bold gold1]{quest_title}[/bold gold1]: [gold1]{stage_desc}[/gold1]"
+                
+                quest_content.append(quest_line)
+            
+            quest_text = "\n".join(quest_content)
+        else:
+            quest_text = "[dim]No active quests.[/dim]"
+        
+        quest_panel = Panel(
+            quest_text,
+            title="📓 QUEST JOURNAL",
+            title_align="left",
+            border_style="gold1",
+            box=HEAVY,
+            expand=True
+        )
+        
+        return Group(status_panel, quest_panel)
     
     def input_prompt(self, prompt_text: str = "[player]You > [/player]") -> str:
         """

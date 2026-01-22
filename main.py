@@ -13,6 +13,7 @@ from core.engine import generate_dialogue, parse_approval_change, update_summary
 from core.dice import roll_d20, CheckResult
 from core.dm import analyze_intent
 from core import mechanics
+from core import quest
 from ui.renderer import GameRenderer
 
 # Load environment variables from .env file
@@ -276,6 +277,7 @@ def main():
         attributes = character.data  # 保留对原始数据的引用，用于显示
         situational_bonuses = attributes.get('situational_bonuses', [])
         dialogue_triggers = attributes.get('dialogue_triggers', [])
+        quests_config = character.quests
     ui.print_system_info(f"✓ Loaded attributes for {attributes['name']}")
     ui.print(f"  - {attributes['race']} {attributes['class']} (Level {attributes['level']})")
     ui.print(f"  - Deity: {attributes['deity']}")
@@ -307,7 +309,8 @@ def main():
         
         # Display dashboard
         player_name = player_data['name'] if player_data else "Unknown"
-        ui.print(ui.show_dashboard(player_name, attributes['name'], relationship_score, npc_state))
+        active_quests = quest.QuestManager.check_quests(quests_config, flags)
+        ui.print(ui.show_dashboard(player_name, attributes['name'], relationship_score, npc_state, active_quests))
         ui.print()
         
         # 如果是新对话（没记忆），生成并打印开场白
@@ -342,8 +345,9 @@ def main():
             try:
                 states_config = attributes.get('states', {})
 
-                # Update dashboard
-                ui.print(ui.show_dashboard(player_name, attributes['name'], relationship_score, npc_state))
+                # Check quests and update dashboard
+                active_quests = quest.QuestManager.check_quests(quests_config, flags)
+                ui.print(ui.show_dashboard(player_name, attributes['name'], relationship_score, npc_state, active_quests))
                 ui.print()
                 
                 # ==========================================

@@ -166,8 +166,13 @@ def check_condition(condition_str: str, flags: dict) -> bool:
     
     Supports formats like: "flags.some_flag == True"
     Returns True for empty/None conditions.
+    Handles "True" as a special case (always returns True).
     """
     if not condition_str or not condition_str.strip():
+        return True
+    
+    # Handle "True" as a special case (always active conditions)
+    if str(condition_str).strip() == "True":
         return True
     
     condition = condition_str.strip()
