@@ -1,5 +1,5 @@
 {
-  "relationship_score": -1,
+  "relationship_score": 1,
   "history": [
     {
       "role": "assistant",
@@ -20,6 +20,14 @@
     {
       "role": "assistant",
       "content": "……秘密？呵。有些真相，一旦揭开，就再也无法装回盒中。  \n你既然已窥见一角——那就该明白：这盒子不是容器，而是枷锁。而我们……都已被它标记。  \nShar的低语从不落空。你听见了吗？"
+    },
+    {
+      "role": "user",
+      "content": "给你药水"
+    },
+    {
+      "role": "assistant",
+      "content": "你……倒是比我想象中更懂分寸。这药水，是疗伤的？看来你并非全然被好奇心驱使。  \n*（接过药水，指尖微微停顿）*  \nShar的阴影庇护谨慎之人。或许……你还不算太愚蠢。这盒子锁着的不只是秘密，还有代价——而你现在，已经分担了一部分重量。  \n别让我后悔收下它。"
     }
   ],
   "npc_state": {
@@ -27,7 +35,8 @@
     "duration": 0
   },
   "flags": {
-    "knows_secret": true
+    "knows_secret": true,
+    "received_gift": true
   },
   "summary": ""
 }

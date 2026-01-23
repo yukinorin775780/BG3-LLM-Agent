@@ -14,6 +14,7 @@ from core.dice import roll_d20, CheckResult
 from core.dm import analyze_intent
 from core import mechanics
 from core import quest
+from core import inventory
 from ui.renderer import GameRenderer
 
 # Load environment variables from .env file
@@ -271,6 +272,11 @@ def main():
             player_data = None
             ui.print()
     
+    # Initialize Player Inventory
+    player_inventory = inventory.Inventory()
+    player_inventory.add("Healing Potion")
+    player_inventory.add("Gold Coin (10)")
+    
     # Load character
     with ui.create_spinner("[info]Loading Shadowheart's attributes...[/info]", spinner="dots"):
         character = load_character(CHARACTER_NAME)
@@ -310,7 +316,7 @@ def main():
         # Display dashboard
         player_name = player_data['name'] if player_data else "Unknown"
         active_quests = quest.QuestManager.check_quests(quests_config, flags)
-        ui.print(ui.show_dashboard(player_name, attributes['name'], relationship_score, npc_state, active_quests))
+        ui.print(ui.show_dashboard(player_name, attributes['name'], relationship_score, npc_state, active_quests, player_inventory, character.inventory))
         ui.print()
         
         # 如果是新对话（没记忆），生成并打印开场白
@@ -347,7 +353,7 @@ def main():
 
                 # Check quests and update dashboard
                 active_quests = quest.QuestManager.check_quests(quests_config, flags)
-                ui.print(ui.show_dashboard(player_name, attributes['name'], relationship_score, npc_state, active_quests))
+                ui.print(ui.show_dashboard(player_name, attributes['name'], relationship_score, npc_state, active_quests, player_inventory, character.inventory))
                 ui.print()
                 
                 # ==========================================
@@ -526,7 +532,14 @@ def main():
                                 system_info = f"Skill Check Result: {result['result_type'].value} (Rolled {result['total']} vs DC {dc})."
                 
                 # Process dialogue triggers (generic trigger system)
-                trigger_messages = mechanics.process_dialogue_triggers(user_input, dialogue_triggers, flags)
+                trigger_messages = mechanics.process_dialogue_triggers(
+                    user_input, 
+                    dialogue_triggers, 
+                    flags, 
+                    ui=ui, 
+                    player_inv=player_inventory, 
+                    npc_inv=character.inventory
+                )
                 for msg in trigger_messages:
                     ui.print_system_info(msg)
 

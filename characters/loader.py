@@ -7,6 +7,7 @@ import os
 import yaml
 from jinja2 import Environment, FileSystemLoader, TemplateNotFound
 from typing import Dict, Any, Optional, List
+from core import inventory
 
 
 class CharacterLoader:
@@ -196,6 +197,7 @@ class Character:
         self.data = data
         self.loader = loader
         self.quests = quests if quests is not None else []
+        self.inventory = inventory.Inventory()
         
     def render_prompt(self, relationship_score: int, flags: Optional[dict] = None, summary: str = "") -> str:
         """
@@ -239,4 +241,11 @@ def load_character(name: str) -> Character:
     loader = CharacterLoader()
     data = loader.load_character(name)
     quests_data = data.get('quests', [])
-    return Character(name, data, loader, quests=quests_data)
+    character = Character(name, data, loader, quests=quests_data)
+    
+    # Load inventory items
+    inv_data = data.get('inventory', [])
+    for item in inv_data:
+        character.inventory.add(item)
+    
+    return character

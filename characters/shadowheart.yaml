@@ -72,6 +72,11 @@ equipment:
   - Holy Symbol of Shar
   - Mysterious Artifact
 
+# Starting Inventory
+inventory:
+  - "Mysterious Sharran Artifact"
+  - "Mace"
+
 # Dialogue Style
 dialogue_style:
   tone: "Mysterious, guarded, but occasionally warm"
@@ -163,6 +168,19 @@ dialogue_triggers:
       - "flags.knows_secret = True"
     # Optional system message to show in UI
     system_message: "🚩 [Story Event] You have revealed your knowledge of the artifact."
+    
+  - id: "give_potion"
+    description: "Player gives a healing potion"
+    trigger_type: "keyword_match"
+    keywords:
+      - "give you the potion"
+      - "take this potion"
+      - "给你药水"
+      - "给你治疗药水"
+    effects:
+      - "inventory.give:Healing Potion"
+      - "flags.received_gift = True"
+    system_message: "🎁 [Story Event] You handed over the potion."
 
 # Quest Definitions
 quests:

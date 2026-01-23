@@ -12,6 +12,7 @@ from rich.rule import Rule
 from rich.table import Table
 from rich.box import HEAVY
 from core.dice import CheckResult
+from core.inventory import Inventory
 
 
 class GameRenderer:
@@ -43,7 +44,7 @@ class GameRenderer:
         self.console.print(Rule(f"[bold purple]{title_text}[/bold purple]", style="bold purple"))
         self.console.print()
     
-    def show_dashboard(self, player_name: str, npc_name: str, relationship: int, npc_state: dict, active_quests: Optional[list] = None) -> Group:
+    def show_dashboard(self, player_name: str, npc_name: str, relationship: int, npc_state: dict, active_quests: Optional[list] = None, player_inventory: Optional[Inventory] = None, npc_inventory: Optional[Inventory] = None) -> Group:
         """
         Render the dashboard panels showing game status and quest journal.
         
@@ -53,6 +54,8 @@ class GameRenderer:
             relationship: Current relationship score
             npc_state: NPC state dict with 'status' and 'duration'
             active_quests: List of active quest objects (optional)
+            player_inventory: Player's inventory object (optional)
+            npc_inventory: NPC's inventory object (optional)
         
         Returns:
             Group: A Group containing the status panel and quest panel
@@ -70,11 +73,29 @@ class GameRenderer:
         if state_duration > 0:
             state_display += f" ({state_duration} turns)"
         
+        # Player inventory display
+        player_inv_text = "🎒 Inventory: Empty"
+        if player_inventory:
+            player_inv_text = f"🎒 Inventory: {player_inventory.list_items()}"
+        
+        # NPC inventory display
+        npc_inv_text = ""
+        if npc_inventory:
+            npc_inv_text = f"🎒 Equipped: {npc_inventory.list_items()}"
+        
         dashboard_table.add_row(
             f"Player: [player]{player_name}[/player]",
             f"NPC: [npc]{npc_name}[/npc]",
             f"Relationship: [stat]{relationship}/100[/stat]",
             f"State: [warning]{state_display}[/warning]"
+        )
+        
+        # Add inventory rows
+        dashboard_table.add_row(
+            player_inv_text,
+            npc_inv_text,
+            "",
+            ""
         )
         
         status_panel = Panel(dashboard_table, title="[bold]Game Status[/bold]", border_style="blue")

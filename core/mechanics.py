@@ -305,17 +305,20 @@ def get_situational_bonus(
     return (total_bonus, ", ".join(reasons))
 
 
-def process_dialogue_triggers(user_input: str, triggers_config: list, flags: dict) -> list[str]:
+def process_dialogue_triggers(user_input: str, triggers_config: list, flags: dict, ui=None, player_inv=None, npc_inv=None) -> list[str]:
     """
-    Process dialogue triggers based on user input and update flags accordingly.
+    Process dialogue triggers based on user input and update flags/inventory accordingly.
     
     This function checks user input against configured triggers and applies
-    their effects (typically flag updates). Returns system messages to display.
+    their effects (flag updates and inventory transfers). Returns system messages to display.
     
     Args:
         user_input: The current user input message
         triggers_config: List of trigger configurations from YAML
         flags: Persistent world-state flags dictionary (modified in place)
+        ui: Optional UI renderer for displaying messages
+        player_inv: Optional player inventory object
+        npc_inv: Optional NPC inventory object
     
     Returns:
         list[str]: List of system messages to display (empty if no triggers matched)
@@ -334,7 +337,20 @@ def process_dialogue_triggers(user_input: str, triggers_config: list, flags: dic
                 # Apply all effects
                 effects = trigger.get("effects", [])
                 for effect_str in effects:
-                    update_flags(effect_str, flags)
+                    # Handle flag updates
+                    if "flags." in effect_str:
+                        update_flags(effect_str, flags)
+                    # Handle inventory transfers
+                    elif effect_str.startswith("inventory.give:"):
+                        item_name = effect_str.split(":", 1)[1].strip()
+                        if player_inv and npc_inv:
+                            if player_inv.remove(item_name):
+                                npc_inv.add(item_name)
+                                if ui:
+                                    ui.print_system_info(f"🎒 Item Transferred: {item_name} (Player -> NPC)")
+                            else:
+                                if ui:
+                                    ui.print_system_info(f"❌ Transaction Failed: You don't have {item_name}")
                 
                 # Collect system message if provided
                 system_message = trigger.get("system_message")
