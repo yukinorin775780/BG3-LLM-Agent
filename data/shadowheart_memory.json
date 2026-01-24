@@ -1,5 +1,5 @@
 {
-  "relationship_score": 1,
+  "relationship_score": -1,
   "history": [
     {
       "role": "assistant",
@@ -28,6 +28,14 @@
     {
       "role": "assistant",
       "content": "你……倒是比我想象中更懂分寸。这药水，是疗伤的？看来你并非全然被好奇心驱使。  \n*（接过药水，指尖微微停顿）*  \nShar的阴影庇护谨慎之人。或许……你还不算太愚蠢。这盒子锁着的不只是秘密，还有代价——而你现在，已经分担了一部分重量。  \n别让我后悔收下它。"
+    },
+    {
+      "role": "user",
+      "content": "你记得我给你药水了嘛？"
+    },
+    {
+      "role": "assistant",
+      "content": "……药水？我从不依赖他人的施舍，更不会把转瞬即逝的善意当作记忆的锚点。  \nShar teaches us: what is given can be taken. What is earned—*留在骨子里*。  \n你连一次简单的辨识都做不到，却指望我记得你的小恩惠？  \n省省力气吧。黑暗从不记账，它只记……谁配留下。"
     }
   ],
   "npc_state": {

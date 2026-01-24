@@ -2,20 +2,10 @@ import os
 from openai import OpenAI
 import sys
 import re
-from dotenv import load_dotenv
-
-# 加载环境变量（必须在获取环境变量之前调用）
-load_dotenv()
-
-# ==========================================
-# 配置区域
-# ==========================================
-API_KEY = os.getenv("BAILIAN_API_KEY") or os.getenv("DASHSCOPE_API_KEY")
-BASE_URL = os.getenv("DASHSCOPE_API_BASE")
-MODEL_NAME = "qwen-plus"  # 或者 deepseek-v3
+from config import settings
 
 # 检查 API Key 是否存在
-if not API_KEY:
+if not settings.API_KEY:
     print("❌ 错误: 未找到 API Key")
     print("\n请配置 API Key:")
     print("1. 在项目根目录创建 .env 文件")
@@ -29,7 +19,7 @@ if not API_KEY:
 
 # 初始化客户端
 try:
-    client = OpenAI(api_key=API_KEY, base_url=BASE_URL)
+    client = OpenAI(api_key=settings.API_KEY, base_url=settings.BASE_URL)
 except Exception as e:
     print(f"❌ 错误: 初始化 AI 客户端失败: {e}")
     print("\n请检查:")
@@ -62,7 +52,7 @@ def generate_dialogue(system_prompt, conversation_history=None):
     try:
         # 2. 调用 API
         completion = client.chat.completions.create(
-            model=MODEL_NAME,
+            model=settings.MODEL_NAME,
             messages=messages,  # type: ignore
             temperature=0.7,
             max_tokens=500  # 控制回复长度
@@ -118,7 +108,7 @@ Please create a concise story summary in third-person perspective, capturing the
     try:
         messages = [{"role": "user", "content": prompt}]
         completion = client.chat.completions.create(
-            model=MODEL_NAME,
+            model=settings.MODEL_NAME,
             messages=messages,  # type: ignore
             temperature=0.3,  # Lower temperature for more consistent summarization
             max_tokens=300  # Keep summaries concise

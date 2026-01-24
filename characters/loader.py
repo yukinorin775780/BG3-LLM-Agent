@@ -74,7 +74,7 @@ class CharacterLoader:
         
         Args:
             name: Character name (e.g., "shadowheart")
-                The method will look for {name}_prompt.j2 or prompt.j2 in the characters directory.
+                The method will look for {name}_persona_template.j2 or persona_template.j2 in the characters directory.
         
         Returns:
             jinja2.Template: Loaded Jinja2 template
@@ -82,10 +82,10 @@ class CharacterLoader:
         Raises:
             TemplateNotFound: If the template file doesn't exist
         """
-        # Try character-specific template first (e.g., shadowheart_prompt.j2)
+        # Try character-specific template first (e.g., shadowheart_persona_template.j2)
         template_names = [
-            f"{name}_prompt.j2",
-            "prompt.j2"  # Fallback to generic prompt.j2
+            f"{name}_persona_template.j2",
+            "persona_template.j2"  # Fallback to generic persona_template.j2
         ]
         
         for template_name in template_names:

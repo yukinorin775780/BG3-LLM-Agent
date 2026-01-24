@@ -7,7 +7,7 @@ import os
 import sys
 import json
 from typing import Optional
-from dotenv import load_dotenv
+from config import settings
 from characters.loader import load_character
 from core.engine import generate_dialogue, parse_approval_change, update_summary
 from core.dice import roll_d20, CheckResult
@@ -17,11 +17,8 @@ from core import quest
 from core import inventory
 from ui.renderer import GameRenderer
 
-# Load environment variables from .env file
-load_dotenv()
-
 # 定义记忆文件保存的位置
-MEMORY_FILE = "data/shadowheart_memory.json"
+MEMORY_FILE = os.path.join(settings.SAVE_DIR, "shadowheart_memory.json")
 
 # 角色名称
 CHARACTER_NAME = "shadowheart"
@@ -240,7 +237,7 @@ def load_player_profile():
         FileNotFoundError: If player.json doesn't exist
         json.JSONDecodeError: If JSON is malformed
     """
-    player_file = "data/player.json"
+    player_file = os.path.join(settings.SAVE_DIR, "player.json")
     if not os.path.exists(player_file):
         raise FileNotFoundError(f"Player profile not found: {player_file}")
     
@@ -591,8 +588,7 @@ def main():
                 conversation_history.append({"role": "assistant", "content": cleaned_response})
                 
                 # 10. 【Rolling Memory Summarization】防止 Token 爆炸
-                MAX_HISTORY = 10
-                if len(conversation_history) > MAX_HISTORY:
+                if len(conversation_history) > settings.MAX_HISTORY:
                     # Take the oldest 4 messages to summarize
                     messages_to_summarize = conversation_history[:4]
                     

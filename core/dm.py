@@ -9,33 +9,23 @@ import re
 from typing import Dict, Any
 from openai import OpenAI
 from jinja2 import Environment, FileSystemLoader, TemplateNotFound
-from dotenv import load_dotenv
-
-# 加载环境变量
-load_dotenv()
-
-# ==========================================
-# 配置区域（复用 engine.py 的配置）
-# ==========================================
-API_KEY = os.getenv("BAILIAN_API_KEY") or os.getenv("DASHSCOPE_API_KEY")
-BASE_URL = os.getenv("DASHSCOPE_API_BASE")
-MODEL_NAME = "qwen-plus"  # 使用与 engine.py 相同的模型
+from config import settings
 
 # 初始化客户端
-if not API_KEY:
+if not settings.API_KEY:
     raise RuntimeError(
         "未找到 API Key。请配置 BAILIAN_API_KEY 或 DASHSCOPE_API_KEY 环境变量。"
     )
 
 try:
-    client = OpenAI(api_key=API_KEY, base_url=BASE_URL)
+    client = OpenAI(api_key=settings.API_KEY, base_url=settings.BASE_URL)
 except Exception as e:
     raise RuntimeError(f"初始化 AI 客户端失败: {e}")
 
 # 初始化 Jinja2 环境（用于加载 DM prompt 模板）
-# 获取项目根目录
-_project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_prompts_dir = os.path.join(_project_root, "prompt")
+# 获取当前文件所在目录（core/），然后指向 core/prompts/
+_core_dir = os.path.dirname(os.path.abspath(__file__))
+_prompts_dir = os.path.join(_core_dir, "prompts")
 
 _jinja_env = Environment(
     loader=FileSystemLoader(_prompts_dir),
@@ -55,11 +45,11 @@ def load_dm_template():
         TemplateNotFound: If the template file doesn't exist
     """
     try:
-        template = _jinja_env.get_template("dm_prompt.j2")
+        template = _jinja_env.get_template("dm.j2")
         return template
     except TemplateNotFound:
         raise TemplateNotFound(
-            f"DM template not found: {os.path.join(_prompts_dir, 'dm_prompt.j2')}"
+            f"DM template not found: {os.path.join(_prompts_dir, 'dm.j2')}"
         )
 
 
@@ -122,7 +112,7 @@ def analyze_intent(user_input: str) -> Dict[str, Any]:
         messages = [{"role": "user", "content": prompt}]
         
         completion = client.chat.completions.create(
-            model=MODEL_NAME,
+            model=settings.MODEL_NAME,
             messages=messages,  # type: ignore
             temperature=0.3,  # Lower temperature for more consistent analysis
             max_tokens=200  # DM analysis should be concise

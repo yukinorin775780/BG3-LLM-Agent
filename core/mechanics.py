@@ -233,7 +233,7 @@ def update_flags(effect_str: str, flags: dict) -> dict:
         rhs_value = ast.literal_eval(rhs)
     except Exception:
         rhs_value = rhs.strip('"').strip("'")
-    
+
     old_value = flags.get(key)
     flags[key] = rhs_value
     if old_value != rhs_value:
