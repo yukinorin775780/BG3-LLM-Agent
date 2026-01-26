@@ -72,10 +72,10 @@ equipment:
   - Holy Symbol of Shar
   - Mysterious Artifact
 
-# Starting Inventory
+# Starting Inventory (use item_ids from config/items.yaml)
 inventory:
-  - "Mysterious Sharran Artifact"
-  - "Mace"
+  - "mysterious_artifact"
+  - "mace"
 
 # Dialogue Style
 dialogue_style:
@@ -178,7 +178,7 @@ dialogue_triggers:
       - "给你药水"
       - "给你治疗药水"
     effects:
-      - "inventory.give:Healing Potion"
+      - "inventory.give:healing_potion"
       - "flags.received_gift = True"
     system_message: "🎁 [Story Event] You handed over the potion."
 

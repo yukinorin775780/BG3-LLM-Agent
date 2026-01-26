@@ -269,10 +269,11 @@ def main():
             player_data = None
             ui.print()
     
-    # Initialize Player Inventory
+    # Initialize Item Registry and Player Inventory
+    inventory.init_registry("config/items.yaml")
     player_inventory = inventory.Inventory()
-    player_inventory.add("Healing Potion")
-    player_inventory.add("Gold Coin (10)")
+    player_inventory.add("healing_potion", 2)  # Start with 2 healing potions
+    player_inventory.add("gold_coin", 10)      # Start with 10 gold coins
     
     # Load character
     with ui.create_spinner("[info]Loading Shadowheart's attributes...[/info]", spinner="dots"):

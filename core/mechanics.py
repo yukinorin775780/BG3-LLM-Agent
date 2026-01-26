@@ -342,10 +342,15 @@ def process_dialogue_triggers(user_input: str, triggers_config: list, flags: dic
                         update_flags(effect_str, flags)
                     # Handle inventory transfers
                     elif effect_str.startswith("inventory.give:"):
-                        item_name = effect_str.split(":", 1)[1].strip()
+                        item_id = effect_str.split(":", 1)[1].strip()
                         if player_inv and npc_inv:
-                            if player_inv.remove(item_name):
-                                npc_inv.add(item_name)
+                            # Get display name from registry
+                            from core.inventory import get_registry
+                            registry = get_registry()
+                            item_name = registry.get_name(item_id)
+                            
+                            if player_inv.remove(item_id):
+                                npc_inv.add(item_id)
                                 if ui:
                                     ui.print_system_info(f"🎒 Item Transferred: {item_name} (Player -> NPC)")
                             else:
