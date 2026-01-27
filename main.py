@@ -134,7 +134,9 @@ def load_memory(default_relationship_score=0, ui: Optional[GameRenderer] = None)
                         "history": [],
                         "npc_state": {"status": "NORMAL", "duration": 0},
                         "flags": {},
-                        "summary": ""
+                        "summary": "",
+                        "inventory_player": {},
+                        "inventory_npc": {}
                     }
                 
                 data = json.loads(content)
@@ -149,7 +151,9 @@ def load_memory(default_relationship_score=0, ui: Optional[GameRenderer] = None)
                         "history": data,
                         "npc_state": {"status": "NORMAL", "duration": 0},
                         "flags": {},
-                        "summary": ""
+                        "summary": "",
+                        "inventory_player": {},
+                        "inventory_npc": {}
                     }
                 
                 # 新格式：包含 relationship_score 和 history
@@ -172,12 +176,17 @@ def load_memory(default_relationship_score=0, ui: Optional[GameRenderer] = None)
                     npc_state = data.get("npc_state", {"status": "NORMAL", "duration": 0})
                     flags = data.get("flags", {})
                     summary = data.get("summary", "")
+                    # Get inventory data for persistence
+                    inventory_player = data.get("inventory_player", {})
+                    inventory_npc = data.get("inventory_npc", {})
                     return {
                         "relationship_score": relationship_score,
                         "history": history,
                         "npc_state": npc_state,
                         "flags": flags,
-                        "summary": summary
+                        "summary": summary,
+                        "inventory_player": inventory_player,
+                        "inventory_npc": inventory_npc
                     }
                 
                 # 如果格式不对，使用默认值
@@ -187,7 +196,10 @@ def load_memory(default_relationship_score=0, ui: Optional[GameRenderer] = None)
                     "relationship_score": default_relationship_score,
                     "history": [],
                     "npc_state": {"status": "NORMAL", "duration": 0},
-                    "flags": {}
+                    "flags": {},
+                    "summary": "",
+                    "inventory_player": {},
+                    "inventory_npc": {}
                 }
                 
         except Exception as e:
@@ -198,7 +210,10 @@ def load_memory(default_relationship_score=0, ui: Optional[GameRenderer] = None)
                 "relationship_score": default_relationship_score,
                 "history": [],
                 "npc_state": {"status": "NORMAL", "duration": 0},
-                "flags": {}
+                "flags": {},
+                "summary": "",
+                "inventory_player": {},
+                "inventory_npc": {}
             }
     
     # 记忆文件不存在，使用 YAML 配置的值
@@ -208,7 +223,10 @@ def load_memory(default_relationship_score=0, ui: Optional[GameRenderer] = None)
         "relationship_score": default_relationship_score,
         "history": [],
         "npc_state": {"status": "NORMAL", "duration": 0},
-        "flags": {}
+        "flags": {},
+        "summary": "",
+        "inventory_player": {},
+        "inventory_npc": {}
     }
 
 
@@ -308,6 +326,16 @@ def main():
         flags = memory_data.get("flags", {})
         summary = memory_data.get("summary", "")
         
+        # Rehydrate inventories from saved state (if available)
+        saved_player_inv = memory_data.get("inventory_player", {})
+        saved_npc_inv = memory_data.get("inventory_npc", {})
+        if saved_player_inv:
+            player_inventory.from_dict(saved_player_inv)
+            ui.print_system_info(f"🎒 Player inventory restored: {player_inventory.count_unique_items()} item types")
+        if saved_npc_inv:
+            character.inventory.from_dict(saved_npc_inv)
+            ui.print_system_info(f"🎒 NPC inventory restored: {character.inventory.count_unique_items()} item types")
+        
         # 2. 生成 System Prompt（使用 Character 对象的 render_prompt 方法）
         system_prompt = character.render_prompt(relationship_score, flags=flags, summary=summary)
         
@@ -372,7 +400,9 @@ def main():
                         "history": conversation_history,
                         "npc_state": npc_state,
                         "flags": flags,
-                        "summary": summary
+                        "summary": summary,
+                        "inventory_player": player_inventory.to_dict(),
+                        "inventory_npc": character.inventory.to_dict()
                     }
                     save_memory(memory_data, ui=ui)
                     ui.print("\n[info]再见！[/info]")
@@ -415,7 +445,10 @@ def main():
                             "relationship_score": relationship_score,
                             "history": conversation_history,
                             "npc_state": npc_state,
-                            "flags": flags
+                            "flags": flags,
+                            "summary": summary,
+                            "inventory_player": player_inventory.to_dict(),
+                            "inventory_npc": character.inventory.to_dict()
                         }
                         save_memory(memory_data, ui=ui)
                         continue
@@ -610,7 +643,9 @@ def main():
                     "history": conversation_history,
                     "npc_state": npc_state,
                     "flags": flags,
-                    "summary": summary
+                    "summary": summary,
+                    "inventory_player": player_inventory.to_dict(),
+                    "inventory_npc": character.inventory.to_dict()
                 }
                 save_memory(memory_data, ui=ui)
                     
@@ -620,7 +655,10 @@ def main():
                     "relationship_score": relationship_score,
                     "history": conversation_history,
                     "npc_state": npc_state,
-                    "flags": flags
+                    "flags": flags,
+                    "summary": summary,
+                    "inventory_player": player_inventory.to_dict(),
+                    "inventory_npc": character.inventory.to_dict()
                 }
                 save_memory(memory_data, ui=ui)
                 ui.print("\n\n[info]再见！[/info]")

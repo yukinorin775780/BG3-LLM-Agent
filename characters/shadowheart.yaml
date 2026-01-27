@@ -75,7 +75,7 @@ equipment:
 # Starting Inventory (use item_ids from config/items.yaml)
 inventory:
   - "mysterious_artifact"
-  - "mace"
+  - "healing_potion"
 
 # Dialogue Style
 dialogue_style:

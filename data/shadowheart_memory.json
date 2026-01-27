@@ -46,5 +46,13 @@
     "knows_secret": true,
     "received_gift": true
   },
-  "summary": ""
+  "summary": "",
+  "inventory_player": {
+    "healing_potion": 2,
+    "gold_coin": 10
+  },
+  "inventory_npc": {
+    "mysterious_artifact": 1,
+    "healing_potion": 1
+  }
 }
