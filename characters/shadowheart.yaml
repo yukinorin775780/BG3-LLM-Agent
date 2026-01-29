@@ -58,8 +58,6 @@ equipment:
 inventory:
 - mysterious_artifact
 - healing_potion
-- gold_coin
-- ruby_gem
 dialogue_style:
   tone: Mysterious, guarded, but occasionally warm
   speech_patterns:
@@ -71,7 +69,7 @@ dialogue_style:
   - Shar's will be done
   - There's more to me than meets the eye
   - Trust is earned, not given
-relationship: 52
+relationship: 0
 situational_bonuses:
 - id: shared_faith
   description: Shared Faith/Knowledge (Shar)
@@ -145,9 +143,11 @@ dialogue_triggers:
   - flags.received_gift = True
   system_message: 🎁 [Story Event] You handed over the potion.
 quests:
-- id: investigate_shadowheart
+- id: cleric_secret
   title: The Cleric's Secret
-  description: Shadowheart is hiding something.
+  description: Shadowheart is hiding something. She seems protective of the artifact.
+  trigger_event: flag:knows_secret
+  completion_event: flag:secret_revealed
   stages:
   - id: start
     description: Ask Shadowheart about the mysterious box.
@@ -162,9 +162,10 @@ quests:
     description: Shadowheart admitted the artifact is a burden from Shar.
     condition: flags.artifact_confessed == True
     status: COMPLETED
-- id: find_sharran_temple
+- id: temple_loss
   title: The Temple of Loss
   description: Shadowheart mentioned a place of worship nearby.
+  trigger_event: flag:found_temple_map
   stages:
   - id: start
     description: Locate the hidden entrance to the Sharran Temple.
@@ -174,3 +175,4 @@ quests:
     description: Explore the depths of the temple.
     condition: flags.entered_temple == True
     status: ACTIVE
+attributes: {}

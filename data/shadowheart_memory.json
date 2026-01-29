@@ -1,0 +1,27 @@
+{
+  "relationship_score": 0,
+  "history": [
+    {
+      "role": "assistant",
+      "content": "你站得太近了……黑暗从不欢迎鲁莽的窥探者。"
+    }
+  ],
+  "npc_state": {
+    "status": "NORMAL",
+    "duration": 0
+  },
+  "flags": {
+    "knows_secret": true
+  },
+  "summary": "",
+  "inventory_player": {
+    "healing_potion": 2,
+    "gold_coin": 10
+  },
+  "inventory_npc": {
+    "mysterious_artifact": 1,
+    "healing_potion": 1,
+    "gold_coin": 1,
+    "ruby_gem": 1
+  }
+}

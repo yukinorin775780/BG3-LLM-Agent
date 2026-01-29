@@ -1,287 +1,233 @@
-"""
-BG3 Narrative Engine - Config Editor
-配置编辑器：可视化编辑角色属性和背包
-"""
-
-import os
-import yaml
+# tools/editor.py
+# Week 6 Day 4: Config Editor + Logic Visualizer
 import streamlit as st
-from pathlib import Path
+import yaml
+import json
+import os
 
-# 设置页面配置
-st.set_page_config(
-    page_title="BG3 Config Editor",
-    page_icon="⚔️",
-    layout="wide"
-)
+# --- Constants ---
+ITEMS_DB_PATH = "config/items.yaml"
+CHAR_CONFIG_PATH = "characters/shadowheart.yaml"
+MEMORY_PATH = "data/shadowheart_memory.json"
 
-# 项目根目录路径
-PROJECT_ROOT = Path(__file__).parent.parent
-ITEMS_YAML = PROJECT_ROOT / "config" / "items.yaml"
-CHARACTER_YAML = PROJECT_ROOT / "characters" / "shadowheart.yaml"
-MEMORY_FILE = PROJECT_ROOT / "data" / "shadowheart_memory.json"
+st.set_page_config(page_title="BG3 Engine Dashboard", layout="wide", page_icon="⚔️")
+
+# --- Helper Functions ---
+def load_yaml(path):
+    if not os.path.exists(path):
+        return {}
+    with open(path, 'r', encoding='utf-8') as f:
+        return yaml.safe_load(f) or {}
+
+def save_yaml(path, data):
+    with open(path, 'w', encoding='utf-8') as f:
+        yaml.dump(data, f, allow_unicode=True, sort_keys=False)
+
+def load_json(path):
+    if not os.path.exists(path):
+        return None
+    with open(path, 'r', encoding='utf-8') as f:
+        return json.load(f)
+
+def save_json(path, data):
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
 
 
-def load_data():
-    """
-    加载数据文件
-    返回: (items_dict, character_dict) 或 (None, None) 如果文件不存在
-    """
-    items_data = None
-    character_data = None
-    
-    # 加载物品数据库 (只读)
-    if not ITEMS_YAML.exists():
-        st.error(f"❌ 物品数据库未找到: {ITEMS_YAML}")
+# --- Inventory Callbacks (run before rerun; modify disk directly) ---
+def remove_item_callback(index: int):
+    """Remove item at index from character YAML and save. Show toast."""
+    conf = load_yaml(CHAR_CONFIG_PATH)
+    inv = conf.get("inventory", [])
+    if 0 <= index < len(inv):
+        removed_id = inv.pop(index)
+        conf["inventory"] = inv
+        save_yaml(CHAR_CONFIG_PATH, conf)
+        st.toast(f"Removed item at index {index}.")
     else:
-        try:
-            with open(ITEMS_YAML, 'r', encoding='utf-8') as f:
-                items_data = yaml.safe_load(f)
-            st.success(f"✅ 物品数据库已加载: {len(items_data.get('items', {}))} 个物品")
-        except Exception as e:
-            st.error(f"❌ 读取物品数据库失败: {e}")
-    
-    # 加载角色数据 (读写)
-    if not CHARACTER_YAML.exists():
-        st.error(f"❌ 角色文件未找到: {CHARACTER_YAML}")
-    else:
-        try:
-            with open(CHARACTER_YAML, 'r', encoding='utf-8') as f:
-                character_data = yaml.safe_load(f)
-            st.success(f"✅ 角色数据已加载: {character_data.get('name', 'Unknown')}")
-        except Exception as e:
-            st.error(f"❌ 读取角色文件失败: {e}")
-    
-    return items_data, character_data
+        st.toast("Invalid index; no change.", icon="⚠️")
 
 
-def save_character_data(character_data):
-    """
-    保存角色数据到 YAML 文件
-    """
-    try:
-        with open(CHARACTER_YAML, 'w', encoding='utf-8') as f:
-            yaml.dump(character_data, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
-        return True
-    except Exception as e:
-        st.error(f"❌ 保存失败: {e}")
-        return False
+def add_item_callback(item_id: str):
+    """Append item_id to character inventory in YAML and save. Show toast."""
+    conf = load_yaml(CHAR_CONFIG_PATH)
+    inv = conf.get("inventory", [])
+    inv.append(item_id)
+    conf["inventory"] = inv
+    save_yaml(CHAR_CONFIG_PATH, conf)
+    st.toast(f"Added: {item_id}", icon="✅")
 
 
-def main():
-    """主函数"""
-    st.title("⚔️ BG3 Narrative Engine - Config Editor")
-    st.markdown("---")
-    
-    # 加载数据
-    items_data, character_data = load_data()
-    
-    if items_data is None or character_data is None:
-        st.stop()
-    
-    # 初始化 session state（用于存储编辑后的数据）
-    if 'character_data' not in st.session_state:
-        st.session_state.character_data = character_data.copy()
-    
-    # 获取物品列表
-    items_dict = items_data.get('items', {})
-    item_options = [f"{item_id} - {item_data.get('name', item_id)}" 
-                    for item_id, item_data in items_dict.items()]
-    
-    # 创建左右两栏布局
-    col_left, col_right = st.columns(2)
-    
-    # ==========================================
-    # 左侧栏：角色属性编辑
-    # ==========================================
-    with col_left:
-        st.header("📊 角色属性 (Attributes)")
+# --- Data Loading ---
+items_db = load_yaml(ITEMS_DB_PATH).get("items", {})
+char_config = load_yaml(CHAR_CONFIG_PATH)
+memory_data = load_json(MEMORY_PATH)
+
+# --- Title ---
+st.title("⚔️ BG3 Narrative Engine - Admin Console")
+st.markdown("---")
+
+# --- Layout: Tabs ---
+tab1, tab2 = st.tabs(["🛠️ Config & Assets", "🧠 Logic & State"])
+
+# ==============================================================================
+# TAB 1: Configuration (Day 3 Feature)
+# ==============================================================================
+with tab1:
+    col1, col2 = st.columns(2)
+
+    # [Left Column] Attributes
+    with col1:
+        st.subheader("👤 Character Attributes")
         
-        # 确保 ability_scores 存在
-        if 'ability_scores' not in st.session_state.character_data:
-            st.session_state.character_data['ability_scores'] = {}
+        # 1. Attributes
+        attrs = char_config.get("attributes", {})
+        new_attrs = {}
+        for key, val in attrs.items():
+            new_attrs[key] = st.slider(f"{key}", 1, 20, val)
+        char_config["attributes"] = new_attrs
+
+        # 2. Relationship
+        st.divider()
+        rel = char_config.get("relationship", 0)
+        char_config["relationship"] = st.slider("💕 Relationship (Initial)", -100, 100, rel)
+
+    # [Right Column] Inventory (callbacks write to disk; no in-memory remove/add + rerun)
+    with col2:
+        st.subheader("🎒 Inventory Management")
         
-        ability_scores = st.session_state.character_data['ability_scores']
+        current_inv = char_config.get("inventory", [])
+        st.write(f"**Current Items ({len(current_inv)}):**")
         
-        # 能力值滑块
-        st.subheader("能力值 (Ability Scores)")
-        ability_names = {
-            'STR': '力量 (Strength)',
-            'DEX': '敏捷 (Dexterity)',
-            'CON': '体质 (Constitution)',
-            'INT': '智力 (Intelligence)',
-            'WIS': '感知 (Wisdom)',
-            'CHA': '魅力 (Charisma)'
-        }
-        
-        for abbr, full_name in ability_names.items():
-            current_value = ability_scores.get(abbr, 10)
-            new_value = st.slider(
-                full_name,
-                min_value=1,
-                max_value=20,
-                value=current_value,
-                key=f"ability_{abbr}"
+        for i, item_id in enumerate(current_inv):
+            c1, c2 = st.columns([3, 1])
+            item_name = items_db.get(item_id, {}).get("name", item_id)
+            c1.text(f"• {item_name} ({item_id})")
+            c2.button(
+                "❌",
+                key=f"rm_{i}",
+                on_click=remove_item_callback,
+                args=(i,),
             )
-            ability_scores[abbr] = new_value
+
+        st.divider()
         
-        st.markdown("---")
-        
-        # 好感度滑块
-        st.subheader("💕 好感度 (Relationship)")
-        if 'relationship' not in st.session_state.character_data:
-            st.session_state.character_data['relationship'] = 0
-        
-        current_relationship = st.session_state.character_data.get('relationship', 0)
-        new_relationship = st.slider(
-            "关系值 (Relationship Score)",
-            min_value=-100,
-            max_value=100,
-            value=current_relationship,
-            key="relationship_slider"
+        st.write("**Add Item:**")
+        item_options = {k: f"{k} - {v.get('name','Unknown')}" for k, v in items_db.items()}
+        selected_key = st.selectbox(
+            "Select Item DB",
+            options=list(item_options.keys()),
+            format_func=lambda x: item_options[x],
         )
-        st.session_state.character_data['relationship'] = new_relationship
         
-        # 显示当前好感度状态
-        if new_relationship < -50:
-            st.warning(f"😠 敌对关系: {new_relationship}")
-        elif new_relationship < 0:
-            st.info(f"😐 冷淡关系: {new_relationship}")
-        elif new_relationship < 50:
-            st.success(f"😊 友好关系: {new_relationship}")
-        else:
-            st.success(f"❤️ 亲密关系: {new_relationship}")
-    
-    # ==========================================
-    # 右侧栏：背包管理
-    # ==========================================
-    with col_right:
-        st.header("🎒 背包管理 (Inventory)")
+        st.button(
+            "➕ Add to Inventory",
+            key="add_inv_btn",
+            on_click=add_item_callback,
+            args=(selected_key,),
+        )
+
+        # Keep sidebar save in sync: persist current in-memory inventory if user edited elsewhere
+        char_config["inventory"] = current_inv
+
+# ==============================================================================
+# TAB 2: Logic & State (Day 4 Feature - NEW!)
+# ==============================================================================
+with tab2:
+    if memory_data is None:
+        st.warning("⚠️ No active game state found. Please run `main.py` first to generate a save file.")
+    else:
+        st.info(f"📂 Reading from Runtime Memory: `{MEMORY_PATH}`")
         
-        # 确保 inventory 存在
-        if 'inventory' not in st.session_state.character_data:
-            st.session_state.character_data['inventory'] = []
-        
-        inventory_list = st.session_state.character_data['inventory']
-        
-        # 显示当前背包
-        st.subheader("当前背包物品")
-        if not inventory_list:
-            st.info("📦 背包为空")
-        else:
-            for idx, item_id in enumerate(inventory_list):
-                item_name = items_dict.get(item_id, {}).get('name', item_id)
-                col_item, col_btn = st.columns([4, 1])
-                with col_item:
-                    st.write(f"• **{item_name}** (`{item_id}`)")
-                with col_btn:
-                    if st.button("❌ Remove", key=f"remove_{idx}"):
-                        # 从列表中移除
-                        inventory_list.pop(idx)
-                        st.session_state.character_data['inventory'] = inventory_list
-                        st.rerun()
-        
-        st.markdown("---")
-        
-        # 添加物品
-        st.subheader("添加物品")
-        if item_options:
-            selected_item_display = st.selectbox(
-                "选择要添加的物品",
-                options=item_options,
-                key="item_selector"
-            )
+        col_logic_1, col_logic_2 = st.columns([1, 1])
+
+        # --- Section A: Flag Monitor ---
+        with col_logic_1:
+            st.subheader("🚩 World Flags (Runtime)")
+            flags = memory_data.get("flags", {})
             
-            # 从显示文本中提取 item_id
-            if selected_item_display:
-                selected_item_id = selected_item_display.split(" - ")[0]
-                
-                if st.button("➕ Add Item", key="add_item_btn"):
-                    # 检查是否已存在
-                    if selected_item_id in inventory_list:
-                        st.warning(f"⚠️ 物品已存在于背包中: {items_dict.get(selected_item_id, {}).get('name', selected_item_id)}")
-                    else:
-                        inventory_list.append(selected_item_id)
-                        st.session_state.character_data['inventory'] = inventory_list
-                        st.success(f"✅ 已添加: {items_dict.get(selected_item_id, {}).get('name', selected_item_id)}")
-                        st.rerun()
-        else:
-            st.warning("⚠️ 没有可用的物品")
-    
-    # ==========================================
-    # 侧边栏：保存功能
-    # ==========================================
-    with st.sidebar:
-        st.header("💾 保存设置")
-        st.markdown("---")
-        
-        # 显示当前状态摘要
-        st.subheader("📋 当前状态")
-        ability_scores = st.session_state.character_data.get('ability_scores', {})
-        relationship = st.session_state.character_data.get('relationship', 0)
-        inventory_count = len(st.session_state.character_data.get('inventory', []))
-        
-        st.write(f"**能力值**: {len(ability_scores)} 项")
-        st.write(f"**好感度**: {relationship}")
-        st.write(f"**背包物品**: {inventory_count} 个")
-        
-        st.markdown("---")
-        
-        # 保存按钮
-        if st.button("💾 Save Changes", type="primary", use_container_width=True):
-            # 将 session_state 中的所有更改同步到 character_data
-            # 需要深度复制，因为 YAML 可能包含嵌套结构
-            import copy
-            updated_data = copy.deepcopy(character_data)
-            
-            # 更新能力值
-            if 'ability_scores' in st.session_state.character_data:
-                updated_data['ability_scores'] = st.session_state.character_data['ability_scores'].copy()
-            
-            # 更新好感度
-            if 'relationship' in st.session_state.character_data:
-                updated_data['relationship'] = st.session_state.character_data['relationship']
-            
-            # 更新背包
-            if 'inventory' in st.session_state.character_data:
-                updated_data['inventory'] = st.session_state.character_data['inventory'].copy()
-            
-            # 保存到文件
-            if save_character_data(updated_data):
-                # 更新 session_state 和 character_data 引用
-                st.session_state.character_data = updated_data
-                st.success("✅ Character data saved successfully!")
-                st.balloons()
+            # Display Flags
+            if not flags:
+                st.caption("No flags set.")
             else:
-                st.error("❌ Save failed. Please check the error message above.")
-        
-        st.markdown("---")
-        st.caption("💡 提示: 修改后请点击保存按钮以持久化更改")
-        
-        # ==========================================
-        # 危险区域：重置游戏记忆
-        # ==========================================
-        st.markdown("---")
-        st.header("⚠️ Danger Zone")
-        
-        # 检查记忆文件是否存在
-        memory_exists = MEMORY_FILE.exists() if MEMORY_FILE else False
-        
-        if memory_exists:
-            st.warning("⚠️ Save data detected. Config changes may be ignored by the game.")
-            st.caption(f"File: `{MEMORY_FILE.name}`")
-            
-            if st.button("🗑️ Reset/Delete Save Data", type="secondary", use_container_width=True):
-                try:
-                    # 删除记忆文件
-                    MEMORY_FILE.unlink()
-                    st.success("✅ Memory wiped! Next run will use the new Config values.")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"❌ Failed to delete save data: {e}")
-        else:
-            st.info("ℹ️ No save data found. Game will use Config values on next run.")
+                st.dataframe(flags, use_container_width=True)
 
+            # Edit Flags
+            with st.expander("🛠️ Add / Edit Flag"):
+                with st.form("flag_form"):
+                    new_flag_key = st.text_input("Flag Name (e.g., knows_secret)")
+                    new_flag_val = st.checkbox("Set to True", value=True)
+                    if st.form_submit_button("Set Flag"):
+                        if new_flag_key:
+                            memory_data["flags"][new_flag_key] = new_flag_val
+                            save_json(MEMORY_PATH, memory_data)
+                            st.success(f"Flag '{new_flag_key}' set to {new_flag_val}")
+                            st.rerun()
 
-if __name__ == "__main__":
-    main()
+        # --- Section B: Quest Inspector ---
+        with col_logic_2:
+            st.subheader("📜 Quest Tracker")
+            quests_config = char_config.get("quests", [])
+            current_flags = memory_data.get("flags", {})
+
+            for q in quests_config:
+                q_id = q.get("id", "unknown")
+                trigger = q.get("trigger_event") # e.g. "flag:knows_secret"
+                completer = q.get("completion_event")
+                
+                # Simple logic check
+                is_active = False
+                is_completed = False
+                
+                # Check Trigger
+                if trigger and trigger.startswith("flag:"):
+                    req_flag = trigger.split(":")[1]
+                    if current_flags.get(req_flag, False):
+                        is_active = True
+                
+                # Check Completion
+                if completer and completer.startswith("flag:"):
+                    end_flag = completer.split(":")[1]
+                    if current_flags.get(end_flag, False):
+                        is_completed = True
+
+                # Determine Status UI
+                if is_completed:
+                    status_icon = "✅"
+                    status_text = "COMPLETED"
+                    color = "green"
+                elif is_active:
+                    status_icon = "🟢"
+                    status_text = "ACTIVE"
+                    color = "blue"
+                else:
+                    status_icon = "⚪"
+                    status_text = "NOT STARTED"
+                    color = "grey"
+
+                # Render Card
+                with st.expander(f"{status_icon} {q.get('title')} ({status_text})"):
+                    st.write(f"**Description:** {q.get('description')}")
+                    st.caption(f"Trigger: `{trigger}` | Completion: `{completer}`")
+                    if is_active and not is_completed:
+                        st.info("Task is currently in progress.")
+
+# ==============================================================================
+# SIDEBAR: Actions
+# ==============================================================================
+with st.sidebar:
+    st.header("Actions")
+    
+    if st.button("💾 Save Config Changes", type="primary"):
+        save_yaml(CHAR_CONFIG_PATH, char_config)
+        st.success("Config saved to YAML!")
+    
+    st.markdown("---")
+    st.header("⚠️ Danger Zone")
+    if os.path.exists(MEMORY_PATH):
+        if st.button("🗑️ Reset/Delete Save Data"):
+            os.remove(MEMORY_PATH)
+            st.warning("Save data deleted! Restarting...")
+            st.rerun()
+    else:
+        st.caption("No save data detected.")
