@@ -136,7 +136,8 @@ def load_memory(default_relationship_score=0, ui: Optional[GameRenderer] = None)
                         "flags": {},
                         "summary": "",
                         "inventory_player": {},
-                        "inventory_npc": {}
+                        "inventory_npc": {},
+                        "journal": []
                     }
                 
                 data = json.loads(content)
@@ -153,7 +154,8 @@ def load_memory(default_relationship_score=0, ui: Optional[GameRenderer] = None)
                         "flags": {},
                         "summary": "",
                         "inventory_player": {},
-                        "inventory_npc": {}
+                        "inventory_npc": {},
+                        "journal": []
                     }
                 
                 # 新格式：包含 relationship_score 和 history
@@ -179,6 +181,7 @@ def load_memory(default_relationship_score=0, ui: Optional[GameRenderer] = None)
                     # Get inventory data for persistence
                     inventory_player = data.get("inventory_player", {})
                     inventory_npc = data.get("inventory_npc", {})
+                    journal = data.get("journal", [])
                     return {
                         "relationship_score": relationship_score,
                         "history": history,
@@ -186,7 +189,8 @@ def load_memory(default_relationship_score=0, ui: Optional[GameRenderer] = None)
                         "flags": flags,
                         "summary": summary,
                         "inventory_player": inventory_player,
-                        "inventory_npc": inventory_npc
+                        "inventory_npc": inventory_npc,
+                        "journal": journal
                     }
                 
                 # 如果格式不对，使用默认值
@@ -199,7 +203,8 @@ def load_memory(default_relationship_score=0, ui: Optional[GameRenderer] = None)
                     "flags": {},
                     "summary": "",
                     "inventory_player": {},
-                    "inventory_npc": {}
+                    "inventory_npc": {},
+                    "journal": []
                 }
                 
         except Exception as e:
@@ -213,7 +218,8 @@ def load_memory(default_relationship_score=0, ui: Optional[GameRenderer] = None)
                 "flags": {},
                 "summary": "",
                 "inventory_player": {},
-                "inventory_npc": {}
+                "inventory_npc": {},
+                "journal": []
             }
     
     # 记忆文件不存在，使用 YAML 配置的值
@@ -226,8 +232,23 @@ def load_memory(default_relationship_score=0, ui: Optional[GameRenderer] = None)
         "flags": {},
         "summary": "",
         "inventory_player": {},
-        "inventory_npc": {}
+        "inventory_npc": {},
+        "journal": []
     }
+
+
+def add_journal_entry(journal: list, text: str, turn_count: Optional[int] = None) -> None:
+    """
+    Append a formatted journal entry. Keeps only the last 50 entries to prevent bloat.
+    """
+    if turn_count is not None:
+        entry = f"[Turn {turn_count}] {text}"
+    else:
+        entry = f"[Event] {text}"
+    journal.append(entry)
+    # Cap at 50 entries
+    if len(journal) > 50:
+        del journal[: len(journal) - 50]
 
 
 def save_memory(memory_data, ui: Optional[GameRenderer] = None):
@@ -325,6 +346,7 @@ def main():
         npc_state = memory_data.get("npc_state", {"status": "NORMAL", "duration": 0})
         flags = memory_data.get("flags", {})
         summary = memory_data.get("summary", "")
+        journal = memory_data.get("journal", [])
         
         # Rehydrate inventories from saved state (if available)
         saved_player_inv = memory_data.get("inventory_player", {})
@@ -342,7 +364,7 @@ def main():
         # Display dashboard
         player_name = player_data['name'] if player_data else "Unknown"
         active_quests = quest.QuestManager.check_quests(quests_config, flags)
-        ui.print(ui.show_dashboard(player_name, attributes['name'], relationship_score, npc_state, active_quests, player_inventory, character.inventory))
+        ui.print(ui.show_dashboard(player_name, attributes['name'], relationship_score, npc_state, active_quests, player_inventory, character.inventory, journal))
         ui.print()
         
         # 如果是新对话（没记忆），生成并打印开场白
@@ -379,7 +401,7 @@ def main():
 
                 # Check quests and update dashboard
                 active_quests = quest.QuestManager.check_quests(quests_config, flags)
-                ui.print(ui.show_dashboard(player_name, attributes['name'], relationship_score, npc_state, active_quests, player_inventory, character.inventory))
+                ui.print(ui.show_dashboard(player_name, attributes['name'], relationship_score, npc_state, active_quests, player_inventory, character.inventory, journal))
                 ui.print()
                 
                 # ==========================================
@@ -402,7 +424,8 @@ def main():
                         "flags": flags,
                         "summary": summary,
                         "inventory_player": player_inventory.to_dict(),
-                        "inventory_npc": character.inventory.to_dict()
+                        "inventory_npc": character.inventory.to_dict(),
+                        "journal": journal
                     }
                     save_memory(memory_data, ui=ui)
                     ui.print("\n[info]再见！[/info]")
@@ -448,7 +471,8 @@ def main():
                             "flags": flags,
                             "summary": summary,
                             "inventory_player": player_inventory.to_dict(),
-                            "inventory_npc": character.inventory.to_dict()
+                            "inventory_npc": character.inventory.to_dict(),
+                            "journal": journal
                         }
                         save_memory(memory_data, ui=ui)
                         continue
@@ -504,6 +528,10 @@ def main():
                         system_info = f"Action: {action_type} | Result: CRITICAL SUCCESS (Auto). She is vulnerable."
                         ui.print_auto_success(action_type)
                         
+                        # Journal: record critical (auto) success
+                        turn_count = len(conversation_history) // 2 + 1
+                        add_journal_entry(journal, f"Player rolled CRITICAL SUCCESS (Auto) on [{action_type}]!", turn_count)
+                        
                         # Grant +1 relationship bonus for auto-success
                         relationship_score += 1
                         relationship_score = max(-100, min(100, relationship_score))
@@ -550,14 +578,17 @@ def main():
                                 ui.print_roll_result(result)
                                 
                                 # Trigger state changes based on critical rolls
+                                turn_count = len(conversation_history) // 2 + 1
                                 if result['result_type'] == CheckResult.CRITICAL_SUCCESS:
                                     # Natural 20: Set VULNERABLE state
                                     npc_state = {"status": "VULNERABLE", "duration": 3}
                                     ui.print_critical_state_change(CheckResult.CRITICAL_SUCCESS, "VULNERABLE", 3)
+                                    add_journal_entry(journal, f"Player rolled CRITICAL SUCCESS on [{action_type}]! (Rolled {result['total']} vs DC {dc})", turn_count)
                                 elif result['result_type'] == CheckResult.CRITICAL_FAILURE:
                                     # Natural 1: Set SILENT state
                                     npc_state = {"status": "SILENT", "duration": 2}
                                     ui.print_critical_state_change(CheckResult.CRITICAL_FAILURE, "SILENT", 2)
+                                    add_journal_entry(journal, f"Player rolled CRITICAL FAILURE on [{action_type}]! (Rolled {result['total']} vs DC {dc})", turn_count)
                                 
                                 # Create system info string for injection
                                 system_info = f"Skill Check Result: {result['result_type'].value} (Rolled {result['total']} vs DC {dc})."
@@ -571,8 +602,10 @@ def main():
                     player_inv=player_inventory, 
                     npc_inv=character.inventory
                 )
+                turn_count = len(conversation_history) // 2 + 1
                 for msg in trigger_messages:
                     ui.print_system_info(msg)
+                    add_journal_entry(journal, msg, turn_count)
 
                 # Step C: Generation
                 # Update system prompt to reflect current relationship score, flags, and summary
@@ -645,7 +678,8 @@ def main():
                     "flags": flags,
                     "summary": summary,
                     "inventory_player": player_inventory.to_dict(),
-                    "inventory_npc": character.inventory.to_dict()
+                    "inventory_npc": character.inventory.to_dict(),
+                    "journal": journal
                 }
                 save_memory(memory_data, ui=ui)
                     
@@ -658,7 +692,8 @@ def main():
                     "flags": flags,
                     "summary": summary,
                     "inventory_player": player_inventory.to_dict(),
-                    "inventory_npc": character.inventory.to_dict()
+                    "inventory_npc": character.inventory.to_dict(),
+                    "journal": journal
                 }
                 save_memory(memory_data, ui=ui)
                 ui.print("\n\n[info]再见！[/info]")

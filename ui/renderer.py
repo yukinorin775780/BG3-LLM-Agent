@@ -44,9 +44,9 @@ class GameRenderer:
         self.console.print(Rule(f"[bold purple]{title_text}[/bold purple]", style="bold purple"))
         self.console.print()
     
-    def show_dashboard(self, player_name: str, npc_name: str, relationship: int, npc_state: dict, active_quests: Optional[list] = None, player_inventory: Optional[Inventory] = None, npc_inventory: Optional[Inventory] = None) -> Group:
+    def show_dashboard(self, player_name: str, npc_name: str, relationship: int, npc_state: dict, active_quests: Optional[list] = None, player_inventory: Optional[Inventory] = None, npc_inventory: Optional[Inventory] = None, journal: Optional[list] = None) -> Group:
         """
-        Render the dashboard panels showing game status and quest journal.
+        Render the dashboard panels showing game status, quest journal, and recent events.
         
         Args:
             player_name: Player's name
@@ -56,9 +56,10 @@ class GameRenderer:
             active_quests: List of active quest objects (optional)
             player_inventory: Player's inventory object (optional)
             npc_inventory: NPC's inventory object (optional)
+            journal: List of journal entry strings for recent events (optional)
         
         Returns:
-            Group: A Group containing the status panel and quest panel
+            Group: A Group containing the status panel, quest panel, and journal panel
         """
         # Panel 1: Status Panel
         dashboard_table = Table.grid(padding=(0, 2))
@@ -130,7 +131,23 @@ class GameRenderer:
             expand=True
         )
         
-        return Group(status_panel, quest_panel)
+        # Panel 3: Recent Events (Journal)
+        if journal and len(journal) > 0:
+            recent = journal[-3:]  # Last 3 entries
+            recent.reverse()  # Newest first for display
+            journal_text = "\n".join(f"• {e}" for e in recent)
+        else:
+            journal_text = "[dim]No major events yet.[/dim]"
+        
+        journal_panel = Panel(
+            journal_text,
+            title="📜 Recent Events (Journal)",
+            title_align="left",
+            border_style="dim",
+            expand=True
+        )
+        
+        return Group(status_panel, quest_panel, journal_panel)
     
     def input_prompt(self, prompt_text: str = "[player]You > [/player]") -> str:
         """
