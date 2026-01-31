@@ -15,6 +15,7 @@ from core.dm import analyze_intent
 from core import mechanics
 from core import quest
 from core import inventory
+from core.journal import Journal
 from ui.renderer import GameRenderer
 
 # 定义记忆文件保存的位置
@@ -237,20 +238,6 @@ def load_memory(default_relationship_score=0, ui: Optional[GameRenderer] = None)
     }
 
 
-def add_journal_entry(journal: list, text: str, turn_count: Optional[int] = None) -> None:
-    """
-    Append a formatted journal entry. Keeps only the last 50 entries to prevent bloat.
-    """
-    if turn_count is not None:
-        entry = f"[Turn {turn_count}] {text}"
-    else:
-        entry = f"[Event] {text}"
-    journal.append(entry)
-    # Cap at 50 entries
-    if len(journal) > 50:
-        del journal[: len(journal) - 50]
-
-
 def save_memory(memory_data, ui: Optional[GameRenderer] = None):
     """把记忆写入本地文件"""
     try:
@@ -284,6 +271,248 @@ def load_player_profile():
         player_data = json.load(f)
     
     return player_data
+
+
+class GameSession:
+    """
+    Holds game state and handles one turn of input. Keeps main loop clean.
+    """
+
+    def __init__(
+        self,
+        ui: GameRenderer,
+        player_data: Optional[dict],
+        character,
+        attributes: dict,
+        situational_bonuses: list,
+        dialogue_triggers: list,
+        quests_config: list,
+        player_inventory: inventory.Inventory,
+    ):
+        self.ui = ui
+        self.player_data = player_data
+        self.character = character
+        self.attributes = attributes
+        self.situational_bonuses = situational_bonuses
+        self.dialogue_triggers = dialogue_triggers
+        self.quests_config = quests_config
+        self.player_inventory = player_inventory
+
+        self.relationship_score = 0
+        self.conversation_history: list = []
+        self.npc_state = {"status": "NORMAL", "duration": 0}
+        self.flags: dict = {}
+        self.summary = ""
+        self.journal = Journal()
+        self.running = True
+
+    def init_from_memory(self, memory_data: dict) -> None:
+        """Load state from memory dict. Handles missing 'journal' gracefully."""
+        self.relationship_score = memory_data.get("relationship_score", 0)
+        self.conversation_history = memory_data.get("history", [])
+        self.npc_state = memory_data.get("npc_state", {"status": "NORMAL", "duration": 0})
+        self.flags = memory_data.get("flags", {})
+        self.summary = memory_data.get("summary", "")
+        self.journal = Journal.from_dict(memory_data.get("journal"))
+
+        saved_player_inv = memory_data.get("inventory_player", {})
+        saved_npc_inv = memory_data.get("inventory_npc", {})
+        if saved_player_inv:
+            self.player_inventory.from_dict(saved_player_inv)
+        if saved_npc_inv:
+            self.character.inventory.from_dict(saved_npc_inv)
+
+    def build_memory_data(self) -> dict:
+        """Build dict for save_memory. Journal saved via to_dict()."""
+        return {
+            "relationship_score": self.relationship_score,
+            "history": self.conversation_history,
+            "npc_state": self.npc_state,
+            "flags": self.flags,
+            "summary": self.summary,
+            "inventory_player": self.player_inventory.to_dict(),
+            "inventory_npc": self.character.inventory.to_dict(),
+            "journal": self.journal.to_dict(),
+        }
+
+    def turn(self, user_input: str) -> Optional[str]:
+        """
+        Process one user input. Returns "quit", "continue", or None (turn done).
+        """
+        if not user_input:
+            return "continue"
+
+        if user_input.lower() in ["quit", "exit", "退出", "q"]:
+            self.running = False
+            return "quit"
+
+        if user_input.startswith("/"):
+            roll_result = handle_command(
+                user_input, self.attributes, self.ui, self.relationship_score, "NONE"
+            )
+            if roll_result is not None:
+                self.ui.print_system_info("💡 Roll result stored. Type your dialogue to use it.")
+            return "continue"
+
+        states_config = self.attributes.get("states", {})
+        current_status = self.npc_state.get("status", "NORMAL")
+        state_config = states_config.get(current_status)
+        auto_success = False
+
+        if state_config and self.npc_state.get("duration", 0) > 0:
+            duration = self.npc_state["duration"]
+            description = state_config.get("description", current_status)
+            effect = state_config.get("effect")
+            if effect == "skip_generation":
+                self.ui.print_state_effect(current_status, duration, description)
+                self.ui.print_npc_response("Shadowheart", state_config.get("message", ""))
+                new_status, new_duration = mechanics.update_npc_state(
+                    self.npc_state["status"], self.npc_state["duration"]
+                )
+                self.npc_state["status"] = new_status
+                self.npc_state["duration"] = new_duration
+                if new_status == "NORMAL":
+                    self.ui.print_state_effect("NORMAL", 0, "状态恢复")
+                return "skip_generation"
+
+            if effect == "auto_success":
+                auto_success = True
+                self.ui.print_state_effect(current_status, duration, description)
+                new_status, new_duration = mechanics.update_npc_state(
+                    self.npc_state["status"], self.npc_state["duration"]
+                )
+                self.npc_state["status"] = new_status
+                self.npc_state["duration"] = new_duration
+                if new_status == "NORMAL":
+                    self.ui.print_state_effect("NORMAL", 0, "状态恢复")
+
+        # DM analysis
+        try:
+            with self.ui.create_spinner("[dm]🎲 DM is analyzing fate...[/dm]", spinner="dots"):
+                intent_data = analyze_intent(user_input)
+            action_type = intent_data["action_type"]
+            dc = intent_data["difficulty_class"]
+            self.ui.print_dm_analysis(action_type, dc)
+        except Exception as e:
+            self.ui.print_error(f"⚠️ [DM] 意图分析失败: {e}")
+            action_type = "NONE"
+            dc = 0
+
+        rule_dc = mechanics.calculate_passive_dc(action_type, self.attributes)
+        if rule_dc is not None:
+            dc = rule_dc
+            self.ui.print_system_info(f"🛡️ DC Auto-Calculated: {dc} (Based on Shadowheart's Stats)")
+
+        system_info = None
+        turn_count = len(self.conversation_history) // 2 + 1
+
+        if action_type != "NONE" and dc > 0:
+            if auto_success:
+                system_info = f"Action: {action_type} | Result: CRITICAL SUCCESS (Auto). She is vulnerable."
+                self.ui.print_auto_success(action_type)
+                self.journal.add_entry(
+                    f"Player rolled CRITICAL SUCCESS (Auto) on [{action_type}]!", turn_count
+                )
+                self.relationship_score += 1
+                self.relationship_score = max(-100, min(100, self.relationship_score))
+                self.ui.print_system_info("💕 Relationship +1 (Vulnerable State Bonus)")
+            elif self.player_data is None:
+                self.ui.print_error("⚠️ Player profile not loaded. Cannot perform auto-roll.")
+            else:
+                ability_name = mechanics.get_ability_for_action(action_type)
+                player_ability_scores = self.player_data.get("ability_scores", {})
+                if ability_name not in player_ability_scores:
+                    self.ui.print_error(f"⚠️ Player doesn't have {ability_name} ability score.")
+                else:
+                    ability_score = player_ability_scores[ability_name]
+                    modifier = mechanics.calculate_ability_modifier(ability_score)
+                    bonus, reason = mechanics.get_situational_bonus(
+                        self.conversation_history,
+                        action_type,
+                        self.situational_bonuses,
+                        self.flags,
+                        user_input,
+                    )
+                    if bonus != 0:
+                        modifier += bonus
+                        self.ui.print_situational_bonus(bonus, reason)
+                    roll_type = mechanics.determine_roll_type(action_type, self.relationship_score)
+                    self.ui.print_advantage_alert(action_type, roll_type)
+                    result = roll_d20(dc, modifier, roll_type=roll_type)
+                    self.ui.print_roll_result(result)
+
+                    if result["result_type"] == CheckResult.CRITICAL_SUCCESS:
+                        self.npc_state = {"status": "VULNERABLE", "duration": 3}
+                        self.ui.print_critical_state_change(
+                            CheckResult.CRITICAL_SUCCESS, "VULNERABLE", 3
+                        )
+                        self.journal.add_entry(
+                            f"Player rolled CRITICAL SUCCESS on [{action_type}]! (Rolled {result['total']} vs DC {dc})",
+                            turn_count,
+                        )
+                    elif result["result_type"] == CheckResult.CRITICAL_FAILURE:
+                        self.npc_state = {"status": "SILENT", "duration": 2}
+                        self.ui.print_critical_state_change(
+                            CheckResult.CRITICAL_FAILURE, "SILENT", 2
+                        )
+                        self.journal.add_entry(
+                            f"Player rolled CRITICAL FAILURE on [{action_type}]! (Rolled {result['total']} vs DC {dc})",
+                            turn_count,
+                        )
+                    system_info = f"Skill Check Result: {result['result_type'].value} (Rolled {result['total']} vs DC {dc})."
+
+        trigger_messages = mechanics.process_dialogue_triggers(
+            user_input,
+            self.dialogue_triggers,
+            self.flags,
+            ui=self.ui,
+            player_inv=self.player_inventory,
+            npc_inv=self.character.inventory,
+        )
+        for msg in trigger_messages:
+            self.ui.print_system_info(msg)
+            self.journal.add_entry(msg, turn_count)
+
+        system_prompt = self.character.render_prompt(
+            self.relationship_score, flags=self.flags, summary=self.summary
+        )
+        messages_to_send = self.conversation_history.copy()
+        if system_info is not None:
+            user_content_for_llm = f"[SYSTEM INFO: {system_info}]\n\n{user_input}"
+        else:
+            user_content_for_llm = user_input
+        messages_to_send.append({"role": "user", "content": user_content_for_llm})
+
+        with self.ui.create_spinner("[npc]Shadowheart is thinking...[/npc]", spinner="dots"):
+            response = generate_dialogue(system_prompt, conversation_history=messages_to_send)
+
+        approval_change, cleaned_response = parse_approval_change(response)
+        if approval_change != 0:
+            self.relationship_score += approval_change
+            self.relationship_score = max(-100, min(100, self.relationship_score))
+            self.ui.print_relationship_change(approval_change, self.relationship_score)
+
+        if cleaned_response:
+            cleaned_response = cleaned_response.strip('"').strip("'")
+            self.ui.print_npc_response("Shadowheart", cleaned_response)
+        else:
+            self.ui.print_npc_response("Shadowheart", "（没有回应）")
+
+        self.conversation_history.append({"role": "user", "content": user_input})
+        self.conversation_history.append({"role": "assistant", "content": cleaned_response})
+
+        if len(self.conversation_history) > settings.MAX_HISTORY:
+            messages_to_summarize = self.conversation_history[:4]
+            with self.ui.create_spinner("📝 Consolidating memories...", spinner="dots"):
+                self.summary = update_summary(self.summary, messages_to_summarize)
+            self.conversation_history = self.conversation_history[4:]
+            self.ui.print_system_info(
+                f"🧠 Memory Consolidated: {self.summary[:100]}..."
+                if len(self.summary) > 100
+                else f"🧠 Memory Consolidated: {self.summary}"
+            )
+
+        return None  # turn done
 
 
 def main():
@@ -339,363 +568,102 @@ def main():
         # 1. 【关键修改】启动时尝试加载旧记忆
         # 优先级：记忆文件 > YAML 配置 > 默认值 0
         # 从 YAML 配置中获取初始关系值作为默认值
-        default_relationship = attributes.get('relationship', 0)
+        default_relationship = attributes.get("relationship", 0)
         memory_data = load_memory(default_relationship_score=default_relationship, ui=ui)
-        relationship_score = memory_data["relationship_score"]
-        conversation_history = memory_data["history"]
-        npc_state = memory_data.get("npc_state", {"status": "NORMAL", "duration": 0})
-        flags = memory_data.get("flags", {})
-        summary = memory_data.get("summary", "")
-        journal = memory_data.get("journal", [])
-        
-        # Rehydrate inventories from saved state (if available)
-        saved_player_inv = memory_data.get("inventory_player", {})
-        saved_npc_inv = memory_data.get("inventory_npc", {})
-        if saved_player_inv:
-            player_inventory.from_dict(saved_player_inv)
-            ui.print_system_info(f"🎒 Player inventory restored: {player_inventory.count_unique_items()} item types")
-        if saved_npc_inv:
-            character.inventory.from_dict(saved_npc_inv)
-            ui.print_system_info(f"🎒 NPC inventory restored: {character.inventory.count_unique_items()} item types")
-        
-        # 2. 生成 System Prompt（使用 Character 对象的 render_prompt 方法）
-        system_prompt = character.render_prompt(relationship_score, flags=flags, summary=summary)
-        
-        # Display dashboard
-        player_name = player_data['name'] if player_data else "Unknown"
-        active_quests = quest.QuestManager.check_quests(quests_config, flags)
-        ui.print(ui.show_dashboard(player_name, attributes['name'], relationship_score, npc_state, active_quests, player_inventory, character.inventory, journal))
+
+        session = GameSession(
+            ui=ui,
+            player_data=player_data,
+            character=character,
+            attributes=attributes,
+            situational_bonuses=situational_bonuses,
+            dialogue_triggers=dialogue_triggers,
+            quests_config=quests_config,
+            player_inventory=player_inventory,
+        )
+        session.init_from_memory(memory_data)
+
+        if memory_data.get("inventory_player"):
+            ui.print_system_info(
+                f"🎒 Player inventory restored: {player_inventory.count_unique_items()} item types"
+            )
+        if memory_data.get("inventory_npc"):
+            ui.print_system_info(
+                f"🎒 NPC inventory restored: {character.inventory.count_unique_items()} item types"
+            )
+
+        system_prompt = character.render_prompt(
+            session.relationship_score, flags=session.flags, summary=session.summary
+        )
+        player_name = player_data["name"] if player_data else "Unknown"
+        active_quests = quest.QuestManager.check_quests(quests_config, session.flags)
+        ui.print(
+            ui.show_dashboard(
+                player_name,
+                attributes["name"],
+                session.relationship_score,
+                session.npc_state,
+                active_quests,
+                player_inventory,
+                character.inventory,
+                session.journal.get_recent_entries(3),
+            )
+        )
         ui.print()
-        
-        # 如果是新对话（没记忆），生成并打印开场白
-        if not conversation_history:
+
+        if not session.conversation_history:
             with ui.create_spinner("[npc]Shadowheart is thinking...[/npc]", spinner="dots"):
-                # 生成初始问候（使用空的对话历史）
-                dialogue = generate_dialogue(system_prompt, conversation_history=conversation_history)
-            
-            # 解析 approval change（初始问候通常不会有变化，但为了统一处理）
+                dialogue = generate_dialogue(
+                    system_prompt, conversation_history=session.conversation_history
+                )
             approval_change, cleaned_dialogue = parse_approval_change(dialogue)
-            
-            # 更新关系值
-            relationship_score += approval_change
-            
-            # 清理引号
+            session.relationship_score += approval_change
+            session.relationship_score = max(-100, min(100, session.relationship_score))
             if cleaned_dialogue:
                 cleaned_dialogue = cleaned_dialogue.strip('"').strip("'")
-            
-            # Display NPC dialogue in a panel
             ui.print_npc_response("Shadowheart", cleaned_dialogue, "Looking at you warily")
-            
-            # 把初始问候加入对话历史（存储清理后的文本）
-            conversation_history.append({"role": "assistant", "content": cleaned_dialogue})
+            session.conversation_history.append({"role": "assistant", "content": cleaned_dialogue})
         else:
-            # 如果有记忆，显示不同的开场白
-            ui.print_npc_response("Shadowheart", "*Nods slightly acknowledging your return*", "Remembers you")
-        
-        # Start interactive conversation
-        ui.print_rule("💬 开始与影心对话（输入 'quit' 或 'exit' 退出并存档）", style="info")
-        
-        while True:
-            try:
-                states_config = attributes.get('states', {})
+            ui.print_npc_response(
+                "Shadowheart", "*Nods slightly acknowledging your return*", "Remembers you"
+            )
 
-                # Check quests and update dashboard
-                active_quests = quest.QuestManager.check_quests(quests_config, flags)
-                ui.print(ui.show_dashboard(player_name, attributes['name'], relationship_score, npc_state, active_quests, player_inventory, character.inventory, journal))
+        ui.print_rule("💬 开始与影心对话（输入 'quit' 或 'exit' 退出并存档）", style="info")
+
+        while session.running:
+            try:
+                active_quests = quest.QuestManager.check_quests(quests_config, session.flags)
+                ui.print(
+                    ui.show_dashboard(
+                        player_name,
+                        attributes["name"],
+                        session.relationship_score,
+                        session.npc_state,
+                        active_quests,
+                        player_inventory,
+                        character.inventory,
+                        session.journal.get_recent_entries(3),
+                    )
+                )
                 ui.print()
-                
-                # ==========================================
-                # Step 1: Get User Input
-                # ==========================================
+
                 user_input = ui.input_prompt()
-                
-                if not user_input:
-                    continue
-                
-                # ==========================================
-                # Step 2: Command Interceptor
-                # ==========================================
-                if user_input.lower() in ['quit', 'exit', '退出', 'q']:
-                    # Exit command
-                    memory_data = {
-                        "relationship_score": relationship_score,
-                        "history": conversation_history,
-                        "npc_state": npc_state,
-                        "flags": flags,
-                        "summary": summary,
-                        "inventory_player": player_inventory.to_dict(),
-                        "inventory_npc": character.inventory.to_dict(),
-                        "journal": journal
-                    }
-                    save_memory(memory_data, ui=ui)
+                result = session.turn(user_input)
+
+                if result == "quit":
+                    save_memory(session.build_memory_data(), ui=ui)
                     ui.print("\n[info]再见！[/info]")
                     break
-                
-                if user_input.startswith('/'):
-                    # Handle commands (e.g., /roll)
-                    current_action = 'NONE'  # Commands don't use DM analysis
-                    roll_result = handle_command(user_input, attributes, ui, relationship_score, current_action)
-                    if roll_result is not None:
-                        # Store the roll result for injection into next dialogue
-                        ui.print_system_info("💡 Roll result stored. Type your dialogue to use it.")
-                    continue  # Skip the rest of the loop for commands
-                
-                # ==========================================
-                # Step 3: STATE CHECK (Before Normal Dialogue)
-                # ==========================================
-                auto_success = False
+                if result == "skip_generation":
+                    save_memory(session.build_memory_data(), ui=ui)
+                    continue
+                if result == "continue":
+                    continue
 
-                current_status = npc_state.get("status", "NORMAL")
-                state_config = states_config.get(current_status)
-                if state_config and npc_state.get("duration", 0) > 0:
-                    duration = npc_state["duration"]
-                    description = state_config.get("description", current_status)
-                    effect = state_config.get("effect")
-                    if effect == "skip_generation":
-                        ui.print_state_effect(current_status, duration, description)
-                        ui.print_npc_response("Shadowheart", state_config.get("message", ""))
+                save_memory(session.build_memory_data(), ui=ui)
 
-                        # Update state using mechanics
-                        new_status, new_duration = mechanics.update_npc_state(npc_state["status"], npc_state["duration"])
-                        npc_state["status"] = new_status
-                        npc_state["duration"] = new_duration
-
-                        if new_status == "NORMAL":
-                            ui.print_state_effect("NORMAL", 0, "状态恢复")
-
-                        # Save state and continue (skip LLM)
-                        memory_data = {
-                            "relationship_score": relationship_score,
-                            "history": conversation_history,
-                            "npc_state": npc_state,
-                            "flags": flags,
-                            "summary": summary,
-                            "inventory_player": player_inventory.to_dict(),
-                            "inventory_npc": character.inventory.to_dict(),
-                            "journal": journal
-                        }
-                        save_memory(memory_data, ui=ui)
-                        continue
-
-                    if effect == "auto_success":
-                        auto_success = True
-                        ui.print_state_effect(current_status, duration, description)
-
-                        # Update state using mechanics
-                        new_status, new_duration = mechanics.update_npc_state(npc_state["status"], npc_state["duration"])
-                        npc_state["status"] = new_status
-                        npc_state["duration"] = new_duration
-
-                        if new_status == "NORMAL":
-                            ui.print_state_effect("NORMAL", 0, "状态恢复")
-                
-                # ==========================================
-                # Step 4: NORMAL DIALOGUE FLOW
-                # ==========================================
-                
-                # Step A: DM Analysis
-                try:
-                    with ui.create_spinner("[dm]🎲 DM is analyzing fate...[/dm]", spinner="dots"):
-                        intent_data = analyze_intent(user_input)
-                    action_type = intent_data['action_type']
-                    dc = intent_data['difficulty_class']
-                    # 记录意图判定
-                    ui.print_dm_analysis(action_type, dc)
-                except Exception as e:
-                    # 如果 DM 分析失败，使用默认值并继续
-                    ui.print_error(f"⚠️ [DM] 意图分析失败: {e}")
-                    intent_data = {
-                        'action_type': 'NONE',
-                        'difficulty_class': 0,
-                        'reason': 'DM analysis failed'
-                    }
-                    action_type = 'NONE'
-                    dc = 0
-                
-                # Phase 1: Rules Overrule - Calculate DC from NPC stats
-                rule_dc = mechanics.calculate_passive_dc(action_type, attributes)
-                if rule_dc is not None:
-                    dc = rule_dc
-                    ui.print_system_info(f"🛡️ DC Auto-Calculated: {dc} (Based on Shadowheart's Stats)")
-                
-                # Step B: Auto-Roll Logic
-                system_info = None
-                if action_type != "NONE" and dc > 0:
-                    # Check if auto_success is active (VULNERABLE state)
-                    if auto_success:
-                        # Skip dice roll, force CRITICAL SUCCESS
-                        result_type = CheckResult.CRITICAL_SUCCESS
-                        system_info = f"Action: {action_type} | Result: CRITICAL SUCCESS (Auto). She is vulnerable."
-                        ui.print_auto_success(action_type)
-                        
-                        # Journal: record critical (auto) success
-                        turn_count = len(conversation_history) // 2 + 1
-                        add_journal_entry(journal, f"Player rolled CRITICAL SUCCESS (Auto) on [{action_type}]!", turn_count)
-                        
-                        # Grant +1 relationship bonus for auto-success
-                        relationship_score += 1
-                        relationship_score = max(-100, min(100, relationship_score))
-                        ui.print_system_info("💕 Relationship +1 (Vulnerable State Bonus)")
-                    else:
-                        # Normal roll logic
-                        # Check if player_data is available
-                        if player_data is None:
-                            ui.print_error("⚠️ Player profile not loaded. Cannot perform auto-roll.")
-                        else:
-                            # Get ability score for this action
-                            ability_name = mechanics.get_ability_for_action(action_type)
-                            player_ability_scores = player_data.get('ability_scores', {})
-                            
-                            if ability_name not in player_ability_scores:
-                                ui.print_error(f"⚠️ Player doesn't have {ability_name} ability score.")
-                            else:
-                                # Get modifier from player stats
-                                ability_score = player_ability_scores[ability_name]
-                                modifier = mechanics.calculate_ability_modifier(ability_score)
-                                
-                                # Calculate situational bonus (check current user input)
-                                bonus, reason = mechanics.get_situational_bonus(
-                                    conversation_history,
-                                    action_type,
-                                    situational_bonuses,
-                                    flags,
-                                    user_input
-                                )
-                                if bonus != 0:
-                                    modifier += bonus
-                                    ui.print_situational_bonus(bonus, reason)
-                                
-                                # Determine roll type (advantage/disadvantage)
-                                roll_type = mechanics.determine_roll_type(action_type, relationship_score)
-                                
-                                # Visual feedback for advantage/disadvantage
-                                ui.print_advantage_alert(action_type, roll_type)
-                                
-                                # Execute roll
-                                result = roll_d20(dc, modifier, roll_type=roll_type)
-                                
-                                # Print result
-                                ui.print_roll_result(result)
-                                
-                                # Trigger state changes based on critical rolls
-                                turn_count = len(conversation_history) // 2 + 1
-                                if result['result_type'] == CheckResult.CRITICAL_SUCCESS:
-                                    # Natural 20: Set VULNERABLE state
-                                    npc_state = {"status": "VULNERABLE", "duration": 3}
-                                    ui.print_critical_state_change(CheckResult.CRITICAL_SUCCESS, "VULNERABLE", 3)
-                                    add_journal_entry(journal, f"Player rolled CRITICAL SUCCESS on [{action_type}]! (Rolled {result['total']} vs DC {dc})", turn_count)
-                                elif result['result_type'] == CheckResult.CRITICAL_FAILURE:
-                                    # Natural 1: Set SILENT state
-                                    npc_state = {"status": "SILENT", "duration": 2}
-                                    ui.print_critical_state_change(CheckResult.CRITICAL_FAILURE, "SILENT", 2)
-                                    add_journal_entry(journal, f"Player rolled CRITICAL FAILURE on [{action_type}]! (Rolled {result['total']} vs DC {dc})", turn_count)
-                                
-                                # Create system info string for injection
-                                system_info = f"Skill Check Result: {result['result_type'].value} (Rolled {result['total']} vs DC {dc})."
-                
-                # Process dialogue triggers (generic trigger system)
-                trigger_messages = mechanics.process_dialogue_triggers(
-                    user_input, 
-                    dialogue_triggers, 
-                    flags, 
-                    ui=ui, 
-                    player_inv=player_inventory, 
-                    npc_inv=character.inventory
-                )
-                turn_count = len(conversation_history) // 2 + 1
-                for msg in trigger_messages:
-                    ui.print_system_info(msg)
-                    add_journal_entry(journal, msg, turn_count)
-
-                # Step C: Generation
-                # Update system prompt to reflect current relationship score, flags, and summary
-                system_prompt = character.render_prompt(relationship_score, flags=flags, summary=summary)
-                
-                # Create temporary messages list (for sending to LLM, with injected system info)
-                messages_to_send = conversation_history.copy()
-                
-                # Prepare user input (inject system info if exists)
-                if system_info is not None:
-                    user_content_for_llm = f"[SYSTEM INFO: {system_info}]\n\n{user_input}"
-                else:
-                    user_content_for_llm = user_input
-                
-                # Add user message to temporary list
-                messages_to_send.append({"role": "user", "content": user_content_for_llm})
-                
-                # Generate reply with spinner
-                with ui.create_spinner("[npc]Shadowheart is thinking...[/npc]", spinner="dots"):
-                    response = generate_dialogue(system_prompt, conversation_history=messages_to_send)
-                
-                # 6. 解析 approval change
-                approval_change, cleaned_response = parse_approval_change(response)
-                
-                # 7. 更新关系值
-                if approval_change != 0:
-                    old_score = relationship_score
-                    relationship_score += approval_change
-                    # 限制关系值在 -100 到 100 之间
-                    relationship_score = max(-100, min(100, relationship_score))
-                    
-                    # 打印系统调试信息
-                    ui.print_relationship_change(approval_change, relationship_score)
-                
-                # 8. 处理一下回复格式
-                if cleaned_response:
-                    cleaned_response = cleaned_response.strip('"').strip("'")
-                    # Display NPC dialogue in a panel
-                    ui.print_npc_response("Shadowheart", cleaned_response)
-                else:
-                    ui.print_npc_response("Shadowheart", "（没有回应）")
-                
-                # 9. 【Memory Hygiene】保存干净的对话历史（不包含系统注入标签）
-                # 只保存原始用户输入，不包含 [SYSTEM INFO: ...]
-                conversation_history.append({"role": "user", "content": user_input})
-                # 保存清理后的 AI 回复（不包含 approval tag）
-                conversation_history.append({"role": "assistant", "content": cleaned_response})
-                
-                # 10. 【Rolling Memory Summarization】防止 Token 爆炸
-                if len(conversation_history) > settings.MAX_HISTORY:
-                    # Take the oldest 4 messages to summarize
-                    messages_to_summarize = conversation_history[:4]
-                    
-                    # Generate or update summary
-                    with ui.create_spinner("📝 Consolidating memories...", spinner="dots"):
-                        new_summary_text = update_summary(summary, messages_to_summarize)
-                        summary = new_summary_text
-                    
-                    # Remove those 4 messages from conversation_history
-                    conversation_history = conversation_history[4:]
-                    
-                    # Log the consolidation
-                    ui.print_system_info(f"🧠 Memory Consolidated: {summary[:100]}..." if len(summary) > 100 else f"🧠 Memory Consolidated: {summary}")
-                
-                # Save npc_state to memory after each turn
-                memory_data = {
-                    "relationship_score": relationship_score,
-                    "history": conversation_history,
-                    "npc_state": npc_state,
-                    "flags": flags,
-                    "summary": summary,
-                    "inventory_player": player_inventory.to_dict(),
-                    "inventory_npc": character.inventory.to_dict(),
-                    "journal": journal
-                }
-                save_memory(memory_data, ui=ui)
-                    
             except KeyboardInterrupt:
-                # 强制中断也要存档
-                memory_data = {
-                    "relationship_score": relationship_score,
-                    "history": conversation_history,
-                    "npc_state": npc_state,
-                    "flags": flags,
-                    "summary": summary,
-                    "inventory_player": player_inventory.to_dict(),
-                    "inventory_npc": character.inventory.to_dict(),
-                    "journal": journal
-                }
-                save_memory(memory_data, ui=ui)
+                save_memory(session.build_memory_data(), ui=ui)
                 ui.print("\n\n[info]再见！[/info]")
                 break
             except Exception as e:

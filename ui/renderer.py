@@ -131,9 +131,9 @@ class GameRenderer:
             expand=True
         )
         
-        # Panel 3: Recent Events (Journal)
+        # Panel 3: Recent Journal Events (data from journal.get_recent_entries(3))
         if journal and len(journal) > 0:
-            recent = journal[-3:]  # Last 3 entries
+            recent = list(journal)
             recent.reverse()  # Newest first for display
             journal_text = "\n".join(f"• {e}" for e in recent)
         else:
@@ -141,7 +141,7 @@ class GameRenderer:
         
         journal_panel = Panel(
             journal_text,
-            title="📜 Recent Events (Journal)",
+            title="📜 Recent Journal Events",
             title_align="left",
             border_style="dim",
             expand=True
