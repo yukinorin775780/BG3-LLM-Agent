@@ -262,6 +262,25 @@ class Inventory:
         
         return ", ".join(formatted_items)
     
+    def list_item_names(self) -> List[str]:
+        """
+        Get a list of item display names (with quantity when > 1) for prompt/UI.
+        
+        Returns:
+            List[str]: e.g. ["Healing Potion x2", "Gold Coin x10"] or []
+        """
+        if not self.items:
+            return []
+        registry = get_registry()
+        result: List[str] = []
+        for item_id, qty in self.items.items():
+            name = registry.get_name(item_id)
+            if qty > 1:
+                result.append(f"{name} x{qty}")
+            else:
+                result.append(name)
+        return result
+    
     def list_items_detailed(self) -> List[Dict[str, Any]]:
         """
         Get detailed information for all items in the inventory.

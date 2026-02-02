@@ -1,5 +1,5 @@
 {
-  "relationship_score": 2,
+  "relationship_score": 4,
   "history": [
     {
       "role": "assistant",
@@ -20,6 +20,22 @@
     {
       "role": "assistant",
       "content": "……秘密？不，你只是瞥见了盒子的一道裂痕而已。  \n真正的秘密，是它为何选中你来注视——而我，为何无法将它彻底掩埋。  \nShar的低语从不轻易示人……但既然你已听见回响……  \n那就别妄想全身而退。"
+    },
+    {
+      "role": "user",
+      "content": "了什么？"
+    },
+    {
+      "role": "assistant",
+      "content": "……你听见了，对吗？那盒中渗出的、近乎叹息的寂静。  \n不是所有秘密都该被揭开——但有些，一旦被看见，便再也无法装作未见。  \n我本该烧掉它。可火焰……拒绝吞噬这黑暗的馈赠。  \n你呢？你打算如何承担这份“发现”？"
+    },
+    {
+      "role": "user",
+      "content": "你的背包里有什么？"
+    },
+    {
+      "role": "assistant",
+      "content": "我的背包？呵……装着 Shar 的遗物、一瓶尚温的治疗药水、几枚沾着旧血的金币，还有一颗红宝石——它本该嵌在某座神庙的祭坛上，如今却在我掌心发烫。  \n至于那盒子？它不在包里。它……在我肋骨之间跳动。  \n你问得太多，陌生人。而黑暗，从不为好奇者解囊。"
     }
   ],
   "npc_state": {
@@ -41,6 +57,6 @@
     "ruby_gem": 1
   },
   "journal": [
-    "[Turn 2] 🚩 [Story Event] You have revealed your knowledge of the artifact."
+    "[Turn 2] 🚩 [Story ] You have revealed your knowledge of the artifact."
   ]
 }

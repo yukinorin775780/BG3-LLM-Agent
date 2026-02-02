@@ -473,8 +473,14 @@ class GameSession:
             self.ui.print_system_info(msg)
             self.journal.add_entry(msg, turn_count)
 
+        journal_data = self.journal.get_recent_entries(5)
+        inventory_data = self.character.inventory.list_item_names()
         system_prompt = self.character.render_prompt(
-            self.relationship_score, flags=self.flags, summary=self.summary
+            self.relationship_score,
+            flags=self.flags,
+            summary=self.summary,
+            journal_entries=journal_data,
+            inventory_items=inventory_data,
         )
         messages_to_send = self.conversation_history.copy()
         if system_info is not None:
@@ -592,8 +598,14 @@ def main():
                 f"🎒 NPC inventory restored: {character.inventory.count_unique_items()} item types"
             )
 
+        journal_data = session.journal.get_recent_entries(5)
+        inventory_data = character.inventory.list_item_names()
         system_prompt = character.render_prompt(
-            session.relationship_score, flags=session.flags, summary=session.summary
+            session.relationship_score,
+            flags=session.flags,
+            summary=session.summary,
+            journal_entries=journal_data,
+            inventory_items=inventory_data,
         )
         player_name = player_data["name"] if player_data else "Unknown"
         active_quests = quest.QuestManager.check_quests(quests_config, session.flags)

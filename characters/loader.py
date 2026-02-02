@@ -199,14 +199,24 @@ class Character:
         self.quests = quests if quests is not None else []
         self.inventory = inventory.Inventory()
         
-    def render_prompt(self, relationship_score: int, flags: Optional[dict] = None, summary: str = "") -> str:
+    def render_prompt(
+        self,
+        relationship_score: int,
+        flags: Optional[dict] = None,
+        summary: str = "",
+        journal_entries: Optional[List[str]] = None,
+        inventory_items: Optional[List[str]] = None,
+    ) -> str:
         """
-        Render the system prompt for this character based on current relationship, flags, and summary.
+        Render the system prompt for this character based on current relationship, flags, summary,
+        journal entries, and inventory items.
         
         Args:
             relationship_score: Current relationship score with the player
             flags: Dictionary of persistent world-state flags (defaults to empty dict)
             summary: Story summary for context (defaults to empty string)
+            journal_entries: Recent journal entries for the AI to remember (defaults to [])
+            inventory_items: List of item names the character is holding (defaults to [])
         """
         # 我们需要在渲染时，把最新的 relationship_score 注入到 attributes 里
         # 但不要直接修改 self.data，以免污染原始数据，所以 copy 一份
@@ -216,12 +226,18 @@ class Character:
         # Ensure flags is a dict (default to empty)
         if flags is None:
             flags = {}
+        if journal_entries is None:
+            journal_entries = []
+        if inventory_items is None:
+            inventory_items = []
         
         return self.loader.render_prompt(
             name=self.name,
             attributes=current_attributes,
             flags=flags,
-            summary=summary
+            summary=summary,
+            journal_entries=journal_entries,
+            inventory_items=inventory_items,
         )
 
 # =========================================================================
