@@ -1,50 +1,48 @@
 {
-  "relationship_score": 4,
+  "relationship_score": -20,
   "history": [
     {
       "role": "assistant",
-      "content": "你站得太近了……黑暗从不欢迎鲁莽的窥探者。"
+      "content": "你站在阴影里，目光如寒霜般扫过我——但阴影从不向窥探者低头。 有什么事？"
     },
     {
       "role": "user",
-      "content": "roll cha 1"
+      "content": "我对你的女神莎尔毫无敬意，她就是个骗子。"
     },
     {
       "role": "assistant",
-      "content": "……呵，连掷骰子都如此无力？Shar的阴影之下，运气本就是最虚妄的幻影。  \n你最好把那枚骰子收好——它不该出现在这里。"
+      "content": "你的话像一把钝刀，既伤不了神祇，也割不开我的耐心——只暴露了你的无知。莎尔从不许诺光明，她只揭示真相。而你，连直视黑暗的勇气都没有。"
     },
     {
       "role": "user",
-      "content": "我发现了秘密"
+      "content": "你好"
     },
     {
       "role": "assistant",
-      "content": "……秘密？不，你只是瞥见了盒子的一道裂痕而已。  \n真正的秘密，是它为何选中你来注视——而我，为何无法将它彻底掩埋。  \nShar的低语从不轻易示人……但既然你已听见回响……  \n那就别妄想全身而退。"
+      "content": "……你好？莎尔的信徒不习惯这种轻飘飘的问候。你最好有更重要的事要说。"
     },
     {
       "role": "user",
-      "content": "了什么？"
+      "content": "我发现了你的米米"
     },
     {
       "role": "assistant",
-      "content": "……你听见了，对吗？那盒中渗出的、近乎叹息的寂静。  \n不是所有秘密都该被揭开——但有些，一旦被看见，便再也无法装作未见。  \n我本该烧掉它。可火焰……拒绝吞噬这黑暗的馈赠。  \n你呢？你打算如何承担这份“发现”？"
+      "content": "米米？我从未听过这等荒谬的称呼——收起你那轻浮的玩笑，否则别怪我不再容忍。"
     },
     {
       "role": "user",
-      "content": "你的背包里有什么？"
+      "content": "我发现了你的秘密"
     },
     {
       "role": "assistant",
-      "content": "我的背包？呵……装着 Shar 的遗物、一瓶尚温的治疗药水、几枚沾着旧血的金币，还有一颗红宝石——它本该嵌在某座神庙的祭坛上，如今却在我掌心发烫。  \n至于那盒子？它不在包里。它……在我肋骨之间跳动。  \n你问得太多，陌生人。而黑暗，从不为好奇者解囊。"
+      "content": "你什么都没发现。莎尔的阴影之下，真相从不轻易显露——而你，连门都没摸到。"
     }
   ],
   "npc_state": {
     "status": "NORMAL",
     "duration": 0
   },
-  "flags": {
-    "knows_secret": true
-  },
+  "flags": {},
   "summary": "",
   "inventory_player": {
     "healing_potion": 2,
@@ -52,11 +50,9 @@
   },
   "inventory_npc": {
     "mysterious_artifact": 1,
-    "healing_potion": 1,
-    "gold_coin": 1,
-    "ruby_gem": 1
+    "healing_potion": 1
   },
   "journal": [
-    "[Turn 2] 🚩 [Story ] You have revealed your knowledge of the artifact."
+    "[Turn 1] Shadowheart chose to enter state: SILENT (duration 3)."
   ]
 }

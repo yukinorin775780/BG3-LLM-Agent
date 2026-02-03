@@ -120,36 +120,46 @@ Please create a concise story summary in third-person perspective, capturing the
         return current_summary  # Return existing summary on error
 
 
-def parse_approval_change(response_text):
+def parse_ai_response(response_text: str) -> dict:
     """
-    Parse the approval change tag from LLM response.
+    Parse [APPROVAL: int] and [STATE: str] tags from LLM response.
     
-    Extracts [APPROVAL: +X], [APPROVAL: -X], or [APPROVAL: 0] from the beginning
-    of the response text and returns the score change and cleaned text.
+    Extracts both tags from the response (typically at the end), returns
+    approval delta, new state if any, and the dialogue text with all tags removed.
     
     Args:
-        response_text (str): Raw text from LLM (e.g., "[APPROVAL: +5] Hmph, not bad.")
+        response_text: Raw text from LLM (e.g., "I don't want to talk. [APPROVAL: -3] [STATE: SILENT]")
     
     Returns:
-        tuple: (score_change: int, cleaned_text: str)
-            - score_change: Integer representing the approval change (e.g., 5, -2, 0)
-            - cleaned_text: The dialogue with the approval tag removed
+        dict with keys:
+            - approval (int): Relationship change, clamped to -5..+5 (default 0)
+            - new_state (str or None): "SILENT", "VULNERABLE", "NORMAL", or None
+            - cleaned_text (str): Dialogue with all tags stripped
     """
     if not response_text:
-        return 0, ""
-    
-    # Pattern to match [APPROVAL: +X], [APPROVAL: -X], or [APPROVAL: 0]
-    pattern = r'^\[APPROVAL:\s*([+-]?\d+)\]\s*'
-    match = re.match(pattern, response_text)
-    
-    if match:
-        # Extract the number (could be "+5", "-3", "0", etc.)
-        score_str = match.group(1)
-        score_change = int(score_str)  # int() handles "+5", "-3", "0" correctly
-        
-        # Remove the approval tag from the text
-        cleaned_text = re.sub(pattern, '', response_text).strip()
-        return score_change, cleaned_text
-    else:
-        # No approval tag found, return 0 change and original text
-        return 0, response_text.strip()
+        return {"approval": 0, "new_state": None, "cleaned_text": ""}
+
+    text = response_text.strip()
+    approval = 0
+    new_state = None
+
+    # Extract [APPROVAL: +X] or [APPROVAL: -X] (anywhere in text; last occurrence wins)
+    approval_pattern = r'\[APPROVAL:\s*([+-]?\d+)\s*\]'
+    approval_matches = list(re.finditer(approval_pattern, text, re.IGNORECASE))
+    if approval_matches:
+        score_str = approval_matches[-1].group(1)
+        approval = int(score_str)
+        approval = max(-5, min(5, approval))  # Clamp to -5..+5
+
+    # Extract [STATE: SILENT], [STATE: VULNERABLE], or [STATE: NORMAL] (last occurrence wins)
+    state_pattern = r'\[STATE:\s*(SILENT|VULNERABLE|NORMAL)\s*\]'
+    state_matches = list(re.finditer(state_pattern, text, re.IGNORECASE))
+    if state_matches:
+        new_state = state_matches[-1].group(1).upper()
+
+    # Remove all approval and state tags to produce cleaned text
+    cleaned_text = re.sub(approval_pattern, '', text, flags=re.IGNORECASE)
+    cleaned_text = re.sub(state_pattern, '', cleaned_text, flags=re.IGNORECASE)
+    cleaned_text = re.sub(r'\s+', ' ', cleaned_text).strip().strip('"').strip("'")
+
+    return {"approval": approval, "new_state": new_state, "cleaned_text": cleaned_text}

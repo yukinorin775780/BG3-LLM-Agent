@@ -9,7 +9,7 @@ import json
 from typing import Optional
 from config import settings
 from characters.loader import load_character
-from core.engine import generate_dialogue, parse_approval_change, update_summary
+from core.engine import generate_dialogue, parse_ai_response, update_summary
 from core.dice import roll_d20, CheckResult
 from core.dm import analyze_intent
 from core import mechanics
@@ -492,14 +492,28 @@ class GameSession:
         with self.ui.create_spinner("[npc]Shadowheart is thinking...[/npc]", spinner="dots"):
             response = generate_dialogue(system_prompt, conversation_history=messages_to_send)
 
-        approval_change, cleaned_response = parse_approval_change(response)
+        parsed = parse_ai_response(response)
+        approval_change = parsed["approval"]
+        new_state = parsed["new_state"]
+        cleaned_response = parsed["cleaned_text"]
+
         if approval_change != 0:
             self.relationship_score += approval_change
             self.relationship_score = max(-100, min(100, self.relationship_score))
             self.ui.print_relationship_change(approval_change, self.relationship_score)
 
+        if new_state and new_state != self.npc_state["status"]:
+            self.npc_state["status"] = new_state
+            self.npc_state["duration"] = 3
+            self.ui.print_state_effect(
+                new_state, 3, f"Shadowheart decided to change state to {new_state}!"
+            )
+            self.journal.add_entry(
+                f"Shadowheart chose to enter state: {new_state} (duration 3).",
+                turn_count,
+            )
+
         if cleaned_response:
-            cleaned_response = cleaned_response.strip('"').strip("'")
             self.ui.print_npc_response("Shadowheart", cleaned_response)
         else:
             self.ui.print_npc_response("Shadowheart", "（没有回应）")
@@ -628,11 +642,21 @@ def main():
                 dialogue = generate_dialogue(
                     system_prompt, conversation_history=session.conversation_history
                 )
-            approval_change, cleaned_dialogue = parse_approval_change(dialogue)
-            session.relationship_score += approval_change
+            parsed = parse_ai_response(dialogue)
+            session.relationship_score += parsed["approval"]
             session.relationship_score = max(-100, min(100, session.relationship_score))
-            if cleaned_dialogue:
-                cleaned_dialogue = cleaned_dialogue.strip('"').strip("'")
+            if parsed["new_state"] and parsed["new_state"] != session.npc_state["status"]:
+                session.npc_state["status"] = parsed["new_state"]
+                session.npc_state["duration"] = 3
+                ui.print_state_effect(
+                    parsed["new_state"], 3,
+                    f"Shadowheart decided to change state to {parsed['new_state']}!",
+                )
+                session.journal.add_entry(
+                    f"Shadowheart chose to enter state: {parsed['new_state']} (duration 3).",
+                    1,
+                )
+            cleaned_dialogue = parsed["cleaned_text"]
             ui.print_npc_response("Shadowheart", cleaned_dialogue, "Looking at you warily")
             session.conversation_history.append({"role": "assistant", "content": cleaned_dialogue})
         else:
