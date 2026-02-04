@@ -481,6 +481,7 @@ class GameSession:
             summary=self.summary,
             journal_entries=journal_data,
             inventory_items=inventory_data,
+            has_healing_potion=self.character.inventory.has("healing_potion"),
         )
         messages_to_send = self.conversation_history.copy()
         if system_info is not None:
@@ -495,7 +496,7 @@ class GameSession:
         parsed = parse_ai_response(response)
         approval_change = parsed["approval"]
         new_state = parsed["new_state"]
-        cleaned_response = parsed["cleaned_text"]
+        cleaned_response = parsed["text"]
 
         if approval_change != 0:
             self.relationship_score += approval_change
@@ -512,6 +513,14 @@ class GameSession:
                 f"Shadowheart chose to enter state: {new_state} (duration 3).",
                 turn_count,
             )
+
+        if parsed.get("action") == "USE_POTION":
+            if self.character.inventory.has("healing_potion"):
+                self.character.inventory.remove("healing_potion")
+                self.ui.print_action_effect("Shadowheart drinks a potion.")
+                self.journal.add_entry("Shadowheart used a Healing Potion.", turn_count)
+            else:
+                self.ui.print_system_info("AI tried to use potion but has none.")
 
         if cleaned_response:
             self.ui.print_npc_response("Shadowheart", cleaned_response)
@@ -620,6 +629,7 @@ def main():
             summary=session.summary,
             journal_entries=journal_data,
             inventory_items=inventory_data,
+            has_healing_potion=character.inventory.has("healing_potion"),
         )
         player_name = player_data["name"] if player_data else "Unknown"
         active_quests = quest.QuestManager.check_quests(quests_config, session.flags)
@@ -656,7 +666,14 @@ def main():
                     f"Shadowheart chose to enter state: {parsed['new_state']} (duration 3).",
                     1,
                 )
-            cleaned_dialogue = parsed["cleaned_text"]
+            if parsed.get("action") == "USE_POTION":
+                if character.inventory.has("healing_potion"):
+                    character.inventory.remove("healing_potion")
+                    ui.print_action_effect("Shadowheart drinks a potion.")
+                    session.journal.add_entry("Shadowheart used a Healing Potion.", 1)
+                else:
+                    ui.print_system_info("AI tried to use potion but has none.")
+            cleaned_dialogue = parsed["text"]
             ui.print_npc_response("Shadowheart", cleaned_dialogue, "Looking at you warily")
             session.conversation_history.append({"role": "assistant", "content": cleaned_dialogue})
         else:

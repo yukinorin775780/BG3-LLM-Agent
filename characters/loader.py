@@ -206,6 +206,7 @@ class Character:
         summary: str = "",
         journal_entries: Optional[List[str]] = None,
         inventory_items: Optional[List[str]] = None,
+        has_healing_potion: bool = False,
     ) -> str:
         """
         Render the system prompt for this character based on current relationship, flags, summary,
@@ -217,6 +218,7 @@ class Character:
             summary: Story summary for context (defaults to empty string)
             journal_entries: Recent journal entries for the AI to remember (defaults to [])
             inventory_items: List of item names the character is holding (defaults to [])
+            has_healing_potion: Whether the character has at least one healing_potion (for reality constraints)
         """
         # 我们需要在渲染时，把最新的 relationship_score 注入到 attributes 里
         # 但不要直接修改 self.data，以免污染原始数据，所以 copy 一份
@@ -238,6 +240,7 @@ class Character:
             summary=summary,
             journal_entries=journal_entries,
             inventory_items=inventory_items,
+            has_healing_potion=has_healing_potion,
         )
 
 # =========================================================================

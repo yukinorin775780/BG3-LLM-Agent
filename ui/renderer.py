@@ -296,6 +296,10 @@ class GameRenderer:
         self.console.print(f"[success]🎯 Auto-Success: [item]{action_type}[/item] -> [critical]CRITICAL SUCCESS[/critical][/success]")
         self.console.print()
     
+    def print_action_effect(self, message: str):
+        """Display NPC action effect (e.g. using an item)."""
+        self.console.print(f"[info]🧪 {message}[/info]")
+
     def print_critical_state_change(self, result_type: CheckResult, new_status: str, duration: int):
         """
         Display critical roll state change message.

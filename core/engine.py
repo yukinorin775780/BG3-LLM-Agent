@@ -122,26 +122,28 @@ Please create a concise story summary in third-person perspective, capturing the
 
 def parse_ai_response(response_text: str) -> dict:
     """
-    Parse [APPROVAL: int] and [STATE: str] tags from LLM response.
+    Parse [APPROVAL: int], [STATE: str], and [ACTION: str] tags from LLM response.
     
-    Extracts both tags from the response (typically at the end), returns
-    approval delta, new state if any, and the dialogue text with all tags removed.
+    Extracts all tags from the response (typically at the end), returns
+    approval delta, new state if any, action if any, and the dialogue text with all tags removed.
     
     Args:
-        response_text: Raw text from LLM (e.g., "I don't want to talk. [APPROVAL: -3] [STATE: SILENT]")
+        response_text: Raw text from LLM (e.g., "I need to patch this wound... [ACTION: USE_POTION]")
     
     Returns:
         dict with keys:
             - approval (int): Relationship change, clamped to -5..+5 (default 0)
             - new_state (str or None): "SILENT", "VULNERABLE", "NORMAL", or None
-            - cleaned_text (str): Dialogue with all tags stripped
+            - action (str or None): e.g. "USE_POTION"
+            - text (str): Dialogue with all tags stripped
     """
     if not response_text:
-        return {"approval": 0, "new_state": None, "cleaned_text": ""}
+        return {"approval": 0, "new_state": None, "action": None, "text": ""}
 
     text = response_text.strip()
     approval = 0
     new_state = None
+    action = None
 
     # Extract [APPROVAL: +X] or [APPROVAL: -X] (anywhere in text; last occurrence wins)
     approval_pattern = r'\[APPROVAL:\s*([+-]?\d+)\s*\]'
@@ -157,9 +159,16 @@ def parse_ai_response(response_text: str) -> dict:
     if state_matches:
         new_state = state_matches[-1].group(1).upper()
 
-    # Remove all approval and state tags to produce cleaned text
+    # Extract [ACTION: (\w+)] (e.g. USE_POTION)
+    action_pattern = r'\[ACTION:\s*([\w_]+)\s*\]'
+    action_matches = list(re.finditer(action_pattern, text, re.IGNORECASE))
+    if action_matches:
+        action = action_matches[-1].group(1).upper()
+
+    # Remove all tags to produce cleaned text
     cleaned_text = re.sub(approval_pattern, '', text, flags=re.IGNORECASE)
     cleaned_text = re.sub(state_pattern, '', cleaned_text, flags=re.IGNORECASE)
+    cleaned_text = re.sub(action_pattern, '', cleaned_text, flags=re.IGNORECASE)
     cleaned_text = re.sub(r'\s+', ' ', cleaned_text).strip().strip('"').strip("'")
 
-    return {"approval": approval, "new_state": new_state, "cleaned_text": cleaned_text}
+    return {"approval": approval, "new_state": new_state, "action": action, "text": cleaned_text}
