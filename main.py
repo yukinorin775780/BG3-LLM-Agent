@@ -25,33 +25,54 @@ MEMORY_FILE = os.path.join(settings.SAVE_DIR, "shadowheart_memory.json")
 CHARACTER_NAME = "shadowheart"
 
 
-def handle_command(user_input: str, attributes: dict, ui: GameRenderer, relationship_score: int = 0, action_type: str = 'NONE') -> Optional[str]:
+def handle_command(
+    user_input: str,
+    attributes: dict,
+    ui: GameRenderer,
+    relationship_score: int = 0,
+    action_type: str = 'NONE',
+    player_inventory: Optional[inventory.Inventory] = None,
+    npc_inventory: Optional[inventory.Inventory] = None,
+    journal: Optional[Journal] = None,
+    turn_count: int = 0,
+) -> Optional[str]:
     """
     Handle user commands (commands starting with '/').
     
     Supported commands:
     - /roll <ability> <dc>: Roll a D20 check with the specified ability modifier
-    
-    Args:
-        user_input: The user's input string
-        attributes: Character attributes dictionary containing ability_scores
-        ui: GameRenderer instance for UI output
-        relationship_score: Current relationship score (for determining advantage/disadvantage)
-        action_type: Current action type from DM analysis (for determining advantage/disadvantage)
+    - /give <item_key>: Give an item from the player's inventory to the NPC
     
     Returns:
-        Optional[str]: Roll result narrative string if a roll occurred, None otherwise
+        Optional[str]: Roll result string, [SYSTEM] message for /give success,
+            error string for /give failure, or None (command printed its own message)
     """
     if not user_input.startswith('/'):
         return None
     
     parts = user_input.split()
     if len(parts) < 2:
-        ui.print_error("❌ 命令格式错误。用法: /roll <ability> <dc>")
-        ui.print_system_info("   例如: /roll wis 12 或 /roll cha 15")
+        ui.print_error("❌ 命令格式错误。用法: /roll <ability> <dc> 或 /give <item_key>")
+        ui.print_system_info("   例如: /roll wis 12 或 /give healing_potion")
         return None
     
     command = parts[0].lower()
+    
+    if command == '/give':
+        item_key = parts[1].strip()
+        if not item_key:
+            ui.print_error("❌ /give 需要物品名称。用法: /give <item_key>")
+            return None
+        if player_inventory is None or npc_inventory is None:
+            ui.print_error("❌ 无法执行 /give：背包未就绪。")
+            return None
+        if not player_inventory.has(item_key):
+            return "You don't have that item."
+        player_inventory.remove(item_key)
+        npc_inventory.add(item_key)
+        if journal is not None:
+            journal.add_entry(f"Player gave '{item_key}' to Shadowheart.", turn_count)
+        return f"[SYSTEM] Player gave you: {item_key}. It is now in your [CURRENT INVENTORY]."
     
     if command == '/roll':
         if len(parts) < 3:
@@ -100,7 +121,7 @@ def handle_command(user_input: str, attributes: dict, ui: GameRenderer, relation
     
     else:
         ui.print_error(f"❌ 未知命令: {command}")
-        ui.print_system_info("   支持的命令: /roll")
+        ui.print_system_info("   支持的命令: /roll, /give <item_key>")
         return None
 
 
@@ -347,11 +368,72 @@ class GameSession:
             return "quit"
 
         if user_input.startswith("/"):
-            roll_result = handle_command(
-                user_input, self.attributes, self.ui, self.relationship_score, "NONE"
+            turn_count = len(self.conversation_history) // 2 + 1
+            cmd_result = handle_command(
+                user_input,
+                self.attributes,
+                self.ui,
+                self.relationship_score,
+                "NONE",
+                player_inventory=self.player_inventory,
+                npc_inventory=self.character.inventory,
+                journal=self.journal,
+                turn_count=turn_count,
             )
-            if roll_result is not None:
-                self.ui.print_system_info("💡 Roll result stored. Type your dialogue to use it.")
+            if cmd_result is None:
+                return "continue"
+            if cmd_result.startswith("[SYSTEM]"):
+                # Inject gift message and generate NPC reaction immediately
+                journal_data = self.journal.get_recent_entries(5)
+                inventory_data = self.character.inventory.list_item_names()
+                system_prompt = self.character.render_prompt(
+                    self.relationship_score,
+                    flags=self.flags,
+                    summary=self.summary,
+                    journal_entries=journal_data,
+                    inventory_items=inventory_data,
+                    has_healing_potion=self.character.inventory.has("healing_potion"),
+                )
+                messages_to_send = self.conversation_history.copy()
+                messages_to_send.append({"role": "user", "content": cmd_result})
+                with self.ui.create_spinner("[npc]Shadowheart is thinking...[/npc]", spinner="dots"):
+                    response = generate_dialogue(system_prompt, conversation_history=messages_to_send)
+                parsed = parse_ai_response(response)
+                if parsed["approval"] != 0:
+                    self.relationship_score += parsed["approval"]
+                    self.relationship_score = max(-100, min(100, self.relationship_score))
+                    self.ui.print_relationship_change(parsed["approval"], self.relationship_score)
+                if parsed["new_state"] and parsed["new_state"] != self.npc_state["status"]:
+                    self.npc_state["status"] = parsed["new_state"]
+                    self.npc_state["duration"] = 3
+                    self.ui.print_state_effect(
+                        parsed["new_state"], 3,
+                        f"Shadowheart decided to change state to {parsed['new_state']}!",
+                    )
+                    self.journal.add_entry(
+                        f"Shadowheart chose to enter state: {parsed['new_state']} (duration 3).",
+                        turn_count,
+                    )
+                if parsed.get("action") == "USE_POTION":
+                    if self.character.inventory.has("healing_potion"):
+                        self.character.inventory.remove("healing_potion")
+                        self.ui.print_action_effect("Shadowheart drinks a potion.")
+                        self.journal.add_entry("Shadowheart used a Healing Potion.", turn_count)
+                    else:
+                        self.ui.print_system_info("AI tried to use potion but has none.")
+                cleaned_response = parsed["text"]
+                if cleaned_response:
+                    self.ui.print_npc_response("Shadowheart", cleaned_response)
+                else:
+                    self.ui.print_npc_response("Shadowheart", "（没有回应）")
+                self.conversation_history.append({"role": "user", "content": user_input})
+                self.conversation_history.append({"role": "assistant", "content": cleaned_response})
+                return None  # turn done
+            if cmd_result == "You don't have that item.":
+                self.ui.print_error(f"❌ {cmd_result}")
+                return "continue"
+            # e.g. /roll result
+            self.ui.print_system_info("💡 Roll result stored. Type your dialogue to use it.")
             return "continue"
 
         states_config = self.attributes.get("states", {})
