@@ -122,32 +122,42 @@ Please create a concise story summary in third-person perspective, capturing the
 
 def parse_ai_response(response_text: str) -> dict:
     """
-    Parse [APPROVAL: int], [STATE: str], and [ACTION: str] tags from LLM response.
+    Parse [THOUGHT], [APPROVAL], [STATE], and [ACTION] tags from LLM response.
     
-    Extracts all tags from the response (typically at the end), returns
-    approval delta, new state if any, action if any, and the dialogue text with all tags removed.
+    Extracts thought block, approval delta, new state if any, action if any,
+    and the dialogue text with all tags and thought content removed.
     
     Args:
-        response_text: Raw text from LLM (e.g., "I need to patch this wound... [ACTION: USE_POTION]")
+        response_text: Raw text from LLM
     
     Returns:
         dict with keys:
+            - thought (str or None): Content between [THOUGHT] and [/THOUGHT]
             - approval (int): Relationship change, clamped to -5..+5 (default 0)
             - new_state (str or None): "SILENT", "VULNERABLE", "NORMAL", or None
             - action (str or None): e.g. "USE_POTION"
-            - text (str): Dialogue with all tags stripped
+            - text (str): Spoken dialogue with all tags and thought block stripped
     """
     if not response_text:
-        return {"approval": 0, "new_state": None, "action": None, "text": ""}
+        return {"thought": None, "approval": 0, "new_state": None, "action": None, "text": ""}
 
     text = response_text.strip()
     approval = 0
     new_state = None
     action = None
+    thought = None
+
+    # Extract [THOUGHT] ... [/THOUGHT] (first occurrence; . matches newlines)
+    thought_pattern = r'\[THOUGHT\](.*?)\[/THOUGHT\]'
+    thought_match = re.search(thought_pattern, text, re.IGNORECASE | re.DOTALL)
+    if thought_match:
+        thought = thought_match.group(1).strip()
+    # Remove thought block from text so it does not appear in spoken dialogue
+    cleaned_text = re.sub(thought_pattern, '', text, flags=re.IGNORECASE | re.DOTALL)
 
     # Extract [APPROVAL: +X] or [APPROVAL: -X] (anywhere in text; last occurrence wins)
     approval_pattern = r'\[APPROVAL:\s*([+-]?\d+)\s*\]'
-    approval_matches = list(re.finditer(approval_pattern, text, re.IGNORECASE))
+    approval_matches = list(re.finditer(approval_pattern, cleaned_text, re.IGNORECASE))
     if approval_matches:
         score_str = approval_matches[-1].group(1)
         approval = int(score_str)
@@ -155,20 +165,20 @@ def parse_ai_response(response_text: str) -> dict:
 
     # Extract [STATE: SILENT], [STATE: VULNERABLE], or [STATE: NORMAL] (last occurrence wins)
     state_pattern = r'\[STATE:\s*(SILENT|VULNERABLE|NORMAL)\s*\]'
-    state_matches = list(re.finditer(state_pattern, text, re.IGNORECASE))
+    state_matches = list(re.finditer(state_pattern, cleaned_text, re.IGNORECASE))
     if state_matches:
         new_state = state_matches[-1].group(1).upper()
 
     # Extract [ACTION: (\w+)] (e.g. USE_POTION)
     action_pattern = r'\[ACTION:\s*([\w_]+)\s*\]'
-    action_matches = list(re.finditer(action_pattern, text, re.IGNORECASE))
+    action_matches = list(re.finditer(action_pattern, cleaned_text, re.IGNORECASE))
     if action_matches:
         action = action_matches[-1].group(1).upper()
 
-    # Remove all tags to produce cleaned text
-    cleaned_text = re.sub(approval_pattern, '', text, flags=re.IGNORECASE)
+    # Remove all remaining tags to produce final spoken text
+    cleaned_text = re.sub(approval_pattern, '', cleaned_text, flags=re.IGNORECASE)
     cleaned_text = re.sub(state_pattern, '', cleaned_text, flags=re.IGNORECASE)
     cleaned_text = re.sub(action_pattern, '', cleaned_text, flags=re.IGNORECASE)
     cleaned_text = re.sub(r'\s+', ' ', cleaned_text).strip().strip('"').strip("'")
 
-    return {"approval": approval, "new_state": new_state, "action": action, "text": cleaned_text}
+    return {"thought": thought, "approval": approval, "new_state": new_state, "action": action, "text": cleaned_text}

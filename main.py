@@ -422,6 +422,8 @@ class GameSession:
                     else:
                         self.ui.print_system_info("AI tried to use potion but has none.")
                 cleaned_response = parsed["text"]
+                if parsed.get("thought"):
+                    self.ui.print_inner_thought(parsed["thought"])
                 if cleaned_response:
                     self.ui.print_npc_response("Shadowheart", cleaned_response)
                 else:
@@ -604,6 +606,8 @@ class GameSession:
             else:
                 self.ui.print_system_info("AI tried to use potion but has none.")
 
+        if parsed.get("thought"):
+            self.ui.print_inner_thought(parsed["thought"])
         if cleaned_response:
             self.ui.print_npc_response("Shadowheart", cleaned_response)
         else:
@@ -756,6 +760,8 @@ def main():
                 else:
                     ui.print_system_info("AI tried to use potion but has none.")
             cleaned_dialogue = parsed["text"]
+            if parsed.get("thought"):
+                ui.print_inner_thought(parsed["thought"])
             ui.print_npc_response("Shadowheart", cleaned_dialogue, "Looking at you warily")
             session.conversation_history.append({"role": "assistant", "content": cleaned_dialogue})
         else:

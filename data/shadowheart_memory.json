@@ -1,0 +1,34 @@
+{
+  "relationship_score": 1,
+  "history": [
+    {
+      "role": "assistant",
+      "content": "……你站在那里，一言不发。 阴影在你脚边悄然聚拢，又散开——像呼吸，像试探。 我不会主动开口。 除非……你有理由让我这么做。 Shar's will be done."
+    },
+    {
+      "role": "user",
+      "content": "你受伤了，赶紧使用药水！"
+    },
+    {
+      "role": "assistant",
+      "content": "你倒比我更在意这具躯壳的完好。不过——不必操心。我自有分寸。"
+    }
+  ],
+  "npc_state": {
+    "status": "SILENT",
+    "duration": 3
+  },
+  "flags": {},
+  "summary": "",
+  "inventory_player": {
+    "healing_potion": 2,
+    "gold_coin": 10
+  },
+  "inventory_npc": {
+    "mysterious_artifact": 1,
+    "healing_potion": 1
+  },
+  "journal": [
+    "[Turn 1] Shadowheart chose to enter state: SILENT (duration 3)."
+  ]
+}

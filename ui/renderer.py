@@ -174,6 +174,11 @@ class GameRenderer:
         """
         return self.console.status(text, spinner=spinner)
     
+    def print_inner_thought(self, thought: str):
+        """Display character's inner monologue in dim/italic style."""
+        self.console.print(f"[dim italic]💭 *Inner Thought:* {thought}[/dim italic]")
+        self.console.print()
+
     def print_npc_response(self, name: str, text: str, subtitle: str = ""):
         """
         Display NPC dialogue in a styled panel.
