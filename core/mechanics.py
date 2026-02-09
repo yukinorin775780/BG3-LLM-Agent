@@ -4,6 +4,8 @@ Pure logic and calculation functions - no UI dependencies
 """
 
 import ast
+import random
+import re
 from typing import Optional
 
 
@@ -384,3 +386,87 @@ def update_npc_state(current_status: str, duration: int) -> tuple[str, int]:
         return ("NORMAL", 0)
     
     return (current_status, new_duration)
+
+
+# =========================================
+# Item Effect Logic (Data-Driven)
+# =========================================
+
+def parse_dice_string(dice_str: str) -> int:
+    """
+    Parse generic dice strings like '2d4+2', '1d8', or fixed numbers '5'.
+    Returns the calculated result.
+    """
+    # 1. Fixed number
+    if str(dice_str).isdigit():
+        return int(dice_str)
+
+    # 2. Dice formula: XdY(+/-)Z
+    match = re.match(r'(\d+)d(\d+)(?:([+-])(\d+))?', dice_str)
+    if not match:
+        return 0
+
+    num_dice = int(match.group(1))
+    sides = int(match.group(2))
+    operator = match.group(3)
+    modifier = int(match.group(4)) if match.group(4) else 0
+
+    total = sum(random.randint(1, sides) for _ in range(num_dice))
+
+    if operator == '-':
+        total -= modifier
+    else:
+        total += modifier
+
+    return total
+
+
+def apply_item_effect(item_id: str, item_data: dict) -> dict:
+    """
+    Executes the effect defined in the item's YAML configuration.
+
+    Args:
+        item_id: The ID of the item (e.g., 'healing_potion')
+        item_data: The dictionary from items.yaml (contains 'effect', 'name', etc.)
+
+    Returns:
+        dict: Result of the application
+        {
+            "success": bool,
+            "message": str, # Description for UI/Log
+            "value": int,   # Numeric value (if applicable, like HP healed)
+            "type": str     # Effect type (e.g., 'heal', 'buff')
+        }
+    """
+    effect_str = item_data.get("effect")
+    item_name = item_data.get("name", item_id)
+
+    if not effect_str:
+        return {
+            "success": False,
+            "message": f"{item_name} has no usage effect.",
+            "value": 0,
+            "type": "none"
+        }
+
+    # Effect Type 1: Healing (Format: "heal:2d4+2")
+    if effect_str.startswith("heal:"):
+        dice_formula = effect_str.split(":")[1]
+        heal_amount = parse_dice_string(dice_formula)
+
+        return {
+            "success": True,
+            "message": f"restores {heal_amount} HP.",
+            "value": heal_amount,
+            "type": "heal"
+        }
+
+    # Future Effect Types can be added here (e.g., "buff:strength", "damage:fire")
+
+    # Default fallback
+    return {
+        "success": True,
+        "message": "used successfully.",
+        "value": 0,
+        "type": "generic"
+    }
