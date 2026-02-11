@@ -1,8 +1,8 @@
-# main_graph.py (Update for Day 2)
+# main_graph.py (Update for Day 3)
 from langgraph.graph import StateGraph, START, END
 from core.graph_state import GameState
-from core.graph_nodes import input_node, dm_node
-from core import inventory
+from core.graph_nodes import input_node, dm_node, mechanics_node, generation_node
+from langchain_core.messages import HumanMessage
 
 
 def build_graph():
@@ -11,50 +11,47 @@ def build_graph():
     # 1. Add Nodes
     builder.add_node("input_processing", input_node)
     builder.add_node("dm_analysis", dm_node)
+    builder.add_node("mechanics_processing", mechanics_node)
+    builder.add_node("generation", generation_node)
 
-    # 2. Add Edges (Linear for now)
-    # Input -> DM -> END
+    # 2. Add Edges (Full Linear Pipeline)
     builder.add_edge(START, "input_processing")
     builder.add_edge("input_processing", "dm_analysis")
-    builder.add_edge("dm_analysis", END)
+    builder.add_edge("dm_analysis", "mechanics_processing")
+    builder.add_edge("mechanics_processing", "generation")
+    builder.add_edge("generation", END)
 
     return builder.compile()
 
 
 if __name__ == "__main__":
-    print("🤖 Initializing LangGraph (Day 2)...")
-    inventory.init_registry("config/items.yaml")  # So /use healing_potion has effect data
+    print("🤖 Initializing LangGraph (Day 3 - Full Pipeline)...")
     graph = build_graph()
 
-    # Test Case 1: Normal Chat
-    print("\n--- TEST 1: Chat ---")
-    state1 = {
-        "user_input": "I pull out my sword and attack!",
-        "messages": [],
-        "relationship": 0,
-        "player_inventory": {},
-        "npc_inventory": {},
-        "flags": {},
-        "npc_state": {},
-        "journal_events": [],
-    }
-    res1 = graph.invoke(GameState(**state1))
-    print(f"📥 Input: {state1['user_input']}")
-    print(f"🔍 Intent Detected: {res1.get('intent')}")
+    # Test Case: A Complex Interaction
+    print("\n--- TEST: Combat Interaction ---")
 
-    # Test Case 2: Command
-    print("\n--- TEST 2: Command ---")
-    state2 = {
-        "user_input": "/use healing_potion",
-        "messages": [],
-        "relationship": 0,
-        "player_inventory": {"healing_potion": 1},  # Player has potion
-        "npc_inventory": {},
+    # Simulate a history
+    history = [HumanMessage(content="Who are you?")]
+
+    initial_state: GameState = {
+        "user_input": "I attempt to steal your artifact!",  # This should trigger Mechanics
+        "messages": history,
+        "relationship": 10,
+        "player_inventory": {},
+        "npc_inventory": {"mysterious_artifact": 1},
         "flags": {},
-        "npc_state": {},
+        "npc_state": {"status": "NORMAL"},
         "journal_events": [],
     }
-    res2 = graph.invoke(GameState(**state2))
-    print(f"📥 Input: {state2['user_input']}")
-    print(f"📦 Inventory Left: {res2['player_inventory']}")  # Should be empty
-    print(f"🔍 Intent: {res2.get('intent')}")
+
+    print(f"📥 User: {initial_state['user_input']}")
+
+    result = graph.invoke(initial_state)
+
+    print("-" * 50)
+    print(f"🔍 Intent: {result.get('intent')}")
+    print(f"🎲 Events: {result.get('journal_events')}")
+    print(f"💭 Thought: {result.get('thought_process')}")
+    print(f"🗣️ Shadowheart: {result.get('final_response')}")
+    print("-" * 50)
