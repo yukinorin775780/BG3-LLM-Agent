@@ -21,6 +21,8 @@ from ui.renderer import GameRenderer
 # New Core Modules
 from core.memory import MemoryManager
 from core.input_handler import InputHandler
+from core.graph_builder import build_graph
+from core.graph_state import GameState
 
 # Character Config
 CHARACTER_NAME = "shadowheart"
@@ -59,6 +61,7 @@ class GameSession:
     ):
         self.ui = ui
         self.input_handler = input_handler
+        self.graph = build_graph()
         self.player_data = player_data
         self.character = character
         self.attributes = attributes
@@ -109,140 +112,66 @@ class GameSession:
     def turn(self, user_input: str) -> Optional[str]:
         """
         Process one user input. Returns "quit", "continue", or None (turn done).
+        Uses LangGraph pipeline: Input -> DM -> Mechanics -> Generation.
         """
         if not user_input:
             return "continue"
-
         if user_input.lower() in ["quit", "exit", "退出", "q"]:
             self.running = False
             return "quit"
 
-        # --- 1. COMMAND PHASE (/give, /use, /roll) ---
-        if user_input.startswith("/"):
-            turn_count = len(self.conversation_history) // 2 + 1
+        # 1. Build State Dict (Map GameSession attributes to GameState keys)
+        state_payload: GameState = {
+            "messages": self.conversation_history,
+            "user_input": user_input,
+            "character_name": self.attributes["name"],
+            "relationship": self.relationship_score,
+            "npc_state": self.npc_state,
+            "player_inventory": self.player_inventory.to_dict(),
+            "npc_inventory": self.character.inventory.to_dict(),
+            "flags": self.flags,
+            "journal_events": [],  # Reset per turn
+        }
 
-            # Build Context for Handler
-            context = {
-                "attributes": self.attributes,
-                "player_data": self.player_data,
-                "player_inventory": self.player_inventory,
-                "npc_inventory": self.character.inventory,
-                "journal": self.journal,
-                "turn_count": turn_count,
-                "relationship_score": self.relationship_score,
-                "action_type": "NONE",  # Default for manual rolls
-            }
-
-            # Delegate to InputHandler
-            cmd_result = self.input_handler.handle(user_input, context)
-
-            # Case A: Not a command (shouldn't happen due to check) or Error
-            if cmd_result is None or cmd_result.startswith("Command error") or cmd_result.startswith("You don't have"):
-                # Errors are already printed by InputHandler
-                return "continue"
-
-            # Case B: System Injection (e.g., Gift given, Item used)
-            if cmd_result.startswith("[SYSTEM]"):
-                # Inject prompt and generate NPC reaction immediately
-                return self._generate_reaction(user_input=cmd_result, is_system=True)
-
-            # Case C: Info Message (e.g., Roll result)
-            self.ui.print_system_info(f"💡 {cmd_result}")
-            self.ui.print_system_info("   (Type your dialogue to continue...)")
+        # 2. Invoke Graph
+        try:
+            with self.ui.create_spinner("[brain]Shadowheart is thinking (Graph V3)...[/brain]", spinner="dots"):
+                result = self.graph.invoke(state_payload)
+        except Exception as e:
+            self.ui.print_error(f"Graph Error: {e}")
             return "continue"
 
-        # --- 2. STATE PHASE (Status Effects) ---
-        states_config = self.attributes.get("states", {})
-        current_status = self.npc_state.get("status", "NORMAL")
-        state_config = states_config.get(current_status)
-        auto_success = False
+        # 3. Process Results (Update UI & Internal State from Graph Output)
 
-        if state_config and self.npc_state.get("duration", 0) > 0:
-            duration = self.npc_state["duration"]
-            description = state_config.get("description", current_status)
-            effect = state_config.get("effect")
+        # A. Logs (Mechanics Dice Rolls)
+        for event in result.get("journal_events", []):
+            self.ui.print_system_info(f"🎲 {event}")
+            self.journal.add_entry(event, len(self.conversation_history) // 2)
 
-            if effect == "skip_generation":
-                self.ui.print_state_effect(current_status, duration, description)
-                self.ui.print_npc_response("Shadowheart", state_config.get("message", ""))
-                self._tick_state()
-                return "skip_generation"
+        # B. Thoughts & Speech
+        if result.get("thought_process"):
+            self.ui.print_inner_thought(result["thought_process"])
 
-            if effect == "auto_success":
-                auto_success = True
-                self.ui.print_state_effect(current_status, duration, description)
-                self._tick_state()
+        if result.get("final_response"):
+            self.ui.print_npc_response("Shadowheart", result["final_response"])
 
-        # --- 3. DM PHASE (Intent Analysis) ---
-        action_type = "NONE"
-        dc = 0
-        try:
-            with self.ui.create_spinner("[dm]🎲 DM is analyzing fate...[/dm]", spinner="dots"):
-                intent_data = analyze_intent(user_input)
-            action_type = intent_data["action_type"]
-            dc = intent_data["difficulty_class"]
-            self.ui.print_dm_analysis(action_type, dc)
-        except Exception as e:
-            self.ui.print_error(f"⚠️ [DM] Analysis failed: {e}")
+        # C. Update State (Relationship, Status, Flags)
+        self.relationship_score = result.get("relationship", self.relationship_score)
+        self.npc_state = result.get("npc_state", self.npc_state)
+        self.flags = result.get("flags", self.flags)
 
-        # Passive Rules Override
-        rule_dc = mechanics.calculate_passive_dc(action_type, self.attributes)
-        if rule_dc is not None:
-            dc = rule_dc
-            self.ui.print_system_info(f"🛡️ DC Auto-Calculated: {dc} (Stats)")
+        # D. Update Inventory (Graph might have modified them via InputNode)
+        if "player_inventory" in result:
+            self.player_inventory.from_dict(result["player_inventory"])
+        if "npc_inventory" in result:
+            self.character.inventory.from_dict(result["npc_inventory"])
 
-        # --- 4. MECHANICS PHASE (Rolling) ---
-        system_info = None
-        turn_count = len(self.conversation_history) // 2 + 1
+        # E. Update History (Append the turn)
+        self.conversation_history.append({"role": "user", "content": user_input})
+        if result.get("final_response"):
+            self.conversation_history.append({"role": "assistant", "content": result["final_response"]})
 
-        if action_type != "NONE" and dc > 0:
-            if auto_success:
-                system_info = f"Action: {action_type} | Result: CRITICAL SUCCESS (Auto)."
-                self.ui.print_auto_success(action_type)
-                self._update_relationship(1)
-            elif self.player_data:
-                # Calculate Modifiers
-                ability_name = mechanics.get_ability_for_action(action_type)
-                player_scores = self.player_data.get("ability_scores", {})
-
-                if ability_name in player_scores:
-                    modifier = mechanics.calculate_ability_modifier(player_scores[ability_name])
-
-                    # Situational Bonuses
-                    bonus, reason = mechanics.get_situational_bonus(
-                        self.conversation_history, action_type, self.situational_bonuses, self.flags, user_input
-                    )
-                    if bonus != 0:
-                        modifier += bonus
-                        self.ui.print_situational_bonus(bonus, reason)
-
-                    # Roll
-                    roll_type = mechanics.determine_roll_type(action_type, self.relationship_score)
-                    self.ui.print_advantage_alert(action_type, roll_type)
-                    result = roll_d20(dc, modifier, roll_type=roll_type)
-                    self.ui.print_roll_result(result)
-
-                    # Critical Effects
-                    if result["result_type"] == CheckResult.CRITICAL_SUCCESS:
-                        self._set_state("VULNERABLE", 3)
-                        self.ui.print_critical_state_change(CheckResult.CRITICAL_SUCCESS, "VULNERABLE", 3)
-                    elif result["result_type"] == CheckResult.CRITICAL_FAILURE:
-                        self._set_state("SILENT", 2)
-                        self.ui.print_critical_state_change(CheckResult.CRITICAL_FAILURE, "SILENT", 2)
-
-                    system_info = f"Skill Check Result: {result['result_type'].value} (Rolled {result['total']} vs DC {dc})."
-
-        # --- 5. TRIGGER PHASE (Flags & Events) ---
-        trigger_messages = mechanics.process_dialogue_triggers(
-            user_input, self.dialogue_triggers, self.flags, self.ui, self.player_inventory, self.character.inventory
-        )
-        for msg in trigger_messages:
-            self.journal.add_entry(msg, turn_count)
-
-        # --- 6. GENERATION PHASE (LLM) ---
-        # Prepare context for AI
-        context_input = f"[SYSTEM INFO: {system_info}]\n\n{user_input}" if system_info else user_input
-        return self._generate_reaction(user_input=context_input, original_input=user_input)
+        return "continue"
 
     def _generate_reaction(self, user_input: str, original_input: Optional[str] = None, is_system: bool = False):
         """Helper to call LLM and handle response parsing."""

@@ -1,52 +1,46 @@
 {
-  "relationship_score": 5,
+  "relationship_score": 0,
   "history": [
     {
       "role": "user",
-      "content": "你好，很高兴认识你"
+      "content": "/use healing potion"
     },
     {
       "role": "assistant",
-      "content": "你好……不过“高兴”这个词，用在初次见面时未免太过轻率。 黑暗从不急于显露真容，而我也一样。 Shar's will be done."
-    },
-    {
-      "role": "assistant",
-      "content": "一枚金币……倒比空洞的问候实在些。 我收下了，但别误会——这不代表信任，只是交易的开端。 There's more to me than meets the eye."
+      "content": "[SYSTEM] You don't have healing."
     },
     {
       "role": "user",
-      "content": "Do you remember what I gave you?"
+      "content": "/use health_potion"
     },
     {
       "role": "assistant",
-      "content": "一枚金币。你给的，我收了。至于“记得”？有些事刻在骨子里，不靠脑子回想。"
+      "content": "[SYSTEM] You don't have health_potion."
+    },
+    {
+      "role": "user",
+      "content": "/use healing_potion"
     },
     {
       "role": "assistant",
-      "content": "你倒挺懂分寸——伤得不重，也不浪费药水来讨好我。可惜，善意若不指向黑暗，便只是微光，转瞬即逝。"
-    },
-    {
-      "role": "assistant",
-      "content": "……又一瓶药水？你倒是比表面看起来更懂得未雨绸缪。 我收下——不是因为感激，而是因为黑暗从不拒绝有用的工具。 Shar's will be done."
+      "content": "我的背包里没有药水——你是在命令一个影子为你施法，还是在试探我的耐心？ 我有药水，但不会为你挥霍在无谓的伤口上。"
     }
   ],
   "npc_state": {
-    "status": "SILENT",
-    "duration": 2
+    "status": "NORMAL",
+    "duration": 0
   },
   "flags": {},
   "summary": "",
   "inventory_player": {
-    "gold_coin": 9
+    "healing_potion": 1,
+    "gold_coin": 10
   },
   "inventory_npc": {
     "mysterious_artifact": 1,
-    "healing_potion": 2,
-    "gold_coin": 1
+    "healing_potion": 1
   },
   "journal": [
-    "[Turn 2] Player gave 'gold_coin' to Shadowheart.",
-    "[Turn 3] Player used healing_potion. Effect: restores 7 HP.",
-    "[Turn 4] Player gave 'healing_potion' to Shadowheart."
+    "[Turn 2] Player used healing_potion: restores 10 HP."
   ]
 }
