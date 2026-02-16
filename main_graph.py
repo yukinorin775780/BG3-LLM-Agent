@@ -1,48 +1,9 @@
 import sys
-from typing import Literal
 from langgraph.graph import StateGraph, START, END
 from core.graph_state import GameState
+from core.graph_routers import route_after_input, route_after_dm
 from core.graph_nodes import input_node, dm_node, mechanics_node, generation_node
 from langchain_core.messages import HumanMessage
-
-# --- Routers (The Logic Switches) ---
-
-
-def route_after_input(state: GameState) -> Literal["dm_analysis", "__end__"]:
-    """
-    Decides where to go after Input Node.
-    - If a command was fully handled (e.g., /give), stop logic.
-    - If input is pending analysis, go to DM.
-    """
-    intent = state.get("intent", "pending")
-    if intent in ["command_done", "gift_given", "item_used"]:
-        # Command handled, no AI generation needed for now (or simple system response)
-        # Note: In a full game, we might still want AI reaction to gifts,
-        # but for this specific flow, let's say 'command_done' means stop.
-        # However, for 'gift_given' or 'item_used', we actually WANT AI reaction.
-        if intent in ["gift_given", "item_used"]:
-            return "dm_analysis"  # Let DM see it, then Gen reaction
-        return "__end__"  # Simple /help or error, just stop
-
-    return "dm_analysis"
-
-
-def route_after_dm(state: GameState) -> Literal["mechanics_processing", "generation"]:
-    """
-    Decides where to go after DM Node.
-    - Combat/Action -> Mechanics -> Generation
-    - Chat/Passive -> Generation (Skip Mechanics)
-    """
-    intent = state.get("intent", "chat")
-
-    # List of intents that require dice rolls
-    action_intents = ["ATTACK", "STEAL", "PERSUASION", "INTIMIDATION", "INSIGHT", "ACTION"]
-
-    if intent in action_intents:
-        return "mechanics_processing"
-
-    # Default: Go straight to generation
-    return "generation"
 
 
 # --- Graph Builder ---
