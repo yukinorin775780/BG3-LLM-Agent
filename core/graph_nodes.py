@@ -7,6 +7,7 @@ LangGraph 节点：Input / DM / Mechanics / Generation
 """
 
 from typing import Callable
+from langchain_core.messages import HumanMessage, AIMessage
 from core.graph_state import GameState
 from core.dm import analyze_intent
 from core import mechanics
@@ -190,10 +191,13 @@ def create_generation_node(character) -> Callable[[GameState], dict]:
         history_dicts = [_message_to_dict(m) for m in messages]
         raw_response = generate_dialogue(system_prompt, conversation_history=history_dicts)
         parsed = parse_ai_response(raw_response)
+        text = parsed["text"] or "..."
 
+        # 返回 messages 供 add_messages 合并，使 Checkpointer 能持久化对话历史
         return {
-            "final_response": parsed["text"] or "...",
+            "final_response": text,
             "thought_process": parsed.get("thought") or "",
+            "messages": [HumanMessage(content=user_input), AIMessage(content=text)],
         }
 
     return generation_node

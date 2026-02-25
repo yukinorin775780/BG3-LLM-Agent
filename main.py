@@ -71,6 +71,7 @@ class GameSession:
         self.player_inventory = player_inventory
 
         # Runtime State (Loaded from Memory)
+        self._graph_thread_id = "shadowheart_default"  # LangGraph Checkpointer 会话 ID
         self.relationship_score = 0
         self.conversation_history: list = []
         self.npc_state = {"status": "NORMAL", "duration": 0}
@@ -81,6 +82,8 @@ class GameSession:
 
     def init_from_memory(self, memory_data: dict) -> None:
         """Load state from memory dict."""
+        # 若存档中有 thread_id，用于 LangGraph Checkpointer 加载对应会话
+        self._graph_thread_id = memory_data.get("thread_id", "shadowheart_default")
         self.relationship_score = memory_data.get("relationship_score", 0)
         self.conversation_history = memory_data.get("history", [])
         self.npc_state = memory_data.get("npc_state", {"status": "NORMAL", "duration": 0})
@@ -99,6 +102,7 @@ class GameSession:
     def build_memory_data(self) -> dict:
         """Build dict for persistence."""
         return {
+            "thread_id": self._graph_thread_id,  # 供下次启动时恢复 Checkpoint 会话
             "relationship_score": self.relationship_score,
             "history": self.conversation_history,
             "npc_state": self.npc_state,
@@ -133,10 +137,13 @@ class GameSession:
             "journal_events": [],  # Reset per turn
         }
 
-        # 2. Invoke Graph
+        # 2. Invoke Graph（带 thread_id 以加载对应 Checkpoint 存档）
+        # Checkpointer 通过 thread_id 区分会话，同一 thread_id 会从上次 checkpoint 恢复
+        thread_id = getattr(self, "_graph_thread_id", "shadowheart_default")
+        config = {"configurable": {"thread_id": thread_id}}
         try:
             with self.ui.create_spinner("[brain]Shadowheart is thinking (Graph V3)...[/brain]", spinner="dots"):
-                result = self.graph.invoke(state_payload)
+                result = self.graph.invoke(state_payload, config=config)
         except Exception as e:
             self.ui.print_error(f"Graph Error: {e}")
             return "continue"
