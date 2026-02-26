@@ -6,7 +6,7 @@ Pure logic and calculation functions - no UI dependencies
 import ast
 import random
 import re
-from typing import Optional
+from typing import Any, Dict, List, Optional
 
 
 def calculate_ability_modifier(ability_score: int) -> int:
@@ -307,64 +307,119 @@ def get_situational_bonus(
     return (total_bonus, ", ".join(reasons))
 
 
-def process_dialogue_triggers(user_input: str, triggers_config: list, flags: dict, ui=None, player_inv=None, npc_inv=None) -> list[str]:
+# -----------------------------------------------------------------------------
+# 对话触发器：对话即交互（Dialogue as Interaction）
+# -----------------------------------------------------------------------------
+#
+# 【AI Narrative Engineer 与叙事一致性】
+# 在叙事驱动游戏中，玩家的「对话」不应只是文本输出，而应能直接推动世界状态：
+# 说「给你药水」即完成物品转移，说「我发现了秘密」即解锁剧情 flag。这样：
+# 1) 叙事与机制一致：对话内容与后续剧情/背包/好感度严格同步，避免「说了不算」的割裂；
+# 2) 下一轮生成有据可查：所有触发的剧情事件写入 journal_events，LLM 在 [RECENT MEMORIES]
+#    中能看到「刚刚发生的重大转折」，从而生成连贯的后续反应；
+# 3) 好感度与关键行为绑定：通过触发器配置中的 approval_change，将「给予剧情物品」等
+#    行为直接映射为 relationship 变化，使数值与叙事选择一致。
+#
+# 调用方（如 generation_node）须将本函数对 flags / player_inv / npc_inv 的原地修改
+# 写回 state，并合并返回的 journal_entries、relationship_delta，以保持全局状态一致。
+# -----------------------------------------------------------------------------
+
+
+def process_dialogue_triggers(
+    user_input: str,
+    triggers_config: list,
+    flags: dict,
+    ui=None,
+    player_inv=None,
+    npc_inv=None,
+) -> Dict[str, Any]:
     """
-    Process dialogue triggers based on user input and update flags/inventory accordingly.
+    根据玩家输入匹配对话触发器，执行效果并返回需合并进 state 的结果。
     
-    This function checks user input against configured triggers and applies
-    their effects (flag updates and inventory transfers). Returns system messages to display.
+    **触发后果（增强）**：
+    - **Flags**：按 effects 中的 "flags.xxx = value" 原地修改传入的 flags，调用方须将
+      同一 dict 写回 state["flags"]。
+    - **背包**：通过 inventory.give:item_id 从 player_inv 移除、向 npc_inv 增加，实现
+      「对话即物品转移」；调用方须将修改后的 player_inv.to_dict() / npc_inv.to_dict()
+      写回 state["player_inventory"] 与 state["npc_inventory"]，确保 Generation 下一轮
+      能基于最新背包生成（避免幻觉）。
+    
+    **好感度**：触发器配置可含 approval_change（整数）。所有在本轮匹配的触发器的
+    approval_change 会累加，通过返回值 relationship_delta 交给调用方加算到
+    state["relationship"]，实现「剧情物品转交」等行为直接影响关系分数。
+    
+    **日志**：每个被触发的触发器都会产生一条 journal 条目（优先用 system_message，
+    否则用 trigger id / description），通过返回值 journal_entries 交给调用方合并进
+    state["journal_events"]，保证下一轮对话中 [RECENT MEMORIES] 能引用这些重大转折。
     
     Args:
-        user_input: The current user input message
-        triggers_config: List of trigger configurations from YAML
-        flags: Persistent world-state flags dictionary (modified in place)
-        ui: Optional UI renderer for displaying messages
-        player_inv: Optional player inventory object
-        npc_inv: Optional NPC inventory object
+        user_input: 当前玩家输入文本。
+        triggers_config: YAML 中的 dialogue_triggers 列表，每项可含：
+            - trigger_type, keywords, effects
+            - system_message: 写入 journal 的剧情描述（可选）
+            - approval_change: 本触发对 relationship 的加减值（可选，默认 0）
+        flags: 世界状态 flag 字典，**原地修改**。
+        ui: 可选 UI，用于打印转移结果等。
+        player_inv: 可选玩家背包对象（Inventory），**原地修改**（转移时 remove）。
+        npc_inv: 可选 NPC 背包对象（Inventory），**原地修改**（转移时 add）。
     
     Returns:
-        list[str]: List of system messages to display (empty if no triggers matched)
+        dict:
+            - journal_entries: list[str]，本轮触发的剧情事件，应合并进 state["journal_events"]；
+            - relationship_delta: int，本轮触发器带来的 relationship 变化总和，应加算到 state["relationship"]。
     """
     if not user_input or not triggers_config:
-        return []
-    
+        return {"journal_entries": [], "relationship_delta": 0}
+
     message_lower = user_input.lower()
-    system_messages = []
-    
+    journal_entries: List[str] = []
+    relationship_delta = 0
+
     for trigger in triggers_config:
         trigger_type = trigger.get("trigger_type")
-        if trigger_type == "keyword_match":
-            keywords = trigger.get("keywords", [])
-            if any(keyword.lower() in message_lower for keyword in keywords):
-                # Apply all effects
-                effects = trigger.get("effects", [])
-                for effect_str in effects:
-                    # Handle flag updates
-                    if "flags." in effect_str:
-                        update_flags(effect_str, flags)
-                    # Handle inventory transfers
-                    elif effect_str.startswith("inventory.give:"):
-                        item_id = effect_str.split(":", 1)[1].strip()
-                        if player_inv and npc_inv:
-                            # Get display name from registry
-                            from core.inventory import get_registry
-                            registry = get_registry()
-                            item_name = registry.get_name(item_id)
-                            
-                            if player_inv.remove(item_id):
-                                npc_inv.add(item_id)
-                                if ui:
-                                    ui.print_system_info(f"🎒 Item Transferred: {item_name} (Player -> NPC)")
-                            else:
-                                if ui:
-                                    ui.print_system_info(f"❌ Transaction Failed: You don't have {item_name}")
-                
-                # Collect system message if provided
-                system_message = trigger.get("system_message")
-                if system_message:
-                    system_messages.append(system_message)
-    
-    return system_messages
+        if trigger_type != "keyword_match":
+            continue
+
+        keywords = trigger.get("keywords", [])
+        if not any(keyword.lower() in message_lower for keyword in keywords):
+            continue
+
+        # ---------- 本触发器已匹配：执行效果（直接操作 flags 与背包）----------
+        effects = trigger.get("effects", [])
+        for effect_str in effects:
+            # 更新世界状态 flag，调用方将同一 flags 写回 state["flags"]
+            if "flags." in effect_str:
+                update_flags(effect_str, flags)
+            # 物品转移：直接修改 player_inv / npc_inv，调用方须将 to_dict() 写回 state
+            elif effect_str.startswith("inventory.give:"):
+                item_id = effect_str.split(":", 1)[1].strip()
+                if player_inv and npc_inv:
+                    from core.inventory import get_registry
+                    registry = get_registry()
+                    item_name = registry.get_name(item_id)
+                    if player_inv.remove(item_id):
+                        npc_inv.add(item_id)
+                        if ui:
+                            ui.print_system_info(f"🎒 Item Transferred: {item_name} (Player -> NPC)")
+                    else:
+                        if ui:
+                            ui.print_system_info(f"❌ Transaction Failed: You don't have {item_name}")
+
+        # 好感度：配置中的 approval_change 累加，由调用方加算到 state["relationship"]
+        delta = trigger.get("approval_change", 0)
+        if isinstance(delta, int):
+            relationship_delta += delta
+
+        # 日志：每条触发都生成一条 journal，确保下一轮 [RECENT MEMORIES] 可见
+        system_message = trigger.get("system_message")
+        if system_message:
+            journal_entries.append(system_message)
+        else:
+            trigger_id = trigger.get("id", "unknown")
+            desc = trigger.get("description", "")
+            journal_entries.append(f"[Story Trigger] {trigger_id}: {desc or 'triggered'}")
+
+    return {"journal_entries": journal_entries, "relationship_delta": relationship_delta}
 
 
 def update_npc_state(current_status: str, duration: int) -> tuple[str, int]:

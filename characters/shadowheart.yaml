@@ -119,6 +119,7 @@ states:
     description: 拒绝交流
     effect: skip_generation
     message: (She turns away, ignoring you completely.)
+# dialogue_triggers: 对话即交互；匹配时更新 flags/背包，并可配置 approval_change 影响 relationship
 dialogue_triggers:
 - id: unlock_secret_manual
   description: Player reveals they know the secret
@@ -130,6 +131,7 @@ dialogue_triggers:
   effects:
   - flags.knows_secret = True
   system_message: 🚩 [Story Event] You have revealed your knowledge of the artifact.
+  approval_change: 5
 - id: give_potion
   description: Player gives a healing potion
   trigger_type: keyword_match
@@ -142,6 +144,18 @@ dialogue_triggers:
   - inventory.give:healing_potion
   - flags.received_gift = True
   system_message: 🎁 [Story Event] You handed over the potion.
+  approval_change: 3
+- id: give_shar_artifact
+  description: Player gives the Shar artifact to Shadowheart
+  trigger_type: keyword_match
+  keywords:
+  - 莎尔遗物
+  - 这是我为你找到的莎尔遗物
+  effects:
+  - flags.knows_secret = True
+  - inventory.give:mysterious_artifact
+  system_message: "🔮 [Story Event] You handed the Sharran artifact to Shadowheart."
+  approval_change: 10
 quests:
 - id: cleric_secret
   title: The Cleric's Secret

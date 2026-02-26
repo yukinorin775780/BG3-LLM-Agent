@@ -11,7 +11,7 @@ from langchain_core.messages import HumanMessage, AIMessage
 from core.graph_state import GameState
 from core.dm import analyze_intent
 from core import mechanics
-from core.inventory import get_registry
+from core.inventory import get_registry, Inventory, format_inventory_dict_to_display_list
 from core.dice import roll_d20
 from core.engine import generate_dialogue, parse_ai_response
 
@@ -147,6 +147,16 @@ def mechanics_node(state: GameState) -> dict:
 # =============================================================================
 # Node 4: Generation LLM 生成（工厂模式）
 # =============================================================================
+#
+# 【通过背包内容约束 AI 幻觉】
+# - 将 state["npc_inventory"] 转为易读清单（如「治疗药水 x2」）并写入 system prompt，
+#   使角色明确「当前身上有什么」；模板中 [CURRENT INVENTORY] 与 [CRITICAL REALITY CONSTRAINTS]
+#   均依赖此清单与 has_healing_potion 等标志位。
+# - 若背包无药水，has_healing_potion=False，模板会强制输出「不得描述喝药水」等约束，
+#   从而避免 LLM 编造「影心喝下药水」等与事实不符的动作。
+# - 物品触发器（如玩家说「给你药水」）在本节点内执行，并写回 flags/背包，保证
+#   下一轮 prompt 中的背包与标志位与真实状态一致。
+# =============================================================================
 
 
 def create_generation_node(character) -> Callable[[GameState], dict]:
@@ -162,29 +172,69 @@ def create_generation_node(character) -> Callable[[GameState], dict]:
         LLM 生成节点。
         直接从 state 提取 relationship / flags / npc_inventory / journal_events，
         符合 add_messages 规范：messages 由 Graph 管理，本节点只读取。
+
+        背包与幻觉约束：
+        - 从 state["npc_inventory"] 得到易读清单并注入 prompt，使角色「知道」自己身上有什么。
+        - has_healing_potion 等标志位与背包严格一致，避免 AI 在没药水时描述喝药水等幻觉。
+        - 对话中的「给予物品」等触发器会在此处执行，并写回 flags / 背包状态。
         """
         print("🗣️ Generation Node: Shadowheart is speaking...")
 
-        # 从 state 提取上下文，不依赖外部注入
+        user_input = state.get("user_input", "")
         relationship = state.get("relationship", 0)
         flags = state.get("flags", {})
         npc_inv = state.get("npc_inventory", {})
-        journal_events = state.get("journal_events", [])
+        player_inv = state.get("player_inventory", {})
+        journal_events = list(state.get("journal_events", []))
         summary = state.get("summary", "Graph Mode Testing")
 
+        # -------------------------------------------------------------------------
+        # 1. 物品触发器：玩家在对话中提及「给你药水」等时，自动转移物品、更新 flags、
+        #    累加 approval_change 到 relationship，并生成 journal_entries 供本轮合并
+        # -------------------------------------------------------------------------
+        triggers_config = character.data.get("dialogue_triggers", [])
+        trigger_result = {"journal_entries": [], "relationship_delta": 0}
+        if user_input and triggers_config:
+            player_inv_obj = Inventory()
+            player_inv_obj.from_dict(player_inv)
+            npc_inv_obj = Inventory()
+            npc_inv_obj.from_dict(npc_inv)
+            trigger_result = mechanics.process_dialogue_triggers(
+                user_input, triggers_config, flags,
+                ui=None, player_inv=player_inv_obj, npc_inv=npc_inv_obj
+            )
+            player_inv = player_inv_obj.to_dict()
+            npc_inv = npc_inv_obj.to_dict()
+            relationship = relationship + trigger_result.get("relationship_delta", 0)
+
+        # -------------------------------------------------------------------------
+        # 2. 背包感知：用 inventory 模块逻辑将 npc_inventory 转为易读字符串列表
+        #    这样 prompt 里显示的是「治疗药水 x2」而非 "healing_potion"，减少歧义。
+        # -------------------------------------------------------------------------
+        inventory_display_list = format_inventory_dict_to_display_list(npc_inv)
+
+        # -------------------------------------------------------------------------
+        # 3. 关键标志位：has_healing_potion 必须与背包事实一致，用于约束幻觉
+        #    模板中会据此输出 [CRITICAL REALITY CONSTRAINTS]：
+        #    - 无药水时明确禁止描述「喝药水」等动作，只能拒绝或说「没有了」。
+        # -------------------------------------------------------------------------
+        has_healing_potion = (npc_inv.get("healing_potion", 0) or 0) >= 1
+
+        # -------------------------------------------------------------------------
+        # 4. 注入提示词：把当前背包清单与标志位传入 render_prompt，确保影心
+        #    「知道」自己身上有什么，从而只描述实际拥有的物品行为，避免幻觉。
+        # -------------------------------------------------------------------------
         system_prompt = character.render_prompt(
             relationship_score=relationship,
             flags=flags,
             summary=summary,
             journal_entries=journal_events,
-            inventory_items=list(npc_inv.keys()),
-            has_healing_potion="healing_potion" in npc_inv,
+            inventory_items=inventory_display_list,
+            has_healing_potion=has_healing_potion,
         )
 
         # messages 符合 add_messages：从 state 读取，转为 engine 所需格式
         messages = list(state.get("messages", []))
-        user_input = state.get("user_input", "")
-
         if not messages or _msg_content(messages[-1]) != user_input:
             messages.append({"role": "user", "content": user_input})
 
@@ -193,12 +243,22 @@ def create_generation_node(character) -> Callable[[GameState], dict]:
         parsed = parse_ai_response(raw_response)
         text = parsed["text"] or "..."
 
-        # 返回 messages 供 add_messages 合并，使 Checkpointer 能持久化对话历史
-        return {
+        # 合并触发器产生的剧情事件到 journal，并写回 flags/背包/好感度
+        out = {
             "final_response": text,
             "thought_process": parsed.get("thought") or "",
             "messages": [HumanMessage(content=user_input), AIMessage(content=text)],
         }
+        trigger_journal = trigger_result.get("journal_entries", [])
+        if trigger_journal:
+            out["journal_events"] = trigger_journal
+        if user_input and triggers_config:
+            out["flags"] = flags
+            out["player_inventory"] = player_inv
+            out["npc_inventory"] = npc_inv
+            if trigger_result.get("relationship_delta", 0) != 0:
+                out["relationship"] = relationship
+        return out
 
     return generation_node
 

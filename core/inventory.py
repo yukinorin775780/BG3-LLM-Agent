@@ -140,6 +140,30 @@ def get_registry() -> ItemRegistry:
     return _registry
 
 
+def format_inventory_dict_to_display_list(inv_dict: Dict[str, int]) -> List[str]:
+    """
+    将状态中的背包字典（item_id -> 数量）转为易读的显示名列表，供提示词/UI 使用。
+    与 Inventory.list_item_names() 逻辑一致，但直接接受 dict，无需实例化 Inventory。
+    
+    Args:
+        inv_dict: 物品 ID 到数量的映射，如 {"healing_potion": 2, "gold_coin": 10}
+    
+    Returns:
+        显示名列表，如 ["治疗药水 x2", "金币 x10"]；空背包返回 []
+    """
+    if not inv_dict:
+        return []
+    registry = get_registry()
+    result: List[str] = []
+    for item_id, qty in inv_dict.items():
+        name = registry.get_name(item_id)
+        if qty > 1:
+            result.append(f"{name} x{qty}")
+        else:
+            result.append(name)
+    return result
+
+
 class Inventory:
     """
     Instance-based inventory system with quantity tracking.
