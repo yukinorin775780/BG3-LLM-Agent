@@ -8,6 +8,8 @@ import random
 import re
 from typing import Any, Dict, List, Optional
 
+from core.dice import roll_d20
+
 
 def calculate_ability_modifier(ability_score: int) -> int:
     """
@@ -63,23 +65,37 @@ def normalize_ability_name(ability_name: str) -> Optional[str]:
     return ability_map.get(ability_name)
 
 
+# -----------------------------------------------------------------------------
+# 技能检定类型与属性映射
+# -----------------------------------------------------------------------------
+# 支持的检定类型：PERSUASION(劝说), DECEPTION(欺瞒), STEALTH(隐匿), INSIGHT(洞悉),
+# INTIMIDATION(威吓), ATTACK(攻击), STEAL(偷窃), ACTION(通用动作)。
+# 每种检定映射到 D&D 5e 属性，用于后续扩展（如玩家属性修正）。
+# -----------------------------------------------------------------------------
+
+SKILL_CHECK_TYPES = ("PERSUASION", "DECEPTION", "STEALTH", "INTIMIDATION", "INSIGHT", "ATTACK", "STEAL", "ACTION")
+
+
 def get_ability_for_action(action_type: str) -> str:
     """
-    Map action type to the corresponding ability score.
+    将检定类型映射到 D&D 5e 属性。
     
     Args:
-        action_type: The action type from DM analysis (e.g., "PERSUASION", "DECEPTION")
+        action_type: DM 分析的意图类型（如 PERSUASION, DECEPTION, STEALTH）
     
     Returns:
-        str: Ability score abbreviation (STR, DEX, CON, INT, WIS, CHA)
+        str: 属性缩写（STR, DEX, CON, INT, WIS, CHA）
     """
     action_to_ability = {
-        "DECEPTION": "CHA",
         "PERSUASION": "CHA",
+        "DECEPTION": "CHA",
         "INTIMIDATION": "CHA",
+        "STEALTH": "DEX",
         "INSIGHT": "WIS",
-        "ATTACK": "STR",  # Default to STR, could be weapon-dependent
-        "NONE": "CHA"  # Default fallback
+        "ATTACK": "STR",
+        "STEAL": "DEX",
+        "ACTION": "CHA",
+        "NONE": "CHA",
     }
     return action_to_ability.get(action_type, "CHA")
 
@@ -126,6 +142,124 @@ def determine_roll_type(action_type: str, relationship_score: int) -> str:
         return 'disadvantage'
     
     return 'normal'
+
+
+# -----------------------------------------------------------------------------
+# 好感度修正与失败惩罚（防止叙事幻觉）
+# -----------------------------------------------------------------------------
+#
+# 【数值系统如何防止 AI 叙事幻觉】
+# 1) 好感度修正：PERSUASION/DECEPTION 时，relationship 每 20 点提供 +1 骰子修正。
+#    这样「高好感时更容易说服」是规则驱动的，LLM 不能随意编造「影心被说服了」——
+#    必须依赖 journal_events 中的掷骰结果（SUCCESS/FAILURE）来生成叙事。
+# 2) 失败降好感：检定失败时，根据类型扣减 relationship（如欺瞒失败 -3）。
+#    数值变化写入 journal，LLM 在 [RECENT MEMORIES] 中看到「检定失败，好感 -3」，
+#    从而生成与事实一致的「被识破后的冷淡」等反应，而非随意编造情绪。
+# 3) 动态 DC：DM 的 difficulty_class 通过 intent_context 传入，避免固定 DC 导致
+#    「简单请求也难成功」等不合理体验；同时 DC 与掷骰明细都写入 journal，叙事有据可查。
+# -----------------------------------------------------------------------------
+
+
+def calculate_relationship_modifier(relationship: int, action_type: str) -> int:
+    """
+    根据好感度计算骰子修正值。仅对 PERSUASION、DECEPTION 生效。
+    
+    规则：好感度每 20 点，骰子点数 +1（向下取整）。负好感同理（每 -20 点 -1）。
+    
+    Args:
+        relationship: 当前 relationship 分数 (-100..100)
+        action_type: 检定类型，仅 PERSUASION/DECEPTION 会应用此修正
+    
+    Returns:
+        int: 修正值，如 relationship=40 且 PERSUASION 则返回 2
+    """
+    if action_type not in ("PERSUASION", "DECEPTION"):
+        return 0
+    return relationship // 20
+
+
+def get_relationship_penalty_on_failure(action_type: str) -> int:
+    """
+    检定失败时对 relationship 的扣减值。用于「欺瞒被识破」「威吓失败」等场景。
+    
+    Args:
+        action_type: 检定类型
+    
+    Returns:
+        int: 失败时应扣减的好感度（0 表示不扣）
+    """
+    penalties = {
+        "DECEPTION": -3,   # 欺瞒被识破，信任受损
+        "PERSUASION": -1,  # 劝说失败，轻微反感
+        "INTIMIDATION": -5,  # 威吓失败，关系恶化
+        "ATTACK": -10,     # 攻击失败，严重敌对
+    }
+    return penalties.get(action_type, 0)
+
+
+def execute_skill_check(state: Any) -> Dict[str, Any]:
+    """
+    执行技能检定，返回需合并进 state 的结果（journal_events、relationship_delta）。
+    
+    【动态 DC】从 state["intent_context"]["difficulty_class"] 读取 DM 设定的难度，
+    若无则使用默认 DC 12。
+    
+    【好感度修正】PERSUASION/DECEPTION 时，根据 relationship 计算 modifier。
+    
+    【结果回传】成功/失败、掷骰明细、好感度变化均写入 journal_events，供 Generation
+    节点在 [RECENT MEMORIES] 中引用，确保叙事与数值一致，防止 AI 产生幻觉。
+    
+    Args:
+        state: GameState 或兼容的 dict-like，需含 intent, intent_context, relationship
+    
+    Returns:
+        dict: {"journal_events": [...], "relationship_delta": int}
+    """
+    intent = state.get("intent", "ACTION")
+    intent_context = state.get("intent_context") or {}
+    relationship = state.get("relationship", 0)
+
+    # 动态 DC：DM 节点若设定了 difficulty_class 则使用，否则默认 12
+    dc = intent_context.get("difficulty_class")
+    if dc is None or (isinstance(dc, (int, float)) and dc <= 0):
+        dc = 12
+    dc = int(dc)
+
+    # 好感度修正：仅 PERSUASION/DECEPTION 生效
+    rel_mod = calculate_relationship_modifier(relationship, intent)
+    modifier = rel_mod
+
+    # advantage/disadvantage 由 determine_roll_type 决定
+    roll_type = determine_roll_type(intent, relationship)
+    result = roll_d20(dc=dc, modifier=modifier, roll_type=roll_type)
+
+    # 失败时扣减好感度
+    relationship_delta = 0
+    if not result.get("is_success", False):
+        penalty = get_relationship_penalty_on_failure(intent)
+        if penalty != 0:
+            relationship_delta = penalty
+
+    # 构建详细的 journal 条目：掷骰明细 + 结果 + 好感度变化
+    rolls_str = str(result.get("rolls", [result.get("raw_roll", "?")]))
+    total = result.get("total", 0)
+    result_type = result.get("result_type")
+    result_val = result_type.value if result_type is not None and hasattr(result_type, "value") else str(result_type)
+
+    journal_lines = [
+        f"Skill Check | {intent} | DC {dc} | "
+        f"Roll {rolls_str} + {modifier:+d} = {total} vs DC {dc} | "
+        f"Result: {result_val}",
+    ]
+    if rel_mod != 0:
+        journal_lines.append(f"  [Relationship modifier: {rel_mod:+d} (rel={relationship})]")
+    if relationship_delta != 0:
+        journal_lines.append(f"  [Relationship: {relationship_delta:+d} (check failed)]")
+
+    return {
+        "journal_events": journal_lines,
+        "relationship_delta": relationship_delta,
+    }
 
 
 def calculate_passive_dc(action_type: str, npc_attributes: dict) -> Optional[int]:

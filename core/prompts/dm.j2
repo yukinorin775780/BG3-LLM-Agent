@@ -8,9 +8,10 @@ Your job is NOT to roleplay, but to analyze the Player's input and determine the
 Analyze the intent behind the player's words.
 Return a JSON object with the following fields:
 
-1.  `action_type`: Choose one of [DECEPTION, PERSUASION, INTIMIDATION, INSIGHT, ATTACK, NONE].
-    -   `DECEPTION`: Lying, misleading, hiding truth.
+1.  `action_type`: Choose one of [PERSUASION, DECEPTION, STEALTH, INTIMIDATION, INSIGHT, ATTACK, NONE].
     -   `PERSUASION`: Reasoning, bargaining, honest convincing.
+    -   `DECEPTION`: Lying, misleading, hiding truth.
+    -   `STEALTH`: Hiding, sneaking, avoiding detection.
     -   `INTIMIDATION`: Threatening, aggressive posturing.
     -   `INSIGHT`: Trying to read the NPC's emotions or detect lies.
     -   `ATTACK`: Physical aggression or casting hostile spells.

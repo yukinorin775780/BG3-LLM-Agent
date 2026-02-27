@@ -46,7 +46,8 @@ class GameState(TypedDict, total=False):
     # Input Processing [TRANSIENT]
     # -------------------------------------------------------------------------
     user_input: str         # Raw player input this turn
-    intent: str             # DM-analyzed intent (e.g. "ATTACK", "CHAT", "gift_given")
+    intent: str             # DM-analyzed intent (e.g. "ATTACK", "PERSUASION", "CHAT")
+    intent_context: Dict[str, Any]  # DM 输出的 difficulty_class、reason 等，供 Mechanics 动态 DC 使用
 
     # -------------------------------------------------------------------------
     # RPG State [PERSISTENT]

@@ -12,7 +12,6 @@ from core.graph_state import GameState
 from core.dm import analyze_intent
 from core import mechanics
 from core.inventory import get_registry, Inventory, format_inventory_dict_to_display_list
-from core.dice import roll_d20
 from core.engine import generate_dialogue, parse_ai_response
 
 
@@ -110,7 +109,13 @@ def dm_node(state: GameState) -> dict:
 
     print("🎲 DM Node: Analyzing intent...")
     analysis = analyze_intent(state.get("user_input", ""))
-    return {"intent": analysis.get("action_type", "chat")}
+    return {
+        "intent": analysis.get("action_type", "chat"),
+        "intent_context": {
+            "difficulty_class": analysis.get("difficulty_class", 12),
+            "reason": analysis.get("reason", ""),
+        },
+    }
 
 
 # =============================================================================
@@ -120,28 +125,24 @@ def dm_node(state: GameState) -> dict:
 
 def mechanics_node(state: GameState) -> dict:
     """
-    根据意图执行骰子检定。
+    根据意图执行技能检定（PERSUASION/DECEPTION/STEALTH/INSIGHT 等）。
     
-    健壮性：掷骰结果格式化为清晰字符串，放入 journal_events。
-    后续 Generation 节点可直接引用这些事件作为叙事上下文。
-    使用 merge_events Reducer：只返回 [新事件]，不 copy/append。
+    调用 mechanics.execute_skill_check，使用动态 DC（来自 intent_context）、
+    好感度修正、失败降好感，并将掷骰明细与结果写入 journal_events。
+    后续 Generation 节点在 [RECENT MEMORIES] 中引用，确保叙事与数值一致。
     """
     intent = state.get("intent", "chat")
     if intent in ["chat", "command_done", "pending", "gift_given", "item_used"]:
         return {}
 
     print(f"⚙️ Mechanics Node: Processing {intent}...")
-    dc = 12
-    modifier = 0
-    result = roll_d20(dc, modifier)
+    result = mechanics.execute_skill_check(state)
 
-    # 清晰、可被下游引用的格式
-    outcome_str = (
-        f"Skill Check | {intent} | "
-        f"Result: {result['result_type'].value} | "
-        f"Roll: {result['total']} vs DC {dc}"
-    )
-    return {"journal_events": [outcome_str]}
+    out = {"journal_events": result.get("journal_events", [])}
+    if result.get("relationship_delta", 0) != 0:
+        rel = state.get("relationship", 0)
+        out["relationship"] = rel + result["relationship_delta"]
+    return out
 
 
 # =============================================================================
