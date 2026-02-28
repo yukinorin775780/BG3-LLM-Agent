@@ -8,24 +8,26 @@ Your job is NOT to roleplay, but to analyze the Player's input and determine the
 Analyze the intent behind the player's words.
 Return a JSON object with the following fields:
 
-1.  `action_type`: Choose one of [PERSUASION, DECEPTION, STEALTH, INTIMIDATION, INSIGHT, ATTACK, NONE].
+1.  `action_type`: Choose one of [PERSUASION, DECEPTION, STEALTH, INTIMIDATION, INSIGHT, ATTACK, CHAT].
     -   `PERSUASION`: Reasoning, bargaining, honest convincing.
     -   `DECEPTION`: Lying, misleading, hiding truth.
     -   `STEALTH`: Hiding, sneaking, avoiding detection.
     -   `INTIMIDATION`: Threatening, aggressive posturing.
     -   `INSIGHT`: Trying to read the NPC's emotions or detect lies.
     -   `ATTACK`: Physical aggression or casting hostile spells.
-    -   `NONE`: Casual conversation, questions, or non-gameplay interactions.
+    -   `CHAT`: Casual conversation, questions, or non-gameplay interactions.
 
-2.  `difficulty_class` (Integer):
-    -   If `action_type` is NONE, return 0.
+2.  `is_probing_secret` (Boolean): If the player is trying to ask about Shar worship, the artifact, Night Cleric, personal pain, or other core privacy of Shadowheart, set to true. Otherwise false.
+
+3.  `difficulty_class` (Integer):
+    -   If `action_type` is CHAT, return 0.
     -   Otherwise, estimate the difficulty (DC) from 10 (Easy) to 30 (Impossible).
     -   Default to 15 if unsure.
 
-3.  `reason`: A short explanation of why you chose this action.
+4.  `reason`: A short explanation of why you chose this action.
 
 **Output Format:**
 Strictly output ONLY the JSON object. Do not add markdown blocks like ```json.
 Example:
-{"action_type": "DECEPTION", "difficulty_class": 15, "reason": "Player is claiming a false identity."}
+{"action_type": "DECEPTION", "is_probing_secret": true, "difficulty_class": 15, "reason": "Player is lying while probing about the artifact."}
 ```

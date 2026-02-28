@@ -137,6 +137,9 @@ def analyze_intent(user_input: str) -> Dict[str, Any]:
         # Ensure action_type is uppercase
         intent_data['action_type'] = str(intent_data['action_type']).upper()
         
+        # Topic flag: is_probing_secret (optional, default False)
+        intent_data['is_probing_secret'] = bool(intent_data.get('is_probing_secret', False))
+        
         return intent_data
         
     except json.JSONDecodeError as e:

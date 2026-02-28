@@ -75,19 +75,25 @@ def route_after_input(state: GameState) -> INPUT_ROUTE:
 
 def route_after_dm(state: GameState) -> DM_ROUTE:
     """
-    DM 节点之后的路由：动作意图走 Mechanics，其余走 Generation。
+    DM 节点之后的路由：动作意图或话题标签走 Mechanics，其余走 Generation。
 
     判定逻辑：
     ---------
-    1. 动作意图（含 PERSUASION, DECEPTION, STEALTH 等 ACTION_INTENTS）
+    1. is_probing_secret 为 True（刺探秘密话题）
        → mechanics_processing
-       → 必须经过掷骰检定，结果写入 journal_events，再进入 Generation
+       → 必须经隐性好感度锁判定，再进入 Generation
 
-    2. 非动作意图（CHAT, NONE, gift_given, item_used 等）
+    2. 动作意图（含 PERSUASION, DECEPTION, STEALTH 等 ACTION_INTENTS）
+       → mechanics_processing
+
+    3. 非动作意图（CHAT, gift_given, item_used 等）且非刺探
        → generation
     """
     intent = state.get("intent", "chat")
+    is_probing_secret = state.get("is_probing_secret", False)
 
+    if is_probing_secret:
+        return _validate_dm_route("mechanics_processing")
     if intent in ACTION_INTENTS:
         return _validate_dm_route("mechanics_processing")
     return _validate_dm_route("generation")

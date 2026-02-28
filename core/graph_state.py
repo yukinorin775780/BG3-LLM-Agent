@@ -46,8 +46,9 @@ class GameState(TypedDict, total=False):
     # Input Processing [TRANSIENT]
     # -------------------------------------------------------------------------
     user_input: str         # Raw player input this turn
-    intent: str             # DM-analyzed intent (e.g. "ATTACK", "PERSUASION", "CHAT")
-    intent_context: Dict[str, Any]  # DM 输出的 difficulty_class、reason 等，供 Mechanics 动态 DC 使用
+    intent: str             # DM-analyzed 机制动作 (e.g. "ATTACK", "PERSUASION", "CHAT")
+    intent_context: Dict[str, Any]  # DM 输出的 difficulty_class、reason 等
+    is_probing_secret: bool  # 话题标签：是否在刺探莎尔信仰/神器等核心隐私（意图 How 与话题 What 分离）
 
     # -------------------------------------------------------------------------
     # RPG State [PERSISTENT]

@@ -197,20 +197,39 @@ def get_relationship_penalty_on_failure(action_type: str) -> int:
     return penalties.get(action_type, 0)
 
 
+# -----------------------------------------------------------------------------
+# 意图(How)与话题(What)分离 —— 彻底解决 LLM 分类冲突
+# -----------------------------------------------------------------------------
+#
+# 【问题】若将 PROBE_SECRET 混入 action_type，会出现维度冲突：
+# - 玩家「用劝说口吻刺探神器」→ PERSUASION 还是 PROBE_SECRET？LLM 难以二选一。
+# - 玩家「边撒谎边问莎尔信仰」→ DECEPTION 与刺探话题同时成立，单维分类必然丢失信息。
+#
+# 【方案】action_type 保持纯粹的机制动作（How：如何互动），is_probing_secret 独立表示
+# 话题标签（What：是否触碰核心隐私）。两者正交，LLM 可同时输出：
+# - action_type=PERSUASION, is_probing_secret=true → 用劝说方式刺探
+# - action_type=DECEPTION, is_probing_secret=true → 用欺瞒方式刺探
+#
+# 【Mechanics 裁判】优先判断 is_probing_secret。若为 True 且 relationship < 20，
+# 无视 action_type，直接锁死并扣好感；否则正常走骰子逻辑。
+# -----------------------------------------------------------------------------
+
+PROBE_SECRET_LOCK_THRESHOLD = 20
+
+
 def execute_skill_check(state: Any) -> Dict[str, Any]:
     """
     执行技能检定，返回需合并进 state 的结果（journal_events、relationship_delta）。
     
-    【动态 DC】从 state["intent_context"]["difficulty_class"] 读取 DM 设定的难度，
-    若无则使用默认 DC 12。
+    【话题优先】若 is_probing_secret 为 True 且 relationship < 20，无视 action_type，
+    直接注入锁死日志并扣好感，防止 LLM 越狱。
+    
+    【动态 DC】从 state["intent_context"]["difficulty_class"] 读取 DM 设定的难度。
     
     【好感度修正】PERSUASION/DECEPTION 时，根据 relationship 计算 modifier。
     
-    【结果回传】成功/失败、掷骰明细、好感度变化均写入 journal_events，供 Generation
-    节点在 [RECENT MEMORIES] 中引用，确保叙事与数值一致，防止 AI 产生幻觉。
-    
     Args:
-        state: GameState 或兼容的 dict-like，需含 intent, intent_context, relationship
+        state: GameState 或兼容的 dict-like，需含 intent, intent_context, relationship, is_probing_secret
     
     Returns:
         dict: {"journal_events": [...], "relationship_delta": int}
@@ -218,6 +237,30 @@ def execute_skill_check(state: Any) -> Dict[str, Any]:
     intent = state.get("intent", "ACTION")
     intent_context = state.get("intent_context") or {}
     relationship = state.get("relationship", 0)
+    is_probing_secret = state.get("is_probing_secret", False)
+    _unlock_for_dice: List[str] = []
+
+    # -------------------------------------------------------------------------
+    # 话题优先：is_probing_secret 独立于 action_type 的判定层
+    # 好感不足时，无论玩家用劝说还是欺骗，一律锁死。
+    # -------------------------------------------------------------------------
+    if is_probing_secret:
+        if relationship < PROBE_SECRET_LOCK_THRESHOLD:
+            journal_lines = [
+                "[SYSTEM OVERRIDE: 玩家触碰了绝对禁忌。好感度不足，强制防备转移话题。]",
+                f"  [Narrative Lock: relationship={relationship} < {PROBE_SECRET_LOCK_THRESHOLD}]",
+                "  [Relationship: -2 (probe penalty)]",
+            ]
+            return {"journal_events": journal_lines, "relationship_delta": -2}
+        # 好感足够：注入解锁事件；若 intent 为 CHAT 则直接返回，否则继续走骰子
+        unlock_lines = [
+            "[系统判定：影心对玩家有足够的信任，可以隐晦地透露部分关于莎尔的信息。]",
+            f"  [Narrative Unlock: relationship={relationship} >= {PROBE_SECRET_LOCK_THRESHOLD}]",
+        ]
+        if intent in ("CHAT", "chat"):
+            return {"journal_events": unlock_lines, "relationship_delta": 0}
+        # 动作意图：先记解锁，再执行骰子，最后将 unlock 与 dice 合并
+        _unlock_for_dice = unlock_lines
 
     # 动态 DC：DM 节点若设定了 difficulty_class 则使用，否则默认 12
     dc = intent_context.get("difficulty_class")
@@ -255,6 +298,10 @@ def execute_skill_check(state: Any) -> Dict[str, Any]:
         journal_lines.append(f"  [Relationship modifier: {rel_mod:+d} (rel={relationship})]")
     if relationship_delta != 0:
         journal_lines.append(f"  [Relationship: {relationship_delta:+d} (check failed)]")
+
+    # 若有话题解锁事件（is_probing_secret 且 rel >= 20），前置到 journal
+    if _unlock_for_dice:
+        journal_lines = _unlock_for_dice + journal_lines
 
     return {
         "journal_events": journal_lines,

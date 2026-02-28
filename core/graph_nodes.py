@@ -110,11 +110,12 @@ def dm_node(state: GameState) -> dict:
     print("🎲 DM Node: Analyzing intent...")
     analysis = analyze_intent(state.get("user_input", ""))
     return {
-        "intent": analysis.get("action_type", "chat"),
+        "intent": analysis.get("action_type", "CHAT"),
         "intent_context": {
             "difficulty_class": analysis.get("difficulty_class", 12),
             "reason": analysis.get("reason", ""),
         },
+        "is_probing_secret": analysis.get("is_probing_secret", False),
     }
 
 
@@ -126,16 +127,18 @@ def dm_node(state: GameState) -> dict:
 def mechanics_node(state: GameState) -> dict:
     """
     根据意图执行技能检定（PERSUASION/DECEPTION/STEALTH/INSIGHT 等）。
+    若 is_probing_secret 为 True，优先走隐性好感度锁判定。
     
     调用 mechanics.execute_skill_check，使用动态 DC（来自 intent_context）、
     好感度修正、失败降好感，并将掷骰明细与结果写入 journal_events。
-    后续 Generation 节点在 [RECENT MEMORIES] 中引用，确保叙事与数值一致。
     """
     intent = state.get("intent", "chat")
-    if intent in ["chat", "command_done", "pending", "gift_given", "item_used"]:
+    is_probing_secret = state.get("is_probing_secret", False)
+    # 非动作意图且非刺探秘密时跳过（如纯 CHAT）
+    if intent in ["chat", "CHAT", "command_done", "pending", "gift_given", "item_used"] and not is_probing_secret:
         return {}
 
-    print(f"⚙️ Mechanics Node: Processing {intent}...")
+    print(f"⚙️ Mechanics Node: Processing {intent} (is_probing_secret={is_probing_secret})...")
     result = mechanics.execute_skill_check(state)
 
     out = {"journal_events": result.get("journal_events", [])}
