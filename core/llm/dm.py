@@ -23,7 +23,7 @@ except Exception as e:
     raise RuntimeError(f"初始化 AI 客户端失败: {e}")
 
 # 初始化 Jinja2 环境（用于加载 DM prompt 模板）
-# 获取当前文件所在目录（core/），然后指向 core/prompts/
+# 获取当前文件所在目录（core/llm/），然后指向 core/llm/prompts/
 _core_dir = os.path.dirname(os.path.abspath(__file__))
 _prompts_dir = os.path.join(_core_dir, "prompts")
 

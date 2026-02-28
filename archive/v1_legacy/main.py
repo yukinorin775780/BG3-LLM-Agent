@@ -9,14 +9,14 @@ from typing import Optional
 from config import settings
 from characters.loader import load_character
 from core.dice import CheckResult, roll_d20
-from core.dm import analyze_intent
-from core import mechanics
-from core import quest
+from core.llm.dm import analyze_intent
+from core.systems import mechanics
+from core.systems import quest
 from core import inventory
-from core.journal import Journal
+from archive.v1_legacy.journal import Journal
 from ui.renderer import GameRenderer
-from core.graph_builder import build_graph
-from core.graph_state import GameState
+from core.graph.graph_builder import build_graph
+from core.graph.graph_state import GameState
 
 # V1 Legacy imports (from same package)
 from archive.v1_legacy.engine import generate_dialogue, parse_ai_response, update_summary

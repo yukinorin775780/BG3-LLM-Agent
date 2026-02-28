@@ -6,7 +6,7 @@ LangGraph 路由逻辑：根据 State 中的 intent 决定下一跳节点。
 """
 
 from typing import Literal, cast
-from core.graph_state import GameState
+from core.graph.graph_state import GameState
 
 # 路由目标：与 graph_builder 中节点名严格一致，返回字符串必须在此枚举内
 INPUT_ROUTE = Literal["dm_analysis", "__end__"]

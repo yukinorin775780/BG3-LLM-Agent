@@ -8,10 +8,10 @@ LangGraph 节点：Input / DM / Mechanics / Generation
 
 from typing import Callable
 from langchain_core.messages import HumanMessage, AIMessage
-from core.graph_state import GameState
-from core.dm import analyze_intent
-from core import mechanics
-from core.inventory import get_registry, Inventory, format_inventory_dict_to_display_list
+from core.graph.graph_state import GameState
+from core.llm.dm import analyze_intent
+from core.systems import mechanics
+from core.systems.inventory import get_registry, Inventory, format_inventory_dict_to_display_list
 from core.engine import generate_dialogue, parse_ai_response
 
 

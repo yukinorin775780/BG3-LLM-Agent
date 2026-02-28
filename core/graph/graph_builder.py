@@ -7,18 +7,18 @@ import os
 import sqlite3
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.sqlite import SqliteSaver
-from core.graph_state import GameState
-from core.graph_routers import route_after_input, route_after_dm
+from core.graph.graph_state import GameState
+from core.graph.graph_routers import route_after_input, route_after_dm
 from characters.loader import load_character
-from core.graph_nodes import input_node, dm_node, mechanics_node, create_generation_node
+from core.graph.graph_nodes import input_node, dm_node, mechanics_node, create_generation_node
 
 
 # -----------------------------------------------------------------------------
 # 持久化：SQLite Checkpointer
 # -----------------------------------------------------------------------------
 
-# 项目根目录（graph_builder 在 core/ 下，上一级为根）
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# 项目根目录（graph_builder 在 core/graph/ 下，上两级为根）
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _MEMORY_DB_PATH = os.path.join(_PROJECT_ROOT, "memory.db")
 
 # 全局连接与 Checkpointer（单例，避免重复创建）

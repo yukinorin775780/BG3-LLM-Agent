@@ -8,7 +8,7 @@ import random
 import re
 from typing import Any, Dict, List, Optional
 
-from core.dice import roll_d20
+from core.systems.dice import roll_d20
 
 
 def calculate_ability_modifier(ability_score: int) -> int:
@@ -575,7 +575,7 @@ def process_dialogue_triggers(
             elif effect_str.startswith("inventory.give:"):
                 item_id = effect_str.split(":", 1)[1].strip()
                 if player_inv and npc_inv:
-                    from core.inventory import get_registry
+                    from core.systems.inventory import get_registry
                     registry = get_registry()
                     item_name = registry.get_name(item_id)
                     if player_inv.remove(item_id):

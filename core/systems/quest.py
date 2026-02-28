@@ -4,7 +4,7 @@ Handles quest tracking and stage progression based on world state flags.
 """
 
 from typing import List, Dict, Any, Optional
-from core import mechanics
+from core.systems import mechanics
 
 
 class QuestManager:

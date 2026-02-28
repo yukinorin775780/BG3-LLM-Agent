@@ -7,7 +7,7 @@ BG3 LLM Agent - V2 Main Entry Point
 
 import sys
 from core import inventory
-from core.graph_builder import build_graph
+from core.graph.graph_builder import build_graph
 from ui.renderer import GameRenderer
 
 # 角色名（用于 UI 显示）

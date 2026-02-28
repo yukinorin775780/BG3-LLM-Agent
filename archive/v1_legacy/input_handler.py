@@ -1,8 +1,8 @@
 from typing import Optional, Dict, Any
-from core import mechanics
+from core.systems import mechanics
 from core.dice import roll_d20
 from core.inventory import Inventory, get_registry
-from core.journal import Journal
+from archive.v1_legacy.journal import Journal
 
 
 class InputHandler:
