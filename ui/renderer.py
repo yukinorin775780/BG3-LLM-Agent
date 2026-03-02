@@ -3,8 +3,10 @@ UI Renderer Module (View Layer)
 Handles all Rich/UI rendering - no game logic
 """
 
+import asyncio
 from typing import Optional
 from rich.console import Console, Group
+from rich.live import Live
 from rich.panel import Panel
 from rich.theme import Theme
 from rich.text import Text
@@ -198,6 +200,35 @@ class GameRenderer:
             style="npc",
             width=80
         ))
+        self.console.print()
+
+    async def print_npc_response_stream(self, name: str, text: str, subtitle: str = "", char_delay: float = 0.02):
+        """
+        异步流式打字机效果：逐字显示 NPC 对话。
+        使用 rich.live.Live 实现动态渲染，Panel 样式与 print_npc_response 保持一致。
+        
+        Args:
+            name: NPC name
+            text: Dialogue text
+            subtitle: Optional subtitle (e.g., "Looking at you warily")
+            char_delay: 每个字符的延迟秒数（默认 0.02）
+        """
+        title = f"[npc]{name}[/npc]"
+        if subtitle:
+            title += f" ({subtitle})"
+        
+        displayed = ""
+        with Live(console=self.console, refresh_per_second=30) as live:
+            for char in text:
+                displayed += char
+                live.update(Panel(
+                    displayed,
+                    title=title,
+                    style="npc",
+                    width=80
+                ))
+                await asyncio.sleep(char_delay)
+        
         self.console.print()
     
     def print_dm_analysis(self, action: str, dc: int):
