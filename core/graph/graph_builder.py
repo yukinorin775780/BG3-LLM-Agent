@@ -82,8 +82,9 @@ def init_checkpointer():
 #   3. 首次 invoke 时传入完整 state_payload；后续 invoke 若需恢复，可传 None 并从
 #      graph.get_state(config) 获取当前状态（用于 UI 展示）
 #
-# 注意：我们的 MemoryManager 仍负责 relationship/inventory/journal 等业务数据的
-# 跨会话持久化；Checkpointer 主要负责图执行过程中的状态恢复与时间旅行。
+# 注意：在 V2 架构中，SqliteSaver (Checkpointer) 作为唯一的 Single Source of Truth，
+# 统一接管了 messages、relationship、inventory 等所有业务状态的跨会话持久化。
+# 彻底废弃了原有的 JSON 文件读写方案。
 # -----------------------------------------------------------------------------
 
 

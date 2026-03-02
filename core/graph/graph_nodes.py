@@ -53,17 +53,21 @@ def input_node(state: GameState) -> dict:
                 del new_p[item_key]
             new_n = dict(npc_inv)
             new_n[item_key] = new_n.get(item_key, 0) + 1
+            response_text = f"[SYSTEM] You gave {item_key} to Shadowheart."
             return {
                 "player_inventory": new_p,
                 "npc_inventory": new_n,
                 "relationship": state.get("relationship", 0) + 2,
                 "journal_events": [f"Player gave {item_key} to NPC."],
-                "final_response": f"[SYSTEM] You gave {item_key} to Shadowheart.",
+                "final_response": response_text,
                 "intent": "gift_given",
+                "messages": [HumanMessage(content=user_input), AIMessage(content=response_text)],
             }
+        response_text = f"[SYSTEM] You don't have {item_key}."
         return {
-            "final_response": f"[SYSTEM] You don't have {item_key}.",
+            "final_response": response_text,
             "intent": "command_done",
+            "messages": [HumanMessage(content=user_input), AIMessage(content=response_text)],
         }
 
     # --- /USE <item> ---
@@ -76,21 +80,27 @@ def input_node(state: GameState) -> dict:
             new_p[item_key] = new_p[item_key] - 1
             if new_p[item_key] <= 0:
                 del new_p[item_key]
+            response_text = f"[SYSTEM] You used {item_key}: {effect['message']}"
             return {
                 "player_inventory": new_p,
                 "journal_events": [f"Player used {item_key}: {effect['message']}"],
-                "final_response": f"[SYSTEM] You used {item_key}: {effect['message']}",
+                "final_response": response_text,
                 "intent": "item_used",
+                "messages": [HumanMessage(content=user_input), AIMessage(content=response_text)],
             }
+        response_text = f"[SYSTEM] You don't have {item_key}."
         return {
-            "final_response": f"[SYSTEM] You don't have {item_key}.",
+            "final_response": response_text,
             "intent": "command_done",
+            "messages": [HumanMessage(content=user_input), AIMessage(content=response_text)],
         }
 
     # --- 未知命令 ---
+    response_text = "[SYSTEM] Unknown command."
     return {
-        "final_response": "[SYSTEM] Unknown command.",
+        "final_response": response_text,
         "intent": "command_done",
+        "messages": [HumanMessage(content=user_input), AIMessage(content=response_text)],
     }
 
 
