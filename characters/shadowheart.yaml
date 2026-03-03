@@ -190,3 +190,19 @@ quests:
     condition: flags.entered_temple == True
     status: ACTIVE
 attributes: {}
+
+# 阶段 1 (默认情况)：没有任何 Flag 时，系统默认走 DM 节点的逻辑。聊到莎尔就是 is_probing_secret=True。不需要额外写规则。
+narrative_rules:
+  # 阶段 2 (中期：秘密公开)
+  - id: "shar_secret_revealed_normalized"
+    description: "当影心主动或被动坦白了莎尔信徒的身份后，玩家再提及莎尔，不再被视为'刺探机密'，而是正常的观点交流。"
+    condition: "flags.get('secret_revealed', False) and is_probing_secret"
+    overrides:
+      is_probing_secret: false
+  # 阶段 3 (后期：信仰崩塌)
+  - id: "shar_abandoned_resonance"
+    description: "当影心抛弃信仰后，玩家如果辱骂莎尔（被 DM 误判为敌意攻击或威吓），将其彻底反转为友善的'共鸣/说服'，并解除机密判定。"
+    condition: "flags.get('abandoned_shar', False) and (is_probing_secret or action_type in ['INTIMIDATION', 'ATTACK'])"
+    overrides:
+      is_probing_secret: false
+      action_type: "PERSUASION"

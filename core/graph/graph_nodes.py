@@ -22,7 +22,7 @@ from core.engine import generate_dialogue, parse_ai_response
 
 def input_node(state: GameState) -> dict:
     """
-    处理斜杠命令（/give, /use）。
+    处理斜杠命令（/give, /use, /add, /flag）。
     
     解耦原则：直接返回需要修改的字段，不手动合并。
     - player_inventory / npc_inventory: 返回完整新 dict，Graph 覆盖
@@ -30,7 +30,10 @@ def input_node(state: GameState) -> dict:
     - 保持命令逻辑清晰，状态更新交给框架
     """
     user_input = state.get("user_input", "").strip()
-    base = {"intent": "pending"}
+    base = {
+        "intent": "pending",
+        "is_probing_secret": False,  # [核心修复] 每次输入前强制洗刷上一轮的禁忌状态
+    }
 
     if not user_input:
         return base
@@ -61,12 +64,14 @@ def input_node(state: GameState) -> dict:
                 "journal_events": [f"Player gave {item_key} to NPC."],
                 "final_response": response_text,
                 "intent": "gift_given",
+                "is_probing_secret": False,
                 "messages": [HumanMessage(content=user_input), AIMessage(content=response_text)],
             }
         response_text = f"[SYSTEM] You don't have {item_key}."
         return {
             "final_response": response_text,
             "intent": "command_done",
+            "is_probing_secret": False,
             "messages": [HumanMessage(content=user_input), AIMessage(content=response_text)],
         }
 
@@ -86,12 +91,46 @@ def input_node(state: GameState) -> dict:
                 "journal_events": [f"Player used {item_key}: {effect['message']}"],
                 "final_response": response_text,
                 "intent": "item_used",
+                "is_probing_secret": False,
                 "messages": [HumanMessage(content=user_input), AIMessage(content=response_text)],
             }
         response_text = f"[SYSTEM] You don't have {item_key}."
         return {
             "final_response": response_text,
             "intent": "command_done",
+            "is_probing_secret": False,
+            "messages": [HumanMessage(content=user_input), AIMessage(content=response_text)],
+        }
+
+    # --- /ADD <item> (开发者指令) ---
+    if command == "/add" and len(parts) > 1:
+        item_key = parts[1]
+        new_p = dict(player_inv)
+        new_p[item_key] = new_p.get(item_key, 0) + 1
+        response_text = f"[SYSTEM] DevMode: Added {item_key} to your inventory."
+        return {
+            "player_inventory": new_p,
+            "final_response": response_text,
+            "intent": "command_done",
+            "is_probing_secret": False,
+            "messages": [HumanMessage(content=user_input), AIMessage(content=response_text)],
+        }
+
+    # --- /FLAG <key> <value> (开发者指令：动态修改标志位) ---
+    if command == "/flag" and len(parts) > 2:
+        flag_key = parts[1]
+        flag_val_str = parts[2].lower()
+        flag_val = True if flag_val_str in ("true", "1", "yes", "on") else False
+
+        new_flags = dict(state.get("flags", {}))
+        new_flags[flag_key] = flag_val
+
+        response_text = f"[SYSTEM] DevMode: Flag '{flag_key}' set to {flag_val}."
+        return {
+            "flags": new_flags,
+            "final_response": response_text,
+            "intent": "command_done",
+            "is_probing_secret": False,
             "messages": [HumanMessage(content=user_input), AIMessage(content=response_text)],
         }
 
@@ -100,6 +139,7 @@ def input_node(state: GameState) -> dict:
     return {
         "final_response": response_text,
         "intent": "command_done",
+        "is_probing_secret": False,
         "messages": [HumanMessage(content=user_input), AIMessage(content=response_text)],
     }
 
@@ -118,7 +158,7 @@ def dm_node(state: GameState) -> dict:
         return {}
 
     print("🎲 DM Node: Analyzing intent...")
-    analysis = analyze_intent(state.get("user_input", ""))
+    analysis = analyze_intent(state.get("user_input", ""), flags=state.get("flags", {}))
     return {
         "intent": analysis.get("action_type", "CHAT"),
         "intent_context": {

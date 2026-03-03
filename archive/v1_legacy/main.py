@@ -185,7 +185,7 @@ def main():
     while session.running:
         try:
             active_quests = quest.QuestManager.check_quests(character.quests, session.flags)
-            ui.print(ui.show_dashboard(
+            ui.print(ui.show_dashboard_legacy(
                 player_data["name"],
                 attributes["name"],
                 session.relationship_score,

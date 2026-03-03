@@ -6,6 +6,7 @@ Handles all Rich/UI rendering - no game logic
 import asyncio
 from typing import Optional
 from rich.console import Console, Group
+from rich.columns import Columns
 from rich.live import Live
 from rich.panel import Panel
 from rich.theme import Theme
@@ -46,7 +47,51 @@ class GameRenderer:
         self.console.print(Rule(f"[bold purple]{title_text}[/bold purple]", style="bold purple"))
         self.console.print()
     
-    def show_dashboard(self, player_name: str, npc_name: str, relationship: int, npc_state: dict, active_quests: Optional[list] = None, player_inventory: Optional[Inventory] = None, npc_inventory: Optional[Inventory] = None, journal: Optional[list] = None) -> Group:
+    def show_dashboard(self, state: dict):
+        """
+        渲染顶部战术仪表盘（V2 状态驱动）。
+        从 state 字典读取 relationship、player_inventory、npc_inventory。
+        """
+        rel_score = state.get("relationship", 0)
+        rel_color = "green" if rel_score >= 10 else "red" if rel_score < 0 else "yellow"
+
+        rel_panel = Panel(
+            f"[{rel_color}]{rel_score}[/{rel_color}] / 100",
+            title="❤️ 好感度",
+            border_style="dim",
+            expand=False,
+        )
+
+        def _format_inv(inv: dict) -> str:
+            if not inv:
+                return "[dim]空无一物[/dim]"
+            try:
+                from core.systems.inventory import get_registry
+                registry = get_registry()
+                lines = [f"• {registry.get_name(k)}: {v}" for k, v in inv.items()]
+            except Exception:
+                lines = [f"• {k}: {v}" for k, v in inv.items()]
+            return "\n".join(lines)
+
+        player_inv = state.get("player_inventory", {})
+        npc_inv = state.get("npc_inventory", {})
+
+        player_inv_panel = Panel(
+            _format_inv(player_inv),
+            title="🎒 你的背包",
+            border_style="blue",
+            expand=False,
+        )
+        npc_inv_panel = Panel(
+            _format_inv(npc_inv),
+            title="📦 影心的背包",
+            border_style="magenta",
+            expand=False,
+        )
+
+        self.console.print(Columns([rel_panel, player_inv_panel, npc_inv_panel]))
+
+    def show_dashboard_legacy(self, player_name: str, npc_name: str, relationship: int, npc_state: dict, active_quests: Optional[list] = None, player_inventory: Optional[Inventory] = None, npc_inventory: Optional[Inventory] = None, journal: Optional[list] = None) -> Group:
         """
         Render the dashboard panels showing game status, quest journal, and recent events.
         

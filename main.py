@@ -86,6 +86,14 @@ async def main_async():
         # -------------------------------------------------------------------------
         while True:
             try:
+                # 获取当前最新状态并展示仪表盘
+                current_snapshot = await graph.aget_state(config)
+                current_state = current_snapshot.values if hasattr(current_snapshot, "values") else {}
+
+                ui.print_rule("📊 战术状态面板", style="bold blue")
+                ui.show_dashboard(current_state)
+                ui.print()
+
                 user_input = ui.input_prompt()
 
                 # 空输入

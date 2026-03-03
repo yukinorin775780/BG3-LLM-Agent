@@ -6,6 +6,7 @@ Analyzes player intent and determines game mechanics (skill checks, DC, etc.)
 import os
 import json
 import re
+from characters.loader import load_character
 from typing import Dict, Any
 from openai import OpenAI
 from jinja2 import Environment, FileSystemLoader, TemplateNotFound
@@ -84,13 +85,41 @@ def parse_json_response(text: str) -> Dict[str, Any]:
     return json.loads(text)
 
 
-def analyze_intent(user_input: str) -> Dict[str, Any]:
+def _evaluate_narrative_rules(analysis: dict, flags: dict) -> dict:
+    """数据驱动的规则引擎：解析 YAML 中的条件表达式，动态覆盖 DM 判定结果"""
+    char = load_character("shadowheart")
+    rules = char.data.get("narrative_rules", [])
+    if not rules:
+        return analysis
+
+    action_type = analysis.get("action_type", "")
+    is_probing_secret = analysis.get("is_probing_secret", False)
+
+    for rule in rules:
+        condition_str = rule.get("condition", "False")
+        try:
+            if eval(
+                condition_str,
+                {"flags": flags, "action_type": action_type, "is_probing_secret": is_probing_secret},
+            ):
+                overrides = rule.get("overrides", {})
+                for key, value in overrides.items():
+                    analysis[key] = value
+                print(f"🔮 [Rule Engine] 触发叙事规则覆写: {rule.get('id')}")
+        except Exception as e:
+            print(f"⚠️ [Rule Engine] 规则 '{rule.get('id')}' 解析失败: {e}")
+
+    return analysis
+
+
+def analyze_intent(user_input: str, flags: dict = None) -> Dict[str, Any]:
     """
     Analyze player intent and determine game mechanics.
     
     Args:
         user_input: The player's input text
-    
+        flags: Current world-state flags for context-aware intent analysis and rule engine
+
     Returns:
         dict: Intent analysis result with keys:
             - action_type: str (DECEPTION, PERSUASION, INTIMIDATION, INSIGHT, ATTACK, NONE)
@@ -101,9 +130,10 @@ def analyze_intent(user_input: str) -> Dict[str, Any]:
         RuntimeError: If template loading or LLM call fails
         json.JSONDecodeError: If JSON parsing fails
     """
+    flags = flags or {}
     # Load and render template
     template = load_dm_template()
-    prompt = template.render(user_input=user_input)
+    prompt = template.render(user_input=user_input, flags=flags)
     
     response_text: str | None = None
     
@@ -139,8 +169,8 @@ def analyze_intent(user_input: str) -> Dict[str, Any]:
         
         # Topic flag: is_probing_secret (optional, default False)
         intent_data['is_probing_secret'] = bool(intent_data.get('is_probing_secret', False))
-        
-        return intent_data
+
+        return _evaluate_narrative_rules(intent_data, flags)
         
     except json.JSONDecodeError as e:
         error_msg = f"Failed to parse JSON from DM response: {e}"
