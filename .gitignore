@@ -63,6 +63,7 @@ db.sqlite3-journal
 
 # LangGraph Checkpointer
 memory.db
+test_memory.db
 
 # Flask stuff:
 instance/

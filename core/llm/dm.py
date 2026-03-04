@@ -112,13 +112,14 @@ def _evaluate_narrative_rules(analysis: dict, flags: dict) -> dict:
     return analysis
 
 
-def analyze_intent(user_input: str, flags: dict = None) -> Dict[str, Any]:
+def analyze_intent(user_input: str, flags: Dict[str, Any] | None = None, time_of_day: str = "晨曦 (Morning)", hp: int = 20) -> Dict[str, Any]:
     """
     Analyze player intent and determine game mechanics.
     
     Args:
         user_input: The player's input text
         flags: Current world-state flags for context-aware intent analysis and rule engine
+        hp: NPC current HP for濒死拦截
 
     Returns:
         dict: Intent analysis result with keys:
@@ -130,10 +131,19 @@ def analyze_intent(user_input: str, flags: dict = None) -> Dict[str, Any]:
         RuntimeError: If template loading or LLM call fails
         json.JSONDecodeError: If JSON parsing fails
     """
+    # 濒死拦截：HP <= 0 时 NPC 已昏迷，跳过 LLM 判定
+    if hp <= 0:
+        return {
+            "action_type": "CHAT",
+            "difficulty_class": 0,
+            "reason": "NPC is unconscious/dead.",
+            "is_probing_secret": False,
+        }
+
     flags = flags or {}
     # Load and render template
     template = load_dm_template()
-    prompt = template.render(user_input=user_input, flags=flags)
+    prompt = template.render(user_input=user_input, flags=flags, time_of_day=time_of_day)
     
     response_text: str | None = None
     

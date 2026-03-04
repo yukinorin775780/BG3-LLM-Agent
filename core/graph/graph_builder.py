@@ -6,9 +6,24 @@ Checkpointer 由调用方（如 main.py）创建并传入，支持 AsyncSqliteSa
 
 from langgraph.graph import StateGraph, START, END
 from core.graph.graph_state import GameState
-from core.graph.graph_routers import route_after_input, route_after_dm
+from core.graph.graph_routers import route_after_dm
+
+
+def route_after_input(state: dict) -> str:
+    """拦截开发者指令，防止世界时间流逝"""
+    intent = state.get("intent", "")
+    if intent in ("dev_command", "command_failed"):
+        return "__end__"
+    return "world_tick"
+
+
+def route_after_tick(state: dict) -> str:
+    """只短路 system_wait；聊天和 action_use 进入 DM 判定和大模型反应"""
+    if state.get("intent") == "system_wait":
+        return "__end__"
+    return "dm_analysis"
 from characters.loader import load_character
-from core.graph.graph_nodes import input_node, dm_node, mechanics_node, create_generation_node
+from core.graph.graph_nodes import input_node, world_tick_node, dm_node, mechanics_node, create_generation_node
 
 
 # -----------------------------------------------------------------------------
@@ -45,6 +60,7 @@ def build_graph(checkpointer=None):
 
     # 1. Add Nodes
     builder.add_node("input_processing", input_node)
+    builder.add_node("world_tick", world_tick_node)
     builder.add_node("dm_analysis", dm_node)
     builder.add_node("mechanics_processing", mechanics_node)
     builder.add_node("generation", create_generation_node(load_character("shadowheart")))  # type: ignore[arg-type]
@@ -54,6 +70,11 @@ def build_graph(checkpointer=None):
     builder.add_conditional_edges(
         "input_processing",
         route_after_input,
+        {"__end__": END, "world_tick": "world_tick"},
+    )
+    builder.add_conditional_edges(
+        "world_tick",
+        route_after_tick,
         {"dm_analysis": "dm_analysis", "__end__": END},
     )
     builder.add_conditional_edges(

@@ -68,6 +68,10 @@ class GameState(TypedDict, total=False):
     # Quest & World [PERSISTENT]
     # -------------------------------------------------------------------------
     flags: Dict[str, bool]
+    turn_count: int         # 世界心跳：当前回合数
+    time_of_day: str        # 世界心跳：当前时段 (晨曦/正午/黄昏/深夜)
+    hp: int                 # NPC 生命值 (默认满血 20)
+    active_buffs: List[Dict[str, Any]]  # 当前挂载的状态效果 [{id, duration, value}, ...]
 
     # -------------------------------------------------------------------------
     # Journal Events [TRANSIENT within turn]

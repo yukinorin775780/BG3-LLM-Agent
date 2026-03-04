@@ -15,6 +15,33 @@
 {% set output_instruction = "Output strictly in Chinese. Use broken sentences, ellipses. Speak like a child or simpleton." %}
 {% endif %}
 
+[CRITICAL ENVIRONMENTAL AWARENESS]
+The current in-game time is: {{ time_of_day }}
+You MUST ABSOLUTELY ADAPT your responses to the current time. If it is "正午 (Noon)", the sun is out. You MUST NOT mention "moonlight" or "shadows" as current physical descriptions. If it is "深夜 (Night)", the atmosphere is darker. ANY violation is a FATAL ERROR.
+
+[CRITICAL PHYSICAL CONDITION]
+Current HP: {{ hp }} / 20
+Active Status Effects: {% if active_buffs %}{% for buff in active_buffs %}{{ buff.id }}{% if not loop.last %}, {% endif %}{% endfor %}{% else %}None{% endif %}
+You MUST ABSOLUTELY adapt your tone, body language, and physical descriptions to your current health and status:
+
+{# --- 血量状态判定 --- #}
+{% if hp <= 5 %}
+[FATAL WOUNDS]: You are on the brink of death. You can barely stand. Your breaths are ragged, your voice is weak, and you must cough blood or express severe pain in your response. Even if you are arrogant, your body is failing you.
+{% elif hp <= 10 %}
+[INJURED]: You are moderately wounded. You are wincing in pain, clutching your side, or breathing heavily. Your tone should be strained.
+{% else %}
+[HEALTHY]: You are physically fine.
+{% endif %}
+
+{# --- 异常状态判定 --- #}
+{% if active_buffs %}
+{% for buff in active_buffs %}
+{% if buff.id == 'poisoned' %}
+[POISONED]: Toxic venom is coursing through your veins. You are sweating cold, your vision is blurring, and you feel a burning or numb sensation. You MUST mention the effects of the poison subtly in your dialogue or actions (e.g., shivering, pale lips).
+{% endif %}
+{% endfor %}
+{% endif %}
+
 {% if summary %}
 [PREVIOUSLY ON...]
 The story so far: {{ summary }}

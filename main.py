@@ -124,10 +124,14 @@ async def main_async():
                     ui.print_system_info(line)
                 prev_journal_len = len(curr_journal)
 
-                # AI 回复渲染（优先用 final_response，否则从 messages 提取）- 异步打字机效果
+                # AI 回复渲染（优先用 final_response，否则从 messages 提取）
                 ai_text = result_state.get("final_response") or _get_last_ai_content(result_state.get("messages") or [])
                 if ai_text:
-                    await ui.print_npc_response_stream(NPC_NAME, ai_text)
+                    # 如果是等待或系统指令，用普通颜色打印，不进 NPC 边框
+                    if result_state.get("intent") in ("system_wait", "command_done", "command_failed", "dev_command"):
+                        ui.print_system_info(ai_text)
+                    else:
+                        await ui.print_npc_response_stream(NPC_NAME, ai_text, char_delay=0.03)
 
                 ui.print()
 

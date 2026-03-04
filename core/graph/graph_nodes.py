@@ -33,6 +33,10 @@ def input_node(state: GameState) -> dict:
     base = {
         "intent": "pending",
         "is_probing_secret": False,  # [核心修复] 每次输入前强制洗刷上一轮的禁忌状态
+        "turn_count": state.get("turn_count", 0),
+        "time_of_day": state.get("time_of_day", "晨曦 (Morning)"),
+        "hp": state.get("hp", 20),
+        "active_buffs": state.get("active_buffs", []),
     }
 
     if not user_input:
@@ -75,45 +79,105 @@ def input_node(state: GameState) -> dict:
             "messages": [HumanMessage(content=user_input), AIMessage(content=response_text)],
         }
 
-    # --- /USE <item> ---
-    if command == "/use" and len(parts) > 1:
-        item_key = parts[1]
-        if player_inv.get(item_key, 0) > 0:
-            item_data = get_registry().get(item_key)
-            effect = mechanics.apply_item_effect(item_key, item_data)
-            new_p = dict(player_inv)
-            new_p[item_key] = new_p[item_key] - 1
-            if new_p[item_key] <= 0:
-                del new_p[item_key]
-            response_text = f"[SYSTEM] You used {item_key}: {effect['message']}"
-            return {
-                "player_inventory": new_p,
-                "journal_events": [f"Player used {item_key}: {effect['message']}"],
-                "final_response": response_text,
-                "intent": "item_used",
-                "is_probing_secret": False,
-                "messages": [HumanMessage(content=user_input), AIMessage(content=response_text)],
-            }
-        response_text = f"[SYSTEM] You don't have {item_key}."
-        return {
-            "final_response": response_text,
-            "intent": "command_done",
-            "is_probing_secret": False,
-            "messages": [HumanMessage(content=user_input), AIMessage(content=response_text)],
-        }
-
-    # --- /ADD <item> (开发者指令) ---
-    if command == "/add" and len(parts) > 1:
-        item_key = parts[1]
+    # --- /ADD <item_id> (开发者指令：刷物品) ---
+    if command == "/add" and len(parts) >= 2:
+        item_id = parts[1]
         new_p = dict(player_inv)
-        new_p[item_key] = new_p.get(item_key, 0) + 1
-        response_text = f"[SYSTEM] DevMode: Added {item_key} to your inventory."
+        new_p[item_id] = new_p.get(item_id, 0) + 1
         return {
             "player_inventory": new_p,
-            "final_response": response_text,
-            "intent": "command_done",
+            "intent": "dev_command",
+            "final_response": f"[SYSTEM] DevMode: 获得了 {item_id}。",
             "is_probing_secret": False,
-            "messages": [HumanMessage(content=user_input), AIMessage(content=response_text)],
+        }
+
+    # --- /WAIT (等待一回合) ---
+    if command == "/wait":
+        return {
+            "intent": "system_wait",
+            "final_response": "⏳ 时间流逝……周围静悄悄的。",
+            "is_probing_secret": False,
+        }
+
+    # --- /BUFF <status_id> <duration> <value> (开发者指令：加状态) ---
+    if command == "/buff" and len(parts) >= 4:
+        buff_id = parts[1]
+        duration = int(parts[2])
+        value = int(parts[3])
+
+        new_buffs = list(state.get("active_buffs", []))
+        new_buffs.append({"id": buff_id, "duration": duration, "value": value})
+
+        response_text = f"[SYSTEM] DevMode: 施加状态 '{buff_id}'，持续 {duration} 回合，数值 {value}/回合。"
+        return {
+            "active_buffs": new_buffs,
+            "intent": "dev_command",
+            "final_response": response_text,
+            "is_probing_secret": False,
+        }
+
+    # --- /USE <item_id> [target] (玩家动作：使用物品) ---
+    if command == "/use" and len(parts) >= 2:
+        item_id = parts[1]
+        target = parts[2] if len(parts) >= 3 else "shadowheart"
+
+        if player_inv.get(item_id, 0) <= 0:
+            return {
+                "intent": "command_failed",
+                "final_response": f"[SYSTEM] 你的背包里没有 '{item_id}'。",
+                "is_probing_secret": False,
+            }
+
+        new_p = dict(player_inv)
+        new_p[item_id] = new_p[item_id] - 1
+        if new_p[item_id] <= 0:
+            del new_p[item_id]
+
+        if item_id == "healing_potion":
+            if target == "shadowheart":
+                current_hp = state.get("hp", 20)
+                new_hp = min(20, current_hp + 10)
+                action_msg = "*你强行掰开影心的嘴，给她灌下了治疗药水。她的生命值恢复了。*"
+                return {
+                    "hp": new_hp,
+                    "player_inventory": new_p,
+                    "intent": "action_use",
+                    "messages": [HumanMessage(content=action_msg)],
+                    "final_response": "",
+                    "is_probing_secret": False,
+                }
+            elif target == "player":
+                return {
+                    "player_inventory": new_p,
+                    "intent": "action_use",
+                    "messages": [HumanMessage(content="*你喝下了一瓶治疗药水。*")],
+                    "final_response": "",
+                    "is_probing_secret": False,
+                }
+            else:
+                # 未知目标默认视为 shadowheart
+                current_hp = state.get("hp", 20)
+                new_hp = min(20, current_hp + 10)
+                action_msg = "*你强行掰开影心的嘴，给她灌下了治疗药水。她的生命值恢复了。*"
+                return {
+                    "hp": new_hp,
+                    "player_inventory": new_p,
+                    "intent": "action_use",
+                    "messages": [HumanMessage(content=action_msg)],
+                    "final_response": "",
+                    "is_probing_secret": False,
+                }
+
+        # 其他物品：走通用效果
+        item_data = get_registry().get(item_id)
+        effect = mechanics.apply_item_effect(item_id, item_data)
+        return {
+            "player_inventory": new_p,
+            "journal_events": [f"Player used {item_id}: {effect['message']}"],
+            "final_response": f"[SYSTEM] You used {item_id}: {effect['message']}",
+            "intent": "item_used",
+            "is_probing_secret": False,
+            "messages": [HumanMessage(content=user_input), AIMessage(content=f"[SYSTEM] You used {item_id}: {effect['message']}")],
         }
 
     # --- /FLAG <key> <value> (开发者指令：动态修改标志位) ---
@@ -145,6 +209,62 @@ def input_node(state: GameState) -> dict:
 
 
 # =============================================================================
+# Node 1.5: World Tick 世界心跳
+# =============================================================================
+
+
+def world_tick_node(state: dict) -> dict:
+    """世界心跳节点：推进回合数，结算环境与状态效果"""
+    from ui.renderer import GameRenderer
+
+    ui = GameRenderer()
+    current_turn = state.get("turn_count", 0) + 1
+
+    # 简单的时间流逝逻辑：每 3 个回合切换一次昼夜
+    time_cycles = ["晨曦 (Morning)", "正午 (Noon)", "黄昏 (Dusk)", "深夜 (Night)"]
+    cycle_index = (current_turn // 3) % 4
+    new_time = time_cycles[cycle_index]
+
+    ui.print_system_info(f"⏳ [World Tick] 回合推进至 {current_turn} | 当前时间: {new_time}")
+
+    # --- 通用状态结算 (Status Effects Resolution) ---
+    current_hp = state.get("hp", 20)
+    buffs = list(state.get("active_buffs", []))
+    surviving_buffs = []
+
+    for buff in buffs:
+        b_id = buff["id"]
+        b_val = buff.get("value", 0)
+
+        # 1. 触发效果 (大同小异的数值结算)
+        if b_id in ["poisoned", "burning", "bleeding"]:
+            old_hp = current_hp
+            current_hp = max(0, current_hp - b_val)
+            actual_damage = old_hp - current_hp
+            ui.print_system_info(f"🩸 [Status] 影心因 {b_id} 受到 {actual_damage} 点伤害！剩余 HP: {current_hp}")
+        elif b_id in ["regeneration"]:
+            current_hp = min(20, current_hp + b_val)
+            ui.print_system_info(f"✨ [Status] 影心因 {b_id} 恢复 {b_val} 点生命！剩余 HP: {current_hp}")
+
+        # 2. 扣除持续时间
+        buff["duration"] -= 1
+        if buff["duration"] > 0:
+            surviving_buffs.append(buff)
+        else:
+            ui.print_system_info(f"💨 [Status] {b_id} 状态已解除。")
+
+    # 确保 HP 不低于 0
+    current_hp = max(0, current_hp)
+
+    return {
+        "turn_count": current_turn,
+        "time_of_day": new_time,
+        "hp": current_hp,
+        "active_buffs": surviving_buffs,
+    }
+
+
+# =============================================================================
 # Node 2: DM 意图分析
 # =============================================================================
 
@@ -158,7 +278,12 @@ def dm_node(state: GameState) -> dict:
         return {}
 
     print("🎲 DM Node: Analyzing intent...")
-    analysis = analyze_intent(state.get("user_input", ""), flags=state.get("flags", {}))
+    analysis = analyze_intent(
+        state.get("user_input", ""),
+        flags=state.get("flags", {}),
+        time_of_day=state.get("time_of_day", "晨曦 (Morning)"),
+        hp=state.get("hp", 20),
+    )
     return {
         "intent": analysis.get("action_type", "CHAT"),
         "intent_context": {
@@ -234,6 +359,19 @@ def create_generation_node(character) -> Callable[[GameState], dict]:
         """
         print("🗣️ Generation Node: Shadowheart is speaking...")
 
+        # 濒死拦截：HP <= 0 时不走 LLM，直接返回物理系统的死亡判定
+        hp = state.get("hp", 20)
+        if hp <= 0:
+            death_msg = "🩸 影心倒在地上，失去了意识。周围陷入了死寂。"
+            return {
+                "final_response": death_msg,
+                "thought_process": "",
+                "messages": [
+                    HumanMessage(content=state.get("user_input", "")),
+                    AIMessage(content="[SYSTEM] 影心已经倒在血泊中，失去了意识。你无法再与她交谈。"),
+                ],
+            }
+
         user_input = state.get("user_input", "")
         relationship = state.get("relationship", 0)
         flags = state.get("flags", {})
@@ -275,8 +413,8 @@ def create_generation_node(character) -> Callable[[GameState], dict]:
         has_healing_potion = (npc_inv.get("healing_potion", 0) or 0) >= 1
 
         # -------------------------------------------------------------------------
-        # 4. 注入提示词：把当前背包清单与标志位传入 render_prompt，确保影心
-        #    「知道」自己身上有什么，从而只描述实际拥有的物品行为，避免幻觉。
+        # 4. 注入提示词：把当前背包、标志位、时间、HP、Buff 传入 render_prompt。
+        #    生理数据（hp, active_buffs）打通物理引擎与大模型的「痛觉神经」。
         # -------------------------------------------------------------------------
         system_prompt = character.render_prompt(
             relationship_score=relationship,
@@ -285,6 +423,9 @@ def create_generation_node(character) -> Callable[[GameState], dict]:
             journal_entries=journal_events,
             inventory_items=inventory_display_list,
             has_healing_potion=has_healing_potion,
+            time_of_day=state.get("time_of_day", "晨曦 (Morning)"),
+            hp=state.get("hp", 20),
+            active_buffs=state.get("active_buffs", []),
         )
 
         # messages 符合 add_messages：从 state 读取，转为 engine 所需格式

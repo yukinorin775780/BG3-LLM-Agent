@@ -50,8 +50,16 @@ class GameRenderer:
     def show_dashboard(self, state: dict):
         """
         渲染顶部战术仪表盘（V2 状态驱动）。
-        从 state 字典读取 relationship、player_inventory、npc_inventory。
+        从 state 字典读取 relationship、player_inventory、npc_inventory、turn_count、time_of_day、hp、active_buffs。
         """
+        turn = state.get("turn_count", 0)
+        time_str = state.get("time_of_day", "晨曦 (Morning)")
+        hp = state.get("hp", 20)
+        buffs = state.get("active_buffs", [])
+        buff_str = ", ".join([f"{b['id']}({b['duration']}t)" for b in buffs]) if buffs else "无"
+        hp_bar = "❤️" * (hp // 2) + "🤍" * ((20 - hp) // 2)
+        self.print(f"[bold cyan]🌍 时间: {time_str} | ⏳ 回合: {turn}[/bold cyan] | [bold red]HP: {hp}/20 {hp_bar}[/bold red] | [bold yellow]Buffs: {buff_str}[/bold yellow]")
+
         rel_score = state.get("relationship", 0)
         rel_color = "green" if rel_score >= 10 else "red" if rel_score < 0 else "yellow"
 

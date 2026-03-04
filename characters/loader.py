@@ -207,6 +207,9 @@ class Character:
         journal_entries: Optional[List[str]] = None,
         inventory_items: Optional[List[str]] = None,
         has_healing_potion: bool = False,
+        time_of_day: str = "晨曦 (Morning)",
+        hp: int = 20,
+        active_buffs: Optional[List[dict]] = None,
     ) -> str:
         """
         Render the system prompt for this character based on current relationship, flags, summary,
@@ -232,7 +235,9 @@ class Character:
             journal_entries = []
         if inventory_items is None:
             inventory_items = []
-        
+        if active_buffs is None:
+            active_buffs = []
+
         return self.loader.render_prompt(
             name=self.name,
             attributes=current_attributes,
@@ -241,6 +246,9 @@ class Character:
             journal_entries=journal_entries,
             inventory_items=inventory_items,
             has_healing_potion=has_healing_potion,
+            time_of_day=time_of_day,
+            hp=hp,
+            active_buffs=active_buffs,
         )
 
 # =========================================================================
