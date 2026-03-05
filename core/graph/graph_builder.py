@@ -22,7 +22,6 @@ def route_after_tick(state: dict) -> str:
     if state.get("intent") == "system_wait":
         return "__end__"
     return "dm_analysis"
-from characters.loader import load_character
 from core.graph.graph_nodes import input_node, world_tick_node, dm_node, mechanics_node, create_generation_node
 
 
@@ -60,10 +59,10 @@ def build_graph(checkpointer=None):
 
     # 1. Add Nodes
     builder.add_node("input_processing", input_node)
-    builder.add_node("world_tick", world_tick_node)
+    builder.add_node("world_tick", world_tick_node)  # type: ignore[arg-type]
     builder.add_node("dm_analysis", dm_node)
     builder.add_node("mechanics_processing", mechanics_node)
-    builder.add_node("generation", create_generation_node(load_character("shadowheart")))  # type: ignore[arg-type]
+    builder.add_node("generation", create_generation_node())  # type: ignore[arg-type]
 
     # 2. Add Edges & Routing
     builder.add_edge(START, "input_processing")

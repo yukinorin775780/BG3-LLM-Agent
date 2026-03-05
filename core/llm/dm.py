@@ -85,9 +85,9 @@ def parse_json_response(text: str) -> Dict[str, Any]:
     return json.loads(text)
 
 
-def _evaluate_narrative_rules(analysis: dict, flags: dict) -> dict:
+def _evaluate_narrative_rules(analysis: dict, flags: dict, target_npc: str = "shadowheart") -> dict:
     """数据驱动的规则引擎：解析 YAML 中的条件表达式，动态覆盖 DM 判定结果"""
-    char = load_character("shadowheart")
+    char = load_character(target_npc)
     rules = char.data.get("narrative_rules", [])
     if not rules:
         return analysis
@@ -112,7 +112,7 @@ def _evaluate_narrative_rules(analysis: dict, flags: dict) -> dict:
     return analysis
 
 
-def analyze_intent(user_input: str, flags: Dict[str, Any] | None = None, time_of_day: str = "晨曦 (Morning)", hp: int = 20) -> Dict[str, Any]:
+def analyze_intent(user_input: str, flags: Dict[str, Any] | None = None, time_of_day: str = "晨曦 (Morning)", hp: int = 20, available_npcs: list | None = None) -> Dict[str, Any]:
     """
     Analyze player intent and determine game mechanics.
     
@@ -141,9 +141,11 @@ def analyze_intent(user_input: str, flags: Dict[str, Any] | None = None, time_of
         }
 
     flags = flags or {}
+    available_npcs = available_npcs or ["shadowheart", "astarion"]
+    npcs_str = ", ".join(f'"{n}"' for n in available_npcs)
     # Load and render template
     template = load_dm_template()
-    prompt = template.render(user_input=user_input, flags=flags, time_of_day=time_of_day)
+    prompt = template.render(user_input=user_input, flags=flags, time_of_day=time_of_day, available_npcs=npcs_str)
     
     response_text: str | None = None
     
@@ -180,7 +182,13 @@ def analyze_intent(user_input: str, flags: Dict[str, Any] | None = None, time_of
         # Topic flag: is_probing_secret (optional, default False)
         intent_data['is_probing_secret'] = bool(intent_data.get('is_probing_secret', False))
 
-        return _evaluate_narrative_rules(intent_data, flags)
+        # 话语权路由：target_npc（DM 选中的说话对象）
+        target_npc = str(intent_data.get('target_npc', 'shadowheart')).strip().lower()
+        if target_npc not in available_npcs:
+            target_npc = available_npcs[0] if available_npcs else "shadowheart"
+        intent_data['target_npc'] = target_npc
+
+        return _evaluate_narrative_rules(intent_data, flags, target_npc)
         
     except json.JSONDecodeError as e:
         error_msg = f"Failed to parse JSON from DM response: {e}"

@@ -55,9 +55,14 @@ equipment:
 - Shield
 - Holy Symbol of Shar
 - Mysterious Artifact
+base_stats:
+  hp: 20
+  affection: 0
 inventory:
-- mysterious_artifact
-- healing_potion
+  - id: mysterious_artifact
+    count: 1
+  - id: healing_potion
+    count: 1
 dialogue_style:
   tone: Mysterious, guarded, but occasionally warm
   speech_patterns:

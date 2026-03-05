@@ -47,57 +47,56 @@ class GameRenderer:
         self.console.print(Rule(f"[bold purple]{title_text}[/bold purple]", style="bold purple"))
         self.console.print()
     
+    def _format_inv_display(self, inv) -> str:
+        """格式化背包显示，支持 Dict[str,int] 或 list of {id, count}"""
+        if not inv:
+            return "[dim]空无一物[/dim]"
+        try:
+            from core.systems.inventory import get_registry
+            registry = get_registry()
+            if isinstance(inv, dict):
+                items = [(k, v) for k, v in inv.items() if v > 0]
+            else:
+                items = [(x.get("id", ""), x.get("count", 0)) for x in inv if x.get("count", 0) > 0]
+            lines = [f"• {registry.get_name(k)}: {v}" for k, v in items]
+            return "\n".join(lines) if lines else "[dim]空无一物[/dim]"
+        except Exception:
+            if isinstance(inv, dict):
+                return "\n".join([f"• {k}: {v}" for k, v in inv.items() if v > 0]) or "[dim]空无一物[/dim]"
+            return "\n".join([f"• {x.get('id', '')}: {x.get('count', 0)}" for x in inv if x.get("count", 0) > 0]) or "[dim]空无一物[/dim]"
+
     def show_dashboard(self, state: dict):
-        """
-        渲染顶部战术仪表盘（V2 状态驱动）。
-        从 state 字典读取 relationship、player_inventory、npc_inventory、turn_count、time_of_day、hp、active_buffs。
-        """
+        """动态渲染多角色战术面板"""
         turn = state.get("turn_count", 0)
         time_str = state.get("time_of_day", "晨曦 (Morning)")
-        hp = state.get("hp", 20)
-        buffs = state.get("active_buffs", [])
-        buff_str = ", ".join([f"{b['id']}({b['duration']}t)" for b in buffs]) if buffs else "无"
-        hp_bar = "❤️" * (hp // 2) + "🤍" * ((20 - hp) // 2)
-        self.print(f"[bold cyan]🌍 时间: {time_str} | ⏳ 回合: {turn}[/bold cyan] | [bold red]HP: {hp}/20 {hp_bar}[/bold red] | [bold yellow]Buffs: {buff_str}[/bold yellow]")
-
-        rel_score = state.get("relationship", 0)
-        rel_color = "green" if rel_score >= 10 else "red" if rel_score < 0 else "yellow"
-
-        rel_panel = Panel(
-            f"[{rel_color}]{rel_score}[/{rel_color}] / 100",
-            title="❤️ 好感度",
-            border_style="dim",
-            expand=False,
-        )
-
-        def _format_inv(inv: dict) -> str:
-            if not inv:
-                return "[dim]空无一物[/dim]"
-            try:
-                from core.systems.inventory import get_registry
-                registry = get_registry()
-                lines = [f"• {registry.get_name(k)}: {v}" for k, v in inv.items()]
-            except Exception:
-                lines = [f"• {k}: {v}" for k, v in inv.items()]
-            return "\n".join(lines)
-
+        entities = state.get("entities", {})
         player_inv = state.get("player_inventory", {})
-        npc_inv = state.get("npc_inventory", {})
 
-        player_inv_panel = Panel(
-            _format_inv(player_inv),
-            title="🎒 你的背包",
-            border_style="blue",
-            expand=False,
-        )
-        npc_inv_panel = Panel(
-            _format_inv(npc_inv),
-            title="📦 影心的背包",
-            border_style="magenta",
-            expand=False,
-        )
+        self.print("───────────────────────────────────────────────────── 📊 战术状态面板 ──────────────────────────────────────────────────────")
+        self.print(f"[bold cyan]🌍 时间: {time_str} | ⏳ 回合: {turn}[/bold cyan]")
 
-        self.console.print(Columns([rel_panel, player_inv_panel, npc_inv_panel]))
+        for ent_id, ent_data in entities.items():
+            hp = ent_data.get("hp", 20)
+            buffs = ent_data.get("active_buffs", [])
+            buff_str = ", ".join([f"{b['id']}({b['duration']}t)" for b in buffs]) if buffs else "无"
+            hp_bar = "❤️" * (hp // 2) + "🤍" * ((20 - hp) // 2)
+            name_color = "magenta" if ent_id == "shadowheart" else "red"
+            self.print(f"[{name_color}]{ent_id.capitalize():<12}[/{name_color}] | [bold red]HP: {hp}/20 {hp_bar}[/bold red] | [bold yellow]Buffs: {buff_str}[/bold yellow]")
+
+        panels = []
+        p_inv_str = self._format_inv_display(player_inv)
+        panels.append(Panel(p_inv_str, title="🎒 你的背包", width=22, border_style="cyan"))
+
+        for ent_id, ent_data in entities.items():
+            aff = ent_data.get("affection", 0)
+            n_inv = ent_data.get("inventory", {})
+            n_inv_str = self._format_inv_display(n_inv)
+            content = f"[pink]❤️ 好感度: {aff} / 100[/pink]\n[dim]─[/dim]\n{n_inv_str}"
+            name_color = "magenta" if ent_id == "shadowheart" else "red"
+            panels.append(Panel(content, title=f"📦 {ent_id.capitalize()}", width=22, border_style=name_color))
+
+        self.console.print(Columns(panels))
+        self.print("")
 
     def show_dashboard_legacy(self, player_name: str, npc_name: str, relationship: int, npc_state: dict, active_quests: Optional[list] = None, player_inventory: Optional[Inventory] = None, npc_inventory: Optional[Inventory] = None, journal: Optional[list] = None) -> Group:
         """

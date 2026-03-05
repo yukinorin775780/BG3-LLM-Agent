@@ -46,6 +46,7 @@ class GameState(TypedDict, total=False):
     # Input Processing [TRANSIENT]
     # -------------------------------------------------------------------------
     user_input: str         # Raw player input this turn
+    current_speaker: str     # DM 选中的说话对象（话语权路由），如 "shadowheart" / "astarion"
     intent: str             # DM-analyzed 机制动作 (e.g. "ATTACK", "PERSUASION", "CHAT")
     intent_context: Dict[str, Any]  # DM 输出的 difficulty_class、reason 等
     is_probing_secret: bool  # 话题标签：是否在刺探莎尔信仰/神器等核心隐私（意图 How 与话题 What 分离）
@@ -70,8 +71,7 @@ class GameState(TypedDict, total=False):
     flags: Dict[str, bool]
     turn_count: int         # 世界心跳：当前回合数
     time_of_day: str        # 世界心跳：当前时段 (晨曦/正午/黄昏/深夜)
-    hp: int                 # NPC 生命值 (默认满血 20)
-    active_buffs: List[Dict[str, Any]]  # 当前挂载的状态效果 [{id, duration, value}, ...]
+    entities: Dict[str, Dict[str, Any]]  # 多角色实体状态 {entity_id: {hp, active_buffs}, ...}
 
     # -------------------------------------------------------------------------
     # Journal Events [TRANSIENT within turn]

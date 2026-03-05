@@ -12,8 +12,11 @@ from core.graph.graph_builder import build_graph
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from ui.renderer import GameRenderer
 
-# 角色名（用于 UI 显示）
-NPC_NAME = "影心"
+
+def _speaker_display_name(speaker_id: str) -> str:
+    """从 current_speaker 映射为中文显示名。"""
+    _names = {"shadowheart": "影心", "astarion": "阿斯代伦"}
+    return _names.get((speaker_id or "").strip().lower(), (speaker_id or "未知").capitalize())
 
 
 def _get_last_ai_content(messages: list) -> str:
@@ -90,7 +93,6 @@ async def main_async():
                 current_snapshot = await graph.aget_state(config)
                 current_state = current_snapshot.values if hasattr(current_snapshot, "values") else {}
 
-                ui.print_rule("📊 战术状态面板", style="bold blue")
                 ui.show_dashboard(current_state)
                 ui.print()
 
@@ -131,7 +133,9 @@ async def main_async():
                     if result_state.get("intent") in ("system_wait", "command_done", "command_failed", "dev_command"):
                         ui.print_system_info(ai_text)
                     else:
-                        await ui.print_npc_response_stream(NPC_NAME, ai_text, char_delay=0.03)
+                        speaker = result_state.get("current_speaker", "shadowheart") or "shadowheart"
+                        display_name = _speaker_display_name(speaker)
+                        await ui.print_npc_response_stream(display_name, ai_text, char_delay=0.03)
 
                 ui.print()
 

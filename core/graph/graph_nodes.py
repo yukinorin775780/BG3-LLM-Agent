@@ -6,7 +6,10 @@ LangGraph 节点：Input / DM / Mechanics / Generation
 - 避免节点内手动 copy/append，信任 LangGraph 的状态管理
 """
 
-from typing import Callable
+import copy
+import os
+from typing import Callable, Dict, Any
+import yaml
 from langchain_core.messages import HumanMessage, AIMessage
 from core.graph.graph_state import GameState
 from core.llm.dm import analyze_intent
@@ -20,23 +23,85 @@ from core.engine import generate_dialogue, parse_ai_response
 # =============================================================================
 
 
+def _parse_inventory(inv_raw: Any) -> Dict[str, int]:
+    """
+    智能解析背包：兼容「纯字符串」和「字典」两种格式。
+    - 纯字符串: ["healing_potion", "mysterious_artifact"] -> 每项 count=1
+    - 字典: [{id: "healing_potion", count: 2}] -> 按 id/count 解析
+    """
+    inv_dict: Dict[str, int] = {}
+    if not isinstance(inv_raw, list):
+        return inv_dict
+    for item in inv_raw:
+        if isinstance(item, str):
+            inv_dict[item] = inv_dict.get(item, 0) + 1
+        elif isinstance(item, dict):
+            iid = item.get("id")
+            cnt = item.get("count", 1)
+            if iid:
+                inv_dict[iid] = inv_dict.get(iid, 0) + cnt
+    return inv_dict
+
+
+def load_default_entities() -> Dict[str, Dict[str, Any]]:
+    """
+    从 characters/*.yaml 动态加载所有角色的出厂初始状态（Data-Driven Design）。
+    返回 {entity_id: {hp, active_buffs, affection, inventory}}。
+    """
+    chars_dir = os.path.join(os.path.dirname(__file__), "..", "..", "characters")
+    entities: Dict[str, Dict[str, Any]] = {}
+    for fname in sorted(os.listdir(chars_dir) if os.path.isdir(chars_dir) else []):
+        if not fname.endswith(".yaml"):
+            continue
+        entity_id = fname[:-5]
+        yaml_path = os.path.join(chars_dir, fname)
+        try:
+            with open(yaml_path, "r", encoding="utf-8") as f:
+                data = yaml.safe_load(f)
+            data = data or {}
+            base = data.get("base_stats") or {}
+            inv_raw = data.get("inventory") or []
+            inv_dict = _parse_inventory(inv_raw)
+            entities[entity_id] = {
+                "hp": base.get("hp", 20),
+                "active_buffs": [],
+                "affection": base.get("affection", 0),
+                "inventory": inv_dict,
+            }
+        except Exception:
+            entities[entity_id] = {"hp": 20, "active_buffs": [], "affection": 0, "inventory": {}}
+    return entities
+
+
+# 模块加载时构建默认实体（从 YAML 驱动）
+default_entities = load_default_entities()
+
+# 世界级出厂默认（角色无关）
+FACTORY_DEFAULT = {
+    "player_inventory": {"healing_potion": 2},
+    "turn_count": 0,
+    "time_of_day": "晨曦 (Morning)",
+    "flags": {},
+}
+
+
 def input_node(state: GameState) -> dict:
     """
-    处理斜杠命令（/give, /use, /add, /flag）。
+    处理斜杠命令（/give, /use, /add, /reset 等）。
     
     解耦原则：直接返回需要修改的字段，不手动合并。
-    - player_inventory / npc_inventory: 返回完整新 dict，Graph 覆盖
+    - player_inventory / entities: 返回完整新 dict，Graph 覆盖
     - journal_events: 返回 [新事件]，merge_events Reducer 自动累加
-    - 保持命令逻辑清晰，状态更新交给框架
     """
     user_input = state.get("user_input", "").strip()
+    entities = state.get("entities") or copy.deepcopy(default_entities)
     base = {
         "intent": "pending",
-        "is_probing_secret": False,  # [核心修复] 每次输入前强制洗刷上一轮的禁忌状态
+        "current_speaker": "",
+        "is_probing_secret": False,
         "turn_count": state.get("turn_count", 0),
         "time_of_day": state.get("time_of_day", "晨曦 (Morning)"),
-        "hp": state.get("hp", 20),
-        "active_buffs": state.get("active_buffs", []),
+        "entities": entities,
     }
 
     if not user_input:
@@ -50,28 +115,37 @@ def input_node(state: GameState) -> dict:
     player_inv = state.get("player_inventory", {})
     npc_inv = state.get("npc_inventory", {})
 
-    # --- /GIVE <item> ---
+    # --- /GIVE <item> [target] ---
     if command == "/give" and len(parts) > 1:
         item_key = parts[1]
-        if player_inv.get(item_key, 0) > 0:
+        target = parts[2] if len(parts) >= 3 else "shadowheart"
+        if player_inv.get(item_key, 0) > 0 and target in entities:
             new_p = dict(player_inv)
             new_p[item_key] = new_p[item_key] - 1
             if new_p[item_key] <= 0:
                 del new_p[item_key]
-            new_n = dict(npc_inv)
-            new_n[item_key] = new_n.get(item_key, 0) + 1
-            response_text = f"[SYSTEM] You gave {item_key} to Shadowheart."
+            new_entities = {}
+            for k, v in entities.items():
+                new_entities[k] = {
+                    "hp": v.get("hp", 20),
+                    "active_buffs": list(v.get("active_buffs", [])),
+                    "affection": v.get("affection", 0),
+                    "inventory": dict(v.get("inventory", {})),
+                }
+            new_entities[target]["inventory"][item_key] = new_entities[target]["inventory"].get(item_key, 0) + 1
+            new_entities[target]["affection"] = new_entities[target]["affection"] + 2
+            response_text = f"[SYSTEM] You gave {item_key} to {target}."
             return {
                 "player_inventory": new_p,
-                "npc_inventory": new_n,
-                "relationship": state.get("relationship", 0) + 2,
-                "journal_events": [f"Player gave {item_key} to NPC."],
+                "entities": new_entities,
+                "current_speaker": target,
+                "journal_events": [f"Player gave {item_key} to {target}."],
                 "final_response": response_text,
                 "intent": "gift_given",
                 "is_probing_secret": False,
                 "messages": [HumanMessage(content=user_input), AIMessage(content=response_text)],
             }
-        response_text = f"[SYSTEM] You don't have {item_key}."
+        response_text = f"[SYSTEM] You don't have {item_key}." if player_inv.get(item_key, 0) <= 0 else f"[SYSTEM] 找不到目标: {target}"
         return {
             "final_response": response_text,
             "intent": "command_done",
@@ -91,6 +165,21 @@ def input_node(state: GameState) -> dict:
             "is_probing_secret": False,
         }
 
+    # --- /RESET (开发者指令：世界重置为出厂设置) ---
+    if command == "/reset":
+        fresh_entities = copy.deepcopy(default_entities)
+        return {
+            "entities": fresh_entities,
+            "player_inventory": dict(FACTORY_DEFAULT["player_inventory"]),
+            "turn_count": FACTORY_DEFAULT["turn_count"],
+            "time_of_day": FACTORY_DEFAULT["time_of_day"],
+            "flags": dict(FACTORY_DEFAULT["flags"]),
+            "intent": "dev_command",
+            "final_response": "[SYSTEM] 世界已重置为出厂设置。",
+            "is_probing_secret": False,
+            "messages": [HumanMessage(content=user_input), AIMessage(content="[SYSTEM] 世界已重置为出厂设置。")],
+        }
+
     # --- /WAIT (等待一回合) ---
     if command == "/wait":
         return {
@@ -99,18 +188,29 @@ def input_node(state: GameState) -> dict:
             "is_probing_secret": False,
         }
 
-    # --- /BUFF <status_id> <duration> <value> (开发者指令：加状态) ---
-    if command == "/buff" and len(parts) >= 4:
-        buff_id = parts[1]
-        duration = int(parts[2])
-        value = int(parts[3])
+    # --- /BUFF <target> <status_id> <duration> <value> (开发者指令：加状态) ---
+    if command == "/buff" and len(parts) >= 5:
+        target = parts[1]
+        buff_id = parts[2]
+        duration = int(parts[3])
+        value = int(parts[4])
 
-        new_buffs = list(state.get("active_buffs", []))
-        new_buffs.append({"id": buff_id, "duration": duration, "value": value})
+        raw = state.get("entities") or entities
+        entities_copy = {k: {"hp": v.get("hp", 20), "active_buffs": list(v.get("active_buffs", [])), "affection": v.get("affection", 0), "inventory": dict(v.get("inventory", {}))} for k, v in entities.items()}
+        for k, v in raw.items():
+            if k not in entities_copy:
+                entities_copy[k] = {"hp": 20, "active_buffs": [], "affection": 0, "inventory": {}}
+            entities_copy[k].update({"hp": v.get("hp", 20), "active_buffs": list(v.get("active_buffs", [])), "affection": v.get("affection", 0), "inventory": dict(v.get("inventory", {}))})
+        if target in entities_copy:
+            new_buffs = list(entities_copy[target].get("active_buffs", []))
+            new_buffs.append({"id": buff_id, "duration": duration, "value": value})
+            entities_copy[target]["active_buffs"] = new_buffs
+            response_text = f"[SYSTEM] DevMode: 给 {target} 施加状态 '{buff_id}'，持续 {duration} 回合。"
+        else:
+            response_text = f"[SYSTEM] 找不到目标实体: {target}"
 
-        response_text = f"[SYSTEM] DevMode: 施加状态 '{buff_id}'，持续 {duration} 回合，数值 {value}/回合。"
         return {
-            "active_buffs": new_buffs,
+            "entities": entities_copy,
             "intent": "dev_command",
             "final_response": response_text,
             "is_probing_secret": False,
@@ -134,19 +234,13 @@ def input_node(state: GameState) -> dict:
             del new_p[item_id]
 
         if item_id == "healing_potion":
-            if target == "shadowheart":
-                current_hp = state.get("hp", 20)
-                new_hp = min(20, current_hp + 10)
-                action_msg = "*你强行掰开影心的嘴，给她灌下了治疗药水。她的生命值恢复了。*"
-                return {
-                    "hp": new_hp,
-                    "player_inventory": new_p,
-                    "intent": "action_use",
-                    "messages": [HumanMessage(content=action_msg)],
-                    "final_response": "",
-                    "is_probing_secret": False,
-                }
-            elif target == "player":
+            raw = state.get("entities") or entities
+            entities_copy = {k: {"hp": v.get("hp", 20), "active_buffs": list(v.get("active_buffs", [])), "affection": v.get("affection", 0), "inventory": dict(v.get("inventory", {}))} for k, v in entities.items()}
+            for k, v in raw.items():
+                if k not in entities_copy:
+                    entities_copy[k] = {"hp": 20, "active_buffs": [], "affection": 0, "inventory": {}}
+                entities_copy[k].update({"hp": v.get("hp", 20), "active_buffs": list(v.get("active_buffs", [])), "affection": v.get("affection", 0), "inventory": dict(v.get("inventory", {}))})
+            if target == "player":
                 return {
                     "player_inventory": new_p,
                     "intent": "action_use",
@@ -154,17 +248,25 @@ def input_node(state: GameState) -> dict:
                     "final_response": "",
                     "is_probing_secret": False,
                 }
-            else:
-                # 未知目标默认视为 shadowheart
-                current_hp = state.get("hp", 20)
-                new_hp = min(20, current_hp + 10)
-                action_msg = "*你强行掰开影心的嘴，给她灌下了治疗药水。她的生命值恢复了。*"
+            elif target in entities_copy:
+                current_hp = entities_copy[target].get("hp", 20)
+                entities_copy[target]["hp"] = min(20, current_hp + 10)
+                action_msg = f"*你强行掰开 {target} 的嘴，灌下了治疗药水。生命值恢复了。*"
                 return {
-                    "hp": new_hp,
+                    "entities": entities_copy,
                     "player_inventory": new_p,
+                    "current_speaker": target,
                     "intent": "action_use",
                     "messages": [HumanMessage(content=action_msg)],
                     "final_response": "",
+                    "is_probing_secret": False,
+                }
+            else:
+                response_text = f"[SYSTEM] 找不到目标实体: {target}"
+                return {
+                    "player_inventory": player_inv,
+                    "intent": "command_failed",
+                    "final_response": response_text,
                     "is_probing_secret": False,
                 }
 
@@ -173,6 +275,7 @@ def input_node(state: GameState) -> dict:
         effect = mechanics.apply_item_effect(item_id, item_data)
         return {
             "player_inventory": new_p,
+            "current_speaker": "shadowheart",
             "journal_events": [f"Player used {item_id}: {effect['message']}"],
             "final_response": f"[SYSTEM] You used {item_id}: {effect['message']}",
             "intent": "item_used",
@@ -214,53 +317,61 @@ def input_node(state: GameState) -> dict:
 
 
 def world_tick_node(state: dict) -> dict:
-    """世界心跳节点：推进回合数，结算环境与状态效果"""
+    """世界心跳节点：推进回合数，遍历所有实体结算状态效果"""
     from ui.renderer import GameRenderer
 
     ui = GameRenderer()
     current_turn = state.get("turn_count", 0) + 1
 
-    # 简单的时间流逝逻辑：每 3 个回合切换一次昼夜
     time_cycles = ["晨曦 (Morning)", "正午 (Noon)", "黄昏 (Dusk)", "深夜 (Night)"]
-    cycle_index = (current_turn // 3) % 4
-    new_time = time_cycles[cycle_index]
-
+    new_time = time_cycles[(current_turn // 3) % 4]
     ui.print_system_info(f"⏳ [World Tick] 回合推进至 {current_turn} | 当前时间: {new_time}")
 
-    # --- 通用状态结算 (Status Effects Resolution) ---
-    current_hp = state.get("hp", 20)
-    buffs = list(state.get("active_buffs", []))
-    surviving_buffs = []
+    default_entities = {
+        "shadowheart": {"hp": 20, "active_buffs": []},
+        "astarion": {"hp": 20, "active_buffs": []},
+    }
+    entities_in = state.get("entities", default_entities) or {}
+    entities_out = {}
 
-    for buff in buffs:
-        b_id = buff["id"]
-        b_val = buff.get("value", 0)
+    for entity_id, entity_data in entities_in.items():
+        entity_data = dict(entity_data)
+        current_hp = entity_data.get("hp", 20)
+        buffs = list(entity_data.get("active_buffs", []))
+        surviving_buffs = []
 
-        # 1. 触发效果 (大同小异的数值结算)
-        if b_id in ["poisoned", "burning", "bleeding"]:
-            old_hp = current_hp
-            current_hp = max(0, current_hp - b_val)
-            actual_damage = old_hp - current_hp
-            ui.print_system_info(f"🩸 [Status] 影心因 {b_id} 受到 {actual_damage} 点伤害！剩余 HP: {current_hp}")
-        elif b_id in ["regeneration"]:
-            current_hp = min(20, current_hp + b_val)
-            ui.print_system_info(f"✨ [Status] 影心因 {b_id} 恢复 {b_val} 点生命！剩余 HP: {current_hp}")
+        for buff in buffs:
+            b_id = buff["id"]
+            b_val = buff.get("value", 0)
 
-        # 2. 扣除持续时间
-        buff["duration"] -= 1
-        if buff["duration"] > 0:
-            surviving_buffs.append(buff)
-        else:
-            ui.print_system_info(f"💨 [Status] {b_id} 状态已解除。")
+            if b_id in ["poisoned", "burning", "bleeding"]:
+                old_hp = current_hp
+                current_hp = max(0, current_hp - b_val)
+                actual_damage = old_hp - current_hp
+                if actual_damage > 0:
+                    ui.print_system_info(f"🩸 [Status] {entity_id} 因 {b_id} 受到 {actual_damage} 点伤害！剩余 HP: {current_hp}")
+            elif b_id in ["regeneration"]:
+                current_hp = min(20, current_hp + b_val)
+                ui.print_system_info(f"✨ [Status] {entity_id} 因 {b_id} 恢复 {b_val} 点生命！剩余 HP: {current_hp}")
 
-    # 确保 HP 不低于 0
-    current_hp = max(0, current_hp)
+            buff["duration"] -= 1
+            if buff["duration"] > 0:
+                surviving_buffs.append(buff)
+            else:
+                ui.print_system_info(f"💨 [Status] {entity_id} 的 {b_id} 状态已解除。")
+
+        entity_data["hp"] = max(0, current_hp)
+        entity_data["active_buffs"] = surviving_buffs
+        entity_data.setdefault("affection", 0)
+        entity_data.setdefault("inventory", {})
+        if isinstance(entity_data.get("inventory"), list):
+            entity_data["inventory"] = {x.get("id", ""): x.get("count", 0) for x in entity_data["inventory"] if x.get("id")}
+        entities_out[entity_id] = entity_data
 
     return {
         "turn_count": current_turn,
         "time_of_day": new_time,
-        "hp": current_hp,
-        "active_buffs": surviving_buffs,
+        "entities": entities_out,
     }
 
 
@@ -273,18 +384,26 @@ def dm_node(state: GameState) -> dict:
     """
     分析玩家输入的意图。
     若 intent 已被 Input 处理（command_done / gift_given / item_used），直接跳过。
+    DM 具备「眼神锁定」能力：输出 target_npc 作为话语权路由。
     """
     if state.get("intent") in ["command_done", "gift_given", "item_used"]:
         return {}
 
     print("🎲 DM Node: Analyzing intent...")
+    entities = state.get("entities", {})
+    available_npcs = list(entities.keys()) if entities else ["shadowheart", "astarion"]
+    # 默认用 shadowheart 的 HP 做濒死拦截（DM 尚未选出 target 时）
+    current_npc_hp = entities.get("shadowheart", {}).get("hp", 20)
     analysis = analyze_intent(
         state.get("user_input", ""),
         flags=state.get("flags", {}),
         time_of_day=state.get("time_of_day", "晨曦 (Morning)"),
-        hp=state.get("hp", 20),
+        hp=current_npc_hp,
+        available_npcs=available_npcs,
     )
+    target_npc = analysis.get("target_npc", "shadowheart")
     return {
+        "current_speaker": target_npc,
         "intent": analysis.get("action_type", "CHAT"),
         "intent_context": {
             "difficulty_class": analysis.get("difficulty_class", 12),
@@ -318,8 +437,20 @@ def mechanics_node(state: GameState) -> dict:
 
     out = {"journal_events": result.get("journal_events", [])}
     if result.get("relationship_delta", 0) != 0:
-        rel = state.get("relationship", 0)
-        out["relationship"] = rel + result["relationship_delta"]
+        entities = state.get("entities", {})
+        speaker = state.get("current_speaker", "shadowheart")
+        current_aff = (entities.get(speaker, {}) or {}).get("affection", state.get("relationship", 0))
+        new_entities = {}
+        for k, v in entities.items():
+            new_entities[k] = {
+                "hp": v.get("hp", 20),
+                "active_buffs": list(v.get("active_buffs", [])),
+                "affection": v.get("affection", 0),
+                "inventory": dict(v.get("inventory", {})),
+            }
+        new_entities.setdefault(speaker, {"hp": 20, "active_buffs": [], "affection": 0, "inventory": {}})
+        new_entities[speaker]["affection"] = current_aff + result["relationship_delta"]
+        out["entities"] = new_entities
     return out
 
 
@@ -338,44 +469,46 @@ def mechanics_node(state: GameState) -> dict:
 # =============================================================================
 
 
-def create_generation_node(character) -> Callable[[GameState], dict]:
+def create_generation_node() -> Callable[[GameState], dict]:
     """
-    工厂函数：创建 Generation 节点，注入已加载的角色。
-    
-    叙事工程师实践：节点内不实例化 load_character，由 Graph 构建时注入。
-    避免每次 invoke 都重新加载 YAML，同时保持节点纯函数语义。
+    工厂函数：创建 Generation 节点。
+    根据 state["current_speaker"] 动态加载 YAML 灵魂，实现多智能体话语权路由。
     """
 
     def generation_node(state: GameState) -> dict:
         """
         LLM 生成节点。
-        直接从 state 提取 relationship / flags / npc_inventory / journal_events，
-        符合 add_messages 规范：messages 由 Graph 管理，本节点只读取。
-
-        背包与幻觉约束：
-        - 从 state["npc_inventory"] 得到易读清单并注入 prompt，使角色「知道」自己身上有什么。
-        - has_healing_potion 等标志位与背包严格一致，避免 AI 在没药水时描述喝药水等幻觉。
-        - 对话中的「给予物品」等触发器会在此处执行，并写回 flags / 背包状态。
+        根据 current_speaker 动态加载对应角色，从 state 提取 relationship / flags / inventory 等。
         """
-        print("🗣️ Generation Node: Shadowheart is speaking...")
+        from characters.loader import load_character
 
-        # 濒死拦截：HP <= 0 时不走 LLM，直接返回物理系统的死亡判定
-        hp = state.get("hp", 20)
-        if hp <= 0:
-            death_msg = "🩸 影心倒在地上，失去了意识。周围陷入了死寂。"
+        speaker = state.get("current_speaker", "shadowheart") or "shadowheart"
+        character = load_character(speaker)
+        print(f"🗣️ Generation Node: {speaker.capitalize()} is speaking...")
+
+        # 濒死拦截：当前 NPC HP <= 0 时不走 LLM
+        entities = state.get("entities", {})
+        current_npc_hp = entities.get(speaker, {}).get("hp", 20)
+        char_display = character.data.get("name", speaker.capitalize())
+        if current_npc_hp <= 0:
+            death_msg = f"🩸 {char_display}倒在地上，失去了意识。周围陷入了死寂。"
             return {
                 "final_response": death_msg,
                 "thought_process": "",
                 "messages": [
                     HumanMessage(content=state.get("user_input", "")),
-                    AIMessage(content="[SYSTEM] 影心已经倒在血泊中，失去了意识。你无法再与她交谈。"),
+                    AIMessage(content=f"[SYSTEM] {char_display}已经倒在血泊中，失去了意识。你无法再与她交谈。"),
                 ],
             }
 
         user_input = state.get("user_input", "")
-        relationship = state.get("relationship", 0)
+        entities = state.get("entities", {})
+        current_npc = entities.get(speaker, {})
+        relationship = current_npc.get("affection", state.get("relationship", 0))
         flags = state.get("flags", {})
-        npc_inv = state.get("npc_inventory", {})
+        npc_inv = current_npc.get("inventory", state.get("npc_inventory", {}))
+        if not isinstance(npc_inv, dict):
+            npc_inv = {}
         player_inv = state.get("player_inventory", {})
         journal_events = list(state.get("journal_events", []))
         summary = state.get("summary", "Graph Mode Testing")
@@ -401,21 +534,18 @@ def create_generation_node(character) -> Callable[[GameState], dict]:
 
         # -------------------------------------------------------------------------
         # 2. 背包感知：用 inventory 模块逻辑将 npc_inventory 转为易读字符串列表
-        #    这样 prompt 里显示的是「治疗药水 x2」而非 "healing_potion"，减少歧义。
         # -------------------------------------------------------------------------
         inventory_display_list = format_inventory_dict_to_display_list(npc_inv)
 
         # -------------------------------------------------------------------------
         # 3. 关键标志位：has_healing_potion 必须与背包事实一致，用于约束幻觉
-        #    模板中会据此输出 [CRITICAL REALITY CONSTRAINTS]：
-        #    - 无药水时明确禁止描述「喝药水」等动作，只能拒绝或说「没有了」。
         # -------------------------------------------------------------------------
         has_healing_potion = (npc_inv.get("healing_potion", 0) or 0) >= 1
 
         # -------------------------------------------------------------------------
         # 4. 注入提示词：把当前背包、标志位、时间、HP、Buff 传入 render_prompt。
-        #    生理数据（hp, active_buffs）打通物理引擎与大模型的「痛觉神经」。
         # -------------------------------------------------------------------------
+        current_npc_data = entities.get(speaker, {})
         system_prompt = character.render_prompt(
             relationship_score=relationship,
             flags=flags,
@@ -424,8 +554,8 @@ def create_generation_node(character) -> Callable[[GameState], dict]:
             inventory_items=inventory_display_list,
             has_healing_potion=has_healing_potion,
             time_of_day=state.get("time_of_day", "晨曦 (Morning)"),
-            hp=state.get("hp", 20),
-            active_buffs=state.get("active_buffs", []),
+            hp=current_npc_data.get("hp", 20),
+            active_buffs=current_npc_data.get("active_buffs", []),
         )
 
         # messages 符合 add_messages：从 state 读取，转为 engine 所需格式
@@ -450,9 +580,16 @@ def create_generation_node(character) -> Callable[[GameState], dict]:
         if user_input and triggers_config:
             out["flags"] = flags
             out["player_inventory"] = player_inv
-            out["npc_inventory"] = npc_inv
-            if trigger_result.get("relationship_delta", 0) != 0:
-                out["relationship"] = relationship
+            new_entities = {k: dict(v) for k, v in entities.items()}
+            for k in new_entities:
+                new_entities[k].setdefault("affection", 0)
+                new_entities[k].setdefault("inventory", {})
+                if not isinstance(new_entities[k].get("inventory"), dict):
+                    new_entities[k]["inventory"] = {}
+            new_entities.setdefault(speaker, {"hp": 20, "active_buffs": [], "affection": 0, "inventory": {}})
+            new_entities[speaker]["inventory"] = dict(npc_inv)
+            new_entities[speaker]["affection"] = relationship
+            out["entities"] = new_entities
         return out
 
     return generation_node

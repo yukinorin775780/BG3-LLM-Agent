@@ -8,9 +8,14 @@ Time of Day: {{ time_of_day }}
 **Player Input:**
 "{{ user_input }}"
 
+**Available NPCs (player may be addressing any of them):**
+{{ available_npcs }}
+
 **Task:**
-Analyze the intent behind the player's words.
+Analyze the intent behind the player's words and determine WHO the player is speaking to.
 Return a JSON object with the following fields:
+
+0.  `target_npc` (String): The NPC the player is addressing. Must be one of: {{ available_npcs }}. If unclear or generic, default to "shadowheart".
 
 1.  `action_type`: Choose one of [PERSUASION, DECEPTION, STEALTH, INTIMIDATION, INSIGHT, ATTACK, CHAT].
     -   `PERSUASION`: Reasoning, bargaining, honest convincing.
@@ -36,5 +41,4 @@ FLAGS PROVIDED:
 **Output Format:**
 Strictly output ONLY the JSON object. Do not add markdown blocks like ```json.
 Example:
-{"action_type": "DECEPTION", "is_probing_secret": true, "difficulty_class": 15, "reason": "Player is lying while probing about the artifact."}
-```
+{"target_npc": "shadowheart", "action_type": "DECEPTION", "is_probing_secret": true, "difficulty_class": 15, "reason": "Player is lying while probing about the artifact."}

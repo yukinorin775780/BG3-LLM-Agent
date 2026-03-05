@@ -270,9 +270,12 @@ def load_character(name: str) -> Character:
     quests_data = data.get('quests', [])
     character = Character(name, data, loader, quests=quests_data)
     
-    # Load inventory items
+    # Load inventory items（兼容纯字符串与 {id, count} 字典格式）
     inv_data = data.get('inventory', [])
     for item in inv_data:
-        character.inventory.add(item)
+        if isinstance(item, str):
+            character.inventory.add(item, 1)
+        elif isinstance(item, dict) and item.get('id'):
+            character.inventory.add(item['id'], item.get('count', 1))
     
     return character
