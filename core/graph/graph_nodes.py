@@ -10,7 +10,8 @@ import copy
 import os
 from typing import Callable, Dict, Any
 import yaml
-from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.messages import HumanMessage, AIMessage, RemoveMessage
+from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from core.graph.graph_state import GameState
 from core.llm.dm import analyze_intent
 from core.systems import mechanics
@@ -97,7 +98,9 @@ def input_node(state: GameState) -> dict:
     entities = state.get("entities") or copy.deepcopy(default_entities)
     base = {
         "intent": "pending",
+        "speaker_queue": [],
         "current_speaker": "",
+        "speaker_responses": [],
         "is_probing_secret": False,
         "turn_count": state.get("turn_count", 0),
         "time_of_day": state.get("time_of_day", "晨曦 (Morning)"),
@@ -138,7 +141,9 @@ def input_node(state: GameState) -> dict:
             return {
                 "player_inventory": new_p,
                 "entities": new_entities,
+                "speaker_queue": [],
                 "current_speaker": target,
+                "speaker_responses": [],
                 "journal_events": [f"Player gave {item_key} to {target}."],
                 "final_response": response_text,
                 "intent": "gift_given",
@@ -165,19 +170,31 @@ def input_node(state: GameState) -> dict:
             "is_probing_secret": False,
         }
 
-    # --- /RESET (开发者指令：世界重置为出厂设置) ---
+    # --- /RESET (开发者指令：世界重置) ---
     if command == "/reset":
         fresh_entities = copy.deepcopy(default_entities)
+        # 核心修复：遍历当前所有历史记忆，生成 LangGraph 专属的删除指令
+        current_messages = state.get("messages", [])
+        delete_msgs = []
+        for m in current_messages:
+            mid = m.get("id") if isinstance(m, dict) else (getattr(m, "id", None) if hasattr(m, "id") else None)
+            if mid:
+                delete_msgs.append(RemoveMessage(id=mid))
+        # 若 message 无 id，兜底使用 REMOVE_ALL_MESSAGES 清空
+        if not delete_msgs:
+            messages_update = [RemoveMessage(id=REMOVE_ALL_MESSAGES)]
+        else:
+            messages_update = delete_msgs
         return {
             "entities": fresh_entities,
             "player_inventory": dict(FACTORY_DEFAULT["player_inventory"]),
-            "turn_count": FACTORY_DEFAULT["turn_count"],
-            "time_of_day": FACTORY_DEFAULT["time_of_day"],
+            "turn_count": 0,
+            "time_of_day": "晨曦 (Morning)",
             "flags": dict(FACTORY_DEFAULT["flags"]),
+            "messages": messages_update,
             "intent": "dev_command",
-            "final_response": "[SYSTEM] 世界已重置为出厂设置。",
+            "final_response": "[SYSTEM] 🌍 世界线已重置 (World Reset)。实体状态与历史记忆已全部归零。",
             "is_probing_secret": False,
-            "messages": [HumanMessage(content=user_input), AIMessage(content="[SYSTEM] 世界已重置为出厂设置。")],
         }
 
     # --- /WAIT (等待一回合) ---
@@ -255,7 +272,9 @@ def input_node(state: GameState) -> dict:
                 return {
                     "entities": entities_copy,
                     "player_inventory": new_p,
+                    "speaker_queue": [],
                     "current_speaker": target,
+                    "speaker_responses": [],
                     "intent": "action_use",
                     "messages": [HumanMessage(content=action_msg)],
                     "final_response": "",
@@ -275,7 +294,9 @@ def input_node(state: GameState) -> dict:
         effect = mechanics.apply_item_effect(item_id, item_data)
         return {
             "player_inventory": new_p,
+            "speaker_queue": [],
             "current_speaker": "shadowheart",
+            "speaker_responses": [],
             "journal_events": [f"Player used {item_id}: {effect['message']}"],
             "final_response": f"[SYSTEM] You used {item_id}: {effect['message']}",
             "intent": "item_used",
@@ -384,15 +405,20 @@ def dm_node(state: GameState) -> dict:
     """
     分析玩家输入的意图。
     若 intent 已被 Input 处理（command_done / gift_given / item_used），直接跳过。
-    DM 具备「眼神锁定」能力：输出 target_npc 作为话语权路由。
+    DM 派发多人发言队列，并结算好感度变化，渲染 BG3 风格提示。
     """
     if state.get("intent") in ["command_done", "gift_given", "item_used"]:
         return {}
 
     print("🎲 DM Node: Analyzing intent...")
-    entities = state.get("entities", {})
+    entities_raw = state.get("entities", {})
+    entities = {k: dict(v) for k, v in entities_raw.items()}
+    for k in entities:
+        entities[k].setdefault("affection", 0)
+        entities[k].setdefault("inventory", {})
+        if not isinstance(entities[k].get("inventory"), dict):
+            entities[k]["inventory"] = {}
     available_npcs = list(entities.keys()) if entities else ["shadowheart", "astarion"]
-    # 默认用 shadowheart 的 HP 做濒死拦截（DM 尚未选出 target 时）
     current_npc_hp = entities.get("shadowheart", {}).get("hp", 20)
     analysis = analyze_intent(
         state.get("user_input", ""),
@@ -401,9 +427,32 @@ def dm_node(state: GameState) -> dict:
         hp=current_npc_hp,
         available_npcs=available_npcs,
     )
-    target_npc = analysis.get("target_npc", "shadowheart")
+
+    # 好感度物理结算与 BG3 风格 UI 渲染
+    affection_changes = analysis.get("affection_changes", {})
+    _npc_name_cn = {"shadowheart": "影心", "astarion": "阿斯代伦"}
+    from ui.renderer import GameRenderer
+    ui = GameRenderer()
+    for npc_id, change in affection_changes.items():
+        npc_id = str(npc_id).strip().lower()
+        if npc_id in entities and isinstance(change, (int, float)) and change != 0:
+            current_aff = entities[npc_id].get("affection", 0)
+            new_aff = max(-100, min(100, current_aff + int(change)))
+            entities[npc_id]["affection"] = new_aff
+            npc_name_cn = _npc_name_cn.get(npc_id, npc_id.capitalize())
+            delta = int(change)
+            if delta > 0:
+                ui.print_system_info(f"💡 [bold green][ {npc_name_cn} 赞同 (Approves) {delta:+d} ][/bold green]")
+            else:
+                ui.print_system_info(f"💔 [bold red][ {npc_name_cn} 不赞同 (Disapproves) {delta:+d} ][/bold red]")
+
+    queue = list(analysis.get("responders", ["shadowheart"]))
+    current = queue.pop(0) if queue else "shadowheart"
     return {
-        "current_speaker": target_npc,
+        "entities": entities,
+        "speaker_queue": queue,
+        "current_speaker": current,
+        "speaker_responses": [],
         "intent": analysis.get("action_type", "CHAT"),
         "intent_context": {
             "difficulty_class": analysis.get("difficulty_class", 12),
@@ -411,6 +460,16 @@ def dm_node(state: GameState) -> dict:
         },
         "is_probing_secret": analysis.get("is_probing_secret", False),
     }
+
+
+def advance_speaker_node(state: GameState) -> dict:
+    """从 speaker_queue 弹出下一位，设为 current_speaker，实现多人连续发言。"""
+    queue = list(state.get("speaker_queue", []))
+    if not queue:
+        return {}
+    next_speaker = queue[0]
+    remaining = queue[1:]
+    return {"current_speaker": next_speaker, "speaker_queue": remaining}
 
 
 # =============================================================================
@@ -492,8 +551,10 @@ def create_generation_node() -> Callable[[GameState], dict]:
         char_display = character.data.get("name", speaker.capitalize())
         if current_npc_hp <= 0:
             death_msg = f"🩸 {char_display}倒在地上，失去了意识。周围陷入了死寂。"
+            prev_responses = list(state.get("speaker_responses", []))
             return {
                 "final_response": death_msg,
+                "speaker_responses": prev_responses + [(speaker, death_msg)],
                 "thought_process": "",
                 "messages": [
                     HumanMessage(content=state.get("user_input", "")),
@@ -566,13 +627,21 @@ def create_generation_node() -> Callable[[GameState], dict]:
         history_dicts = [_message_to_dict(m) for m in messages]
         raw_response = generate_dialogue(system_prompt, conversation_history=history_dicts)
         parsed = parse_ai_response(raw_response)
-        text = parsed["text"] or "..."
+        ai_text = parsed["text"] or "..."
+
+        # 获取角色显示名 (例如 "阿斯代伦 (Astarion)")
+        display_name = character.data.get("name", speaker)
+
+        # 核心修复：为存入图状态的上下文记忆强制加上发言者名字前缀，防止下一个 NPC 产生幻觉 (Identity Bleed)
+        memory_content = f"[{display_name}]说： {ai_text}"
 
         # 合并触发器产生的剧情事件到 journal，并写回 flags/背包/好感度
+        prev_responses = list(state.get("speaker_responses", []))
         out = {
-            "final_response": text,
+            "final_response": ai_text,
+            "speaker_responses": prev_responses + [(speaker, ai_text)],
             "thought_process": parsed.get("thought") or "",
-            "messages": [HumanMessage(content=user_input), AIMessage(content=text)],
+            "messages": [HumanMessage(content=user_input), AIMessage(content=memory_content, name=speaker)],
         }
         trigger_journal = trigger_result.get("journal_entries", [])
         if trigger_journal:
@@ -598,11 +667,9 @@ def create_generation_node() -> Callable[[GameState], dict]:
 def generation_node(state: GameState) -> dict:
     """
     默认 Generation 节点（向后兼容 main_graph.py 等单测）。
-    生产环境应使用 create_generation_node(char) 注入角色。
+    生产环境应使用 create_generation_node() 动态加载角色。
     """
-    from characters.loader import load_character
-    char = load_character("shadowheart")
-    return create_generation_node(char)(state)
+    return create_generation_node()(state)
 
 
 # =============================================================================

@@ -8,7 +8,7 @@ Uses operator and Annotated reducers for enhanced state merge semantics:
 """
 
 import operator
-from typing import TypedDict, Annotated, List, Dict, Any
+from typing import TypedDict, Annotated, List, Dict, Any, Tuple
 from langgraph.graph.message import add_messages
 
 
@@ -46,7 +46,8 @@ class GameState(TypedDict, total=False):
     # Input Processing [TRANSIENT]
     # -------------------------------------------------------------------------
     user_input: str         # Raw player input this turn
-    current_speaker: str     # DM 选中的说话对象（话语权路由），如 "shadowheart" / "astarion"
+    speaker_queue: List[str]  # 需要发言的 NPC 队列，例如 ["astarion", "shadowheart"]
+    current_speaker: str     # 当前正在生成的 NPC
     intent: str             # DM-analyzed 机制动作 (e.g. "ATTACK", "PERSUASION", "CHAT")
     intent_context: Dict[str, Any]  # DM 输出的 difficulty_class、reason 等
     is_probing_secret: bool  # 话题标签：是否在刺探莎尔信仰/神器等核心隐私（意图 How 与话题 What 分离）
@@ -83,5 +84,6 @@ class GameState(TypedDict, total=False):
     # -------------------------------------------------------------------------
     # Output to Renderer [TRANSIENT]
     # -------------------------------------------------------------------------
-    final_response: str      # Spoken dialogue to display
+    final_response: str      # Spoken dialogue to display（单人时用；多人时为最后一位）
+    speaker_responses: List[Tuple[str, str]]  # 多人发言队列产出：[(speaker_id, text), ...]
     thought_process: str     # Inner monologue content

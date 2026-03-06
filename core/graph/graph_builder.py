@@ -22,7 +22,21 @@ def route_after_tick(state: dict) -> str:
     if state.get("intent") == "system_wait":
         return "__end__"
     return "dm_analysis"
-from core.graph.graph_nodes import input_node, world_tick_node, dm_node, mechanics_node, create_generation_node
+
+
+def route_after_generation(state: dict) -> str:
+    """多人发言队列：若 speaker_queue 非空，继续让下一位发言"""
+    if state.get("speaker_queue"):
+        return "advance_speaker"
+    return "__end__"
+from core.graph.graph_nodes import (
+    input_node,
+    world_tick_node,
+    dm_node,
+    mechanics_node,
+    create_generation_node,
+    advance_speaker_node,
+)
 
 
 # -----------------------------------------------------------------------------
@@ -63,6 +77,7 @@ def build_graph(checkpointer=None):
     builder.add_node("dm_analysis", dm_node)
     builder.add_node("mechanics_processing", mechanics_node)
     builder.add_node("generation", create_generation_node())  # type: ignore[arg-type]
+    builder.add_node("advance_speaker", advance_speaker_node)
 
     # 2. Add Edges & Routing
     builder.add_edge(START, "input_processing")
@@ -82,7 +97,12 @@ def build_graph(checkpointer=None):
         {"mechanics_processing": "mechanics_processing", "generation": "generation"},
     )
     builder.add_edge("mechanics_processing", "generation")
-    builder.add_edge("generation", END)
+    builder.add_conditional_edges(
+        "generation",
+        route_after_generation,
+        {"advance_speaker": "advance_speaker", "__end__": END},
+    )
+    builder.add_edge("advance_speaker", "generation")
 
     # 3. Compile
     if checkpointer is not None:

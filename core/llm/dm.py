@@ -182,13 +182,27 @@ def analyze_intent(user_input: str, flags: Dict[str, Any] | None = None, time_of
         # Topic flag: is_probing_secret (optional, default False)
         intent_data['is_probing_secret'] = bool(intent_data.get('is_probing_secret', False))
 
-        # 话语权路由：target_npc（DM 选中的说话对象）
-        target_npc = str(intent_data.get('target_npc', 'shadowheart')).strip().lower()
-        if target_npc not in available_npcs:
-            target_npc = available_npcs[0] if available_npcs else "shadowheart"
-        intent_data['target_npc'] = target_npc
+        # 多人发言队列：responders（DM 决定的发言顺序）
+        responders = intent_data.get("responders", ["shadowheart"])
+        if not isinstance(responders, list) or len(responders) == 0:
+            responders = ["shadowheart"]
+        responders = [str(r).strip().lower() for r in responders if str(r).strip().lower() in available_npcs]
+        if not responders:
+            responders = [available_npcs[0]] if available_npcs else ["shadowheart"]
+        intent_data["responders"] = responders
 
-        return _evaluate_narrative_rules(intent_data, flags, target_npc)
+        # 好感度变化：安全提取并过滤
+        affection_changes = intent_data.get("affection_changes", {})
+        if not isinstance(affection_changes, dict):
+            affection_changes = {}
+        # 只保留合法 NPC 的数值变化
+        intent_data["affection_changes"] = {
+            str(k).strip().lower(): int(v)
+            for k, v in affection_changes.items()
+            if str(k).strip().lower() in available_npcs and isinstance(v, (int, float))
+        }
+
+        return _evaluate_narrative_rules(intent_data, flags, responders[0] if responders else "shadowheart")
         
     except json.JSONDecodeError as e:
         error_msg = f"Failed to parse JSON from DM response: {e}"

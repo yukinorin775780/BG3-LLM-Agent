@@ -53,7 +53,7 @@ async def main_async():
         # 获取初始状态（注意：此处必须改为 await graph.aget_state）
         # -------------------------------------------------------------------------
         try:
-            snapshot = await graph.aget_state(config)
+            snapshot = await graph.aget_state(config)  # type: ignore[arg-type]
             prev_values = snapshot.values if hasattr(snapshot, "values") else {}
         except Exception:
             prev_values = {}
@@ -90,7 +90,7 @@ async def main_async():
         while True:
             try:
                 # 获取当前最新状态并展示仪表盘
-                current_snapshot = await graph.aget_state(config)
+                current_snapshot = await graph.aget_state(config)  # type: ignore[arg-type]
                 current_state = current_snapshot.values if hasattr(current_snapshot, "values") else {}
 
                 ui.show_dashboard(current_state)
@@ -110,13 +110,13 @@ async def main_async():
                 # 核心调用：使用异步流实时监听节点执行
                 state_input = {"user_input": user_input.strip()}
                 ui.print_system_info("⚙️ 引擎开始运转...")
-                async for update in graph.astream(state_input, config=config, stream_mode="updates"):
+                async for update in graph.astream(state_input, config=config, stream_mode="updates"):  # type: ignore[arg-type]
                     for node_name, node_state in update.items():
                         # 实时打印当前刚刚执行完毕的节点，实现真正的"流式跟踪"
                         ui.print_system_info(f"⚡ [流式追踪] 节点 `{node_name}` 执行完毕")
 
                 # 循环结束后，获取最终状态用于渲染对话和最终日志
-                snapshot = await graph.aget_state(config)
+                snapshot = await graph.aget_state(config)  # type: ignore[arg-type]
                 result_state = snapshot.values if hasattr(snapshot, "values") else {}
 
                 # 系统日志增量渲染
@@ -126,16 +126,23 @@ async def main_async():
                     ui.print_system_info(line)
                 prev_journal_len = len(curr_journal)
 
-                # AI 回复渲染（优先用 final_response，否则从 messages 提取）
-                ai_text = result_state.get("final_response") or _get_last_ai_content(result_state.get("messages") or [])
-                if ai_text:
-                    # 如果是等待或系统指令，用普通颜色打印，不进 NPC 边框
-                    if result_state.get("intent") in ("system_wait", "command_done", "command_failed", "dev_command"):
+                # AI 回复渲染（多人发言队列 或 单人 final_response）
+                if result_state.get("intent") in ("system_wait", "command_done", "command_failed", "dev_command"):
+                    ai_text = result_state.get("final_response") or _get_last_ai_content(result_state.get("messages") or [])
+                    if ai_text:
                         ui.print_system_info(ai_text)
+                else:
+                    responses = result_state.get("speaker_responses") or []
+                    if responses:
+                        for speaker_id, text in responses:
+                            display_name = _speaker_display_name(speaker_id)
+                            await ui.print_npc_response_stream(display_name, text, char_delay=0.03)
                     else:
-                        speaker = result_state.get("current_speaker", "shadowheart") or "shadowheart"
-                        display_name = _speaker_display_name(speaker)
-                        await ui.print_npc_response_stream(display_name, ai_text, char_delay=0.03)
+                        ai_text = result_state.get("final_response") or _get_last_ai_content(result_state.get("messages") or [])
+                        if ai_text:
+                            speaker = result_state.get("current_speaker", "shadowheart") or "shadowheart"
+                            display_name = _speaker_display_name(speaker)
+                            await ui.print_npc_response_stream(display_name, ai_text, char_delay=0.03)
 
                 ui.print()
 
