@@ -495,10 +495,12 @@ def mechanics_node(state: GameState) -> dict:
     result = mechanics.execute_skill_check(state)
 
     out = {"journal_events": result.get("journal_events", [])}
+    if "raw_roll_data" in result:
+        out["latest_roll"] = result["raw_roll_data"]
     if result.get("relationship_delta", 0) != 0:
         entities = state.get("entities", {})
         speaker = state.get("current_speaker", "shadowheart")
-        current_aff = (entities.get(speaker, {}) or {}).get("affection", state.get("relationship", 0))
+        current_aff = (entities.get(speaker, {}) or {}).get("affection", 0)
         new_entities = {}
         for k, v in entities.items():
             new_entities[k] = {
@@ -565,7 +567,7 @@ def create_generation_node() -> Callable[[GameState], dict]:
         user_input = state.get("user_input", "")
         entities = state.get("entities", {})
         current_npc = entities.get(speaker, {})
-        relationship = current_npc.get("affection", state.get("relationship", 0))
+        relationship = current_npc.get("affection", 0)
         flags = state.get("flags", {})
         npc_inv = current_npc.get("inventory", state.get("npc_inventory", {}))
         if not isinstance(npc_inv, dict):
@@ -611,7 +613,7 @@ def create_generation_node() -> Callable[[GameState], dict]:
             relationship_score=relationship,
             flags=flags,
             summary=summary,
-            journal_entries=journal_events,
+            journal_entries=journal_events[-5:] if journal_events else [],
             inventory_items=inventory_display_list,
             has_healing_potion=has_healing_potion,
             time_of_day=state.get("time_of_day", "晨曦 (Morning)"),
@@ -624,7 +626,24 @@ def create_generation_node() -> Callable[[GameState], dict]:
         if not messages or _msg_content(messages[-1]) != user_input:
             messages.append({"role": "user", "content": user_input})
 
-        history_dicts = [_message_to_dict(m) for m in messages]
+        # 核心记忆机制：滑动窗口截断，只保留最近的 20 条对话记录，防止上下文核爆
+        recent_messages = messages[-20:] if len(messages) > 20 else messages
+        history_dicts = [_message_to_dict(m) for m in recent_messages]
+
+        # 终极旁观者清醒补丁：直接在上下文中明确玩家的对话目标
+        prev_responses = list(state.get("speaker_responses", []))
+        if len(prev_responses) > 0:
+            # 提取真正的受话人（即本回合第一个被点名发言的人）
+            first_speaker_id = prev_responses[0][0]
+
+            # 1. 在 System Prompt 加上钢印，赋予"保持沉默"的权利
+            system_prompt += f"\n\n[CRITICAL NOTE: You are a BYSTANDER. The player's words were directed at {first_speaker_id}, NOT you. React as a third-party observer. You MAY respond with ONLY a physical action (e.g. *raised an eyebrow*) and no speech—staying silent is perfectly acceptable.]"
+
+            # 2. 强制修改发给大模型的最后一句话，加上动作旁白
+            if history_dicts and history_dicts[-1]["role"] == "user":
+                original_text = history_dicts[-1]["content"]
+                history_dicts[-1]["content"] = f"*(玩家正盯着 {first_speaker_id} 说话，并没有看你)*\n玩家说：{original_text}"
+
         raw_response = generate_dialogue(system_prompt, conversation_history=history_dicts)
         parsed = parse_ai_response(raw_response)
         ai_text = parsed["text"] or "..."

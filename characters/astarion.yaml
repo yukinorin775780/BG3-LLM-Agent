@@ -76,11 +76,3 @@ attributes: {}
 # 多智能体互动特殊关系
 relationships:
   shadowheart: "觉得她像个抱着秘密死死不放的无聊修女，经常喜欢出言讥讽她的信仰和保守。"
-
-# 阿斯代伦专属的叙事反转规则
-narrative_rules:
-  - id: "astarion_chaos_approval"
-    description: "当玩家做出极度自私、混乱或敲诈勒索的行为时，阿斯代伦会极度赞赏。"
-    condition: "action_type in ['INTIMIDATION', 'DECEPTION']"
-    overrides:
-      action_type: "ENTERTAINED"

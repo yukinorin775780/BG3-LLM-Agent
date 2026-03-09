@@ -4,7 +4,9 @@ Handles all Rich/UI rendering - no game logic
 """
 
 import asyncio
+import random
 from typing import Optional
+from rich.align import Align
 from rich.console import Console, Group
 from rich.columns import Columns
 from rich.live import Live
@@ -383,7 +385,59 @@ class GameRenderer:
         """Display auto-success message (VULNERABLE state)"""
         self.console.print(f"[success]🎯 Auto-Success: [item]{action_type}[/item] -> [critical]CRITICAL SUCCESS[/critical][/success]")
         self.console.print()
-    
+
+    async def show_dice_roll_animation(self, intent: str, dc: int, modifier: int, roll_data: dict):
+        """异步呈现跑团掷骰子的悬念动画"""
+        final_roll = roll_data.get("raw_roll", 10)
+        total = roll_data.get("total", 10)
+        is_success = roll_data.get("is_success", False)
+        result_type = roll_data.get("result_type")
+
+        if is_success:
+            color = "bold green"
+            res_text = "成功 (SUCCESS)"
+        else:
+            color = "bold red"
+            res_text = "失败 (FAILURE)"
+
+        if "CRITICAL" in str(result_type):
+            res_text = f"大{res_text}!"
+            color = "bold yellow reverse blink"
+
+        self.console.print()
+        with Live(console=self.console, refresh_per_second=20) as live:
+            # 1. 悬念滚动效果 (Rolling)
+            for _ in range(15):
+                fake_roll = random.randint(1, 20)
+                panel = Panel(
+                    Align.center(f"[bold cyan]🎲 正在进行 {intent} 检定...[/bold cyan]\n\n[bold white]D20 掷出: {fake_roll}[/bold white]\n\n[dim]目标 DC: {dc} | 修正值: {modifier:+d}[/dim]"),
+                    title="[bold yellow]命运之骰[/bold yellow]",
+                    border_style="yellow",
+                    width=50
+                )
+                live.update(panel)
+                await asyncio.sleep(0.05)
+
+            # 2. 定格最终裸骰数字 (Reveal)
+            panel = Panel(
+                Align.center(f"[bold cyan]🎲 {intent} 检定[/bold cyan]\n\n[bold white]D20 掷出: [/bold white][{color}]{final_roll}[/{color}]\n\n[dim]目标 DC: {dc} | 修正值: {modifier:+d}[/dim]"),
+                title="[bold yellow]命运之骰[/bold yellow]",
+                border_style="yellow",
+                width=50
+            )
+            live.update(panel)
+            await asyncio.sleep(0.6)
+
+            # 3. 加上修正值，显示最终判定结果 (Result)
+            panel = Panel(
+                Align.center(f"[bold cyan]🎲 {intent} 检定[/bold cyan]\n\n[bold white]最终结果: {final_roll} {modifier:+d} = [/bold white][{color}]{total}[/{color}]\n\n[{color}]{res_text}[/{color}]"),
+                title="[bold yellow]检定结算[/bold yellow]",
+                border_style="green" if is_success else "red",
+                width=50
+            )
+            live.update(panel)
+            await asyncio.sleep(0.8)
+
     def print_action_effect(self, message: str):
         """Display NPC action effect (e.g. using an item)."""
         self.console.print(f"[info]🧪 {message}[/info]")

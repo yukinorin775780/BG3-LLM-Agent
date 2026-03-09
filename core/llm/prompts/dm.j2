@@ -23,6 +23,13 @@ Analyze the intent behind the player's words and determine WHO should respond, A
 
 Return a JSON object with the following fields:
 
+CRITICAL RULE FOR ACTION_TYPE:
+Spoken dialogue is often an action!
+- If the user threatens, demands, or uses violence in dialogue -> MUST output "INTIMIDATION".
+- If the user lies or manipulates -> MUST output "DECEPTION".
+- If the user asks for an item or favor -> MUST output "PERSUASION".
+- "CHAT" is strictly for harmless, casual small talk ONLY. DO NOT use CHAT for threats or demands.
+
 1.  `action_type`: Choose one of [PERSUASION, DECEPTION, STEALTH, INTIMIDATION, INSIGHT, ATTACK, CHAT].
     -   `PERSUASION`: Reasoning, bargaining, honest convincing.
     -   `DECEPTION`: Lying, misleading, hiding truth.
@@ -46,6 +53,7 @@ FLAGS PROVIDED:
 
 5.  `responders` (Array of strings): List of character IDs who will speak, in order. Must be from: {{ available_npcs }}.
     -   Primary addressee first; others who react (banter/chime in) follow.
+    -   CRITICAL: DO NOT force NPCs into the responders list if they have no strong reason to speak. Keep banter natural. Often, just 1 responder is enough.
     -   If unclear, default to ["shadowheart"].
 
 6.  `affection_changes` (Object): Map of NPC ID to integer delta. Example: {"shadowheart": -2, "astarion": 3}

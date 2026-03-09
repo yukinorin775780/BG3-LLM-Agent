@@ -114,6 +114,14 @@ async def main_async():
                     for node_name, node_state in update.items():
                         # 实时打印当前刚刚执行完毕的节点，实现真正的"流式跟踪"
                         ui.print_system_info(f"⚡ [流式追踪] 节点 `{node_name}` 执行完毕")
+                        if "mechanics" in node_name and "latest_roll" in node_state:
+                            roll_info = node_state["latest_roll"]
+                            await ui.show_dice_roll_animation(
+                                intent=roll_info.get("intent", "ACTION"),
+                                dc=roll_info.get("dc", 10),
+                                modifier=roll_info.get("modifier", 0),
+                                roll_data=roll_info.get("result", {})
+                            )
 
                 # 循环结束后，获取最终状态用于渲染对话和最终日志
                 snapshot = await graph.aget_state(config)  # type: ignore[arg-type]

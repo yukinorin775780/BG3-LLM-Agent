@@ -237,7 +237,7 @@ def execute_skill_check(state: Any) -> Dict[str, Any]:
     intent = state.get("intent", "ACTION")
     intent_context = state.get("intent_context") or {}
     speaker = state.get("current_speaker", "shadowheart") or "shadowheart"
-    relationship = (state.get("entities") or {}).get(speaker, {}).get("affection", state.get("relationship", 0))
+    relationship = (state.get("entities") or {}).get(speaker, {}).get("affection", 0)
     is_probing_secret = state.get("is_probing_secret", False)
     _unlock_for_dice: List[str] = []
 
@@ -307,6 +307,12 @@ def execute_skill_check(state: Any) -> Dict[str, Any]:
     return {
         "journal_events": journal_lines,
         "relationship_delta": relationship_delta,
+        "raw_roll_data": {
+            "intent": intent,
+            "dc": dc,
+            "modifier": modifier,
+            "result": result
+        }
     }
 
 

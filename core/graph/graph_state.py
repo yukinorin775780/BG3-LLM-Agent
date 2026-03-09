@@ -56,7 +56,6 @@ class GameState(TypedDict, total=False):
     # RPG State [PERSISTENT]
     # -------------------------------------------------------------------------
     character_name: str
-    relationship: int       # Relationship score (-100..100)
     npc_state: Dict[str, Any]  # e.g. {"status": "SILENT", "duration": 2}
 
     # -------------------------------------------------------------------------
@@ -80,6 +79,11 @@ class GameState(TypedDict, total=False):
     # Consumed by GenerationNode for context; flushed per turn by main.py.
     # -------------------------------------------------------------------------
     journal_events: Annotated[List[str], merge_events]
+
+    # -------------------------------------------------------------------------
+    # UI Animation Data [TRANSIENT]
+    # -------------------------------------------------------------------------
+    latest_roll: Dict[str, Any]  # 存储最近一次掷骰子的明细，供 UI 拦截并播放动画
 
     # -------------------------------------------------------------------------
     # Output to Renderer [TRANSIENT]
