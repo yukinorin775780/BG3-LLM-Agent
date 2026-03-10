@@ -448,7 +448,7 @@ def dm_node(state: GameState) -> dict:
 
     queue = list(analysis.get("responders", ["shadowheart"]))
     current = queue.pop(0) if queue else "shadowheart"
-    return {
+    out = {
         "entities": entities,
         "speaker_queue": queue,
         "current_speaker": current,
@@ -460,6 +460,16 @@ def dm_node(state: GameState) -> dict:
         },
         "is_probing_secret": analysis.get("is_probing_secret", False),
     }
+
+    # 提取并合并剧情状态 (Flags)
+    current_flags = dict(state.get("flags", {}))
+    flags_changed = analysis.get("flags_changed", {})
+    if isinstance(flags_changed, dict) and flags_changed:
+        current_flags.update(flags_changed)
+        out["flags"] = current_flags
+        out["journal_events"] = out.get("journal_events", []) + [f"📜 [系统] 剧情世界线已变动: {list(flags_changed.keys())}"]
+
+    return out
 
 
 def advance_speaker_node(state: GameState) -> dict:
@@ -630,19 +640,19 @@ def create_generation_node() -> Callable[[GameState], dict]:
         recent_messages = messages[-20:] if len(messages) > 20 else messages
         history_dicts = [_message_to_dict(m) for m in recent_messages]
 
-        # 终极旁观者清醒补丁：直接在上下文中明确玩家的对话目标
+        # 终极 Agent-to-Agent (A-to-A) 交叉辩论补丁
         prev_responses = list(state.get("speaker_responses", []))
         if len(prev_responses) > 0:
-            # 提取真正的受话人（即本回合第一个被点名发言的人）
             first_speaker_id = prev_responses[0][0]
+            last_speaker_id, last_speaker_text = prev_responses[-1]
 
-            # 1. 在 System Prompt 加上钢印，赋予"保持沉默"的权利
-            system_prompt += f"\n\n[CRITICAL NOTE: You are a BYSTANDER. The player's words were directed at {first_speaker_id}, NOT you. React as a third-party observer. You MAY respond with ONLY a physical action (e.g. *raised an eyebrow*) and no speech—staying silent is perfectly acceptable.]"
+            # 1. A-to-A 思想钢印：自然反应矩阵（同意/反驳/嘲讽/无视）
+            system_prompt += f"\n\n[CRITICAL A-TO-A NOTE: You are part of a group conversation. The player just acted, and {last_speaker_id} reacted by saying: '{last_speaker_text}'.\nYOUR TASK: Evaluate {last_speaker_id}'s statement based on your personality.\n- If you STRONGLY DISAGREE, argue with them.\n- If you AGREE, support or build on their point.\n- If you think they are being ridiculous, MOCK them.\n- If the topic is TRIVIAL or you don't care, DO NOT SPEAK. Output ONLY a brief physical action (e.g., *rolls eyes*, *yawns*, *ignores them*).\nReact naturally. Address {last_speaker_id} directly if you choose to speak.]"
 
-            # 2. 强制修改发给大模型的最后一句话，加上动作旁白
+            # 2. 动作旁白重构：让大模型清晰感知到当前的对话焦点已经转移到了上一个 NPC 身上
             if history_dicts and history_dicts[-1]["role"] == "user":
                 original_text = history_dicts[-1]["content"]
-                history_dicts[-1]["content"] = f"*(玩家正盯着 {first_speaker_id} 说话，并没有看你)*\n玩家说：{original_text}"
+                history_dicts[-1]["content"] = f"[事件回顾] 玩家说：{original_text}\n[刚刚发生] {last_speaker_id} 回应道：{last_speaker_text}\n*(现在轮到你做出反应了)*"
 
         raw_response = generate_dialogue(system_prompt, conversation_history=history_dicts)
         parsed = parse_ai_response(raw_response)

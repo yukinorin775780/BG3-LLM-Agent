@@ -57,7 +57,7 @@ equipment:
 - Mysterious Artifact
 base_stats:
   hp: 20
-  affection: 0
+  affection: 50
 inventory:
   - id: mysterious_artifact
     count: 1

@@ -59,9 +59,14 @@ FLAGS PROVIDED:
 6.  `affection_changes` (Object): Map of NPC ID to integer delta. Example: {"shadowheart": -2, "astarion": 3}
     -   Only include NPCs whose affection changes. Omit if no changes.
 
+7.  `flags_changed` (Object): Map of string flag names to boolean values.
+    -   Use this ONLY IF the player discovers a major plot secret, makes a critical promise, or reaches a narrative milestone.
+    -   Example: If the player discovers Shadowheart's secret, output {"knows_secret": true}. If she confesses the artifact's true nature, output {"artifact_confessed": true}.
+    -   Omit if no major story progression happened.
+
 **Output Format:**
 Strictly output ONLY the JSON object. Do not add markdown blocks like ```json.
 Example:
-{"action_type": "CHAT", "is_probing_secret": false, "difficulty_class": 0, "reason": "Casual chat.", "responders": ["shadowheart"], "affection_changes": {}}
+{"action_type": "CHAT", "is_probing_secret": false, "difficulty_class": 0, "reason": "Casual chat.", "responders": ["shadowheart"], "affection_changes": {}, "flags_changed": {}}
 Example with affection:
-{"action_type": "CHAT", "is_probing_secret": false, "difficulty_class": 0, "reason": "Player mocked altruism.", "responders": ["astarion", "shadowheart"], "affection_changes": {"astarion": 3, "shadowheart": -2}}
+{"action_type": "CHAT", "is_probing_secret": false, "difficulty_class": 0, "reason": "Player mocked altruism.", "responders": ["astarion", "shadowheart"], "affection_changes": {"astarion": 3, "shadowheart": -2}, "flags_changed": {}}

@@ -18,6 +18,7 @@ from rich.table import Table
 from rich.box import HEAVY
 from core.dice import CheckResult
 from core.inventory import Inventory
+from core.systems.quest import QuestManager
 
 
 class GameRenderer:
@@ -74,6 +75,12 @@ class GameRenderer:
         entities = state.get("entities", {})
         player_inv = state.get("player_inventory", {})
 
+        # 解析任务状态
+        flags = state.get("flags", {})
+        from characters.loader import load_character
+        char_data = load_character("shadowheart")
+        active_quests = QuestManager.check_quests(char_data.quests, flags)
+
         self.print("───────────────────────────────────────────────────── 📊 战术状态面板 ──────────────────────────────────────────────────────")
         self.print(f"[bold cyan]🌍 时间: {time_str} | ⏳ 回合: {turn}[/bold cyan]")
 
@@ -98,6 +105,18 @@ class GameRenderer:
             panels.append(Panel(content, title=f"📦 {ent_id.capitalize()}", width=22, border_style=name_color))
 
         self.console.print(Columns(panels))
+
+        # 任务UI构建（显示在背包面板下方）
+        quest_text = ""
+        if active_quests:
+            for q in active_quests:
+                status_color = "green" if q["status"] == "COMPLETED" else "yellow"
+                quest_text += f"[{status_color}]• {q['title']}[/{status_color}]\n[dim]  {q['stage_description']}[/dim]\n"
+        else:
+            quest_text = "[dim]暂无活跃任务...[/dim]"
+
+        quest_panel = Panel(quest_text, title="📜 [bold yellow]任务日志[/bold yellow]", border_style="yellow")
+        self.console.print(quest_panel)
         self.print("")
 
     def show_dashboard_legacy(self, player_name: str, npc_name: str, relationship: int, npc_state: dict, active_quests: Optional[list] = None, player_inventory: Optional[Inventory] = None, npc_inventory: Optional[Inventory] = None, journal: Optional[list] = None) -> Group:

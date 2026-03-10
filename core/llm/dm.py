@@ -191,6 +191,12 @@ def analyze_intent(user_input: str, flags: Dict[str, Any] | None = None, time_of
             responders = [available_npcs[0]] if available_npcs else ["shadowheart"]
         intent_data["responders"] = responders
 
+        # 剧情标志位变更：安全提取并过滤
+        flags_changed = intent_data.get("flags_changed", {})
+        if not isinstance(flags_changed, dict):
+            flags_changed = {}
+        intent_data["flags_changed"] = {str(k): bool(v) for k, v in flags_changed.items()}
+
         # 好感度变化：安全提取并过滤
         affection_changes = intent_data.get("affection_changes", {})
         if not isinstance(affection_changes, dict):
