@@ -36,10 +36,15 @@ async def main_async():
     # -------------------------------------------------------------------------
     # 初始化
     # -------------------------------------------------------------------------
+    # 挂载全局物品数据库
+    if not inventory.init_registry("config/items.yaml"):
+        print("⚠️ 警告: 物品数据库加载失败，将使用默认回退(Fallback)数据。")
+    else:
+        print("✅ 物品数据库加载成功！")
+
     ui = GameRenderer()
     ui.clear_screen()
     ui.show_title("BG3 LLM Agent - V2 (LangGraph)")
-    inventory.init_registry("config/items.yaml")
 
     # -------------------------------------------------------------------------
     # 挂载引擎与配置存档（AsyncSqliteSaver 跨会话记忆）

@@ -51,7 +51,7 @@ class GameRenderer:
         self.console.print()
     
     def _format_inv_display(self, inv) -> str:
-        """格式化背包显示，支持 Dict[str,int] 或 list of {id, count}"""
+        """格式化背包显示，支持 Dict[str,int] 或 list of {id, count}，使用物品数据库中文名及类型颜色"""
         if not inv:
             return "[dim]空无一物[/dim]"
         try:
@@ -61,7 +61,13 @@ class GameRenderer:
                 items = [(k, v) for k, v in inv.items() if v > 0]
             else:
                 items = [(x.get("id", ""), x.get("count", 0)) for x in inv if x.get("count", 0) > 0]
-            lines = [f"• {registry.get_name(k)}: {v}" for k, v in items]
+            lines = []
+            for item_id, count in items:
+                item_name = registry.get_name(item_id)
+                item_data = registry.get(item_id)
+                item_type = item_data.get("type", "unknown")
+                color = "magenta" if item_type == "quest" else "red" if item_type == "consumable" else "cyan"
+                lines.append(f"• [{color}]{item_name}[/{color}]: {count}")
             return "\n".join(lines) if lines else "[dim]空无一物[/dim]"
         except Exception:
             if isinstance(inv, dict):
@@ -73,7 +79,10 @@ class GameRenderer:
         turn = state.get("turn_count", 0)
         time_str = state.get("time_of_day", "晨曦 (Morning)")
         entities = state.get("entities", {})
-        player_inv = state.get("player_inventory", {})
+        player_data = entities.get("player", {})
+        player_hp = player_data.get("hp", 20)
+        player_max_hp = player_data.get("max_hp", 20)
+        player_inv = player_data.get("inventory") or state.get("player_inventory", {})
 
         # 解析任务状态
         flags = state.get("flags", {})
@@ -84,19 +93,29 @@ class GameRenderer:
         self.print("───────────────────────────────────────────────────── 📊 战术状态面板 ──────────────────────────────────────────────────────")
         self.print(f"[bold cyan]🌍 时间: {time_str} | ⏳ 回合: {turn}[/bold cyan]")
 
+        # 主角 HP 行
+        player_hearts_top = "❤️" * max(0, player_hp // 2) + "🤍" * max(0, (player_max_hp - player_hp) // 2)
+        self.print(f"[cyan]Player{'':<8}[/cyan] | [bold red]HP: {player_hp}/{player_max_hp} {player_hearts_top}[/bold red] | [bold yellow]Buffs: 无[/bold yellow]")
+
         for ent_id, ent_data in entities.items():
+            if ent_id == "player":
+                continue
             hp = ent_data.get("hp", 20)
+            max_hp = ent_data.get("max_hp", 20)
             buffs = ent_data.get("active_buffs", [])
             buff_str = ", ".join([f"{b['id']}({b['duration']}t)" for b in buffs]) if buffs else "无"
-            hp_bar = "❤️" * (hp // 2) + "🤍" * ((20 - hp) // 2)
-            name_color = "magenta" if ent_id == "shadowheart" else "red"
-            self.print(f"[{name_color}]{ent_id.capitalize():<12}[/{name_color}] | [bold red]HP: {hp}/20 {hp_bar}[/bold red] | [bold yellow]Buffs: {buff_str}[/bold yellow]")
+            hp_bar = "❤️" * max(0, hp // 2) + "🤍" * max(0, (max_hp - hp) // 2)
+            name_color = "magenta" if ent_id == "shadowheart" else "red" if ent_id == "astarion" else "cyan"
+            self.print(f"[{name_color}]{ent_id.capitalize():<12}[/{name_color}] | [bold red]HP: {hp}/{max_hp} {hp_bar}[/bold red] | [bold yellow]Buffs: {buff_str}[/bold yellow]")
 
         panels = []
-        p_inv_str = self._format_inv_display(player_inv)
-        panels.append(Panel(p_inv_str, title="🎒 你的背包", width=22, border_style="cyan"))
+        # 你的背包（仅物品列表，HP 在顶部全局状态栏显示）
+        player_inv_text = self._format_inv_display(player_inv)
+        panels.append(Panel(player_inv_text, title="🎒 你的背包", width=22, border_style="cyan"))
 
         for ent_id, ent_data in entities.items():
+            if ent_id == "player":
+                continue
             aff = ent_data.get("affection", 0)
             n_inv = ent_data.get("inventory", {})
             n_inv_str = self._format_inv_display(n_inv)

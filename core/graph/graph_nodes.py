@@ -16,6 +16,34 @@ from core.graph.graph_state import GameState
 from core.llm.dm import analyze_intent
 from core.systems import mechanics
 from core.systems.inventory import get_registry, Inventory, format_inventory_dict_to_display_list
+
+
+def _build_item_lore(state: Any) -> str:
+    """收集场上所有物品并生成 LLM 可用的物品知识库文本"""
+    registry = get_registry()
+    known_items = set()
+    entities = state.get("entities", {})
+    for ent in entities.values():
+        inv = ent.get("inventory", {})
+        if isinstance(inv, list):
+            for item in inv:
+                if isinstance(item, dict) and item.get("id"):
+                    known_items.add(item["id"])
+                elif isinstance(item, str):
+                    known_items.add(item)
+        else:
+            for item_id in (inv or {}).keys():
+                known_items.add(item_id)
+    player_inv = state.get("player_inventory", {})
+    if isinstance(player_inv, dict):
+        known_items.update(player_inv.keys())
+    if not known_items:
+        return ""
+    item_lore = "\n\n[CRITICAL KNOWLEDGE: ITEM DATABASE]\nHere is the real data for the items currently in the game. Use their translated names and respect their effects/descriptions:\n"
+    for item_id in known_items:
+        data = registry.get(item_id)
+        item_lore += f"- ID: {item_id} | Name: {data.get('name')} | Desc: {data.get('description')} | Effect: {data.get('effect', 'None')}\n"
+    return item_lore
 from core.engine import generate_dialogue, parse_ai_response
 
 
@@ -420,12 +448,14 @@ def dm_node(state: GameState) -> dict:
             entities[k]["inventory"] = {}
     available_npcs = list(entities.keys()) if entities else ["shadowheart", "astarion"]
     current_npc_hp = entities.get("shadowheart", {}).get("hp", 20)
+    item_lore = _build_item_lore(state)
     analysis = analyze_intent(
         state.get("user_input", ""),
         flags=state.get("flags", {}),
         time_of_day=state.get("time_of_day", "晨曦 (Morning)"),
         hp=current_npc_hp,
         available_npcs=available_npcs,
+        item_lore=item_lore if item_lore else None,
     )
 
     # 好感度物理结算与 BG3 风格 UI 渲染
@@ -468,6 +498,101 @@ def dm_node(state: GameState) -> dict:
         current_flags.update(flags_changed)
         out["flags"] = current_flags
         out["journal_events"] = out.get("journal_events", []) + [f"📜 [系统] 剧情世界线已变动: {list(flags_changed.keys())}"]
+
+    # -------------------------------------------------------------------------
+    # 物理物品转移与消耗逻辑 (Item Transfers)
+    # -------------------------------------------------------------------------
+    item_transfers = analysis.get("item_transfers", [])
+    if not isinstance(item_transfers, list):
+        item_transfers = []
+    player_inv = dict(state.get("player_inventory", {}))
+    current_entities = dict(out["entities"])
+    registry = get_registry()
+
+    for transfer in item_transfers:
+        if not isinstance(transfer, dict):
+            continue
+        src = transfer.get("from", "player")
+        dst = transfer.get("to")
+        item_id = transfer.get("item_id")
+        count = int(transfer.get("count", 1))
+
+        if not item_id or count <= 0:
+            continue
+
+        # 获取源背包（player 用 player_inventory，NPC 用 entities）
+        src_inv: Dict[str, int] = {}
+        if src == "player":
+            src_inv = player_inv
+        elif src in current_entities:
+            inv = current_entities[src].setdefault("inventory", {})
+            if not isinstance(inv, dict):
+                inv = {}
+                current_entities[src]["inventory"] = inv
+            src_inv = inv
+        else:
+            continue
+
+        item_name = registry.get_name(item_id)
+        has_enough = src_inv.get(item_id, 0) >= count
+
+        if has_enough:
+            # 1. 扣除来源物品
+            src_inv[item_id] = src_inv.get(item_id, 0) - count
+            if src_inv[item_id] <= 0:
+                del src_inv[item_id]
+
+            # 2. 增加目标物品（若不是被消耗）
+            if dst == "consumed":
+                out["journal_events"] = out.get("journal_events", []) + [f"💥 [物品消耗] {src} 使用了 {count}x {item_name}"]
+            elif dst == "player":
+                player_inv[item_id] = player_inv.get(item_id, 0) + count
+                out["journal_events"] = out.get("journal_events", []) + [f"📦 [物品流转] {src} 将 {count}x {item_name} 交给了 {dst}"]
+            elif dst in current_entities:
+                dst_inv = current_entities[dst].setdefault("inventory", {})
+                if not isinstance(dst_inv, dict):
+                    dst_inv = {}
+                    current_entities[dst]["inventory"] = dst_inv
+                dst_inv[item_id] = dst_inv.get(item_id, 0) + count
+                out["journal_events"] = out.get("journal_events", []) + [f"📦 [物品流转] {src} 将 {count}x {item_name} 交给了 {dst}"]
+            else:
+                out["journal_events"] = out.get("journal_events", []) + [f"❌ [动作失败] 无效的目标: {dst}"]
+        else:
+            out["journal_events"] = out.get("journal_events", []) + [f"❌ [动作失败] {src} 并没有足够的 {item_name}！"]
+
+    out["entities"] = current_entities
+    if any(t.get("from") == "player" or t.get("to") == "player" for t in item_transfers if isinstance(t, dict)):
+        out["player_inventory"] = player_inv
+
+    # -------------------------------------------------------------------------
+    # 生命值变动逻辑 (HP Changes)
+    # -------------------------------------------------------------------------
+    hp_changes = analysis.get("hp_changes", [])
+    if not isinstance(hp_changes, list):
+        hp_changes = []
+    for change in hp_changes:
+        if not isinstance(change, dict):
+            continue
+        target = change.get("target")
+        amount = int(change.get("amount", 0))
+        if not target or amount == 0:
+            continue
+        # 支持 player：若不在 entities 中则创建
+        if target == "player" and target not in current_entities:
+            current_entities["player"] = {"hp": 20, "max_hp": 20, "affection": 0, "inventory": {}, "active_buffs": []}
+        if target not in current_entities:
+            continue
+        ent = current_entities[target]
+        current_hp = ent.get("hp", 20)
+        base_stats = ent.get("base_stats") or {}
+        max_hp = ent.get("max_hp", base_stats.get("hp", 20))
+        new_hp = max(0, min(current_hp + amount, max_hp))
+        ent["hp"] = new_hp
+        action_word = "恢复了" if amount > 0 else "失去了"
+        color_icon = "💚" if amount > 0 else "🩸"
+        out["journal_events"] = out.get("journal_events", []) + [f"{color_icon} [状态变动] {target} {action_word} {abs(amount)} 点 HP (当前: {new_hp}/{max_hp})"]
+
+    out["entities"] = current_entities
 
     return out
 
@@ -630,6 +755,11 @@ def create_generation_node() -> Callable[[GameState], dict]:
             hp=current_npc_data.get("hp", 20),
             active_buffs=current_npc_data.get("active_buffs", []),
         )
+
+        # 动态物品知识库注入 (Item Database Injection)
+        item_lore = _build_item_lore(state)
+        if item_lore:
+            system_prompt += item_lore
 
         # messages 符合 add_messages：从 state 读取，转为 engine 所需格式
         messages = list(state.get("messages", []))

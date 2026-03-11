@@ -64,9 +64,24 @@ FLAGS PROVIDED:
     -   Example: If the player discovers Shadowheart's secret, output {"knows_secret": true}. If she confesses the artifact's true nature, output {"artifact_confessed": true}.
     -   Omit if no major story progression happened.
 
+8.  `item_transfers` (Array of Objects): Use this when physical items are given, taken, or consumed.
+    -   Format: {"from": "<source_entity>", "to": "<target_entity>", "item_id": "<item_id>", "count": <number>}
+    -   SCENARIO 1 (Player gives to NPC): {"from": "player", "to": "shadowheart", "item_id": "healing_potion", "count": 1}
+    -   SCENARIO 2 (NPC gives to Player): {"from": "shadowheart", "to": "player", "item_id": "healing_potion", "count": 1}
+    -   SCENARIO 3 (Item is CONSUMED/USED up): Set "to" as "consumed". Example: {"from": "player", "to": "consumed", "item_id": "healing_potion", "count": 1}
+    -   item_id MUST EXACTLY match the keys in the inventory (e.g., "healing_potion", "gold").
+    -   Omit if no physical item exchange occurs.
+
+9.  `hp_changes` (Array of Objects): Use this when any entity takes damage or heals.
+    -   Format: {"target": "<entity_id>", "amount": <number>}
+    -   Positive number for healing, negative number for damage.
+    -   Example 1 (Player drinks potion): {"target": "player", "amount": 6}
+    -   Example 2 (Astarion gets stabbed): {"target": "astarion", "amount": -4}
+    -   Omit if no health changes occur.
+
 **Output Format:**
 Strictly output ONLY the JSON object. Do not add markdown blocks like ```json.
 Example:
-{"action_type": "CHAT", "is_probing_secret": false, "difficulty_class": 0, "reason": "Casual chat.", "responders": ["shadowheart"], "affection_changes": {}, "flags_changed": {}}
+{"action_type": "CHAT", "is_probing_secret": false, "difficulty_class": 0, "reason": "Casual chat.", "responders": ["shadowheart"], "affection_changes": {}, "flags_changed": {}, "item_transfers": [], "hp_changes": []}
 Example with affection:
-{"action_type": "CHAT", "is_probing_secret": false, "difficulty_class": 0, "reason": "Player mocked altruism.", "responders": ["astarion", "shadowheart"], "affection_changes": {"astarion": 3, "shadowheart": -2}, "flags_changed": {}}
+{"action_type": "CHAT", "is_probing_secret": false, "difficulty_class": 0, "reason": "Player mocked altruism.", "responders": ["astarion", "shadowheart"], "affection_changes": {"astarion": 3, "shadowheart": -2}, "flags_changed": {}, "item_transfers": [], "hp_changes": []}

@@ -112,7 +112,7 @@ def _evaluate_narrative_rules(analysis: dict, flags: dict, target_npc: str = "sh
     return analysis
 
 
-def analyze_intent(user_input: str, flags: Dict[str, Any] | None = None, time_of_day: str = "晨曦 (Morning)", hp: int = 20, available_npcs: list | None = None) -> Dict[str, Any]:
+def analyze_intent(user_input: str, flags: Dict[str, Any] | None = None, time_of_day: str = "晨曦 (Morning)", hp: int = 20, available_npcs: list | None = None, item_lore: str | None = None) -> Dict[str, Any]:
     """
     Analyze player intent and determine game mechanics.
     
@@ -146,6 +146,8 @@ def analyze_intent(user_input: str, flags: Dict[str, Any] | None = None, time_of
     # Load and render template
     template = load_dm_template()
     prompt = template.render(user_input=user_input, flags=flags, time_of_day=time_of_day, available_npcs=npcs_str)
+    if item_lore:
+        prompt += "\n\n" + item_lore
     
     response_text: str | None = None
     
@@ -196,6 +198,24 @@ def analyze_intent(user_input: str, flags: Dict[str, Any] | None = None, time_of
         if not isinstance(flags_changed, dict):
             flags_changed = {}
         intent_data["flags_changed"] = {str(k): bool(v) for k, v in flags_changed.items()}
+
+        # 物理物品转移：安全提取并过滤
+        item_transfers_raw = intent_data.get("item_transfers", [])
+        if not isinstance(item_transfers_raw, list):
+            item_transfers_raw = []
+        intent_data["item_transfers"] = [
+            {"from": str(t.get("from", "player")), "to": str(t.get("to", "")), "item_id": str(t.get("item_id", "")), "count": int(t.get("count", 1))}
+            for t in item_transfers_raw if isinstance(t, dict) and t.get("to") and t.get("item_id")
+        ]
+
+        # 生命值变动：安全提取并过滤
+        hp_changes_raw = intent_data.get("hp_changes", [])
+        if not isinstance(hp_changes_raw, list):
+            hp_changes_raw = []
+        intent_data["hp_changes"] = [
+            {"target": str(t.get("target", "")), "amount": int(t.get("amount", 0))}
+            for t in hp_changes_raw if isinstance(t, dict) and t.get("target") is not None and isinstance(t.get("amount"), (int, float))
+        ]
 
         # 好感度变化：安全提取并过滤
         affection_changes = intent_data.get("affection_changes", {})
