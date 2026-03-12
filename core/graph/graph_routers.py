@@ -27,6 +27,8 @@ ACTION_INTENTS: tuple[str, ...] = (
     "STEALTH",
     "INTIMIDATION",
     "INSIGHT",
+    "PERCEPTION",
+    "INVESTIGATION",
     "ACTION",
 )
 assert set(MECHANICS_REQUIRED_INTENTS).issubset(set(ACTION_INTENTS)), (

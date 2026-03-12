@@ -30,10 +30,14 @@ Spoken dialogue is often an action!
 - If the user asks for an item or favor -> MUST output "PERSUASION".
 - "CHAT" is strictly for harmless, casual small talk ONLY. DO NOT use CHAT for threats or demands.
 
-1.  `action_type`: Choose one of [PERSUASION, DECEPTION, STEALTH, INTIMIDATION, INSIGHT, ATTACK, CHAT].
+- CRITICAL RULE FOR INTENT: If the player describes an ACTION like looking around, LISTENING carefully, searching, hiding, or attacking, you MUST output the appropriate action_type (e.g., PERCEPTION for listening/looking, INVESTIGATION for searching, STEALTH for hiding, ATTACK for attacking). Do NOT treat physical environment sensing as "CHAT".
+
+1.  `action_type`: Choose one of [PERSUASION, DECEPTION, STEALTH, INTIMIDATION, INSIGHT, ATTACK, PERCEPTION, INVESTIGATION, CHAT].
     -   `PERSUASION`: Reasoning, bargaining, honest convincing.
     -   `DECEPTION`: Lying, misleading, hiding truth.
-    -   `STEALTH`: Hiding, sneaking, avoiding detection.
+    -   `STEALTH`: Use ONLY when the player is actively trying to hide or move silently to avoid detection.
+    -   `PERCEPTION`: Use when the player is listening, looking around, or sensing the environment (e.g., "I listen to the wind", "I look for enemies").
+    -   `INVESTIGATION`: Use when the player is actively searching a specific object, looting a body, or deducing clues.
     -   `INTIMIDATION`: Threatening, aggressive posturing.
     -   `INSIGHT`: Trying to read the NPC's emotions or detect lies.
     -   `ATTACK`: Physical aggression or casting hostile spells.
@@ -69,6 +73,8 @@ FLAGS PROVIDED:
     -   SCENARIO 1 (Player gives to NPC): {"from": "player", "to": "shadowheart", "item_id": "healing_potion", "count": 1}
     -   SCENARIO 2 (NPC gives to Player): {"from": "shadowheart", "to": "player", "item_id": "healing_potion", "count": 1}
     -   SCENARIO 3 (Item is CONSUMED/USED up): Set "to" as "consumed". Example: {"from": "player", "to": "consumed", "item_id": "healing_potion", "count": 1}
+    -   SCENARIO 4 (World Drop / Looting): If the player successfully searches the environment or loots something, generate items from the "world". Example: {"from": "world", "to": "player", "item_id": "gold_coin", "count": 50}
+    -   Hint for Loot: You can reward items like "gold_coin", "ruby_gem", "healing_potion", etc., if it makes sense narratively.
     -   item_id MUST EXACTLY match the keys in the inventory (e.g., "healing_potion", "gold").
     -   Omit if no physical item exchange occurs.
 

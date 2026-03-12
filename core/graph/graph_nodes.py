@@ -8,6 +8,7 @@ LangGraph 节点：Input / DM / Mechanics / Generation
 
 import copy
 import os
+import re
 from typing import Callable, Dict, Any
 import yaml
 from langchain_core.messages import HumanMessage, AIMessage, RemoveMessage
@@ -520,6 +521,23 @@ def dm_node(state: GameState) -> dict:
         if not item_id or count <= 0:
             continue
 
+        # --- 世界掉落 (World Drop) 逻辑 ---
+        if src == "world" and dst and count > 0:
+            item_name = registry.get_name(item_id)
+            if dst == "player":
+                player_inv[item_id] = player_inv.get(item_id, 0) + count
+                out["journal_events"] = out.get("journal_events", []) + [f"✨ [环境发现] {dst} 获得了 {count}x {item_name}"]
+                out["player_inventory"] = player_inv
+            elif dst in current_entities:
+                dst_inv = current_entities[dst].setdefault("inventory", {})
+                if not isinstance(dst_inv, dict):
+                    dst_inv = {}
+                    current_entities[dst]["inventory"] = dst_inv
+                dst_inv[item_id] = dst_inv.get(item_id, 0) + count
+                out["journal_events"] = out.get("journal_events", []) + [f"✨ [环境发现] {dst} 获得了 {count}x {item_name}"]
+            continue
+        # ------------------------------------------
+
         # 获取源背包（player 用 player_inventory，NPC 用 entities）
         src_inv: Dict[str, int] = {}
         if src == "player":
@@ -786,21 +804,32 @@ def create_generation_node() -> Callable[[GameState], dict]:
 
         raw_response = generate_dialogue(system_prompt, conversation_history=history_dicts)
         parsed = parse_ai_response(raw_response)
-        ai_text = parsed["text"] or "..."
+        raw_text = (parsed["text"] or "...").strip()
 
         # 获取角色显示名 (例如 "阿斯代伦 (Astarion)")
         display_name = character.data.get("name", speaker)
 
-        # 核心修复：为存入图状态的上下文记忆强制加上发言者名字前缀，防止下一个 NPC 产生幻觉 (Identity Bleed)
-        memory_content = f"[{display_name}]说： {ai_text}"
+        # 暴力清洗：切掉第一个引号或星号之前的所有废话前缀
+        first_quote = raw_text.find('"')
+        first_asterisk = raw_text.find('*')
+        candidates = [i for i in (first_quote, first_asterisk) if i >= 0]
+        clean_text = raw_text[min(candidates):].strip() if candidates else raw_text
+        # 兜底：正则移除残留的名字前缀
+        clean_text = re.sub(r"^[：:\s]*\[?[a-zA-Z\u4e00-\u9fa5]+\]?\s*[：:说]\s*", "", clean_text).strip()
+        clean_text = re.sub(rf"^{re.escape(speaker)}\s*[:：说]\s*", "", clean_text, flags=re.IGNORECASE).strip()
+        if not clean_text:
+            clean_text = raw_text
+
+        # 存入底层历史记忆时，Python 强行打上标准标签
+        attributed_msg = f"[{speaker}]: {clean_text}"
 
         # 合并触发器产生的剧情事件到 journal，并写回 flags/背包/好感度
         prev_responses = list(state.get("speaker_responses", []))
         out = {
-            "final_response": ai_text,
-            "speaker_responses": prev_responses + [(speaker, ai_text)],
+            "final_response": clean_text,
+            "speaker_responses": prev_responses + [(speaker, clean_text)],
             "thought_process": parsed.get("thought") or "",
-            "messages": [HumanMessage(content=user_input), AIMessage(content=memory_content, name=speaker)],
+            "messages": [HumanMessage(content=user_input), AIMessage(content=attributed_msg, name=speaker)],
         }
         trigger_journal = trigger_result.get("journal_entries", [])
         if trigger_journal:

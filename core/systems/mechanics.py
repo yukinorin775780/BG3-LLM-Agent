@@ -73,7 +73,7 @@ def normalize_ability_name(ability_name: str) -> Optional[str]:
 # 每种检定映射到 D&D 5e 属性，用于后续扩展（如玩家属性修正）。
 # -----------------------------------------------------------------------------
 
-SKILL_CHECK_TYPES = ("PERSUASION", "DECEPTION", "STEALTH", "INTIMIDATION", "INSIGHT", "ATTACK", "STEAL", "ACTION")
+SKILL_CHECK_TYPES = ("PERSUASION", "DECEPTION", "STEALTH", "INTIMIDATION", "INSIGHT", "ATTACK", "STEAL", "ACTION", "PERCEPTION", "INVESTIGATION")
 
 
 def get_ability_for_action(action_type: str) -> str:
@@ -92,6 +92,8 @@ def get_ability_for_action(action_type: str) -> str:
         "INTIMIDATION": "CHA",
         "STEALTH": "DEX",
         "INSIGHT": "WIS",
+        "PERCEPTION": "WIS",
+        "INVESTIGATION": "INT",
         "ATTACK": "STR",
         "STEAL": "DEX",
         "ACTION": "CHA",
