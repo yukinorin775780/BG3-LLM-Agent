@@ -1,0 +1,41 @@
+"""
+文本处理器：清洗大模型生成的冗余 NPC 剧本前缀。
+"""
+
+import re
+
+
+def clean_npc_dialogue(speaker: str, raw_text: str) -> str:
+    """
+    清洗大模型生成的冗余 NPC 名字前缀。
+    例如把 "[Shadowheart]说： 风停了。" 清洗为 "风停了。"
+    """
+    clean_text = raw_text.strip()
+
+    # 1. 暴力清洗：切掉第一个引号或星号之前的所有废话前缀
+    first_quote = clean_text.find('"')
+    first_asterisk = clean_text.find('*')
+    candidates = [i for i in (first_quote, first_asterisk) if i >= 0]
+    if candidates:
+        clean_text = clean_text[min(candidates) :].strip()
+
+    # 2. 正则清洗：移除行首出现的类似 "[Shadowheart]说："、"Shadowheart: " 等结构
+    clean_text = re.sub(
+        r"^[：:\s]*\[?[a-zA-Z\u4e00-\u9fa5]+\]?\s*[：:\s说]+", "", clean_text
+    ).strip()
+
+    # 3. 兜底清洗：基于传入的 speaker ID 再次强制正则清洗
+    clean_text = re.sub(
+        rf"^{re.escape(speaker)}\s*[:：说]\s*", "", clean_text, flags=re.IGNORECASE
+    ).strip()
+
+    if not clean_text:
+        clean_text = raw_text.strip()
+    return clean_text
+
+
+def format_history_message(speaker: str, clean_text: str) -> str:
+    """
+    为后台历史记录打上标准的说话人标签，防止大模型产生身份幻觉。
+    """
+    return f"[{speaker}]: {clean_text}"

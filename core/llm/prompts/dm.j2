@@ -32,6 +32,8 @@ Spoken dialogue is often an action!
 
 - CRITICAL RULE FOR INTENT: If the player describes an ACTION like looking around, LISTENING carefully, searching, hiding, or attacking, you MUST output the appropriate action_type (e.g., PERCEPTION for listening/looking, INVESTIGATION for searching, STEALTH for hiding, ATTACK for attacking). Do NOT treat physical environment sensing as "CHAT".
 
+- FREE ACTION / GIFTING: If the player is simply handing over or giving a beneficial item to a willing ally (e.g., "I give you this potion"), you MUST classify the "action_type" as "CHAT". DO NOT trigger a skill check (like PERSUASION) for freely giving gifts! You must still output the correct "item_transfers" JSON.
+
 1.  `action_type`: Choose one of [PERSUASION, DECEPTION, STEALTH, INTIMIDATION, INSIGHT, ATTACK, PERCEPTION, INVESTIGATION, CHAT].
     -   `PERSUASION`: Reasoning, bargaining, honest convincing.
     -   `DECEPTION`: Lying, misleading, hiding truth.

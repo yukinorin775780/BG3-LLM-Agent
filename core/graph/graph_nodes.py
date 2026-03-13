@@ -8,7 +8,6 @@ LangGraph 节点：Input / DM / Mechanics / Generation
 
 import copy
 import os
-import re
 from typing import Callable, Dict, Any
 import yaml
 from langchain_core.messages import HumanMessage, AIMessage, RemoveMessage
@@ -46,6 +45,8 @@ def _build_item_lore(state: Any) -> str:
         item_lore += f"- ID: {item_id} | Name: {data.get('name')} | Desc: {data.get('description')} | Effect: {data.get('effect', 'None')}\n"
     return item_lore
 from core.engine import generate_dialogue, parse_ai_response
+from core.engine.physics import apply_physics
+from core.utils.text_processor import clean_npc_dialogue, format_history_message
 
 
 # =============================================================================
@@ -501,116 +502,23 @@ def dm_node(state: GameState) -> dict:
         out["journal_events"] = out.get("journal_events", []) + [f"📜 [系统] 剧情世界线已变动: {list(flags_changed.keys())}"]
 
     # -------------------------------------------------------------------------
-    # 物理物品转移与消耗逻辑 (Item Transfers)
+    # 物理结算：物品流转与生命值变动（委托给物理引擎）
     # -------------------------------------------------------------------------
     item_transfers = analysis.get("item_transfers", [])
+    hp_changes = analysis.get("hp_changes", [])
     if not isinstance(item_transfers, list):
         item_transfers = []
-    player_inv = dict(state.get("player_inventory", {}))
-    current_entities = dict(out["entities"])
-    registry = get_registry()
-
-    for transfer in item_transfers:
-        if not isinstance(transfer, dict):
-            continue
-        src = transfer.get("from", "player")
-        dst = transfer.get("to")
-        item_id = transfer.get("item_id")
-        count = int(transfer.get("count", 1))
-
-        if not item_id or count <= 0:
-            continue
-
-        # --- 世界掉落 (World Drop) 逻辑 ---
-        if src == "world" and dst and count > 0:
-            item_name = registry.get_name(item_id)
-            if dst == "player":
-                player_inv[item_id] = player_inv.get(item_id, 0) + count
-                out["journal_events"] = out.get("journal_events", []) + [f"✨ [环境发现] {dst} 获得了 {count}x {item_name}"]
-                out["player_inventory"] = player_inv
-            elif dst in current_entities:
-                dst_inv = current_entities[dst].setdefault("inventory", {})
-                if not isinstance(dst_inv, dict):
-                    dst_inv = {}
-                    current_entities[dst]["inventory"] = dst_inv
-                dst_inv[item_id] = dst_inv.get(item_id, 0) + count
-                out["journal_events"] = out.get("journal_events", []) + [f"✨ [环境发现] {dst} 获得了 {count}x {item_name}"]
-            continue
-        # ------------------------------------------
-
-        # 获取源背包（player 用 player_inventory，NPC 用 entities）
-        src_inv: Dict[str, int] = {}
-        if src == "player":
-            src_inv = player_inv
-        elif src in current_entities:
-            inv = current_entities[src].setdefault("inventory", {})
-            if not isinstance(inv, dict):
-                inv = {}
-                current_entities[src]["inventory"] = inv
-            src_inv = inv
-        else:
-            continue
-
-        item_name = registry.get_name(item_id)
-        has_enough = src_inv.get(item_id, 0) >= count
-
-        if has_enough:
-            # 1. 扣除来源物品
-            src_inv[item_id] = src_inv.get(item_id, 0) - count
-            if src_inv[item_id] <= 0:
-                del src_inv[item_id]
-
-            # 2. 增加目标物品（若不是被消耗）
-            if dst == "consumed":
-                out["journal_events"] = out.get("journal_events", []) + [f"💥 [物品消耗] {src} 使用了 {count}x {item_name}"]
-            elif dst == "player":
-                player_inv[item_id] = player_inv.get(item_id, 0) + count
-                out["journal_events"] = out.get("journal_events", []) + [f"📦 [物品流转] {src} 将 {count}x {item_name} 交给了 {dst}"]
-            elif dst in current_entities:
-                dst_inv = current_entities[dst].setdefault("inventory", {})
-                if not isinstance(dst_inv, dict):
-                    dst_inv = {}
-                    current_entities[dst]["inventory"] = dst_inv
-                dst_inv[item_id] = dst_inv.get(item_id, 0) + count
-                out["journal_events"] = out.get("journal_events", []) + [f"📦 [物品流转] {src} 将 {count}x {item_name} 交给了 {dst}"]
-            else:
-                out["journal_events"] = out.get("journal_events", []) + [f"❌ [动作失败] 无效的目标: {dst}"]
-        else:
-            out["journal_events"] = out.get("journal_events", []) + [f"❌ [动作失败] {src} 并没有足够的 {item_name}！"]
-
-    out["entities"] = current_entities
-    if any(t.get("from") == "player" or t.get("to") == "player" for t in item_transfers if isinstance(t, dict)):
-        out["player_inventory"] = player_inv
-
-    # -------------------------------------------------------------------------
-    # 生命值变动逻辑 (HP Changes)
-    # -------------------------------------------------------------------------
-    hp_changes = analysis.get("hp_changes", [])
     if not isinstance(hp_changes, list):
         hp_changes = []
-    for change in hp_changes:
-        if not isinstance(change, dict):
-            continue
-        target = change.get("target")
-        amount = int(change.get("amount", 0))
-        if not target or amount == 0:
-            continue
-        # 支持 player：若不在 entities 中则创建
-        if target == "player" and target not in current_entities:
-            current_entities["player"] = {"hp": 20, "max_hp": 20, "affection": 0, "inventory": {}, "active_buffs": []}
-        if target not in current_entities:
-            continue
-        ent = current_entities[target]
-        current_hp = ent.get("hp", 20)
-        base_stats = ent.get("base_stats") or {}
-        max_hp = ent.get("max_hp", base_stats.get("hp", 20))
-        new_hp = max(0, min(current_hp + amount, max_hp))
-        ent["hp"] = new_hp
-        action_word = "恢复了" if amount > 0 else "失去了"
-        color_icon = "💚" if amount > 0 else "🩸"
-        out["journal_events"] = out.get("journal_events", []) + [f"{color_icon} [状态变动] {target} {action_word} {abs(amount)} 点 HP (当前: {new_hp}/{max_hp})"]
 
-    out["entities"] = current_entities
+    if item_transfers or hp_changes:
+        player_inv = dict(state.get("player_inventory", {}))
+        current_entities = dict(out["entities"])
+        new_events = apply_physics(current_entities, player_inv, item_transfers, hp_changes)
+        out["journal_events"] = out.get("journal_events", []) + new_events
+        out["entities"] = current_entities
+        if any(t.get("from") == "player" or t.get("to") == "player" for t in item_transfers if isinstance(t, dict)):
+            out["player_inventory"] = player_inv
 
     return out
 
@@ -806,22 +714,11 @@ def create_generation_node() -> Callable[[GameState], dict]:
         parsed = parse_ai_response(raw_response)
         raw_text = (parsed["text"] or "...").strip()
 
-        # 获取角色显示名 (例如 "阿斯代伦 (Astarion)")
-        display_name = character.data.get("name", speaker)
+        # 清洗大模型的原始输出
+        clean_text = clean_npc_dialogue(speaker, raw_text)
 
-        # 暴力清洗：切掉第一个引号或星号之前的所有废话前缀
-        first_quote = raw_text.find('"')
-        first_asterisk = raw_text.find('*')
-        candidates = [i for i in (first_quote, first_asterisk) if i >= 0]
-        clean_text = raw_text[min(candidates):].strip() if candidates else raw_text
-        # 兜底：正则移除残留的名字前缀
-        clean_text = re.sub(r"^[：:\s]*\[?[a-zA-Z\u4e00-\u9fa5]+\]?\s*[：:说]\s*", "", clean_text).strip()
-        clean_text = re.sub(rf"^{re.escape(speaker)}\s*[:：说]\s*", "", clean_text, flags=re.IGNORECASE).strip()
-        if not clean_text:
-            clean_text = raw_text
-
-        # 存入底层历史记忆时，Python 强行打上标准标签
-        attributed_msg = f"[{speaker}]: {clean_text}"
+        # 封装给记忆大模型看的带标签版本
+        attributed_msg = format_history_message(speaker, clean_text)
 
         # 合并触发器产生的剧情事件到 journal，并写回 flags/背包/好感度
         prev_responses = list(state.get("speaker_responses", []))
