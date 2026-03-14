@@ -1,8 +1,29 @@
 """
-文本处理器：清洗大模型生成的冗余 NPC 剧本前缀。
+文本处理器：清洗大模型生成的冗余 NPC 剧本前缀，以及 LLM JSON 防弹解析。
 """
 
+import json
 import re
+
+
+def parse_llm_json(raw_text: str) -> dict:
+    """
+    提取并解析 LLM 返回的 JSON，自动剥离 Markdown 代码块包裹。
+    """
+    clean_text = raw_text.strip()
+    if clean_text.startswith("```"):
+        # 截取第一个和第二个 ``` 之间的内容
+        parts = clean_text.split("```")
+        if len(parts) >= 3:
+            clean_text = parts[1]
+        # 如果带有 json 标识，去掉 "json"
+        if clean_text.lower().startswith("json"):
+            clean_text = clean_text[4:].strip()
+    try:
+        return json.loads(clean_text)
+    except json.JSONDecodeError as e:
+        print(f"⚠️ [系统警告] LLM 输出了无效的 JSON 格式: {e}\n原文内容: {raw_text}")
+        return {}  # 兜底返回空字典，防止游戏崩溃
 
 
 def clean_npc_dialogue(speaker: str, raw_text: str) -> str:

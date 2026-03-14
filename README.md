@@ -36,6 +36,26 @@
 
 ---
 
+## 🚀 V2 引擎迭代亮点 (The V2 Engine Evolution)
+
+在 V2 版本中，系统从「多智能体聊天机器人」正式跃迁为**真正的 TRPG (桌面角色扮演游戏) 引擎**。我们重构了底层状态机，并引入了物理与数值守恒法则。
+
+- 🌍 **物理法则与资产守恒 (Physics & Assets Engine)**
+  - 彻底解耦物理结算逻辑 (`core/engine/physics.py`)。
+  - 实装 HP (生命值) 系统与越界保护，支持伤害与治疗判定。
+  - 引入「世界掉落 (World Drop)」后门，允许玩家通过探索环境 (`INVESTIGATION`) 无中生有地获取战利品。
+- 🧠 **高精度意图识别 (Fine-Grained Intent Routing)**
+  - DM 节点精准区分对人社交、环境探索 (`PERCEPTION` / `STEALTH`) 与 免费互动 (`Free Action`)。
+  - 队友间赠送物品判定为静默流转，彻底消灭「过度检定 (Over-rolling)」。
+- 🎭 **MVC 场记与防幻觉系统 (Context Attribution)**
+  - 引入 `TextProcessor`，强制剥离 LLM 生成的冗余前缀（如 `[Shadowheart]说:`），由后台 Python 统一打标签。
+  - 彻底解决多 Agent 并发交流时大模型容易「认错人」的人格分裂 Bug，确保前端 UI 渲染绝对纯净。
+- 🧱 **坚如磐石的状态契约 (Industrial-Grade Graph State)**
+  - 基于 LangGraph 的 `TypedDict` 与 `Annotated` Reducer 重构状态总线。
+  - 严格区分持久化存档数据 (`[PERSISTENT]`) 与单局瞬时上下文 (`[TRANSIENT]`)，彻底扫清 V3 扩展障碍。
+
+---
+
 ## 🛠️ Tech Stack | 技术栈
 
 - **Core Framework**: `LangGraph`, `LangChain`

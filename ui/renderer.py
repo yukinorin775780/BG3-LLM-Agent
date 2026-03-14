@@ -15,7 +15,7 @@ from rich.theme import Theme
 from rich.text import Text
 from rich.rule import Rule
 from rich.table import Table
-from rich.box import HEAVY
+from rich.box import HEAVY, ROUNDED
 from core.dice import CheckResult
 from core.inventory import Inventory
 from core.systems.quest import QuestManager
@@ -109,9 +109,17 @@ class GameRenderer:
             self.print(f"[{name_color}]{ent_id.capitalize():<12}[/{name_color}] | [bold red]HP: {hp}/{max_hp} {hp_bar}[/bold red] | [bold yellow]Buffs: {buff_str}[/bold yellow]")
 
         panels = []
-        # 你的背包（仅物品列表，HP 在顶部全局状态栏显示）
+        # 你的背包：仅物品列表，HP 已在顶部全局状态栏显示
         player_inv_text = self._format_inv_display(player_inv)
-        panels.append(Panel(player_inv_text, title="🎒 你的背包", width=22, border_style="cyan"))
+        panels.append(
+            Panel(
+                player_inv_text,
+                title="🎒 你的背包",
+                width=22,
+                border_style="cyan",
+                box=ROUNDED,
+            )
+        )
 
         for ent_id, ent_data in entities.items():
             if ent_id == "player":

@@ -4,9 +4,9 @@ Analyzes player intent and determines game mechanics (skill checks, DC, etc.)
 """
 
 import os
-import json
 import re
 from characters.loader import load_character
+from core.utils.text_processor import parse_llm_json
 from typing import Dict, Any
 from openai import OpenAI
 from jinja2 import Environment, FileSystemLoader, TemplateNotFound
@@ -57,32 +57,9 @@ def load_dm_template():
 def parse_json_response(text: str) -> Dict[str, Any]:
     """
     Parse JSON from LLM response text.
-    Handles cases where JSON might be wrapped in markdown code blocks.
-    
-    Args:
-        text: Raw text response from LLM
-    
-    Returns:
-        dict: Parsed JSON object
-    
-    Raises:
-        json.JSONDecodeError: If JSON cannot be parsed
+    委托给 parse_llm_json，自动剥离 Markdown 代码块，解析失败时返回空字典。
     """
-    # Remove markdown code blocks if present
-    text = text.strip()
-    
-    # Try to extract JSON from markdown code blocks
-    json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', text, re.DOTALL)
-    if json_match:
-        text = json_match.group(1)
-    else:
-        # Try to find JSON object in the text
-        json_match = re.search(r'\{.*\}', text, re.DOTALL)
-        if json_match:
-            text = json_match.group(0)
-    
-    # Parse JSON
-    return json.loads(text)
+    return parse_llm_json(text)
 
 
 def _evaluate_narrative_rules(analysis: dict, flags: dict, target_npc: str = "shadowheart") -> dict:
@@ -129,7 +106,6 @@ def analyze_intent(user_input: str, flags: Dict[str, Any] | None = None, time_of
     
     Raises:
         RuntimeError: If template loading or LLM call fails
-        json.JSONDecodeError: If JSON parsing fails
     """
     # 濒死拦截：HP <= 0 时 NPC 已昏迷，跳过 LLM 判定
     if hp <= 0:
@@ -166,9 +142,23 @@ def analyze_intent(user_input: str, flags: Dict[str, Any] | None = None, time_of
         if not response_text:
             raise RuntimeError("LLM returned empty response")
         
-        # Parse JSON from response
+        # Parse JSON from response（防弹解析：失败时返回空字典）
         intent_data = parse_json_response(response_text)
-        
+
+        # 解析失败时兜底，防止游戏崩溃
+        if not intent_data:
+            return {
+                "action_type": "CHAT",
+                "difficulty_class": 0,
+                "reason": "JSON parse failed, fallback to CHAT.",
+                "is_probing_secret": False,
+                "responders": available_npcs[:1] or ["shadowheart"],
+                "affection_changes": {},
+                "flags_changed": {},
+                "item_transfers": [],
+                "hp_changes": [],
+            }
+
         # Validate required fields
         required_fields = ['action_type', 'difficulty_class', 'reason']
         for field in required_fields:
@@ -229,11 +219,6 @@ def analyze_intent(user_input: str, flags: Dict[str, Any] | None = None, time_of
         }
 
         return _evaluate_narrative_rules(intent_data, flags, responders[0] if responders else "shadowheart")
-        
-    except json.JSONDecodeError as e:
-        error_msg = f"Failed to parse JSON from DM response: {e}"
-        if response_text:
-            error_msg += f"\nResponse text: {response_text[:200]}"
-        raise ValueError(error_msg) from e
+
     except Exception as e:
         raise RuntimeError(f"DM intent analysis failed: {e}")
