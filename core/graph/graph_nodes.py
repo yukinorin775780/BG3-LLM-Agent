@@ -52,6 +52,8 @@ from core.engine.physics import apply_physics
 from core.tools.npc_tools import check_target_inventory, execute_physical_action
 from core.utils.text_processor import clean_npc_dialogue, format_history_message
 
+# 全局开关：设为 True 时打印发给大模型的 Payload（调试用）
+DEBUG_AI_PAYLOAD = False
 
 # =============================================================================
 # Node 1: Input 输入处理
@@ -855,7 +857,7 @@ DO NOT generate narrative text for item transfers until the tool returns a succe
         # 绑定工具并调用 LLM
         llm = ChatOpenAI(
             model=settings.MODEL_NAME,
-            api_key=settings.API_KEY,
+            api_key=settings.API_KEY, # type: ignore[arg-type]
             base_url=settings.BASE_URL,
             temperature=0.7,
             max_completion_tokens=500,
@@ -865,39 +867,41 @@ DO NOT generate narrative text for item transfers until the tool returns a succe
         # =====================================================================
         # 🚨 [DEBUG] 拦截大模型输入前的消息队列 (Messages X光机) 🚨
         # =====================================================================
-        messages = lc_messages
-        print("\n" + "🔥" * 25)
-        print("🚨 正在打印发给大模型的最终 Payload...")
-        print(f"📊 当前消息总数: {len(messages)} 条")
-        for i, msg in enumerate(messages):
-            msg_type = msg.__class__.__name__
-            print(f"\n[{i}] 角色/类型: {msg_type}")
-            if msg_type == "SystemMessage":
-                content_preview = msg.content.replace("\n", " ")[:100]
-                print(f"    📝 内容预览: {content_preview}...")
-                print(f"    📏 总字符数: {len(msg.content)}")
-            elif msg_type == "HumanMessage":
-                print(f"    🗣️ 玩家说: {msg.content}")
-            elif msg_type == "AIMessage":
-                print(f"    🤖 AI 文本: {repr(msg.content)}")
-                if hasattr(msg, "tool_calls") and msg.tool_calls:
-                    print(f"    🔧 携带工具调用意图: {msg.tool_calls}")
-            elif msg_type == "ToolMessage":
-                print(f"    ⚙️ 工具执行结果: {msg.content}")
-                print(f"    🔗 绑定的 Tool ID: {getattr(msg, 'tool_call_id', '缺失!')}")
-            else:
-                print(f"    ❓ 未知消息内容: {msg.content}")
-        print("🔥" * 25 + "\n")
+        if DEBUG_AI_PAYLOAD:
+            messages = lc_messages
+            print("\n" + "🔥" * 25)
+            print("🚨 正在打印发给大模型的最终 Payload...")
+            print(f"📊 当前消息总数: {len(messages)} 条")
+            for i, msg in enumerate(messages):
+                msg_type = msg.__class__.__name__
+                print(f"\n[{i}] 角色/类型: {msg_type}")
+                if msg_type == "SystemMessage":
+                    content_str = str(getattr(msg, "content", "") or "")
+                    content_preview = content_str.replace("\n", " ")[:100]
+                    print(f"    📝 内容预览: {content_preview}...")
+                    print(f"    📏 总字符数: {len(content_str)}")
+                elif msg_type == "HumanMessage":
+                    print(f"    🗣️ 玩家说: {msg.content}")
+                elif msg_type == "AIMessage":
+                    print(f"    🤖 AI 文本: {repr(msg.content)}")
+                    if getattr(msg, "tool_calls", None):
+                        print(f"    🔧 携带工具调用意图: {getattr(msg, 'tool_calls', None)}")
+                elif msg_type == "ToolMessage":
+                    print(f"    ⚙️ 工具执行结果: {msg.content}")
+                    print(f"    🔗 绑定的 Tool ID: {getattr(msg, 'tool_call_id', '缺失!')}")
+                else:
+                    print(f"    ❓ 未知消息内容: {msg.content}")
+            print("🔥" * 25 + "\n")
         # =====================================================================
 
         response = llm_with_tools.invoke(lc_messages)
 
         # ReAct 微循环：拦截 tool_calls -> 执行工具 -> 追加 ToolMessage -> 再次 invoke，直到无工具调用
         tool_physics_events = []
-        max_react_rounds = 5  # 防止无限循环
-        react_round = 0
-        while response.tool_calls and react_round < max_react_rounds:
-            react_round += 1
+        MAX_ITERATIONS = 5  # 安全锁：防止幻觉导致无限工具调用
+        iteration_count = 0
+        while response.tool_calls:
+            iteration_count += 1
             lc_messages.append(response)
             registry = get_registry()
             for tc in response.tool_calls:
@@ -955,34 +959,45 @@ DO NOT generate narrative text for item transfers until the tool returns a succe
             # =====================================================================
             # 🚨 [DEBUG] ReAct 第 N 轮：打印含 ToolMessage 的 Payload
             # =====================================================================
-            messages = lc_messages
-            print("\n" + "🔥" * 25)
-            print(f"🚨 [ReAct 第 {react_round} 轮] 正在打印发给大模型的 Payload (含工具返回)...")
-            print(f"📊 当前消息总数: {len(messages)} 条")
-            for i, msg in enumerate(messages):
-                msg_type = msg.__class__.__name__
-                print(f"\n[{i}] 角色/类型: {msg_type}")
-                if msg_type == "SystemMessage":
-                    content_preview = msg.content.replace("\n", " ")[:100]
-                    print(f"    📝 内容预览: {content_preview}...")
-                    print(f"    📏 总字符数: {len(msg.content)}")
-                elif msg_type == "HumanMessage":
-                    print(f"    🗣️ 玩家说: {msg.content}")
-                elif msg_type == "AIMessage":
-                    print(f"    🤖 AI 文本: {repr(msg.content)}")
-                    if hasattr(msg, "tool_calls") and msg.tool_calls:
-                        print(f"    🔧 携带工具调用意图: {msg.tool_calls}")
-                elif msg_type == "ToolMessage":
-                    print(f"    ⚙️ 工具执行结果: {msg.content}")
-                    print(f"    🔗 绑定的 Tool ID: {getattr(msg, 'tool_call_id', '缺失!')}")
-                else:
-                    print(f"    ❓ 未知消息内容: {msg.content}")
-            print("🔥" * 25 + "\n")
+            if DEBUG_AI_PAYLOAD:
+                messages = lc_messages
+                print("\n" + "🔥" * 25)
+                print(f"🚨 [ReAct 第 {iteration_count} 轮] 正在打印发给大模型的 Payload (含工具返回)...")
+                print(f"📊 当前消息总数: {len(messages)} 条")
+                for i, msg in enumerate(messages):
+                    msg_type = msg.__class__.__name__
+                    print(f"\n[{i}] 角色/类型: {msg_type}")
+                    if msg_type == "SystemMessage":
+                        content_str = str(getattr(msg, "content", "") or "")
+                        content_preview = content_str.replace("\n", " ")[:100]
+                        print(f"    📝 内容预览: {content_preview}...")
+                        print(f"    📏 总字符数: {len(content_str)}")
+                    elif msg_type == "HumanMessage":
+                        print(f"    🗣️ 玩家说: {msg.content}")
+                    elif msg_type == "AIMessage":
+                        print(f"    🤖 AI 文本: {repr(msg.content)}")
+                        if getattr(msg, "tool_calls", None):
+                            print(f"    🔧 携带工具调用意图: {getattr(msg, 'tool_calls', None)}")
+                    elif msg_type == "ToolMessage":
+                        print(f"    ⚙️ 工具执行结果: {msg.content}")
+                        print(f"    🔗 绑定的 Tool ID: {getattr(msg, 'tool_call_id', '缺失!')}")
+                    else:
+                        print(f"    ❓ 未知消息内容: {msg.content}")
+                print("🔥" * 25 + "\n")
             # =====================================================================
 
             response = llm_with_tools.invoke(lc_messages)
 
-        raw_output = response.content if hasattr(response, "content") else str(response or "")
+            # 安全拦截：超过最大迭代次数强制跳出
+            if iteration_count >= MAX_ITERATIONS:
+                print("⚠️ [安全拦截] Agent 内部工具调用次数超限 (>=5次)，强制终止循环！")
+                break
+
+        # 兜底：若最后一次 response 仍只有 tool_calls 而无文本，塞入默认回复
+        if getattr(response, "tool_calls", None) and not (getattr(response, "content", None) or "").strip():
+            response = AIMessage(content="*（陷入了深深的沉思，暂时没有回应）*")
+
+        raw_output = str(response.content if hasattr(response, "content") else str(response or ""))
 
         # 清洗台词
         parsed = parse_ai_response(raw_output)

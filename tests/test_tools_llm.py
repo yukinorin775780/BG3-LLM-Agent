@@ -42,9 +42,15 @@ def check_target_inventory(item_keyword: str, target_id: str) -> str:
 def transfer_item(item_keyword: str, source_id: str, target_id: str) -> str:
     """
     在两个角色之间转移物品。必须在确认源角色有该物品后才能调用！
+
+    CRITICAL PERSPECTIVE RULES:
+    - If the player gives YOU (the NPC) an item: source_id MUST be 'player' and target_id MUST be your character ID (e.g., 'shadowheart').
+    - If YOU (the NPC) give the player an item: source_id MUST be your character ID and target_id MUST be 'player'.
+    DO NOT mix up the source and target!
+
     :param item_keyword: 物品名称
-    :param source_id: 失去物品的角色ID
-    :param target_id: 获得物品的角色ID
+    :param source_id: 失去物品的角色ID (the one who LOSES the item)
+    :param target_id: 获得物品的角色ID (the one who RECEIVES the item)
     """
     source_inv = PLAYER_INVENTORY if source_id == "player" else SHADOWHEART_INVENTORY
     target_inv = PLAYER_INVENTORY if target_id == "player" else SHADOWHEART_INVENTORY
@@ -70,7 +76,7 @@ def test_npc_agent_loop():
 
     llm = ChatOpenAI(
         model=settings.MODEL_NAME,
-        api_key=settings.API_KEY,
+        api_key=settings.API_KEY or "",  # type: ignore[arg-type]
         base_url=settings.BASE_URL,
         temperature=0.7,
     )
