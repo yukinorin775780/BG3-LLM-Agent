@@ -15,7 +15,7 @@ from ui.renderer import GameRenderer
 
 def _speaker_display_name(speaker_id: str) -> str:
     """从 current_speaker 映射为中文显示名。"""
-    _names = {"shadowheart": "影心", "astarion": "阿斯代伦"}
+    _names = {"shadowheart": "影心", "astarion": "阿斯代伦", "dm": "Dungeon Master"}
     return _names.get((speaker_id or "").strip().lower(), (speaker_id or "未知").capitalize())
 
 
@@ -77,6 +77,7 @@ async def main_async():
                 # 兼容 LangChain 对象或字典格式
                 role = getattr(m, "type", None) or (m.get("type") if isinstance(m, dict) else None)
                 content = getattr(m, "content", None) or (m.get("content", "") if isinstance(m, dict) else "")
+                name = getattr(m, "name", None) or (m.get("name") if isinstance(m, dict) else None)
 
                 if not content:
                     continue
@@ -84,7 +85,8 @@ async def main_async():
                 if role in ("human", "user"):
                     ui.print(f"[dim]You > {content}[/dim]")
                 elif role in ("ai", "assistant"):
-                    ui.print(f"[dim]影心 > {content}[/dim]")
+                    label = _speaker_display_name(name) if name else "影心"
+                    ui.print(f"[dim]{label} > {content}[/dim]")
             ui.print_rule("💬 新的对话", style="info")
         else:
             ui.print_rule("💬 新的对话", style="info")
@@ -115,10 +117,29 @@ async def main_async():
                 # 核心调用：使用异步流实时监听节点执行
                 state_input = {"user_input": user_input.strip()}
                 ui.print_system_info("⚙️ 引擎开始运转...")
+                rendered_in_stream = False  # 标记是否已在流中渲染对话，避免结尾重复
                 async for update in graph.astream(state_input, config=config, stream_mode="updates"):  # type: ignore[arg-type]
                     for node_name, node_state in update.items():
                         # 实时打印当前刚刚执行完毕的节点，实现真正的"流式跟踪"
                         ui.print_system_info(f"⚡ [流式追踪] 节点 `{node_name}` 执行完毕")
+
+                        # 1. DM 旁白节点完成 → 立即渲染 DM 面板
+                        if node_name == "narration":
+                            dm_text = node_state.get("final_response", "")
+                            if dm_text:
+                                ui.print_dm_narration(dm_text)
+                                rendered_in_stream = True
+
+                        # 2. NPC 生成节点完成 → 立即渲染 NPC 面板
+                        elif node_name == "generation":
+                            npc_text = node_state.get("final_response", "")
+                            speaker = node_state.get("current_speaker", "shadowheart") or "shadowheart"
+                            if npc_text:
+                                display_name = _speaker_display_name(speaker)
+                                await ui.print_npc_response_stream(display_name, npc_text, char_delay=0.03)
+                                rendered_in_stream = True
+
+                        # 3. 骰子动画
                         if "mechanics" in node_name and "latest_roll" in node_state:
                             roll_info = node_state["latest_roll"]
                             await ui.show_dice_roll_animation(
@@ -139,23 +160,24 @@ async def main_async():
                     ui.print_system_info(line)
                 prev_journal_len = len(curr_journal)
 
-                # AI 回复渲染（多人发言队列 或 单人 final_response）
-                if result_state.get("intent") in ("system_wait", "command_done", "command_failed", "dev_command"):
-                    ai_text = result_state.get("final_response") or _get_last_ai_content(result_state.get("messages") or [])
-                    if ai_text:
-                        ui.print_system_info(ai_text)
-                else:
-                    responses = result_state.get("speaker_responses") or []
-                    if responses:
-                        for speaker_id, text in responses:
-                            display_name = _speaker_display_name(speaker_id)
-                            await ui.print_npc_response_stream(display_name, text, char_delay=0.03)
-                    else:
+                # AI 回复渲染（若流中已渲染 narration/generation，则跳过避免重复）
+                if not rendered_in_stream:
+                    if result_state.get("intent") in ("system_wait", "command_done", "command_failed", "dev_command"):
                         ai_text = result_state.get("final_response") or _get_last_ai_content(result_state.get("messages") or [])
                         if ai_text:
-                            speaker = result_state.get("current_speaker", "shadowheart") or "shadowheart"
-                            display_name = _speaker_display_name(speaker)
-                            await ui.print_npc_response_stream(display_name, ai_text, char_delay=0.03)
+                            ui.print_system_info(ai_text)
+                    else:
+                        responses = result_state.get("speaker_responses") or []
+                        if responses:
+                            for speaker_id, text in responses:
+                                display_name = _speaker_display_name(speaker_id)
+                                await ui.print_npc_response_stream(display_name, text, char_delay=0.03)
+                        else:
+                            ai_text = result_state.get("final_response") or _get_last_ai_content(result_state.get("messages") or [])
+                            if ai_text:
+                                speaker = result_state.get("current_speaker", "shadowheart") or "shadowheart"
+                                display_name = _speaker_display_name(speaker)
+                                await ui.print_npc_response_stream(display_name, ai_text, char_delay=0.03)
 
                 ui.print()
 

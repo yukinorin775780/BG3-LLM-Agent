@@ -32,7 +32,12 @@ Spoken dialogue is often an action!
 
 - CRITICAL RULE FOR INTENT: If the player describes an ACTION like looking around, LISTENING carefully, searching, hiding, or attacking, you MUST output the appropriate action_type (e.g., PERCEPTION for listening/looking, INVESTIGATION for searching, STEALTH for hiding, ATTACK for attacking). Do NOT treat physical environment sensing as "CHAT".
 
-- FREE ACTION / GIFTING: If the player is simply handing over or giving a beneficial item to a willing ally (e.g., "I give you this potion"), you MUST classify the "action_type" as "CHAT". DO NOT trigger a skill check (like PERSUASION) for freely giving gifts! You must still output the correct "item_transfers" JSON.
+- FREE ACTION / GIFTING: If the player is simply handing over or giving a beneficial item to a willing ally (e.g., "I give you this potion"), you MUST classify the "action_type" as "CHAT". DO NOT trigger a skill check (like PERSUASION) for freely giving gifts!
+
+- CRITICAL RULE FOR PHYSICS: You are the DM of the ENVIRONMENT.
+  - ONLY use "item_transfers" for looting chests, finding world drops, or picking up items from the ground.
+  - ONLY use "hp_changes" for environmental damage (traps, falling) or ambient healing.
+  - DO NOT EVER use these arrays for Social Interactions (e.g., player giving a gift to an NPC, or an NPC hitting the player). The NPCs will manage their own inventories and combat actions! If the player gives an item to an ally, output EMPTY arrays for item_transfers and hp_changes, and let the NPC handle the transaction.
 
 1.  `action_type`: Choose one of [PERSUASION, DECEPTION, STEALTH, INTIMIDATION, INSIGHT, ATTACK, PERCEPTION, INVESTIGATION, CHAT].
     -   `PERSUASION`: Reasoning, bargaining, honest convincing.

@@ -6,7 +6,7 @@ Checkpointer 由调用方（如 main.py）创建并传入，支持 AsyncSqliteSa
 
 from langgraph.graph import StateGraph, START, END
 from core.graph.graph_state import GameState
-from core.graph.graph_routers import route_after_dm
+from core.graph.graph_routers import route_after_dm, route_after_mechanics, route_after_narration
 
 
 def route_after_input(state: dict) -> str:
@@ -34,6 +34,7 @@ from core.graph.graph_nodes import (
     world_tick_node,
     dm_node,
     mechanics_node,
+    narration_node,
     create_generation_node,
     advance_speaker_node,
 )
@@ -76,6 +77,7 @@ def build_graph(checkpointer=None):
     builder.add_node("world_tick", world_tick_node)  # type: ignore[arg-type]
     builder.add_node("dm_analysis", dm_node)
     builder.add_node("mechanics_processing", mechanics_node)
+    builder.add_node("narration", narration_node)
     builder.add_node("generation", create_generation_node())  # type: ignore[arg-type]
     builder.add_node("advance_speaker", advance_speaker_node)
 
@@ -96,7 +98,17 @@ def build_graph(checkpointer=None):
         route_after_dm,
         {"mechanics_processing": "mechanics_processing", "generation": "generation"},
     )
-    builder.add_edge("mechanics_processing", "generation")
+    builder.add_conditional_edges(
+        "mechanics_processing",
+        route_after_mechanics,
+        {"generation": "generation", "narration": "narration"},
+    )
+    # DM 旁白后：30% 概率触发吐槽，大成功/大失败 100% 吐槽
+    builder.add_conditional_edges(
+        "narration",
+        route_after_narration,
+        {"generation": "generation", "__end__": END},
+    )
     builder.add_conditional_edges(
         "generation",
         route_after_generation,

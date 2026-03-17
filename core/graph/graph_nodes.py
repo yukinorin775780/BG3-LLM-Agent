@@ -8,9 +8,10 @@ LangGraph 节点：Input / DM / Mechanics / Generation
 
 import copy
 import os
+import re
 from typing import Callable, Dict, Any
 import yaml
-from langchain_core.messages import HumanMessage, AIMessage, RemoveMessage
+from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, RemoveMessage, SystemMessage, ToolMessage
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from core.graph.graph_state import GameState
 from core.llm.dm import analyze_intent
@@ -44,8 +45,11 @@ def _build_item_lore(state: Any) -> str:
         data = registry.get(item_id)
         item_lore += f"- ID: {item_id} | Name: {data.get('name')} | Desc: {data.get('description')} | Effect: {data.get('effect', 'None')}\n"
     return item_lore
+from config import settings
+from langchain_openai import ChatOpenAI
 from core.engine import generate_dialogue, parse_ai_response
 from core.engine.physics import apply_physics
+from core.tools.npc_tools import check_target_inventory, execute_physical_action
 from core.utils.text_processor import clean_npc_dialogue, format_history_message
 
 
@@ -577,6 +581,71 @@ def mechanics_node(state: GameState) -> dict:
 
 
 # =============================================================================
+# Node 3.5: Narration DM 旁白 (V3)
+# =============================================================================
+
+
+def narration_node(state: GameState) -> dict:
+    """
+    DM 旁白节点 (V3): 负责渲染客观环境、动作结果，不再由 NPC 强行抢戏。
+    使用 LLM 生成客观旁白，并严格锚定机制结果（掷骰 / DC / 成败）。
+    """
+    print("🎙️ [路由追踪] 进入 DM 旁白节点 (Narration Node)")
+
+    latest_roll = state.get("latest_roll", {})
+    roll_result = latest_roll.get("result", {}) if isinstance(latest_roll, dict) else {}
+    intent = str((latest_roll or {}).get("intent", state.get("intent", "action"))).lower()
+    dc = (latest_roll or {}).get("dc", "?")
+    total = roll_result.get("total", "?") if isinstance(roll_result, dict) else "?"
+    is_success = bool(roll_result.get("is_success", False)) if isinstance(roll_result, dict) else False
+    rolls = roll_result.get("rolls", []) if isinstance(roll_result, dict) else []
+    rolls_text = str(rolls if isinstance(rolls, list) and rolls else [roll_result.get("raw_roll", "?")])
+
+    user_input = (state.get("user_input", "") or "").strip()
+    time_of_day = state.get("time_of_day", "未知时段")
+    journal_tail = list(state.get("journal_events", []))[-3:]
+    journal_text = "\n".join(journal_tail) if journal_tail else "无"
+    outcome = "成功" if is_success else "失败"
+
+    system_prompt = (
+        "你是桌游主持人 DM。请根据给定事实输出一段中文旁白，必须客观、简洁、具体。\n"
+        "硬性规则：\n"
+        "1) 只能依据已给事实，不得杜撰新道具/新人物/新结果。\n"
+        "2) 必须与检定结果一致（成功就给有效发现或推进；失败就给受阻或无收获）。\n"
+        "3) 输出 1-2 句，不要加前缀标签，不要输出思维过程。\n"
+        f"时间：{time_of_day}\n"
+        f"动作意图：{intent}\n"
+        f"玩家输入：{user_input or '（无）'}\n"
+        f"检定：Roll {rolls_text} -> Total {total} vs DC {dc}，结果：{outcome}\n"
+        f"最近系统日志：\n{journal_text}\n"
+    )
+
+    fallback_text = (
+        "你谨慎地检查了周围，线索逐渐浮出水面。"
+        if is_success
+        else "你反复确认了周围情况，但这次没有得到有价值的发现。"
+    )
+    try:
+        raw_response = generate_dialogue(
+            system_prompt,
+            conversation_history=[{"role": "user", "content": user_input or "继续"}],
+        )
+        parsed = parse_ai_response(raw_response)
+        narration_text = (parsed.get("text") or "").strip() or fallback_text
+    except Exception:
+        narration_text = fallback_text
+
+    # 【关键】格式化为带标签的历史消息，必须通过 messages 传递，让后续 NPC 能看见
+    attributed_msg = format_history_message("DM", narration_text)
+
+    return {
+        "messages": [AIMessage(content=attributed_msg, name="DM")],  # 触发 add_messages reducer 追加
+        "final_response": narration_text,
+        # 不覆盖 current_speaker，保留 dm 设定的 NPC，让 generation 接力发声
+    }
+
+
+# =============================================================================
 # Node 4: Generation LLM 生成（工厂模式）
 # =============================================================================
 #
@@ -638,6 +707,47 @@ def create_generation_node() -> Callable[[GameState], dict]:
         summary = state.get("summary", "Graph Mode Testing")
 
         # -------------------------------------------------------------------------
+        # 0. Banter 模式检测：紧接 DM 旁白后，使用极简模板节省 Token
+        # -------------------------------------------------------------------------
+        messages = list(state.get("messages", []))
+        is_banter = False
+        dm_text = ""
+        if messages:
+            last_msg = messages[-1]
+            last_content = _msg_content(last_msg)
+            last_name = getattr(last_msg, "name", None) or (last_msg.get("name") if isinstance(last_msg, dict) else None)
+            if last_name == "DM" or (last_content and last_content.strip().startswith("[DM]:")):
+                is_banter = True
+                dm_text = last_content.replace("[DM]:", "").strip() if last_content else ""
+
+        if is_banter and dm_text:
+            print(f"💬 [Banter Mode] {speaker.capitalize()} 使用极简模板吐槽...")
+            from jinja2 import Environment, FileSystemLoader
+            _prompts_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "llm", "prompts")
+            _banter_env = Environment(loader=FileSystemLoader(_prompts_dir), trim_blocks=True, lstrip_blocks=True)
+            banter_tpl = _banter_env.get_template("banter.j2")
+            traits = character.data.get("personality", {}).get("traits", []) or []
+            core_traits = ", ".join(str(t) for t in traits[:3]) if traits else "mysterious"
+            system_prompt = banter_tpl.render(
+                npc_name=character.data.get("name", speaker.capitalize()),
+                core_traits=core_traits,
+                approval=relationship,
+                dm_text=dm_text,
+            )
+            history_dicts = [{"role": "user", "content": f"[DM]: {dm_text}"}]
+            raw_response = generate_dialogue(system_prompt, conversation_history=history_dicts)
+            parsed = parse_ai_response(raw_response)
+            clean_text = clean_npc_dialogue(speaker, (parsed.get("text") or "...").strip())
+            attributed_msg = format_history_message(speaker, clean_text)
+            prev_responses = list(state.get("speaker_responses", []))
+            return {
+                "final_response": clean_text,
+                "speaker_responses": prev_responses + [(speaker, clean_text)],
+                "thought_process": "",
+                "messages": [AIMessage(content=attributed_msg, name=speaker)],
+            }
+
+        # -------------------------------------------------------------------------
         # 1. 物品触发器：玩家在对话中提及「给你药水」等时，自动转移物品、更新 flags、
         #    累加 approval_change 到 relationship，并生成 journal_entries 供本轮合并
         # -------------------------------------------------------------------------
@@ -687,7 +797,7 @@ def create_generation_node() -> Callable[[GameState], dict]:
         if item_lore:
             system_prompt += item_lore
 
-        # messages 符合 add_messages：从 state 读取，转为 engine 所需格式
+        # messages 符合 add_messages：从 state 读取，转为 engine 所需格式（banter 模式已提前 return）
         messages = list(state.get("messages", []))
         if not messages or _msg_content(messages[-1]) != user_input:
             messages.append({"role": "user", "content": user_input})
@@ -710,14 +820,174 @@ def create_generation_node() -> Callable[[GameState], dict]:
                 original_text = history_dicts[-1]["content"]
                 history_dicts[-1]["content"] = f"[事件回顾] 玩家说：{original_text}\n[刚刚发生] {last_speaker_id} 回应道：{last_speaker_text}\n*(现在轮到你做出反应了)*"
 
-        raw_response = generate_dialogue(system_prompt, conversation_history=history_dicts)
-        parsed = parse_ai_response(raw_response)
-        raw_text = (parsed["text"] or "...").strip()
+        # 预构建 current_entities 与 player_inv_for_physics，供 ReAct 工具拦截器使用
+        current_entities = {k: dict(v) for k, v in entities.items()}
+        for k in current_entities:
+            current_entities[k].setdefault("affection", 0)
+            current_entities[k].setdefault("inventory", {})
+            if not isinstance(current_entities[k].get("inventory"), dict):
+                current_entities[k]["inventory"] = {}
+        current_entities.setdefault(speaker, {"hp": 20, "active_buffs": [], "affection": 0, "inventory": {}})
+        if user_input and triggers_config:
+            current_entities[speaker]["inventory"] = dict(npc_inv)
+            current_entities[speaker]["affection"] = relationship
+        player_inv_for_physics = dict(player_inv)
 
-        # 清洗大模型的原始输出
+        # 【近因效应】在 System Prompt 最末尾注入强约束，强制模型优先输出 tool_calls
+        system_prompt += """
+
+<CRITICAL_SYSTEM_RULES>
+You are an AGENT operating in a stateful game world.
+When the player attempts an action that interacts with the physical world (e.g., giving an item, moving, attacking), YOU MUST NOT JUST DESCRIBE IT.
+You MUST output a tool_call (e.g., `check_target_inventory`).
+DO NOT generate narrative text for item transfers until the tool returns a success status.
+</CRITICAL_SYSTEM_RULES>
+"""
+
+        # 构建 LangChain 消息列表
+        lc_messages: list[BaseMessage] = [SystemMessage(content=system_prompt)]
+        for d in history_dicts:
+            if d.get("role") == "user":
+                lc_messages.append(HumanMessage(content=d.get("content", "")))
+            else:
+                lc_messages.append(AIMessage(content=d.get("content", "")))
+
+        # 绑定工具并调用 LLM
+        llm = ChatOpenAI(
+            model=settings.MODEL_NAME,
+            api_key=settings.API_KEY,
+            base_url=settings.BASE_URL,
+            temperature=0.7,
+            max_completion_tokens=500,
+        )
+        llm_with_tools = llm.bind_tools([check_target_inventory, execute_physical_action])
+
+        # =====================================================================
+        # 🚨 [DEBUG] 拦截大模型输入前的消息队列 (Messages X光机) 🚨
+        # =====================================================================
+        messages = lc_messages
+        print("\n" + "🔥" * 25)
+        print("🚨 正在打印发给大模型的最终 Payload...")
+        print(f"📊 当前消息总数: {len(messages)} 条")
+        for i, msg in enumerate(messages):
+            msg_type = msg.__class__.__name__
+            print(f"\n[{i}] 角色/类型: {msg_type}")
+            if msg_type == "SystemMessage":
+                content_preview = msg.content.replace("\n", " ")[:100]
+                print(f"    📝 内容预览: {content_preview}...")
+                print(f"    📏 总字符数: {len(msg.content)}")
+            elif msg_type == "HumanMessage":
+                print(f"    🗣️ 玩家说: {msg.content}")
+            elif msg_type == "AIMessage":
+                print(f"    🤖 AI 文本: {repr(msg.content)}")
+                if hasattr(msg, "tool_calls") and msg.tool_calls:
+                    print(f"    🔧 携带工具调用意图: {msg.tool_calls}")
+            elif msg_type == "ToolMessage":
+                print(f"    ⚙️ 工具执行结果: {msg.content}")
+                print(f"    🔗 绑定的 Tool ID: {getattr(msg, 'tool_call_id', '缺失!')}")
+            else:
+                print(f"    ❓ 未知消息内容: {msg.content}")
+        print("🔥" * 25 + "\n")
+        # =====================================================================
+
+        response = llm_with_tools.invoke(lc_messages)
+
+        # ReAct 微循环：拦截 tool_calls -> 执行工具 -> 追加 ToolMessage -> 再次 invoke，直到无工具调用
+        tool_physics_events = []
+        max_react_rounds = 5  # 防止无限循环
+        react_round = 0
+        while response.tool_calls and react_round < max_react_rounds:
+            react_round += 1
+            lc_messages.append(response)
+            registry = get_registry()
+            for tc in response.tool_calls:
+                tool_name = tc.get("name", "")
+                tool_args = tc.get("args") or {}
+                tool_result_str = "操作失败"
+
+                if tool_name == "check_target_inventory":
+                    target = tool_args.get("target_id", "player")
+                    keyword = (tool_args.get("item_keyword") or "").lower()
+                    if target == "player":
+                        inv = player_inv_for_physics
+                    else:
+                        inv = current_entities.get(target, {}).get("inventory", {})
+                    inv = inv or {}
+                    found = False
+                    for i_id, count in inv.items():
+                        if keyword in i_id.lower() or keyword in registry.get_name(i_id).lower():
+                            tool_result_str = f"{target} 拥有 {count} 个 {i_id}。"
+                            found = True
+                            break
+                    if not found:
+                        tool_result_str = f"{target} 的背包里根本没有找到 '{keyword}'！他在撒谎或两手空空。"
+
+                elif tool_name == "execute_physical_action":
+                    action_type = tool_args.get("action_type", "")
+                    target = tool_args.get("target_id", "player")
+                    item_id = tool_args.get("item_id", "")
+                    amount = int(tool_args.get("amount", 1))
+
+                    item_transfers = []
+                    hp_changes = []
+                    if action_type == "take_item":
+                        item_transfers.append({"from": target, "to": speaker, "item_id": item_id, "count": amount})
+                    elif action_type == "give_item":
+                        item_transfers.append({"from": speaker, "to": target, "item_id": item_id, "count": amount})
+                    elif action_type == "heal":
+                        hp_changes.append({"target": target, "amount": amount, "reason": "healed"})
+                    elif action_type == "damage":
+                        hp_changes.append({"target": target, "amount": -amount, "reason": "damaged"})
+
+                    new_events = apply_physics(current_entities, player_inv_for_physics, item_transfers, hp_changes)
+                    journal_events.extend(new_events)
+                    tool_physics_events.extend(new_events)
+                    # 【关键修复】将物理引擎的真实反馈（哪怕是失败报错）原封不动地传回给大模型
+                    if new_events:
+                        tool_result_str = "\n".join(new_events)
+                    else:
+                        tool_result_str = "动作未产生任何效果。"
+
+                tool_msg = ToolMessage(content=tool_result_str, tool_call_id=tc.get("id", ""))
+                lc_messages.append(tool_msg)
+
+            # 将工具执行结果喂给大模型，继续下一轮
+            # =====================================================================
+            # 🚨 [DEBUG] ReAct 第 N 轮：打印含 ToolMessage 的 Payload
+            # =====================================================================
+            messages = lc_messages
+            print("\n" + "🔥" * 25)
+            print(f"🚨 [ReAct 第 {react_round} 轮] 正在打印发给大模型的 Payload (含工具返回)...")
+            print(f"📊 当前消息总数: {len(messages)} 条")
+            for i, msg in enumerate(messages):
+                msg_type = msg.__class__.__name__
+                print(f"\n[{i}] 角色/类型: {msg_type}")
+                if msg_type == "SystemMessage":
+                    content_preview = msg.content.replace("\n", " ")[:100]
+                    print(f"    📝 内容预览: {content_preview}...")
+                    print(f"    📏 总字符数: {len(msg.content)}")
+                elif msg_type == "HumanMessage":
+                    print(f"    🗣️ 玩家说: {msg.content}")
+                elif msg_type == "AIMessage":
+                    print(f"    🤖 AI 文本: {repr(msg.content)}")
+                    if hasattr(msg, "tool_calls") and msg.tool_calls:
+                        print(f"    🔧 携带工具调用意图: {msg.tool_calls}")
+                elif msg_type == "ToolMessage":
+                    print(f"    ⚙️ 工具执行结果: {msg.content}")
+                    print(f"    🔗 绑定的 Tool ID: {getattr(msg, 'tool_call_id', '缺失!')}")
+                else:
+                    print(f"    ❓ 未知消息内容: {msg.content}")
+            print("🔥" * 25 + "\n")
+            # =====================================================================
+
+            response = llm_with_tools.invoke(lc_messages)
+
+        raw_output = response.content if hasattr(response, "content") else str(response or "")
+
+        # 清洗台词
+        parsed = parse_ai_response(raw_output)
+        raw_text = (parsed.get("text") or raw_output or "...").strip()
         clean_text = clean_npc_dialogue(speaker, raw_text)
-
-        # 封装给记忆大模型看的带标签版本
         attributed_msg = format_history_message(speaker, clean_text)
 
         # 合并触发器产生的剧情事件到 journal，并写回 flags/背包/好感度
@@ -731,19 +1001,15 @@ def create_generation_node() -> Callable[[GameState], dict]:
         trigger_journal = trigger_result.get("journal_entries", [])
         if trigger_journal:
             out["journal_events"] = trigger_journal
+        if tool_physics_events:
+            out["journal_events"] = out.get("journal_events", []) + tool_physics_events
+        if tool_physics_events:
+            out["entities"] = current_entities
+            out["player_inventory"] = player_inv_for_physics
         if user_input and triggers_config:
             out["flags"] = flags
-            out["player_inventory"] = player_inv
-            new_entities = {k: dict(v) for k, v in entities.items()}
-            for k in new_entities:
-                new_entities[k].setdefault("affection", 0)
-                new_entities[k].setdefault("inventory", {})
-                if not isinstance(new_entities[k].get("inventory"), dict):
-                    new_entities[k]["inventory"] = {}
-            new_entities.setdefault(speaker, {"hp": 20, "active_buffs": [], "affection": 0, "inventory": {}})
-            new_entities[speaker]["inventory"] = dict(npc_inv)
-            new_entities[speaker]["affection"] = relationship
-            out["entities"] = new_entities
+            out["player_inventory"] = player_inv_for_physics
+            out["entities"] = current_entities
         return out
 
     return generation_node

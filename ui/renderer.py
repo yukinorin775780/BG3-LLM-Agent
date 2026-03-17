@@ -281,6 +281,20 @@ class GameRenderer:
         self.console.print(f"[dim italic]💭 *Inner Thought:* {thought}[/dim italic]")
         self.console.print()
 
+    def print_dm_narration(self, text: str):
+        """Display DM narration in a styled panel (Amelia Tyler style)."""
+        if not text:
+            return
+        self.console.print(
+            Panel(
+                text,
+                title="[bold yellow]🎙️ Dungeon Master[/bold yellow]",
+                border_style="yellow",
+                width=80,
+            )
+        )
+        self.console.print()
+
     def print_npc_response(self, name: str, text: str, subtitle: str = ""):
         """
         Display NPC dialogue in a styled panel.
