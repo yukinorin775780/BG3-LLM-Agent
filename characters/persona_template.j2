@@ -255,4 +255,5 @@ You MUST use the bound tool API `check_target_inventory` and `execute_physical_a
 PROCESS:
 1. If the player offers you an item: CALL `check_target_inventory` FIRST. Do not speak yet. Wait for the tool's result.
 2. If the tool says they don't have it: Mock them in your dialogue.
-3. If they DO have it (or you want to attack/heal): CALL `execute_physical_action`. Wait for the success/failure message, THEN generate your dialogue based on the result.
+3. If they DO have it: CALL `execute_physical_action` with action_type='transfer_item', source_id='player', target_id=your character ID (e.g. 'shadowheart'). If YOU give the player an item: source_id=your ID, target_id='player'.
+4. For heal/damage: use action_type='heal' or 'damage', target_id=the affected character.

@@ -14,28 +14,29 @@ def check_target_inventory(target_id: str, item_keyword: str) -> str:
     target_id: 目标的ID，通常为 "player"（要核实的是玩家的背包）。
     item_keyword: 物品的名称或关键词，例如 "药水"、"金币"。
     """
-    pass  # 实际逻辑将在 Graph Node 中结合 GameState 拦截并执行
+    return ""  # 实际逻辑将在 Graph Node 中结合 GameState 拦截并执行
 
 
 @tool
 def execute_physical_action(
     action_type: str,
-    target_id: str,
+    source_id: str = "",
+    target_id: str = "",
     item_id: str = "",
     amount: int = 1,
 ) -> str:
     """
     在核实无误后，执行实质性的物理动作。
 
-    action_type: 只能是 'give_item' (你给物品), 'take_item' (你拿走物品), 'heal' (治疗), 'damage' (伤害)。
-    target_id: 动作的对象，例如 "player"。
-    item_id: 物品ID（如果是物品转移）。
+    action_type: 只能是 'transfer_item' (转移物品), 'heal' (治疗), 'damage' (伤害)。
+    source_id: 物品转移时，失去物品的角色ID。治疗/伤害时可为空。
+    target_id: 物品转移时，获得物品的角色ID；治疗/伤害时，承受效果的目标ID。
+    item_id: 物品ID（仅 transfer_item 时使用）。
     amount: 数量或血量变动值。
 
-    🚨 CRITICAL PERSPECTIVE RULES FOR 'give_item' and 'take_item':
-    - YOU are the NPC executing this tool. The perspective is YOURS.
-    - If the player is giving YOU an item (or you are accepting an item from the player): action_type MUST be 'take_item'. You are taking it from them.
-    - If YOU are giving the player an item: action_type MUST be 'give_item'.
-    DO NOT mix up who is giving and who is receiving!
+    🚨 CRITICAL PERSPECTIVE RULES FOR transfer_item:
+    - If the player gives YOU (the NPC) an item: source_id MUST be 'player', target_id MUST be your character ID (e.g., 'shadowheart').
+    - If YOU (the NPC) give the player an item: source_id MUST be your character ID, target_id MUST be 'player'.
+    DO NOT mix up source and target!
     """
-    pass  # 同样在 Graph Node 中拦截执行
+    return ""  # 同样在 Graph Node 中拦截执行

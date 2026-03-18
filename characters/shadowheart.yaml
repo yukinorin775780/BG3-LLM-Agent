@@ -138,7 +138,7 @@ dialogue_triggers:
   system_message: 🚩 [Story Event] You have revealed your knowledge of the artifact.
   approval_change: 5
 - id: give_potion
-  description: Player gives a healing potion
+  description: "Player gives a healing potion (V2 - 物品流转由 LLM 工具调用负责)"
   trigger_type: keyword_match
   keywords:
   - give you the potion
@@ -146,19 +146,17 @@ dialogue_triggers:
   - 给你药水
   - 给你治疗药水
   effects:
-  - inventory.give:healing_potion
   - flags.received_gift = True
   system_message: 🎁 [Story Event] You handed over the potion.
   approval_change: 3
 - id: give_shar_artifact
-  description: Player gives the Shar artifact to Shadowheart
+  description: "Player gives the Shar artifact to Shadowheart (V2 - 物品流转由 LLM 工具调用负责)"
   trigger_type: keyword_match
   keywords:
   - 莎尔遗物
   - 这是我为你找到的莎尔遗物
   effects:
   - flags.knows_secret = True
-  - inventory.give:mysterious_artifact
   system_message: "🔮 [Story Event] You handed the Sharran artifact to Shadowheart."
   approval_change: 10
 quests:

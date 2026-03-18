@@ -64,31 +64,35 @@ def apply_physics(
             continue
 
         item_name = registry.get_name(item_id)
+        # 【修复物理黑洞】先校验 dst 是否合法，不合法则报错并 continue，绝不扣除源物品
+        dst_valid = dst in ("consumed", "player") or (dst and dst in current_entities)
+        if not dst_valid:
+            journal_events.append(f"❌ [动作失败] 无效的目标: {dst}")
+            continue
+
         has_enough = src_inv.get(item_id, 0) >= count
-
-        if has_enough:
-            # 1. 扣除来源物品
-            src_inv[item_id] = src_inv.get(item_id, 0) - count
-            if src_inv[item_id] <= 0:
-                del src_inv[item_id]
-
-            # 2. 增加目标物品（若不是被消耗）
-            if dst == "consumed":
-                journal_events.append(f"💥 [物品消耗] {src} 使用了 {count}x {item_name}")
-            elif dst == "player":
-                player_inventory[item_id] = player_inventory.get(item_id, 0) + count
-                journal_events.append(f"📦 [物品流转] {src} 将 {count}x {item_name} 交给了 {dst}")
-            elif dst in current_entities:
-                dst_inv = current_entities[dst].setdefault("inventory", {})
-                if not isinstance(dst_inv, dict):
-                    dst_inv = {}
-                    current_entities[dst]["inventory"] = dst_inv
-                dst_inv[item_id] = dst_inv.get(item_id, 0) + count
-                journal_events.append(f"📦 [物品流转] {src} 将 {count}x {item_name} 交给了 {dst}")
-            else:
-                journal_events.append(f"❌ [动作失败] 无效的目标: {dst}")
-        else:
+        if not has_enough:
             journal_events.append(f"❌ [动作失败] {src} 并没有足够的 {item_name}！")
+            continue
+
+        # 1. 扣除来源物品（仅在校验通过后执行）
+        src_inv[item_id] = src_inv.get(item_id, 0) - count
+        if src_inv[item_id] <= 0:
+            del src_inv[item_id]
+
+        # 2. 增加目标物品（若不是被消耗）
+        if dst == "consumed":
+            journal_events.append(f"💥 [物品消耗] {src} 使用了 {count}x {item_name}")
+        elif dst == "player":
+            player_inventory[item_id] = player_inventory.get(item_id, 0) + count
+            journal_events.append(f"📦 [物品流转] {src} 将 {count}x {item_name} 交给了 {dst}")
+        elif dst in current_entities:
+            dst_inv = current_entities[dst].setdefault("inventory", {})
+            if not isinstance(dst_inv, dict):
+                dst_inv = {}
+                current_entities[dst]["inventory"] = dst_inv
+            dst_inv[item_id] = dst_inv.get(item_id, 0) + count
+            journal_events.append(f"📦 [物品流转] {src} 将 {count}x {item_name} 交给了 {dst}")
 
     # 2. 处理生命值变动 (HP Changes)
     for change in hp_changes:

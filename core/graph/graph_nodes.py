@@ -16,7 +16,7 @@ from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from core.graph.graph_state import GameState
 from core.llm.dm import analyze_intent
 from core.systems import mechanics
-from core.systems.inventory import get_registry, Inventory, format_inventory_dict_to_display_list
+from core.systems.inventory import get_registry, format_inventory_dict_to_display_list
 
 
 def _build_item_lore(state: Any) -> str:
@@ -272,7 +272,7 @@ def input_node(state: GameState) -> dict:
     # --- /USE <item_id> [target] (玩家动作：使用物品) ---
     if command == "/use" and len(parts) >= 2:
         item_id = parts[1]
-        target = parts[2] if len(parts) >= 3 else "shadowheart"
+        target = parts[2] if len(parts) >= 3 else "player"
 
         if player_inv.get(item_id, 0) <= 0:
             return {
@@ -296,7 +296,7 @@ def input_node(state: GameState) -> dict:
             if target == "player":
                 return {
                     "player_inventory": new_p,
-                    "intent": "action_use",
+                    "intent": "item_used",
                     "messages": [HumanMessage(content="*你喝下了一瓶治疗药水。*")],
                     "final_response": "",
                     "is_probing_secret": False,
@@ -311,7 +311,7 @@ def input_node(state: GameState) -> dict:
                     "speaker_queue": [],
                     "current_speaker": target,
                     "speaker_responses": [],
-                    "intent": "action_use",
+                    "intent": "item_used",
                     "messages": [HumanMessage(content=action_msg)],
                     "final_response": "",
                     "is_probing_secret": False,
@@ -508,23 +508,23 @@ def dm_node(state: GameState) -> dict:
         out["journal_events"] = out.get("journal_events", []) + [f"📜 [系统] 剧情世界线已变动: {list(flags_changed.keys())}"]
 
     # -------------------------------------------------------------------------
-    # 物理结算：物品流转与生命值变动（委托给物理引擎）
+    # [V2] 已剥夺 DM 的物理执行权：物品流转与 HP 变动全部由 generation_node 的工具调用完成
+    # DM 只负责意图提取、DC 设定和好感度变动，不再调用 apply_physics
     # -------------------------------------------------------------------------
-    item_transfers = analysis.get("item_transfers", [])
-    hp_changes = analysis.get("hp_changes", [])
-    if not isinstance(item_transfers, list):
-        item_transfers = []
-    if not isinstance(hp_changes, list):
-        hp_changes = []
-
-    if item_transfers or hp_changes:
-        player_inv = dict(state.get("player_inventory", {}))
-        current_entities = dict(out["entities"])
-        new_events = apply_physics(current_entities, player_inv, item_transfers, hp_changes)
-        out["journal_events"] = out.get("journal_events", []) + new_events
-        out["entities"] = current_entities
-        if any(t.get("from") == "player" or t.get("to") == "player" for t in item_transfers if isinstance(t, dict)):
-            out["player_inventory"] = player_inv
+    # item_transfers = analysis.get("item_transfers", [])
+    # hp_changes = analysis.get("hp_changes", [])
+    # if not isinstance(item_transfers, list):
+    #     item_transfers = []
+    # if not isinstance(hp_changes, list):
+    #     hp_changes = []
+    # if item_transfers or hp_changes:
+    #     player_inv = dict(state.get("player_inventory", {}))
+    #     current_entities = dict(out["entities"])
+    #     new_events = apply_physics(current_entities, player_inv, item_transfers, hp_changes)
+    #     out["journal_events"] = out.get("journal_events", []) + new_events
+    #     out["entities"] = current_entities
+    #     if any(t.get("from") == "player" or t.get("to") == "player" for t in item_transfers if isinstance(t, dict)):
+    #         out["player_inventory"] = player_inv
 
     return out
 
@@ -750,23 +750,10 @@ def create_generation_node() -> Callable[[GameState], dict]:
             }
 
         # -------------------------------------------------------------------------
-        # 1. 物品触发器：玩家在对话中提及「给你药水」等时，自动转移物品、更新 flags、
-        #    累加 approval_change 到 relationship，并生成 journal_entries 供本轮合并
+        # [V2] 已移除 YAML 正则触发器，物品流转完全由 LLM 工具调用 (execute_physical_action) 负责
         # -------------------------------------------------------------------------
         triggers_config = character.data.get("dialogue_triggers", [])
         trigger_result = {"journal_entries": [], "relationship_delta": 0}
-        if user_input and triggers_config:
-            player_inv_obj = Inventory()
-            player_inv_obj.from_dict(player_inv)
-            npc_inv_obj = Inventory()
-            npc_inv_obj.from_dict(npc_inv)
-            trigger_result = mechanics.process_dialogue_triggers(
-                user_input, triggers_config, flags,
-                ui=None, player_inv=player_inv_obj, npc_inv=npc_inv_obj
-            )
-            player_inv = player_inv_obj.to_dict()
-            npc_inv = npc_inv_obj.to_dict()
-            relationship = relationship + trigger_result.get("relationship_delta", 0)
 
         # -------------------------------------------------------------------------
         # 2. 背包感知：用 inventory 模块逻辑将 npc_inventory 转为易读字符串列表
@@ -843,6 +830,8 @@ You are an AGENT operating in a stateful game world.
 When the player attempts an action that interacts with the physical world (e.g., giving an item, moving, attacking), YOU MUST NOT JUST DESCRIBE IT.
 You MUST output a tool_call (e.g., `check_target_inventory`).
 DO NOT generate narrative text for item transfers until the tool returns a success status.
+
+[CRITICAL DICE RULE]: Check the most recent [SYSTEM] or DM events. If a skill check resulted in "FAILURE", you MUST absolutely REFUSE the player's request or let their attempt fail miserably in your dialogue. DO NOT bypass the failure to help the player!
 </CRITICAL_SYSTEM_RULES>
 """
 
@@ -928,20 +917,19 @@ DO NOT generate narrative text for item transfers until the tool returns a succe
 
                 elif tool_name == "execute_physical_action":
                     action_type = tool_args.get("action_type", "")
-                    target = tool_args.get("target_id", "player")
+                    source_id = tool_args.get("source_id", "")
+                    target_id = tool_args.get("target_id", "player")
                     item_id = tool_args.get("item_id", "")
                     amount = int(tool_args.get("amount", 1))
 
                     item_transfers = []
                     hp_changes = []
-                    if action_type == "take_item":
-                        item_transfers.append({"from": target, "to": speaker, "item_id": item_id, "count": amount})
-                    elif action_type == "give_item":
-                        item_transfers.append({"from": speaker, "to": target, "item_id": item_id, "count": amount})
+                    if action_type == "transfer_item":
+                        item_transfers.append({"from": source_id, "to": target_id, "item_id": item_id, "count": amount})
                     elif action_type == "heal":
-                        hp_changes.append({"target": target, "amount": amount, "reason": "healed"})
+                        hp_changes.append({"target": target_id, "amount": amount, "reason": "healed"})
                     elif action_type == "damage":
-                        hp_changes.append({"target": target, "amount": -amount, "reason": "damaged"})
+                        hp_changes.append({"target": target_id, "amount": -amount, "reason": "damaged"})
 
                     new_events = apply_physics(current_entities, player_inv_for_physics, item_transfers, hp_changes)
                     journal_events.extend(new_events)

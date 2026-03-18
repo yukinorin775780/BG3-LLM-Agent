@@ -209,3 +209,10 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# SQLite 数据库及临时文件
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
