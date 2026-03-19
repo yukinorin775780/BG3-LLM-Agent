@@ -4,10 +4,78 @@ Loads character data from YAML files and Jinja2 templates.
 """
 
 import os
+import re
 import yaml
 from jinja2 import Environment, FileSystemLoader, TemplateNotFound
 from typing import Dict, Any, Optional, List
 from core import inventory
+
+
+def _evaluate_condition(condition: str, value: int) -> bool:
+    """
+    解析 condition 字符串（如 ">= 80", "< 40"）并用 value 进行数学比较。
+    支持 >=, <=, >, <, ==。
+    """
+    condition = condition.strip()
+    match = re.match(r"(>=|<=|>|<|==)\s*(-?\d+)", condition)
+    if not match:
+        return False
+    op, threshold = match.group(1), int(match.group(2))
+    if op == ">=":
+        return value >= threshold
+    if op == "<=":
+        return value <= threshold
+    if op == ">":
+        return value > threshold
+    if op == "<":
+        return value < threshold
+    if op == "==":
+        return value == threshold
+    return False
+
+
+def _resolve_dynamic_states(
+    attributes: Dict[str, Any],
+    **kwargs
+) -> Dict[str, Dict[str, Any]]:
+    """
+    预处理 dynamic_states：用 kwargs 覆盖 current_value，计算激活的规则描述。
+    返回处理后的 dynamic_states，每个状态包含 name, current_value, active_rule_description。
+    """
+    raw_states = attributes.get("dynamic_states") or {}
+    base_stats = attributes.get("base_stats") or {}
+
+    def _get_value(state_id: str) -> int:
+        v = kwargs.get(state_id)
+        if v is not None:
+            return int(v)
+        if state_id == "affection":
+            v = kwargs.get("relationship_score")
+            if v is not None:
+                return int(v)
+        v = base_stats.get(state_id, 0)
+        return int(v) if v is not None else 0
+
+    resolved = {}
+    for state_id, state_def in raw_states.items():
+        if not isinstance(state_def, dict):
+            continue
+        current_value = _get_value(state_id)
+
+        rules = state_def.get("rules") or []
+        active_rule_description = ""
+        for rule in rules:
+            cond = rule.get("condition", "")
+            if _evaluate_condition(cond, current_value):
+                active_rule_description = rule.get("description", "")
+                break
+
+        resolved[state_id] = {
+            "name": state_def.get("name", state_id),
+            "current_value": current_value,
+            "active_rule_description": active_rule_description,
+        }
+    return resolved
 
 
 class CharacterLoader:
@@ -130,9 +198,13 @@ class CharacterLoader:
         # Load template
         template = self.load_template(name)
         
+        # 预处理 dynamic_states：计算激活的规则描述
+        dynamic_states = _resolve_dynamic_states(attributes, **kwargs)
+        
         # Prepare template variables
         template_vars = {
             "attributes": attributes,
+            "dynamic_states": dynamic_states,
             **kwargs
         }
         
@@ -210,6 +282,9 @@ class Character:
         time_of_day: str = "晨曦 (Morning)",
         hp: int = 20,
         active_buffs: Optional[List[dict]] = None,
+        shar_faith: Optional[int] = None,
+        memory_awakening: Optional[int] = None,
+        affection: Optional[int] = None,
     ) -> str:
         """
         Render the system prompt for this character based on current relationship, flags, summary,
@@ -249,6 +324,9 @@ class Character:
             time_of_day=time_of_day,
             hp=hp,
             active_buffs=active_buffs,
+            shar_faith=shar_faith,
+            memory_awakening=memory_awakening,
+            affection=affection,
         )
 
 # =========================================================================

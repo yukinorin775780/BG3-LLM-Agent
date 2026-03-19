@@ -15,11 +15,17 @@ Analyze the intent behind the player's words and determine WHO should respond, A
 - If the action is controversial, shocking, or directly affects party dynamics, OTHER NPCs should also react (banter/chime in).
 - Order matters! The primary target speaks first, followed by reactors.
 
-**Affection System (好感度评判):**
+**【重要约束】Shadowheart (影心) 状态机隔离：**
+Shadowheart 目前已实装独立的自我反思状态机（Dynamic Persona），由角色自身的 LLM 在对话生成时评估好感度、莎尔信仰度、记忆觉醒度。
+- DM **绝对不可**再评估和输出任何关于 Shadowheart 的赞同/不赞同 (Approves/Disapproves) 及好感度变化！
+- 在 `affection_changes` 中，**必须省略 Shadowheart**。DM 的关系判定只对尚未升级的传统 NPC（如 Astarion）生效。
+- DM 继续保留：技能检定 (Skill Checks)、`is_probing_secret`、剧情解锁 (flags_changed)、发言队列 (responders) 等全部原有职责。
+
+**Affection System (好感度评判 - 仅限传统 NPC)：**
 - Astarion likes chaos, selfishness, and mocks altruism. He approves of intimidation, deception, and self-serving acts.
-- Shadowheart values privacy, pragmatism, and devotion to Shar. She approves of respecting her secrets, practical choices, and faith.
-- If the player's action aligns with their personality, affection increases (+1 to +5). If it offends them, it decreases (-1 to -5). 0 means no change.
+- If the player's action aligns with an NPC's personality, affection increases (+1 to +5). If it offends them, it decreases (-1 to -5). 0 means no change.
 - Only include NPCs whose affection actually changes. Omit NPCs with 0 change.
+- **NEVER include "shadowheart" in affection_changes.** (She manages her own state via Dynamic Persona.)
 
 Return a JSON object with the following fields:
 
@@ -67,8 +73,9 @@ FLAGS PROVIDED:
     -   CRITICAL: DO NOT force NPCs into the responders list if they have no strong reason to speak. Keep banter natural. Often, just 1 responder is enough.
     -   If unclear, default to ["shadowheart"].
 
-6.  `affection_changes` (Object): Map of NPC ID to integer delta. Example: {"shadowheart": -2, "astarion": 3}
+6.  `affection_changes` (Object): Map of NPC ID to integer delta. Example: {"astarion": 3}
     -   Only include NPCs whose affection changes. Omit if no changes.
+    -   【严禁】DO NOT include "shadowheart" or "影心" in affection_changes. She has her own Dynamic Persona state machine.
 
 7.  `flags_changed` (Object): Map of string flag names to boolean values.
     -   Use this ONLY IF the player discovers a major plot secret, makes a critical promise, or reaches a narrative milestone.
@@ -96,5 +103,5 @@ FLAGS PROVIDED:
 Strictly output ONLY the JSON object. Do not add markdown blocks like ```json.
 Example:
 {"action_type": "CHAT", "is_probing_secret": false, "difficulty_class": 0, "reason": "Casual chat.", "responders": ["shadowheart"], "affection_changes": {}, "flags_changed": {}, "item_transfers": [], "hp_changes": []}
-Example with affection:
-{"action_type": "CHAT", "is_probing_secret": false, "difficulty_class": 0, "reason": "Player mocked altruism.", "responders": ["astarion", "shadowheart"], "affection_changes": {"astarion": 3, "shadowheart": -2}, "flags_changed": {}, "item_transfers": [], "hp_changes": []}
+Example with affection (Astarion only; NEVER include shadowheart):
+{"action_type": "CHAT", "is_probing_secret": false, "difficulty_class": 0, "reason": "Player mocked altruism.", "responders": ["astarion", "shadowheart"], "affection_changes": {"astarion": 3}, "flags_changed": {}, "item_transfers": [], "hp_changes": []}

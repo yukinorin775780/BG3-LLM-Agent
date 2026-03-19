@@ -9,6 +9,7 @@ import re
 def parse_llm_json(raw_text: str) -> dict:
     """
     提取并解析 LLM 返回的 JSON，自动剥离 Markdown 代码块包裹。
+    支持容错：清洗 `: +2` 等非法正数格式，解析失败时返回空字典以保证调用方不崩溃。
     """
     clean_text = raw_text.strip()
     if clean_text.startswith("```"):
@@ -19,11 +20,16 @@ def parse_llm_json(raw_text: str) -> dict:
         # 如果带有 json 标识，去掉 "json"
         if clean_text.lower().startswith("json"):
             clean_text = clean_text[4:].strip()
+
+    # 正则清洗：去掉键值对中形如 ": +2", ":+2", ":  +5" 的正数前导 + 号（不符合 JSON 规范）
+    cleaned_text = re.sub(r"(:\s*)\+(\d+)", r"\1\2", clean_text)
+
     try:
-        return json.loads(clean_text)
+        return json.loads(cleaned_text)
     except json.JSONDecodeError as e:
-        print(f"⚠️ [系统警告] LLM 输出了无效的 JSON 格式: {e}\n原文内容: {raw_text}")
-        return {}  # 兜底返回空字典，防止游戏崩溃
+        print(f"⚠️ [系统警告] LLM 输出了无效的 JSON 格式: {e}")
+        print(f"   清洗后内容: {cleaned_text}")
+        return {}  # 兜底返回空字典，保证测试脚本能够继续往下跑
 
 
 def clean_npc_dialogue(speaker: str, raw_text: str) -> str:

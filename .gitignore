@@ -210,6 +210,9 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
+# 测试文件（不提交）
+tests/
+
 # SQLite 数据库及临时文件
 *.db
 *.db-shm

@@ -50,7 +50,7 @@ from langchain_openai import ChatOpenAI
 from core.engine import generate_dialogue, parse_ai_response
 from core.engine.physics import apply_physics
 from core.tools.npc_tools import check_target_inventory, execute_physical_action
-from core.utils.text_processor import clean_npc_dialogue, format_history_message
+from core.utils.text_processor import clean_npc_dialogue, format_history_message, parse_llm_json
 
 # 全局开关：设为 True 时打印发给大模型的 Payload（调试用）
 DEBUG_AI_PAYLOAD = False
@@ -58,6 +58,24 @@ DEBUG_AI_PAYLOAD = False
 # =============================================================================
 # Node 1: Input 输入处理
 # =============================================================================
+
+
+def _entity_snapshot(v: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    从实体数据提取快照，保留 hp/affection/inventory 及三维状态机字段（shar_faith, memory_awakening）。
+    确保 LangGraph 状态持久化时，影心的 Persona 状态机数值不丢失。
+    """
+    out: Dict[str, Any] = {
+        "hp": v.get("hp", 20),
+        "active_buffs": list(v.get("active_buffs", [])),
+        "affection": v.get("affection", 0),
+        "inventory": dict(v.get("inventory", {})),
+    }
+    if "shar_faith" in v:
+        out["shar_faith"] = v["shar_faith"]
+    if "memory_awakening" in v:
+        out["memory_awakening"] = v["memory_awakening"]
+    return out
 
 
 def _parse_inventory(inv_raw: Any) -> Dict[str, int]:
@@ -99,12 +117,18 @@ def load_default_entities() -> Dict[str, Dict[str, Any]]:
             base = data.get("base_stats") or {}
             inv_raw = data.get("inventory") or []
             inv_dict = _parse_inventory(inv_raw)
-            entities[entity_id] = {
+            entity_data: Dict[str, Any] = {
                 "hp": base.get("hp", 20),
                 "active_buffs": [],
                 "affection": base.get("affection", 0),
                 "inventory": inv_dict,
             }
+            # 三维状态机：从 YAML base_stats 注入 shar_faith / memory_awakening（仅影心等配置了该字段的角色）
+            if "shar_faith" in base:
+                entity_data["shar_faith"] = base["shar_faith"]
+            if "memory_awakening" in base:
+                entity_data["memory_awakening"] = base["memory_awakening"]
+            entities[entity_id] = entity_data
         except Exception:
             entities[entity_id] = {"hp": 20, "active_buffs": [], "affection": 0, "inventory": {}}
     return entities
@@ -165,12 +189,7 @@ def input_node(state: GameState) -> dict:
                 del new_p[item_key]
             new_entities = {}
             for k, v in entities.items():
-                new_entities[k] = {
-                    "hp": v.get("hp", 20),
-                    "active_buffs": list(v.get("active_buffs", [])),
-                    "affection": v.get("affection", 0),
-                    "inventory": dict(v.get("inventory", {})),
-                }
+                new_entities[k] = _entity_snapshot(v)
             new_entities[target]["inventory"][item_key] = new_entities[target]["inventory"].get(item_key, 0) + 1
             new_entities[target]["affection"] = new_entities[target]["affection"] + 2
             response_text = f"[SYSTEM] You gave {item_key} to {target}."
@@ -249,11 +268,11 @@ def input_node(state: GameState) -> dict:
         value = int(parts[4])
 
         raw = state.get("entities") or entities
-        entities_copy = {k: {"hp": v.get("hp", 20), "active_buffs": list(v.get("active_buffs", [])), "affection": v.get("affection", 0), "inventory": dict(v.get("inventory", {}))} for k, v in entities.items()}
+        entities_copy = {k: _entity_snapshot(v) for k, v in entities.items()}
         for k, v in raw.items():
             if k not in entities_copy:
                 entities_copy[k] = {"hp": 20, "active_buffs": [], "affection": 0, "inventory": {}}
-            entities_copy[k].update({"hp": v.get("hp", 20), "active_buffs": list(v.get("active_buffs", [])), "affection": v.get("affection", 0), "inventory": dict(v.get("inventory", {}))})
+            entities_copy[k].update(_entity_snapshot(v))
         if target in entities_copy:
             new_buffs = list(entities_copy[target].get("active_buffs", []))
             new_buffs.append({"id": buff_id, "duration": duration, "value": value})
@@ -288,11 +307,11 @@ def input_node(state: GameState) -> dict:
 
         if item_id == "healing_potion":
             raw = state.get("entities") or entities
-            entities_copy = {k: {"hp": v.get("hp", 20), "active_buffs": list(v.get("active_buffs", [])), "affection": v.get("affection", 0), "inventory": dict(v.get("inventory", {}))} for k, v in entities.items()}
+            entities_copy = {k: _entity_snapshot(v) for k, v in entities.items()}
             for k, v in raw.items():
                 if k not in entities_copy:
                     entities_copy[k] = {"hp": 20, "active_buffs": [], "affection": 0, "inventory": {}}
-                entities_copy[k].update({"hp": v.get("hp", 20), "active_buffs": list(v.get("active_buffs", [])), "affection": v.get("affection", 0), "inventory": dict(v.get("inventory", {}))})
+                entities_copy[k].update(_entity_snapshot(v))
             if target == "player":
                 return {
                     "player_inventory": new_p,
@@ -568,14 +587,7 @@ def mechanics_node(state: GameState) -> dict:
         entities = state.get("entities", {})
         speaker = state.get("current_speaker", "shadowheart")
         current_aff = (entities.get(speaker, {}) or {}).get("affection", 0)
-        new_entities = {}
-        for k, v in entities.items():
-            new_entities[k] = {
-                "hp": v.get("hp", 20),
-                "active_buffs": list(v.get("active_buffs", [])),
-                "affection": v.get("affection", 0),
-                "inventory": dict(v.get("inventory", {})),
-            }
+        new_entities = {k: _entity_snapshot(v) for k, v in entities.items()}
         new_entities.setdefault(speaker, {"hp": 20, "active_buffs": [], "affection": 0, "inventory": {}})
         new_entities[speaker]["affection"] = current_aff + result["relationship_delta"]
         out["entities"] = new_entities
@@ -766,9 +778,12 @@ def create_generation_node() -> Callable[[GameState], dict]:
         has_healing_potion = (npc_inv.get("healing_potion", 0) or 0) >= 1
 
         # -------------------------------------------------------------------------
-        # 4. 注入提示词：把当前背包、标志位、时间、HP、Buff 传入 render_prompt。
+        # 4. 注入提示词：把当前背包、标志位、时间、HP、Buff、三维状态机 传入 render_prompt。
+        # 三维状态机：shar_faith（莎尔信仰度）、memory_awakening（记忆觉醒度），仅影心等角色有该字段。
         # -------------------------------------------------------------------------
         current_npc_data = entities.get(speaker, {})
+        shar_faith = current_npc_data.get("shar_faith")  # 若不存在则为 None，模板不注入信仰/记忆逻辑
+        memory_awakening = current_npc_data.get("memory_awakening")
         system_prompt = character.render_prompt(
             relationship_score=relationship,
             flags=flags,
@@ -779,6 +794,8 @@ def create_generation_node() -> Callable[[GameState], dict]:
             time_of_day=state.get("time_of_day", "晨曦 (Morning)"),
             hp=current_npc_data.get("hp", 20),
             active_buffs=current_npc_data.get("active_buffs", []),
+            shar_faith=shar_faith,
+            memory_awakening=memory_awakening,
         )
 
         # 动态物品知识库注入 (Item Database Injection)
@@ -987,20 +1004,56 @@ DO NOT generate narrative text for item transfers until the tool returns a succe
 
         raw_output = str(response.content if hasattr(response, "content") else str(response or ""))
 
-        # 清洗台词
-        parsed = parse_ai_response(raw_output)
-        raw_text = (parsed.get("text") or raw_output or "...").strip()
+        # -------------------------------------------------------------------------
+        # 结构化 JSON 解析：优先尝试解析三维状态机输出（reply + internal_monologue + state_changes）
+        # 解析失败时回退到旧版 parse_ai_response（正则解析 [THOUGHT]/[APPROVAL] 等）
+        # -------------------------------------------------------------------------
+        json_parsed = parse_llm_json(raw_output)
+        if isinstance(json_parsed, dict) and "reply" in json_parsed:
+            # 成功解析 JSON：提取 reply 作为台词，internal_monologue 作为内心独白
+            raw_text = (json_parsed.get("reply") or "...").strip()
+            thought_process = (json_parsed.get("internal_monologue") or "").strip()
+            state_changes = json_parsed.get("state_changes") or {}
+        else:
+            # 回退：旧版正则解析（兼容 Banter 或 LLM 未按 JSON 输出时）
+            parsed = parse_ai_response(raw_output)
+            raw_text = (parsed.get("text") or raw_output or "...").strip()
+            thought_process = (parsed.get("thought") or "").strip()
+            # 旧版 approval 映射为 affection_delta
+            state_changes = {"affection_delta": parsed.get("approval", 0), "shar_faith_delta": 0, "memory_awakening_delta": 0}
+
         clean_text = clean_npc_dialogue(speaker, raw_text)
         attributed_msg = format_history_message(speaker, clean_text)
+
+        # -------------------------------------------------------------------------
+        # 状态机流转：将 state_changes 写回 current_entities[speaker]，实现三维数值持久化
+        # LangGraph 状态不灭，更新后的实体会在下一回合被 DM/Mechanics 等节点读取
+        # -------------------------------------------------------------------------
+        aff_delta = int(state_changes.get("affection_delta", 0))
+        shar_delta = int(state_changes.get("shar_faith_delta", 0))
+        mem_delta = int(state_changes.get("memory_awakening_delta", 0))
+        state_changes_applied = False
+        if aff_delta != 0 or shar_delta != 0 or mem_delta != 0:
+            ent = current_entities.get(speaker, {})
+            ent = dict(ent)
+            ent["affection"] = max(-100, min(100, ent.get("affection", 0) + aff_delta))
+            if "shar_faith" in ent:
+                ent["shar_faith"] = max(0, min(100, ent["shar_faith"] + shar_delta))
+            if "memory_awakening" in ent:
+                ent["memory_awakening"] = max(0, min(100, ent["memory_awakening"] + mem_delta))
+            current_entities[speaker] = ent
+            state_changes_applied = True
 
         # 合并触发器产生的剧情事件到 journal，并写回 flags/背包/好感度
         prev_responses = list(state.get("speaker_responses", []))
         out = {
             "final_response": clean_text,
             "speaker_responses": prev_responses + [(speaker, clean_text)],
-            "thought_process": parsed.get("thought") or "",
+            "thought_process": thought_process,
             "messages": [HumanMessage(content=user_input), AIMessage(content=attributed_msg, name=speaker)],
         }
+        if state_changes_applied:
+            out["entities"] = current_entities  # 状态机更新必须写回，供后续回合持久化
         trigger_journal = trigger_result.get("journal_entries", [])
         if trigger_journal:
             out["journal_events"] = trigger_journal

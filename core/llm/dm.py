@@ -208,15 +208,23 @@ def analyze_intent(user_input: str, flags: Dict[str, Any] | None = None, time_of
         ]
 
         # 好感度变化：安全提取并过滤
+        # 【为 Dynamic Persona 让路】Shadowheart 已实装独立的自我反思状态机，DM 不得覆盖其好感度。
+        # 即使大模型违反 prompt 输出了 shadowheart 的 affection_changes，代码层也必须拦截。
         affection_changes = intent_data.get("affection_changes", {})
         if not isinstance(affection_changes, dict):
             affection_changes = {}
-        # 只保留合法 NPC 的数值变化
-        intent_data["affection_changes"] = {
-            str(k).strip().lower(): int(v)
-            for k, v in affection_changes.items()
-            if str(k).strip().lower() in available_npcs and isinstance(v, (int, float))
-        }
+        filtered = {}
+        for k, v in affection_changes.items():
+            npc_id = str(k).strip().lower()
+            raw_key = str(k).strip()
+            if npc_id not in available_npcs or not isinstance(v, (int, float)):
+                continue
+            # 黑名单：shadowheart / 影心 由 Dynamic Persona 管理，DM 不得覆盖
+            if npc_id == "shadowheart" or "影心" in raw_key:
+                print("[DM Intercept] Ignored affection change for Shadowheart (Dynamic Persona owns this).")
+                continue
+            filtered[npc_id] = int(v)
+        intent_data["affection_changes"] = filtered
 
         return _evaluate_narrative_rules(intent_data, flags, responders[0] if responders else "shadowheart")
 
