@@ -85,7 +85,7 @@ async def main_async():
                 if role in ("human", "user"):
                     ui.print(f"[dim]You > {content}[/dim]")
                 elif role in ("ai", "assistant"):
-                    label = _speaker_display_name(name) if name else "影心"
+                    label = _speaker_display_name(name or "")
                     ui.print(f"[dim]{label} > {content}[/dim]")
             ui.print_rule("💬 新的对话", style="info")
         else:
@@ -133,7 +133,12 @@ async def main_async():
                         # 2. NPC 生成节点完成 → 立即渲染 NPC 面板
                         elif node_name == "generation":
                             npc_text = node_state.get("final_response", "")
-                            speaker = node_state.get("current_speaker", "shadowheart") or "shadowheart"
+                            # 从节点返回的 speaker_responses 队列末尾提取真正的说话人
+                            speaker_responses = node_state.get("speaker_responses", [])
+                            if speaker_responses and len(speaker_responses) > 0:
+                                speaker = speaker_responses[-1][0]
+                            else:
+                                speaker = node_state.get("current_speaker", "shadowheart") or "shadowheart"
                             if npc_text:
                                 display_name = _speaker_display_name(speaker)
                                 await ui.print_npc_response_stream(display_name, npc_text, char_delay=0.03)

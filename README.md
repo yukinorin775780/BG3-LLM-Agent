@@ -30,8 +30,8 @@
 * 判定不再是暗箱操作。当 DM 识别到威胁 (`INTIMIDATION`)、欺瞒 (`DECEPTION`) 等动作意图时，强制路由至 `mechanics` 节点。
 * 结合终端 UI (Rich)，实现了**明牌化的 D20 掷骰子悬念动画**。AI 必须基于底层的“大成功 (Critical Success)”或“失败 (Failure)”标签来生成对应的狂喜或吃瘪台词，真正做到了“系统规则主导叙事”。
 
-### 4. 🛡️ 叙事锁与记忆防爆机制 (Narrative Locks & Sliding Window Memory)
-* **双轨意图判定**：将“动作 (Action)”与“话题 (Topic)”正交分离，好感度不达标时触发 `[SYSTEM OVERRIDE]` 强行锁死敏感话题，100% 防止玩家越狱。
+### 4. 🛡️ 话题标签与记忆防爆机制 (Topic Tags & Sliding Window Memory)
+* **双轨意图判定**：将“动作 (Action)”与“话题 (Topic)”正交分离（`is_probing_secret`）。刺探隐私仍会走正常技能检定；是否拒绝或透露由 **LLM + `story_rules` / 角色模板** 决定，不再由 Python 注入 `[SYSTEM OVERRIDE]`。
 * **记忆滑动窗口**：废弃了早期的全局文本摘要，采用精确的 `messages[-20:]` 与 `journal_events[-5:]` 切片截断。结合持久化的 SqliteSaver 数据库，既保证了跨会话的长期记忆，又彻底消除了长时间游玩导致的 LLM 上下文爆炸与幻觉。
 
 ---

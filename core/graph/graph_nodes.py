@@ -566,10 +566,10 @@ def advance_speaker_node(state: GameState) -> dict:
 def mechanics_node(state: GameState) -> dict:
     """
     根据意图执行技能检定（PERSUASION/DECEPTION/STEALTH/INSIGHT 等）。
-    若 is_probing_secret 为 True，优先走隐性好感度锁判定。
-    
+
     调用 mechanics.execute_skill_check，使用动态 DC（来自 intent_context）、
-    好感度修正、失败降好感，并将掷骰明细与结果写入 journal_events。
+    affection 修正、失败降好感，并将掷骰明细与结果写入 journal_events。
+    （刺探隐私 is_probing_secret 不再触发 Python 层拦截，仅照常检定。）
     """
     intent = state.get("intent", "chat")
     is_probing_secret = state.get("is_probing_secret", False)
@@ -683,7 +683,7 @@ def create_generation_node() -> Callable[[GameState], dict]:
     def generation_node(state: GameState) -> dict:
         """
         LLM 生成节点。
-        根据 current_speaker 动态加载对应角色，从 state 提取 relationship / flags / inventory 等。
+        根据 current_speaker 动态加载对应角色，从 state 提取 affection / flags / inventory 等。
         """
         from characters.loader import load_character
 
@@ -704,14 +704,14 @@ def create_generation_node() -> Callable[[GameState], dict]:
                 "thought_process": "",
                 "messages": [
                     HumanMessage(content=state.get("user_input", "")),
-                    AIMessage(content=f"[SYSTEM] {char_display}已经倒在血泊中，失去了意识。你无法再与她交谈。"),
+                    AIMessage(content=f"[SYSTEM] {char_display}已经倒在血泊中，失去了意识。你无法再与其交谈。", name=speaker),
                 ],
             }
 
         user_input = state.get("user_input", "")
         entities = state.get("entities", {})
         current_npc = entities.get(speaker, {})
-        relationship = current_npc.get("affection", 0)
+        affection = current_npc.get("affection", 0)
         flags = state.get("flags", {})
         npc_inv = current_npc.get("inventory", state.get("npc_inventory", {}))
         if not isinstance(npc_inv, dict):
@@ -745,7 +745,7 @@ def create_generation_node() -> Callable[[GameState], dict]:
             system_prompt = banter_tpl.render(
                 npc_name=character.data.get("name", speaker.capitalize()),
                 core_traits=core_traits,
-                approval=relationship,
+                approval=affection,
                 dm_text=dm_text,
             )
             history_dicts = [{"role": "user", "content": f"[DM]: {dm_text}"}]
@@ -785,7 +785,8 @@ def create_generation_node() -> Callable[[GameState], dict]:
         shar_faith = current_npc_data.get("shar_faith")  # 若不存在则为 None，模板不注入信仰/记忆逻辑
         memory_awakening = current_npc_data.get("memory_awakening")
         system_prompt = character.render_prompt(
-            relationship_score=relationship,
+            relationship_score=affection,
+            affection=affection,
             flags=flags,
             summary=summary,
             journal_entries=journal_events[-5:] if journal_events else [],
@@ -836,7 +837,7 @@ def create_generation_node() -> Callable[[GameState], dict]:
         current_entities.setdefault(speaker, {"hp": 20, "active_buffs": [], "affection": 0, "inventory": {}})
         if user_input and triggers_config:
             current_entities[speaker]["inventory"] = dict(npc_inv)
-            current_entities[speaker]["affection"] = relationship
+            current_entities[speaker]["affection"] = affection
         player_inv_for_physics = dict(player_inv)
 
         # 【近因效应】在 System Prompt 最末尾注入强约束，强制模型优先输出 tool_calls

@@ -83,8 +83,7 @@ def route_after_dm(state: GameState) -> DM_ROUTE:
     判定逻辑：
     ---------
     1. is_probing_secret 为 True（刺探秘密话题）
-       → mechanics_processing
-       → 必须经隐性好感度锁判定，再进入 Generation
+       → mechanics_processing（照常掷骰；叙事由 LLM + story_rules 处理）
 
     2. 动作意图（含 PERSUASION, DECEPTION, STEALTH 等 ACTION_INTENTS）
        → mechanics_processing

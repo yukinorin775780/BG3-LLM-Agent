@@ -78,6 +78,28 @@ def _resolve_dynamic_states(
     return resolved
 
 
+def _resolve_active_story_rules(
+    attributes: Dict[str, Any],
+    current_flags: Optional[Dict[str, Any]] = None,
+) -> List[str]:
+    """
+    根据 YAML 中的 story_rules 与当前剧情 flags，收集所有激活的规则描述文本。
+    current_flags 中某键为真（truthy）时，追加对应 description 到列表。
+    """
+    if not current_flags:
+        current_flags = {}
+    story_rules = attributes.get("story_rules") or {}
+    active: List[str] = []
+    for rule_key, rule_def in story_rules.items():
+        if not isinstance(rule_def, dict):
+            continue
+        if current_flags.get(rule_key):
+            desc = (rule_def.get("description") or "").strip()
+            if desc:
+                active.append(desc)
+    return active
+
+
 class CharacterLoader:
     """
     Loads character attributes from YAML files and renders prompts using Jinja2 templates.
@@ -200,11 +222,18 @@ class CharacterLoader:
         
         # 预处理 dynamic_states：计算激活的规则描述
         dynamic_states = _resolve_dynamic_states(attributes, **kwargs)
+
+        # 剧情标识：story_rules + current_flags（优先 current_flags，否则使用传入的 flags）
+        current_flags = kwargs.get("current_flags")
+        if current_flags is None:
+            current_flags = kwargs.get("flags") or {}
+        active_story_rules = _resolve_active_story_rules(attributes, current_flags)
         
         # Prepare template variables
         template_vars = {
             "attributes": attributes,
             "dynamic_states": dynamic_states,
+            "active_story_rules": active_story_rules,
             **kwargs
         }
         

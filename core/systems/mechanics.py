@@ -212,58 +212,28 @@ def get_relationship_penalty_on_failure(action_type: str) -> int:
 # - action_type=PERSUASION, is_probing_secret=true → 用劝说方式刺探
 # - action_type=DECEPTION, is_probing_secret=true → 用欺瞒方式刺探
 #
-# 【Mechanics 裁判】优先判断 is_probing_secret。若为 True 且 relationship < 20，
-# 无视 action_type，直接锁死并扣好感；否则正常走骰子逻辑。
+# 【V2】is_probing_secret 仅作 DM 标签写入 state；检定始终走正常骰子，叙事由 LLM + story_rules 决定。
 # -----------------------------------------------------------------------------
-
-PROBE_SECRET_LOCK_THRESHOLD = 20
 
 
 def execute_skill_check(state: Any) -> Dict[str, Any]:
     """
     执行技能检定，返回需合并进 state 的结果（journal_events、relationship_delta）。
-    
-    【话题优先】若 is_probing_secret 为 True 且 relationship < 20，无视 action_type，
-    直接注入锁死日志并扣好感，防止 LLM 越狱。
-    
+
     【动态 DC】从 state["intent_context"]["difficulty_class"] 读取 DM 设定的难度。
-    
-    【好感度修正】PERSUASION/DECEPTION 时，根据 relationship 计算 modifier。
-    
+
+    【好感度修正】PERSUASION/DECEPTION 时，根据当前 NPC 的 affection 计算 modifier。
+
     Args:
-        state: GameState 或兼容的 dict-like，需含 intent, intent_context, relationship, is_probing_secret
-    
+        state: GameState 或兼容的 dict-like，需含 intent、intent_context、entities、current_speaker
+
     Returns:
         dict: {"journal_events": [...], "relationship_delta": int}
     """
     intent = state.get("intent", "ACTION")
     intent_context = state.get("intent_context") or {}
     speaker = state.get("current_speaker", "shadowheart") or "shadowheart"
-    relationship = (state.get("entities") or {}).get(speaker, {}).get("affection", 0)
-    is_probing_secret = state.get("is_probing_secret", False)
-    _unlock_for_dice: List[str] = []
-
-    # -------------------------------------------------------------------------
-    # 话题优先：is_probing_secret 独立于 action_type 的判定层
-    # 好感不足时，无论玩家用劝说还是欺骗，一律锁死。
-    # -------------------------------------------------------------------------
-    if is_probing_secret:
-        if relationship < PROBE_SECRET_LOCK_THRESHOLD:
-            journal_lines = [
-                "[SYSTEM OVERRIDE: 玩家触碰了绝对禁忌。好感度不足，强制防备转移话题。]",
-                f"  [Narrative Lock: relationship={relationship} < {PROBE_SECRET_LOCK_THRESHOLD}]",
-                "  [Relationship: -2 (probe penalty)]",
-            ]
-            return {"journal_events": journal_lines, "relationship_delta": -2}
-        # 好感足够：注入解锁事件；若 intent 为 CHAT 则直接返回，否则继续走骰子
-        unlock_lines = [
-            "[系统判定：影心对玩家有足够的信任，可以隐晦地透露部分关于莎尔的信息。]",
-            f"  [Narrative Unlock: relationship={relationship} >= {PROBE_SECRET_LOCK_THRESHOLD}]",
-        ]
-        if intent in ("CHAT", "chat"):
-            return {"journal_events": unlock_lines, "relationship_delta": 0}
-        # 动作意图：先记解锁，再执行骰子，最后将 unlock 与 dice 合并
-        _unlock_for_dice = unlock_lines
+    affection = (state.get("entities") or {}).get(speaker, {}).get("affection", 0)
 
     # 动态 DC：DM 节点若设定了 difficulty_class 则使用，否则默认 12
     dc = intent_context.get("difficulty_class")
@@ -272,11 +242,11 @@ def execute_skill_check(state: Any) -> Dict[str, Any]:
     dc = int(dc)
 
     # 好感度修正：仅 PERSUASION/DECEPTION 生效
-    rel_mod = calculate_relationship_modifier(relationship, intent)
+    rel_mod = calculate_relationship_modifier(affection, intent)
     modifier = rel_mod
 
     # advantage/disadvantage 由 determine_roll_type 决定
-    roll_type = determine_roll_type(intent, relationship)
+    roll_type = determine_roll_type(intent, affection)
     result = roll_d20(dc=dc, modifier=modifier, roll_type=roll_type)
 
     # 失败时扣减好感度
@@ -298,13 +268,9 @@ def execute_skill_check(state: Any) -> Dict[str, Any]:
         f"Result: {result_val}",
     ]
     if rel_mod != 0:
-        journal_lines.append(f"  [Relationship modifier: {rel_mod:+d} (rel={relationship})]")
+        journal_lines.append(f"  [Affection modifier: {rel_mod:+d} (affection={affection})]")
     if relationship_delta != 0:
-        journal_lines.append(f"  [Relationship: {relationship_delta:+d} (check failed)]")
-
-    # 若有话题解锁事件（is_probing_secret 且 rel >= 20），前置到 journal
-    if _unlock_for_dice:
-        journal_lines = _unlock_for_dice + journal_lines
+        journal_lines.append(f"  [Affection: {relationship_delta:+d} (check failed)]")
 
     return {
         "journal_events": journal_lines,
