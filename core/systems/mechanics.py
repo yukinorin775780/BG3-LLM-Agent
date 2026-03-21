@@ -147,18 +147,12 @@ def determine_roll_type(action_type: str, relationship_score: int) -> str:
 
 
 # -----------------------------------------------------------------------------
-# 好感度修正与失败惩罚（防止叙事幻觉）
+# 好感度与掷骰（仅修正骰子，不自动改 affection）
 # -----------------------------------------------------------------------------
 #
-# 【数值系统如何防止 AI 叙事幻觉】
-# 1) 好感度修正：PERSUASION/DECEPTION 时，relationship 每 20 点提供 +1 骰子修正。
-#    这样「高好感时更容易说服」是规则驱动的，LLM 不能随意编造「影心被说服了」——
-#    必须依赖 journal_events 中的掷骰结果（SUCCESS/FAILURE）来生成叙事。
-# 2) 失败降好感：检定失败时，根据类型扣减 relationship（如欺瞒失败 -3）。
-#    数值变化写入 journal，LLM 在 [RECENT MEMORIES] 中看到「检定失败，好感 -3」，
-#    从而生成与事实一致的「被识破后的冷淡」等反应，而非随意编造情绪。
-# 3) 动态 DC：DM 的 difficulty_class 通过 intent_context 传入，避免固定 DC 导致
-#    「简单请求也难成功」等不合理体验；同时 DC 与掷骰明细都写入 journal，叙事有据可查。
+# PERSUASION/DECEPTION 时按 affection 每 20 点 ±1 骰子修正；advantage/disadvantage 亦由 affection 阈值决定。
+# 检定成败不再扣减 affection——情感波动由 DM 分析与 NPC/LLM 输出自行表达。
+# 动态 DC 来自 intent_context["difficulty_class"]，掷骰明细写入 journal_events。
 # -----------------------------------------------------------------------------
 
 
@@ -180,25 +174,6 @@ def calculate_relationship_modifier(relationship: int, action_type: str) -> int:
     return relationship // 20
 
 
-def get_relationship_penalty_on_failure(action_type: str) -> int:
-    """
-    检定失败时对 relationship 的扣减值。用于「欺瞒被识破」「威吓失败」等场景。
-    
-    Args:
-        action_type: 检定类型
-    
-    Returns:
-        int: 失败时应扣减的好感度（0 表示不扣）
-    """
-    penalties = {
-        "DECEPTION": -3,   # 欺瞒被识破，信任受损
-        "PERSUASION": -1,  # 劝说失败，轻微反感
-        "INTIMIDATION": -5,  # 威吓失败，关系恶化
-        "ATTACK": -10,     # 攻击失败，严重敌对
-    }
-    return penalties.get(action_type, 0)
-
-
 # -----------------------------------------------------------------------------
 # 意图(How)与话题(What)分离 —— 彻底解决 LLM 分类冲突
 # -----------------------------------------------------------------------------
@@ -218,22 +193,26 @@ def get_relationship_penalty_on_failure(action_type: str) -> int:
 
 def execute_skill_check(state: Any) -> Dict[str, Any]:
     """
-    执行技能检定，返回需合并进 state 的结果（journal_events、relationship_delta）。
+    执行技能检定，返回客观掷骰结果（journal_events、raw_roll_data）。
 
     【动态 DC】从 state["intent_context"]["difficulty_class"] 读取 DM 设定的难度。
 
-    【好感度修正】PERSUASION/DECEPTION 时，根据当前 NPC 的 affection 计算 modifier。
+    【骰子修正】PERSUASION/DECEPTION 时，根据当前 NPC 的 affection 计算 modifier（不改写 affection）。
 
     Args:
         state: GameState 或兼容的 dict-like，需含 intent、intent_context、entities、current_speaker
 
     Returns:
-        dict: {"journal_events": [...], "relationship_delta": int}
+        dict: {"journal_events": [...], "raw_roll_data": {...}}
     """
     intent = state.get("intent", "ACTION")
     intent_context = state.get("intent_context") or {}
-    speaker = state.get("current_speaker", "shadowheart") or "shadowheart"
-    affection = (state.get("entities") or {}).get(speaker, {}).get("affection", 0)
+    _entities_map = state.get("entities") or {}
+    if not isinstance(_entities_map, dict):
+        _entities_map = {}
+    _speaker_fb = next(iter(_entities_map), None) if _entities_map else None
+    speaker = (state.get("current_speaker") or "").strip() or _speaker_fb or "unknown"
+    affection = (_entities_map.get(speaker, {}) or {}).get("affection", 0)
 
     # 动态 DC：DM 节点若设定了 difficulty_class 则使用，否则默认 12
     dc = intent_context.get("difficulty_class")
@@ -249,14 +228,7 @@ def execute_skill_check(state: Any) -> Dict[str, Any]:
     roll_type = determine_roll_type(intent, affection)
     result = roll_d20(dc=dc, modifier=modifier, roll_type=roll_type)
 
-    # 失败时扣减好感度
-    relationship_delta = 0
-    if not result.get("is_success", False):
-        penalty = get_relationship_penalty_on_failure(intent)
-        if penalty != 0:
-            relationship_delta = penalty
-
-    # 构建详细的 journal 条目：掷骰明细 + 结果 + 好感度变化
+    # 构建详细的 journal 条目：掷骰明细 + 结果
     rolls_str = str(result.get("rolls", [result.get("raw_roll", "?")]))
     total = result.get("total", 0)
     result_type = result.get("result_type")
@@ -269,12 +241,9 @@ def execute_skill_check(state: Any) -> Dict[str, Any]:
     ]
     if rel_mod != 0:
         journal_lines.append(f"  [Affection modifier: {rel_mod:+d} (affection={affection})]")
-    if relationship_delta != 0:
-        journal_lines.append(f"  [Affection: {relationship_delta:+d} (check failed)]")
 
     return {
         "journal_events": journal_lines,
-        "relationship_delta": relationship_delta,
         "raw_roll_data": {
             "intent": intent,
             "dc": dc,

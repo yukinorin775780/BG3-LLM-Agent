@@ -4,9 +4,14 @@ LangGraph 应用工厂。
 Checkpointer 由调用方（如 main.py）创建并传入，支持 AsyncSqliteSaver 等异步实现。
 """
 
-from langgraph.graph import StateGraph, START, END
-from core.graph.graph_state import GameState
+from langgraph.graph import END, START, StateGraph
+
 from core.graph.graph_routers import route_after_dm, route_after_mechanics, route_after_narration
+from core.graph.graph_state import GameState
+from core.graph.nodes.dm import advance_speaker_node, dm_node, narration_node
+from core.graph.nodes.generation import create_generation_node
+from core.graph.nodes.input import input_node, world_tick_node
+from core.graph.nodes.mechanics import mechanics_node
 
 
 def route_after_input(state: dict) -> str:
@@ -29,15 +34,6 @@ def route_after_generation(state: dict) -> str:
     if state.get("speaker_queue"):
         return "advance_speaker"
     return "__end__"
-from core.graph.graph_nodes import (
-    input_node,
-    world_tick_node,
-    dm_node,
-    mechanics_node,
-    narration_node,
-    create_generation_node,
-    advance_speaker_node,
-)
 
 
 # -----------------------------------------------------------------------------
