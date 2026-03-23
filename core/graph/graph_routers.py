@@ -53,26 +53,14 @@ def _validate_dm_route(route: str) -> DM_ROUTE:
 
 def route_after_input(state: GameState) -> INPUT_ROUTE:
     """
-    Input 节点之后的路由：指令已处理则分流，否则进 DM。
+    Input 节点之后的路由（与 graph_builder 中 input→world_tick 的实装对照用）。
 
-    判定逻辑：
-    ---------
-    1. command_done：/help、未知命令、物品不足等简单错误
-       → 直接结束（__end__），无需 LLM 反应
-
-    2. gift_given / item_used：/give、/use 成功
-       → 进入 dm_analysis，再经 route_after_dm 到 generation
-       → 需要 AI 对赠送/使用行为做出叙事反应
-
-    3. pending：非斜杠输入，或空输入
-       → 进入 dm_analysis，由 DM 分析意图（ATTACK/CHAT 等）
+    纯系统指令（含 /give、/use 成功）使用 intent=command_done，直接 __end__，不进入 DM。
+    其余意图进入 dm_analysis（实际主程序在 graph_builder 中先经 world_tick 再到 dm_analysis）。
     """
     intent = state.get("intent", "pending")
-
     if intent == "command_done":
         return _validate_input_route("__end__")
-    if intent in ("gift_given", "item_used"):
-        return _validate_input_route("dm_analysis")
     return _validate_input_route("dm_analysis")
 
 
@@ -88,7 +76,7 @@ def route_after_dm(state: GameState) -> DM_ROUTE:
     2. 动作意图（含 PERSUASION, DECEPTION, STEALTH 等 ACTION_INTENTS）
        → mechanics_processing
 
-    3. 非动作意图（CHAT, gift_given, item_used 等）且非刺探
+    3. 非动作意图（如 CHAT）且非刺探
        → generation
     """
     intent = state.get("intent", "chat")
@@ -159,6 +147,10 @@ def route_after_narration(state: GameState) -> NARRATION_ROUTE:
     DM 旁白结束后的路由：决定是否触发同伴吐槽 (Banter)。
     普通操作 30% 概率触发；大成功(20)或大失败(1) 100% 触发。
     """
+    # 若 DM 已排出后续发言 NPC，必须进入 generation，不能被随机吐槽判定短路到 __end__
+    if state.get("speaker_queue"):
+        return "generation"
+
     latest_roll = state.get("latest_roll", {}) or {}
     result = latest_roll.get("result", {}) or {}
     raw_roll = result.get("raw_roll") if isinstance(result, dict) else None

@@ -15,9 +15,9 @@ from core.graph.nodes.mechanics import mechanics_node
 
 
 def route_after_input(state: dict) -> str:
-    """拦截开发者指令，防止世界时间流逝"""
+    """拦截开发者指令与纯系统指令（不进入 world_tick / DM，不唤醒 LLM）"""
     intent = state.get("intent", "")
-    if intent in ("dev_command", "command_failed"):
+    if intent in ("dev_command", "command_failed", "command_done"):
         return "__end__"
     return "world_tick"
 

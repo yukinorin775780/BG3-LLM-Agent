@@ -3,6 +3,7 @@ Character Loader Module
 Loads character data from YAML files and Jinja2 templates.
 """
 
+import copy
 import os
 import re
 import yaml
@@ -98,6 +99,83 @@ def _resolve_active_story_rules(
             if desc:
                 active.append(desc)
     return active
+
+
+_ABILITY_LOWER = ("str", "dex", "con", "int", "wis", "cha")
+
+
+def _ensure_ability_scores(attrs: Dict[str, Any]) -> None:
+    """补全 persona_template.j2 所需的 ability_scores（兼容仅写在 base_stats 下的简版 YAML）。"""
+    scores: Dict[str, int] = {}
+    raw = attrs.get("ability_scores")
+    if isinstance(raw, dict):
+        for k, v in raw.items():
+            try:
+                scores[str(k).upper()] = int(v)
+            except (TypeError, ValueError):
+                continue
+    base = attrs.get("base_stats") or {}
+    if isinstance(base, dict):
+        for k in _ABILITY_LOWER:
+            uk = k.upper()
+            if uk not in scores and k in base:
+                try:
+                    scores[uk] = int(base[k])
+                except (TypeError, ValueError):
+                    pass
+    for uk in ("STR", "DEX", "CON", "INT", "WIS", "CHA"):
+        scores.setdefault(uk, 10)
+    attrs["ability_scores"] = scores
+
+
+def _ensure_dialogue_style(attrs: Dict[str, Any]) -> None:
+    """补全 dialogue_style.tone / common_phrases（兼容 personality.speech_style 列表写法）。"""
+    ds = attrs.get("dialogue_style")
+    if isinstance(ds, dict) and ds.get("tone") is not None:
+        out = dict(ds)
+        cp = out.get("common_phrases")
+        if not isinstance(cp, list):
+            out["common_phrases"] = [] if cp is None else [str(cp)]
+        out.setdefault("tone", "In character.")
+        attrs["dialogue_style"] = out
+        return
+
+    tone = "In character, stay true to your personality."
+    phrases: List[str] = []
+    pers = attrs.get("personality") or {}
+    ss = pers.get("speech_style")
+    if isinstance(ss, list):
+        for item in ss:
+            if isinstance(item, dict):
+                t = item.get("Tone") or item.get("tone")
+                p = item.get("Phrases") or item.get("phrases")
+                if t is not None:
+                    tone = str(t).strip()
+                if p is not None:
+                    phrases.append(str(p).replace("\n", " ").strip())
+            elif isinstance(item, str):
+                s = item.strip()
+                low = s.lower()
+                if low.startswith("tone:"):
+                    tone = s.split(":", 1)[1].strip()
+                elif low.startswith("phrases:"):
+                    phrases.append(s.split(":", 1)[1].strip())
+                elif s:
+                    phrases.append(s)
+    if not phrases:
+        phrases = ["—"]
+    attrs["dialogue_style"] = {"tone": tone, "common_phrases": phrases}
+
+
+def normalize_character_attributes_for_template(raw: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    深拷贝 YAML 数据并补全 persona_template.j2 强依赖字段，避免简版角色卡渲染崩溃。
+    """
+    out = copy.deepcopy(raw)
+    _ensure_ability_scores(out)
+    _ensure_dialogue_style(out)
+    out.setdefault("race", "")
+    return out
 
 
 class CharacterLoader:
@@ -327,10 +405,9 @@ class Character:
             inventory_items: List of item names the character is holding (defaults to [])
             has_healing_potion: Whether the character has at least one healing_potion (for reality constraints)
         """
-        # 我们需要在渲染时，把最新的 relationship_score 注入到 attributes 里
-        # 但不要直接修改 self.data，以免污染原始数据，所以 copy 一份
-        current_attributes = self.data.copy()
-        current_attributes['relationship'] = relationship_score
+        # 注入 relationship，并补全 ability_scores / dialogue_style 等模板必需字段（兼容简版 YAML）
+        current_attributes = normalize_character_attributes_for_template(self.data)
+        current_attributes["relationship"] = relationship_score
         
         # Ensure flags is a dict (default to empty)
         if flags is None:

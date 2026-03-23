@@ -68,10 +68,13 @@ FLAGS PROVIDED:
 
 4.  `reason`: A short explanation of why you chose this action.
 
-5.  `responders` (Array of strings): List of character IDs who will speak, in order. Must be from: {{ available_npcs }}.
-    -   Primary addressee first; others who react (banter/chime in) follow.
-    -   CRITICAL: DO NOT force NPCs into the responders list if they have no strong reason to speak. Keep banter natural. Often, just 1 responder is enough.
-    -   If unclear, default to ["shadowheart"].
+5.  `responders` (Array of strings): **CRITICAL — global party awareness**
+    -   Format: `["npc_id_1", "npc_id_2", ...]` — **every NPC ID listed here MUST speak in this turn order** (primary addressee first, then anyone who would realistically react).
+    -   **List ALL party members who would be affected, offended, pleased, or provoked** by the player's line or the situation (e.g. insult to the group → multiple responders; gift aimed at one → that NPC first, others only if they would chime in).
+    -   IDs **must** come only from: {{ available_npcs }}. Use lowercase snake_case ids (e.g. `shadowheart`, `astarion`, `laezel`).
+    -   Do **not** omit a clearly involved NPC to save tokens. Do **not** pad with unrelated NPCs.
+    -   If the player addressed someone specific, that NPC must be `responders[0]`.
+    -   If intent is ambiguous, default to **one** responder: the NPC the player most likely addressed; if still unclear, use the **first** id in `available_npcs` as printed above (do not invent ids).
 
 6.  `affection_changes` (Object): Map of NPC ID to integer delta. Example: {"astarion": 3}
     -   Only include NPCs whose affection changes. Omit if no changes.

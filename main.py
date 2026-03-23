@@ -123,8 +123,15 @@ async def main_async():
                         # 实时打印当前刚刚执行完毕的节点，实现真正的"流式跟踪"
                         ui.print_system_info(f"⚡ [流式追踪] 节点 `{node_name}` 执行完毕")
 
+                        # 0. 临时 Debug：透视 DM 排出的发言队列
+                        if node_name == "dm_analysis":
+                            if node_state and isinstance(node_state, dict):
+                                queue = node_state.get("speaker_queue", [])
+                                if queue:
+                                    ui.print_system_info(f"👀 [Debug] DM 排出的发言队列: {queue}")
+
                         # 1. DM 旁白节点完成 → 立即渲染 DM 面板
-                        if node_name == "narration":
+                        elif node_name == "narration":
                             dm_text = node_state.get("final_response", "")
                             if dm_text:
                                 ui.print_dm_narration(dm_text)

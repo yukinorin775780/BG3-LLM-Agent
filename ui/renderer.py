@@ -20,6 +20,28 @@ from core.dice import CheckResult
 from core.inventory import Inventory
 from core.systems.quest import QuestManager
 
+# 战术面板 NPC 条/边框颜色：按 entity id 稳定映射，不绑定具体角色名
+_DASHBOARD_NPC_COLORS = (
+    "magenta",
+    "red",
+    "green",
+    "blue",
+    "yellow",
+    "bright_magenta",
+    "cyan",
+    "bright_green",
+    "bright_blue",
+    "bright_cyan",
+)
+
+
+def _dashboard_color_for_entity(ent_id: str) -> str:
+    key = (ent_id or "npc").strip().lower()
+    if not key:
+        return "cyan"
+    idx = sum((i + 1) * ord(c) for i, c in enumerate(key)) % len(_DASHBOARD_NPC_COLORS)
+    return _DASHBOARD_NPC_COLORS[idx]
+
 
 class GameRenderer:
     """Handles all UI rendering using Rich library"""
@@ -84,11 +106,20 @@ class GameRenderer:
         player_max_hp = player_data.get("max_hp", 20)
         player_inv = player_data.get("inventory") or state.get("player_inventory", {})
 
-        # 解析任务状态
+        # 解析任务状态：合并所有在场 NPC YAML 中的 quests（无硬编码单一角色）
         flags = state.get("flags", {})
         from characters.loader import load_character
-        char_data = load_character("shadowheart")
-        active_quests = QuestManager.check_quests(char_data.quests, flags)
+
+        merged_quests: list = []
+        for eid in entities:
+            if eid == "player":
+                continue
+            try:
+                char_data = load_character(eid)
+                merged_quests.extend(char_data.quests or [])
+            except (FileNotFoundError, OSError, ValueError, TypeError):
+                continue
+        active_quests = QuestManager.check_quests(merged_quests, flags)
 
         self.print("───────────────────────────────────────────────────── 📊 战术状态面板 ──────────────────────────────────────────────────────")
         self.print(f"[bold cyan]🌍 时间: {time_str} | ⏳ 回合: {turn}[/bold cyan]")
@@ -105,7 +136,7 @@ class GameRenderer:
             buffs = ent_data.get("active_buffs", [])
             buff_str = ", ".join([f"{b['id']}({b['duration']}t)" for b in buffs]) if buffs else "无"
             hp_bar = "❤️" * max(0, hp // 2) + "🤍" * max(0, (max_hp - hp) // 2)
-            name_color = "magenta" if ent_id == "shadowheart" else "red" if ent_id == "astarion" else "cyan"
+            name_color = _dashboard_color_for_entity(ent_id)
             self.print(f"[{name_color}]{ent_id.capitalize():<12}[/{name_color}] | [bold red]HP: {hp}/{max_hp} {hp_bar}[/bold red] | [bold yellow]Buffs: {buff_str}[/bold yellow]")
 
         panels = []
@@ -128,7 +159,7 @@ class GameRenderer:
             n_inv = ent_data.get("inventory", {})
             n_inv_str = self._format_inv_display(n_inv)
             content = f"[pink]❤️ 好感度: {aff} / 100[/pink]\n[dim]─[/dim]\n{n_inv_str}"
-            name_color = "magenta" if ent_id == "shadowheart" else "red"
+            name_color = _dashboard_color_for_entity(ent_id)
             panels.append(Panel(content, title=f"📦 {ent_id.capitalize()}", width=22, border_style=name_color))
 
         self.console.print(Columns(panels))

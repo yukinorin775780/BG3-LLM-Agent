@@ -22,7 +22,15 @@ def input_node(state: GameState) -> dict:
     - journal_events: 返回 [新事件]，merge_events Reducer 自动累加
     """
     user_input = state.get("user_input", "").strip()
-    entities = state.get("entities") or copy.deepcopy(default_entities)
+    raw_entities = state.get("entities")
+    if not raw_entities:
+        entities = copy.deepcopy(default_entities)
+    else:
+        entities = copy.deepcopy(raw_entities)
+    # 热更新：把 YAML 新增的 NPC 合并进旧存档（SQLite checkpoint）里的 entities
+    for npc_id, default_data in default_entities.items():
+        if npc_id not in entities:
+            entities[npc_id] = copy.deepcopy(default_data)
     base = {
         "intent": "pending",
         "speaker_queue": [],
@@ -68,7 +76,7 @@ def input_node(state: GameState) -> dict:
                 "speaker_responses": [],
                 "journal_events": [f"Player gave {item_key} to {target}."],
                 "final_response": response_text,
-                "intent": "gift_given",
+                "intent": "command_done",
                 "is_probing_secret": False,
                 "messages": [HumanMessage(content=user_input), AIMessage(content=response_text)],
             }
@@ -184,7 +192,7 @@ def input_node(state: GameState) -> dict:
             if target == "player":
                 return {
                     "player_inventory": new_p,
-                    "intent": "item_used",
+                    "intent": "command_done",
                     "messages": [HumanMessage(content="*你喝下了一瓶治疗药水。*")],
                     "final_response": "",
                     "is_probing_secret": False,
@@ -199,7 +207,7 @@ def input_node(state: GameState) -> dict:
                     "speaker_queue": [],
                     "current_speaker": target,
                     "speaker_responses": [],
-                    "intent": "item_used",
+                    "intent": "command_done",
                     "messages": [HumanMessage(content=action_msg)],
                     "final_response": "",
                     "is_probing_secret": False,
@@ -222,7 +230,7 @@ def input_node(state: GameState) -> dict:
             "speaker_responses": [],
             "journal_events": [f"Player used {item_id}: {effect['message']}"],
             "final_response": f"[SYSTEM] You used {item_id}: {effect['message']}",
-            "intent": "item_used",
+            "intent": "command_done",
             "is_probing_secret": False,
             "messages": [
                 HumanMessage(content=user_input),

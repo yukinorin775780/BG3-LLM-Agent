@@ -16,10 +16,11 @@ from core.utils.text_processor import format_history_message
 def dm_node(state: GameState) -> dict:
     """
     分析玩家输入的意图。
-    若 intent 已被 Input 处理（command_done / gift_given / item_used），直接跳过。
+    若 intent 为 command_done（系统指令已就地处理），直接跳过，不调用 LLM。
+    兼容旧存档中偶发的 gift_given / item_used。
     DM 派发多人发言队列，并结算好感度变化，渲染 BG3 风格提示。
     """
-    if state.get("intent") in ["command_done", "gift_given", "item_used"]:
+    if state.get("intent") in ("command_done", "gift_given", "item_used"):
         return {}
 
     print("🎲 DM Node: Analyzing intent...")

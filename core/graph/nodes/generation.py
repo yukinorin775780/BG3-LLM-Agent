@@ -13,7 +13,7 @@ Generation 节点：NPC 台词生成（工厂模式 + ReAct 工具）。
 
 import copy
 import os
-from typing import Callable
+from typing import Any, Callable
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_openai import ChatOpenAI
@@ -34,7 +34,27 @@ from core.tools.npc_tools import check_target_inventory, execute_physical_action
 from core.utils.text_processor import clean_npc_dialogue, format_history_message, parse_llm_json
 
 # 全局开关：设为 True 时打印发给大模型的 Payload（调试用）
-DEBUG_AI_PAYLOAD = False
+DEBUG_AI_PAYLOAD = True
+
+
+def _player_message_suggests_item_offer(text: str) -> bool:
+    """玩家是否在口头赠送/递物品（DM 常仍标为 CHAT，但必须走带工具的 Agent）。"""
+    if not text or not str(text).strip():
+        return False
+    t = str(text).strip()
+    low = t.lower()
+    zh = ("给你", "送你", "拿好", "接着", "喝下", "收下", "接住", "一瓶", "这瓶", "把这", "治疗药水", "药水", "东西给你")
+    en = ("give you", "here's", "here is", "take this", "take the", "healing potion", "have a potion")
+    return any(k in t for k in zh) or any(k in low for k in en)
+
+
+def _latest_roll_is_meaningful(latest_roll: Any) -> bool:
+    """是否存在需要 NPC 严肃接检定结果的掷骰上下文（空 dict 不视为有检定）。"""
+    if latest_roll is None:
+        return False
+    if not isinstance(latest_roll, dict):
+        return bool(latest_roll)
+    return bool(latest_roll.get("result")) or bool(latest_roll.get("intent"))
 
 
 def create_generation_node() -> Callable[[GameState], dict]:
@@ -84,10 +104,26 @@ def create_generation_node() -> Callable[[GameState], dict]:
         journal_events = list(state.get("journal_events", []))
         summary = state.get("summary", "Graph Mode Testing")
 
+        # 多人轮流发言：input_node 每轮开始时清空 speaker_responses。
+        # 仅第一位 NPC 应把本回合玩家句写入 messages / LLM history，后续 NPC 只追加自己的 AIMessage。
+        prev_responses = list(state.get("speaker_responses", []))
+        is_first_npc_of_player_turn = len(prev_responses) == 0
+
+        # Banter 仅用 generate_dialogue，无 bind_tools；须严格限制在「纯闲聊 + 无检定 + 无实体交接」场景
+        intent = str(state.get("intent", "chat") or "chat").strip().lower()
+        latest_roll = state.get("latest_roll")
+        banter_allowed_intents = frozenset({"chat", "banter"})
+        needs_full_agent = (
+            intent not in banter_allowed_intents
+            or _latest_roll_is_meaningful(latest_roll)
+            or bool(state.get("is_probing_secret"))
+            or _player_message_suggests_item_offer(user_input)
+        )
+
         messages = list(state.get("messages", []))
         is_banter = False
         dm_text = ""
-        if messages:
+        if not needs_full_agent and messages:
             last_msg = messages[-1]
             last_content = _msg_content(last_msg)
             last_name = getattr(last_msg, "name", None) or (
@@ -117,7 +153,6 @@ def create_generation_node() -> Callable[[GameState], dict]:
             parsed = parse_ai_response(raw_response)
             clean_text = clean_npc_dialogue(speaker, (parsed.get("text") or "...").strip())
             attributed_msg = format_history_message(speaker, clean_text)
-            prev_responses = list(state.get("speaker_responses", []))
             return {
                 "final_response": clean_text,
                 "speaker_responses": prev_responses + [(speaker, clean_text)],
@@ -153,14 +188,50 @@ def create_generation_node() -> Callable[[GameState], dict]:
         if item_lore:
             system_prompt += item_lore
 
+        system_prompt += f"Current Speaker: {speaker}\n"
+        system_prompt += f"Player's Current Inventory: {player_inv}\n"
+
+        # 【核心修复：将本回合检定结果注入 System Prompt，避免模型看不到 latest_roll】
+        # 仅在有实质掷骰数据时注入（与 needs_full_agent 判定一致），避免空 dict 噪声
+        if latest_roll and isinstance(latest_roll, dict) and _latest_roll_is_meaningful(latest_roll):
+            _roll_result = latest_roll.get("result")
+            _roll_result_dict = _roll_result if isinstance(_roll_result, dict) else {}
+            is_success = bool(_roll_result_dict.get("is_success", False))
+            roll_status = "SUCCESS" if is_success else "FAILURE"
+            system_prompt += (
+                f"\n🚨 [CRITICAL SYSTEM ALERT]: The player just attempted a skill check "
+                f"({latest_roll.get('intent')}). The result was: {roll_status}!\n"
+            )
+            if not is_success:
+                system_prompt += (
+                    "Because the roll is a FAILURE, you MUST absolutely reject the player and their item "
+                    "in your response. DO NOT ACCEPT IT.\n"
+                )
+
         messages = list(state.get("messages", []))
-        if not messages or _msg_content(messages[-1]) != user_input:
-            messages.append({"role": "user", "content": user_input})
+        if is_first_npc_of_player_turn and user_input:
+            if not messages or _msg_content(messages[-1]) != user_input:
+                messages.append({"role": "user", "content": user_input})
+        # 非首位 NPC：state.messages 已由首位写入 HumanMessage，此处不再重复注入玩家句
 
         recent_messages = messages[-20:] if len(messages) > 20 else messages
         history_dicts = [_message_to_dict(m) for m in recent_messages]
 
-        prev_responses = list(state.get("speaker_responses", []))
+        # 近因效应：拼在最后一条 User 消息末尾（经 history_dicts 进入 lc_messages；避免先改 messages 以免污染 A-to-A 的 original_text）
+        prompt_suffix = "\n*(现在轮到你做出反应了)*"
+        # 【终极疗法：打破动作幻觉，强制灵肉分离】（intent 已在上方规范为小写）
+        if intent not in ("chat", "banter"):
+            prompt_suffix += f"""\n\n🚨 [CRITICAL OVERRIDE - PHYSICAL ACTION REQUIRED]:
+Listen carefully, {speaker}: Your text output is ONLY YOUR VOICE. It cannot move items in the physical world.
+If you decide to accept the item, YOU MUST USE YOUR BODY by invoking the `execute_physical_action` tool via the API!
+Required Tool Arguments:
+- action_type: "transfer_item"
+- source_id: "player"
+- target_id: "{speaker}"
+- item_id: (Find the exact ID from the Player's Inventory, e.g., "healing_potion")
+
+You are ALLOWED to output both your dialogue and the tool call simultaneously. DO NOT just roleplay taking it in text. IF YOU DO NOT CALL THE TOOL, THE ITEM WILL DROP ON THE GROUND!"""
+
         if len(prev_responses) > 0:
             last_speaker_id, last_speaker_text = prev_responses[-1]
 
@@ -180,9 +251,12 @@ def create_generation_node() -> Callable[[GameState], dict]:
                 original_text = history_dicts[-1]["content"]
                 history_dicts[-1]["content"] = (
                     f"[事件回顾] 玩家说：{original_text}\n"
-                    f"[刚刚发生] {last_speaker_id} 回应道：{last_speaker_text}\n"
-                    "*(现在轮到你做出反应了)*"
+                    f"[刚刚发生] {last_speaker_id} 回应道：{last_speaker_text}"
+                    + prompt_suffix
                 )
+        elif history_dicts and history_dicts[-1].get("role") == "user":
+            _last_u = history_dicts[-1].get("content") or ""
+            history_dicts[-1]["content"] = _last_u + prompt_suffix
 
         current_entities = {k: dict(v) for k, v in entities.items()}
         for k in current_entities:
@@ -199,12 +273,16 @@ def create_generation_node() -> Callable[[GameState], dict]:
         system_prompt += """
 
 <CRITICAL_SYSTEM_RULES>
-You are an AGENT operating in a stateful game world.
-When the player attempts an action that interacts with the physical world (e.g., giving an item, moving, attacking), YOU MUST NOT JUST DESCRIBE IT.
-You MUST output a tool_call (e.g., `check_target_inventory`).
-DO NOT generate narrative text for item transfers until the tool returns a success status.
+You are an autonomous AGENT. YOUR TEXT DESCRIPTIONS DO NOT AFFECT THE PHYSICAL WORLD.
 
-[CRITICAL DICE RULE]: Check the most recent [SYSTEM] or DM events. If a skill check resulted in "FAILURE", you MUST absolutely REFUSE the player's request or let their attempt fail miserably in your dialogue. DO NOT bypass the failure to help the player!
+1. ITEM TRANSFERS: If you DECIDE TO ACCEPT an item, you MUST call the `execute_physical_action` tool with the exact item_id from the Player's Inventory. DO NOT write "*takes the item*" if you don't call the tool!
+2. CONSISTENCY IS MANDATORY: Your spoken dialogue, text actions, and tool calls must be 100% aligned.
+
+[CRITICAL DICE RULE - READ CAREFULLY]:
+Check the most recent [SYSTEM] or DM events. If a skill check (like INTIMIDATION or PERSUASION) resulted in "FAILURE":
+- You MUST explicitly REJECT the player's action in your dialogue and text descriptions (e.g., *slaps the potion away*, *refuses to take it*).
+- You are STRICTLY FORBIDDEN from calling any tool to accept the item.
+If it resulted in "SUCCESS", you may accept it and call the tool.
 </CRITICAL_SYSTEM_RULES>
 """
 
@@ -222,6 +300,7 @@ DO NOT generate narrative text for item transfers until the tool returns a succe
             temperature=0.7,
             max_completion_tokens=500,
         )
+        # 主路径仅此绑定工具；Banter 分支不走此处
         llm_with_tools = llm.bind_tools([check_target_inventory, execute_physical_action])
 
         if DEBUG_AI_PAYLOAD:
@@ -251,6 +330,12 @@ DO NOT generate narrative text for item transfers until the tool returns a succe
             print("🔥" * 25 + "\n")
 
         response = llm_with_tools.invoke(lc_messages)
+
+        from ui.renderer import GameRenderer
+
+        GameRenderer().print_system_info(
+            f"🔧 [底层透视] LLM 返回的 tool_calls: {getattr(response, 'tool_calls', [])}"
+        )
 
         tool_physics_events = []
         MAX_ITERATIONS = 5
@@ -302,6 +387,14 @@ DO NOT generate narrative text for item transfers until the tool returns a succe
                     new_events = apply_physics(current_entities, player_inv_for_physics, item_transfers, hp_changes)
                     journal_events.extend(new_events)
                     tool_physics_events.extend(new_events)
+
+                    # 让大模型调用的物理行为在终端可视化
+                    from ui.renderer import GameRenderer
+
+                    ui = GameRenderer()
+                    for evt in new_events:
+                        ui.print_system_info(evt)
+
                     if new_events:
                         tool_result_str = "\n".join(new_events)
                     else:
@@ -337,6 +430,11 @@ DO NOT generate narrative text for item transfers until the tool returns a succe
                 print("🔥" * 25 + "\n")
 
             response = llm_with_tools.invoke(lc_messages)
+
+            GameRenderer().print_system_info(
+                f"🔧 [底层透视] LLM 返回的 tool_calls (ReAct #{iteration_count}): "
+                f"{getattr(response, 'tool_calls', [])}"
+            )
 
             if iteration_count >= MAX_ITERATIONS:
                 print("⚠️ [安全拦截] Agent 内部工具调用次数超限 (>=5次)，强制终止循环！")
@@ -380,12 +478,15 @@ DO NOT generate narrative text for item transfers until the tool returns a succe
             current_entities[speaker] = ent
             state_changes_applied = True
 
-        prev_responses = list(state.get("speaker_responses", []))
+        out_messages: list[BaseMessage] = [AIMessage(content=attributed_msg, name=speaker)]
+        if is_first_npc_of_player_turn and user_input:
+            out_messages = [HumanMessage(content=user_input), AIMessage(content=attributed_msg, name=speaker)]
+
         out = {
             "final_response": clean_text,
             "speaker_responses": prev_responses + [(speaker, clean_text)],
             "thought_process": thought_process,
-            "messages": [HumanMessage(content=user_input), AIMessage(content=attributed_msg, name=speaker)],
+            "messages": out_messages,
         }
         if state_changes_applied:
             out["entities"] = current_entities
