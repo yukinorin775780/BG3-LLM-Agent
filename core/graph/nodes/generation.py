@@ -219,18 +219,13 @@ def create_generation_node() -> Callable[[GameState], dict]:
 
         # 近因效应：拼在最后一条 User 消息末尾（经 history_dicts 进入 lc_messages；避免先改 messages 以免污染 A-to-A 的 original_text）
         prompt_suffix = "\n*(现在轮到你做出反应了)*"
-        # 【终极疗法：打破动作幻觉，强制灵肉分离】（intent 已在上方规范为小写）
+        # 【终极疗法：利用 JSON 内联动作，打破动作幻觉】
         if intent not in ("chat", "banter"):
-            prompt_suffix += f"""\n\n🚨 [CRITICAL OVERRIDE - PHYSICAL ACTION REQUIRED]:
+            prompt_suffix += f"""\n\n🚨 [CRITICAL OVERRIDE - PHYSICAL ACTION REQUIRED]: 
 Listen carefully, {speaker}: Your text output is ONLY YOUR VOICE. It cannot move items in the physical world.
-If you decide to accept the item, YOU MUST USE YOUR BODY by invoking the `execute_physical_action` tool via the API!
-Required Tool Arguments:
-- action_type: "transfer_item"
-- source_id: "player"
-- target_id: "{speaker}"
-- item_id: (Find the exact ID from the Player's Inventory, e.g., "healing_potion")
-
-You are ALLOWED to output both your dialogue and the tool call simultaneously. DO NOT just roleplay taking it in text. IF YOU DO NOT CALL THE TOOL, THE ITEM WILL DROP ON THE GROUND!"""
+If you decide to accept the item, YOU MUST output the `physical_action` field in your JSON response!
+Example: "physical_action": {{"action_type": "transfer_item", "source_id": "player", "target_id": "{speaker}", "item_id": "healing_potion", "amount": 1}}
+IF YOU DO NOT INCLUDE THIS FIELD IN YOUR JSON, THE ITEM WILL DROP ON THE GROUND!"""
 
         if len(prev_responses) > 0:
             last_speaker_id, last_speaker_text = prev_responses[-1]
@@ -450,6 +445,28 @@ If it resulted in "SUCCESS", you may accept it and call the tool.
             raw_text = (json_parsed.get("reply") or "...").strip()
             thought_process = (json_parsed.get("internal_monologue") or "").strip()
             state_changes = json_parsed.get("state_changes") or {}
+
+            # --- 【新增】解析 JSON 内联的物理动作并直接结算 ---
+            physical_action = json_parsed.get("physical_action")
+            if physical_action and isinstance(physical_action, dict):
+                action_type = physical_action.get("action_type")
+                if action_type == "transfer_item":
+                    # 组装底层的转移意图
+                    item_transfers = [{
+                        "from": physical_action.get("source_id", "player"),
+                        "to": physical_action.get("target_id", speaker),
+                        "item_id": physical_action.get("item_id", ""),
+                        "count": int(physical_action.get("amount", 1))
+                    }]
+                    
+                    # 强行调用底层的物理引擎结算
+                    new_events = apply_physics(current_entities, player_inv_for_physics, item_transfers, [])
+                    
+                    # 状态回写与终端可视化
+                    tool_physics_events.extend(new_events)
+                    from ui.renderer import GameRenderer
+                    for evt in new_events:
+                        GameRenderer().print_system_info(evt)
         else:
             parsed = parse_ai_response(raw_output)
             raw_text = (parsed.get("text") or raw_output or "...").strip()

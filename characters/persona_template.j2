@@ -211,7 +211,15 @@ Expected JSON Structure:
 {% else %}
     "affection_delta": 0
 {% endif %}
+  },
+  "physical_action": {
+    "action_type": "transfer_item",
+    "source_id": "player",
+    "target_id": "{{ attributes.name | lower }}",
+    "item_id": "healing_potion",
+    "amount": 1
   }
 }
 
 *Note for state_changes: Values must be integers representing the change in this turn (e.g., -3, 0, 2). DO NOT use the '+' sign for positive numbers.*
+*Note: The `physical_action` field is OPTIONAL. ONLY include it if you actually take, give, or use an item in the physical world. Otherwise, omit it or set it to null.*
