@@ -6,10 +6,21 @@ BG3 LLM Agent - V2 Main Entry Point
 """
 
 import asyncio
+import copy
+import json
+import os
 import sys
+
+from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_openai import ChatOpenAI
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from langgraph.graph import START
+
+from config import settings
 from core import inventory
 from core.graph.graph_builder import build_graph
-from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from core.graph.nodes.utils import default_entities
+from core.systems.memory_rag import episodic_memory
 from ui.renderer import GameRenderer
 
 
@@ -62,7 +73,39 @@ async def main_async():
             prev_values = snapshot.values if hasattr(snapshot, "values") else {}
         except Exception:
             prev_values = {}
-        prev_journal_len = len(prev_values.get("journal_events") or [])
+        if not isinstance(prev_values, dict):
+            prev_values = {}
+
+        # --- 【新增】检测空存档并执行"创世"初始化 ---
+        if not (prev_values or {}).get("entities"):
+            init_player_inv: dict = {"healing_potion": 2}
+            if os.path.exists("data/player.json"):
+                try:
+                    with open("data/player.json", "r", encoding="utf-8") as f:
+                        p_data = json.load(f)
+                        inv = p_data.get("inventory", init_player_inv)
+                        init_player_inv = dict(inv) if isinstance(inv, dict) else init_player_inv
+                except Exception:
+                    pass
+
+            initial_state = {
+                "entities": copy.deepcopy(default_entities),
+                "player_inventory": init_player_inv,
+                "turn_count": 0,
+                "time_of_day": "晨曦 (Morning)",
+                "flags": {},
+                "messages": [],
+                "journal_events": [],
+            }
+            await graph.aupdate_state(config, initial_state, as_node=START)  # type: ignore[arg-type]
+
+            snapshot = await graph.aget_state(config)  # type: ignore[arg-type]
+            prev_values = snapshot.values if hasattr(snapshot, "values") else {}
+            if not isinstance(prev_values, dict):
+                prev_values = {}
+        # ---------------------------------------------
+
+        prev_journal_len = len((prev_values or {}).get("journal_events") or [])
 
         ui.print_system_info(f"✓ 存档: {thread_id}")
         ui.print()
@@ -113,6 +156,23 @@ async def main_async():
                 if user_input.strip().lower() in ("/quit", "quit", "exit", "退出", "q"):
                     ui.print_system_info("再见。")
                     break
+
+                # --- 【新增】硬重置指令 ---
+                if user_input.strip().lower() == "/reset":
+                    ui.print_system_info("💥 正在执行世界重置 (灭世协议)...")
+
+                    episodic_memory.clear_all_memories()
+
+                    if os.path.exists("memory.db"):
+                        try:
+                            os.remove("memory.db")
+                            ui.print_system_info("🗑️ 短期状态存档 (memory.db) 已销毁。")
+                        except Exception as e:
+                            ui.print_error(f"删除存档失败: {e}")
+
+                    ui.print_rule("世界已重置，请重新运行 `python main.py` 开启新时间线", style="warning")
+                    break
+                # -------------------------
 
                 # 核心调用：使用异步流实时监听节点执行
                 state_input = {"user_input": user_input.strip()}
@@ -190,6 +250,59 @@ async def main_async():
                                 speaker = result_state.get("current_speaker", "shadowheart") or "shadowheart"
                                 display_name = _speaker_display_name(speaker)
                                 await ui.print_npc_response_stream(display_name, ai_text, char_delay=0.03)
+
+                # --- 【新增】RAG 记忆自动沉淀 (Memory Consolidation) ---
+                user_input_for_memory = (user_input or "").strip()
+                turn_events = new_journal
+                turn_responses = result_state.get("speaker_responses", [])
+
+                if user_input_for_memory and (len(user_input_for_memory) > 5 or turn_events):
+                    print("\n🧠 [系统] 正在将本轮交互沉淀为长期记忆...")
+
+                    turn_summary_prompt = f"玩家说：{user_input_for_memory}\n"
+                    if turn_events:
+                        turn_summary_prompt += f"发生的事件：{', '.join(turn_events)}\n"
+                    for speaker, resp in turn_responses:
+                        turn_summary_prompt += f"{speaker} 回应：{resp}\n"
+
+                    summary_llm = ChatOpenAI(
+                        model=settings.MODEL_NAME,
+                        api_key=settings.API_KEY,  # type: ignore[arg-type]
+                        base_url=settings.BASE_URL,
+                        temperature=0.3,
+                    )
+
+                    extract_sys_prompt = (
+                        "你是一个记忆提取器。请阅读以下跑团游戏中的一轮交互，判断是否发生了值得长期记住的事件"
+                        "（例如：物品的赠送/抢夺、好感度的明显改变、角色吐露了心声或秘密、重大的冲突）。\n"
+                        "如果值得记住，请将其浓缩为一句极其精简的第三人称客观描述（不多于50字），例如：'玩家强行给了莱埃泽尔一瓶药水，遭到阿斯代伦的嘲讽。'\n"
+                        "如果只是无意义的闲聊，请严格输出 'NONE'。"
+                    )
+
+                    try:
+                        summary_msg = summary_llm.invoke(
+                            [
+                                SystemMessage(content=extract_sys_prompt),
+                                HumanMessage(content=turn_summary_prompt),
+                            ]
+                        )
+                        raw_out = summary_msg.content
+                        if isinstance(raw_out, list):
+                            memory_text = "".join(
+                                str(b.get("text", b)) if isinstance(b, dict) else str(b) for b in raw_out
+                            ).strip()
+                        else:
+                            memory_text = str(raw_out or "").strip()
+
+                        if memory_text and memory_text != "NONE":
+                            episodic_memory.add_memory(
+                                text=memory_text,
+                                speaker="system",
+                                metadata={"turn": result_state.get("turn_count", 0)},
+                            )
+                    except Exception as e:
+                        print(f"⚠️ 记忆沉淀失败: {e}")
+                # --------------------------------------------------------
 
                 ui.print()
 

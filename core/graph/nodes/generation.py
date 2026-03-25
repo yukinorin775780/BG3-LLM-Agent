@@ -30,11 +30,12 @@ from core.graph.nodes.utils import (
     first_entity_id,
 )
 from core.systems.inventory import format_inventory_dict_to_display_list, get_registry
+from core.systems.memory_rag import episodic_memory
 from core.tools.npc_tools import check_target_inventory, execute_physical_action
 from core.utils.text_processor import clean_npc_dialogue, format_history_message, parse_llm_json
 
 # 全局开关：设为 True 时打印发给大模型的 Payload（调试用）
-DEBUG_AI_PAYLOAD = True
+DEBUG_AI_PAYLOAD = False
 
 
 def _player_message_suggests_item_offer(text: str) -> bool:
@@ -190,6 +191,17 @@ def create_generation_node() -> Callable[[GameState], dict]:
 
         system_prompt += f"Current Speaker: {speaker}\n"
         system_prompt += f"Player's Current Inventory: {player_inv}\n"
+
+        # --- 【新增】RAG 长期记忆注入 ---
+        if user_input and user_input.strip():
+            retrieved_memories = episodic_memory.retrieve_relevant_memories(user_input, top_k=2)
+            if retrieved_memories:
+                system_prompt += "\n[LONG-TERM EPISODIC MEMORIES]\n"
+                system_prompt += "These are your past memories related to the current situation:\n"
+                for mem in retrieved_memories:
+                    system_prompt += f"- {mem}\n"
+                system_prompt += "Use these memories to inform your reaction if they are relevant.\n"
+        # -------------------------------
 
         # 【核心修复：将本回合检定结果注入 System Prompt，避免模型看不到 latest_roll】
         # 仅在有实质掷骰数据时注入（与 needs_full_agent 判定一致），避免空 dict 噪声
