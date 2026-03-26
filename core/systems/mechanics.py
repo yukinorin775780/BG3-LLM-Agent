@@ -73,19 +73,27 @@ def normalize_ability_name(ability_name: str) -> Optional[str]:
 # 每种检定映射到 D&D 5e 属性，用于后续扩展（如玩家属性修正）。
 # -----------------------------------------------------------------------------
 
-SKILL_CHECK_TYPES = ("PERSUASION", "DECEPTION", "STEALTH", "INTIMIDATION", "INSIGHT", "ATTACK", "STEAL", "ACTION", "PERCEPTION", "INVESTIGATION")
+SKILL_CHECK_TYPES = (
+    "PERSUASION",
+    "DECEPTION",
+    "STEALTH",
+    "INTIMIDATION",
+    "INSIGHT",
+    "ATTACK",
+    "STEAL",
+    "ACTION",
+    "PERCEPTION",
+    "INVESTIGATION",
+    "SLEIGHT_OF_HAND",
+    "ATHLETICS",
+)
 
 
 def get_ability_for_action(action_type: str) -> str:
     """
     将检定类型映射到 D&D 5e 属性。
-    
-    Args:
-        action_type: DM 分析的意图类型（如 PERSUASION, DECEPTION, STEALTH）
-    
-    Returns:
-        str: 属性缩写（STR, DEX, CON, INT, WIS, CHA）
     """
+    key = str(action_type or "").strip().upper()
     action_to_ability = {
         "PERSUASION": "CHA",
         "DECEPTION": "CHA",
@@ -94,12 +102,14 @@ def get_ability_for_action(action_type: str) -> str:
         "INSIGHT": "WIS",
         "PERCEPTION": "WIS",
         "INVESTIGATION": "INT",
+        "SLEIGHT_OF_HAND": "DEX",
+        "ATHLETICS": "STR",
         "ATTACK": "STR",
         "STEAL": "DEX",
         "ACTION": "CHA",
         "NONE": "CHA",
     }
-    return action_to_ability.get(action_type, "CHA")
+    return action_to_ability.get(key, "CHA")
 
 
 def get_player_modifier(player_data: dict, ability_name: str) -> Optional[int]:
@@ -193,52 +203,63 @@ def calculate_relationship_modifier(relationship: int, action_type: str) -> int:
 
 def execute_skill_check(state: Any) -> Dict[str, Any]:
     """
-    执行技能检定，返回客观掷骰结果（journal_events、raw_roll_data）。
-
-    【动态 DC】从 state["intent_context"]["difficulty_class"] 读取 DM 设定的难度。
-
-    【骰子修正】PERSUASION/DECEPTION 时，根据当前 NPC 的 affection 计算 modifier（不改写 affection）。
-
-    Args:
-        state: GameState 或兼容的 dict-like，需含 intent、intent_context、entities、current_speaker
-
-    Returns:
-        dict: {"journal_events": [...], "raw_roll_data": {...}}
+    执行技能检定，返回客观掷骰结果。支持多角色的属性提取（intent_context.action_actor）。
     """
-    intent = state.get("intent", "ACTION")
+    intent_raw = state.get("intent", "ACTION")
+    intent = str(intent_raw).strip().upper() if intent_raw else "ACTION"
     intent_context = state.get("intent_context") or {}
+
+    action_actor = str(intent_context.get("action_actor", "player") or "player").strip().lower()
+
     _entities_map = state.get("entities") or {}
     if not isinstance(_entities_map, dict):
         _entities_map = {}
+
     _speaker_fb = next(iter(_entities_map), None) if _entities_map else None
-    speaker = (state.get("current_speaker") or "").strip() or _speaker_fb or "unknown"
+    speaker = (state.get("current_speaker") or "").strip().lower() or (_speaker_fb or "unknown")
     affection = (_entities_map.get(speaker, {}) or {}).get("affection", 0)
 
-    # 动态 DC：DM 节点若设定了 difficulty_class 则使用，否则默认 12
     dc = intent_context.get("difficulty_class")
     if dc is None or (isinstance(dc, (int, float)) and dc <= 0):
         dc = 12
     dc = int(dc)
 
-    # 好感度修正：仅 PERSUASION/DECEPTION 生效
-    rel_mod = calculate_relationship_modifier(affection, intent)
-    modifier = rel_mod
+    ability_name = get_ability_for_action(intent)
+    stat_mod = 0
 
-    # advantage/disadvantage 由 determine_roll_type 决定
+    if action_actor != "player":
+        try:
+            from characters.loader import load_character
+
+            char = load_character(action_actor)
+            score = (char.data.get("ability_scores") or {}).get(ability_name, 10)
+            stat_mod = calculate_ability_modifier(int(score))
+        except Exception as e:
+            print(f"⚠️ 无法读取 {action_actor} 的属性，默认修正为 +0 ({e})")
+            stat_mod = 0
+    else:
+        # 玩家执行：未来可从 player.json / entities['player'] 读取；当前暂定 +2 作为熟练补偿占位
+        stat_mod = 2
+
+    rel_mod = calculate_relationship_modifier(affection, intent)
+    modifier = stat_mod + rel_mod
+
     roll_type = determine_roll_type(intent, affection)
     result = roll_d20(dc=dc, modifier=modifier, roll_type=roll_type)
 
-    # 构建详细的 journal 条目：掷骰明细 + 结果
     rolls_str = str(result.get("rolls", [result.get("raw_roll", "?")]))
     total = result.get("total", 0)
     result_type = result.get("result_type")
     result_val = result_type.value if result_type is not None and hasattr(result_type, "value") else str(result_type)
 
+    actor_display = action_actor.capitalize()
     journal_lines = [
-        f"Skill Check | {intent} | DC {dc} | "
+        f"Skill Check | {actor_display} uses {intent} ({ability_name}) | DC {dc} | "
         f"Roll {rolls_str} + {modifier:+d} = {total} vs DC {dc} | "
         f"Result: {result_val}",
     ]
+    if stat_mod != 0:
+        journal_lines.append(f"  [Attribute modifier ({ability_name}): {stat_mod:+d}]")
     if rel_mod != 0:
         journal_lines.append(f"  [Affection modifier: {rel_mod:+d} (affection={affection})]")
 
@@ -246,10 +267,11 @@ def execute_skill_check(state: Any) -> Dict[str, Any]:
         "journal_events": journal_lines,
         "raw_roll_data": {
             "intent": intent,
+            "actor": action_actor,
             "dc": dc,
             "modifier": modifier,
-            "result": result
-        }
+            "result": result,
+        },
     }
 
 

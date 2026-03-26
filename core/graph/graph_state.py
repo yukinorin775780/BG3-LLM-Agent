@@ -72,6 +72,8 @@ class GameState(TypedDict, total=False):
     turn_count: int         # 世界心跳：当前回合数
     time_of_day: str        # 世界心跳：当前时段 (晨曦/正午/黄昏/深夜)
     entities: Dict[str, Dict[str, Any]]  # 多角色实体状态 {entity_id: {hp, active_buffs}, ...}
+    current_location: str   # 当前所处的场景名称
+    environment_objects: Dict[str, Dict[str, Any]]  # 环境中的可交互物体 (如宝箱、门)
 
     # -------------------------------------------------------------------------
     # Journal Events [TRANSIENT within turn]

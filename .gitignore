@@ -219,3 +219,8 @@ tests/
 *.db-wal
 *.sqlite
 *.sqlite3
+
+# 忽略所有本地数据库和存档
+data/chroma_db/
+*.db
+*.sqlite

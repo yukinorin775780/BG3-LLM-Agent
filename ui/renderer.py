@@ -175,6 +175,34 @@ class GameRenderer:
 
         quest_panel = Panel(quest_text, title="📜 [bold yellow]任务日志[/bold yellow]", border_style="yellow")
         self.console.print(quest_panel)
+
+        # --- 【新增】渲染环境与物体 ---
+        loc = state.get("current_location")
+        env_objs = state.get("environment_objects") or {}
+        if loc:
+            self.console.print(f"[bold cyan]📍 当前位置:[/bold cyan] {loc}")
+            if env_objs:
+                obj_strs = []
+                for obj_id, obj_data in env_objs.items():
+                    if not isinstance(obj_data, dict):
+                        continue
+                    name = obj_data.get("name", obj_id)
+                    status = obj_data.get("status", "unknown")
+                    if status == "locked":
+                        status_str = f"[red]({status})[/red] 🔒"
+                    elif status == "opened":
+                        status_str = f"[green]({status})[/green] 🔓"
+                    elif status == "destroyed":
+                        status_str = f"[dim]({status})[/dim] 💥"
+                    else:
+                        status_str = f"({status})"
+                    obj_strs.append(f"{name} {status_str}")
+
+                self.console.print(f"[bold yellow]🔍 场景交互物:[/bold yellow] {' | '.join(obj_strs)}")
+            else:
+                self.console.print("[dim]🔍 场景中没有特别引人注目的物品。[/dim]")
+            self.console.print("─" * 120, style="dim")
+
         self.print("")
 
     def show_dashboard_legacy(self, player_name: str, npc_name: str, relationship: int, npc_state: dict, active_quests: Optional[list] = None, player_inventory: Optional[Inventory] = None, npc_inventory: Optional[Inventory] = None, journal: Optional[list] = None) -> Group:

@@ -96,6 +96,14 @@ async def main_async():
                 "flags": {},
                 "messages": [],
                 "journal_events": [],
+                "current_location": "幽暗地域营地 (Underdark Camp)",
+                "environment_objects": {
+                    "iron_chest": {
+                        "name": "沉重的铁箱子",
+                        "status": "locked",
+                        "description": "一个上了锁的铁箱（DC 5），看起来很结实。",
+                    }
+                },
             }
             await graph.aupdate_state(config, initial_state, as_node=START)  # type: ignore[arg-type]
 

@@ -36,6 +36,8 @@ Spoken dialogue is often an action!
 - If the user asks for an item or favor -> MUST output "PERSUASION".
 - "CHAT" is strictly for harmless, casual small talk ONLY. DO NOT use CHAT for threats or demands.
 
+- CRITICAL RULE FOR COMMANDS: If the player commands an NPC to perform a physical task (e.g., "Astarion, open that chest", "Laezel, smash the door"), DO NOT use PERSUASION. You MUST use the actual physical skill (e.g., SLEIGHT_OF_HAND, ATHLETICS) and set the 'action_actor' to that NPC's ID.
+
 - CRITICAL RULE FOR INTENT: If the player describes an ACTION like looking around, LISTENING carefully, searching, hiding, or attacking, you MUST output the appropriate action_type (e.g., PERCEPTION for listening/looking, INVESTIGATION for searching, STEALTH for hiding, ATTACK for attacking). Do NOT treat physical environment sensing as "CHAT".
 
 - FREE ACTION / GIFTING: If the player is simply handing over or giving a beneficial item to a willing ally (e.g., "I give you this potion"), you MUST classify the "action_type" as "CHAT". DO NOT trigger a skill check (like PERSUASION) for freely giving gifts!
@@ -45,16 +47,18 @@ Spoken dialogue is often an action!
   - ONLY use "hp_changes" for environmental damage (traps, falling) or ambient healing.
   - DO NOT EVER use these arrays for Social Interactions (e.g., player giving a gift to an NPC, or an NPC hitting the player). The NPCs will manage their own inventories and combat actions! If the player gives an item to an ally, output EMPTY arrays for item_transfers and hp_changes, and let the NPC handle the transaction.
 
-1.  `action_type`: Choose one of [PERSUASION, DECEPTION, STEALTH, INTIMIDATION, INSIGHT, ATTACK, PERCEPTION, INVESTIGATION, CHAT].
+1.  `action_type`: Choose one of [PERSUASION, DECEPTION, STEALTH, INTIMIDATION, INSIGHT, ATTACK, PERCEPTION, INVESTIGATION, SLEIGHT_OF_HAND, ATHLETICS, CHAT].
     -   `PERSUASION`: Reasoning, bargaining, honest convincing.
     -   `DECEPTION`: Lying, misleading, hiding truth.
-    -   `STEALTH`: Use ONLY when the player is actively trying to hide or move silently to avoid detection.
-    -   `PERCEPTION`: Use when the player is listening, looking around, or sensing the environment (e.g., "I listen to the wind", "I look for enemies").
-    -   `INVESTIGATION`: Use when the player is actively searching a specific object, looting a body, or deducing clues.
+    -   `STEALTH`: Hiding or moving silently.
+    -   `PERCEPTION`: Listening, looking around, or sensing the environment.
+    -   `INVESTIGATION`: Actively searching a specific object or deducing clues.
+    -   `SLEIGHT_OF_HAND`: Picking locks, disarming traps, pickpocketing, or careful manipulation.
+    -   `ATHLETICS`: Smashing, pushing, lifting heavy objects, physical brute force.
     -   `INTIMIDATION`: Threatening, aggressive posturing.
-    -   `INSIGHT`: Trying to read the NPC's emotions or detect lies.
+    -   `INSIGHT`: Trying to read emotions or detect lies.
     -   `ATTACK`: Physical aggression or casting hostile spells.
-    -   `CHAT`: Casual conversation, questions, or non-gameplay interactions.
+    -   `CHAT`: Casual conversation or non-gameplay interactions.
 
 2.  `is_probing_secret` (Boolean): If the player is trying to ask about Shar worship, the artifact, Night Cleric, personal pain, or other core privacy of Shadowheart, set to true. Otherwise false.
 
@@ -102,9 +106,15 @@ FLAGS PROVIDED:
     -   Example 2 (Astarion gets stabbed): {"target": "astarion", "amount": -4}
     -   Omit if no health changes occur.
 
+10. `action_actor` (String): The ID of the character performing the action. If the player is doing it themselves, output "player". If the player commands an NPC (e.g., "Astarion, pick the lock"), output that NPC's ID (e.g., "astarion").
+
+11. `action_target` (String): The ID of the object or person being targeted (e.g., "iron_chest", "wooden_door"). Leave as empty string "" if not applicable.
+
 **Output Format:**
 Strictly output ONLY the JSON object. Do not add markdown blocks like ```json.
-Example:
-{"action_type": "CHAT", "is_probing_secret": false, "difficulty_class": 0, "reason": "Casual chat.", "responders": ["shadowheart"], "affection_changes": {}, "flags_changed": {}, "item_transfers": [], "hp_changes": []}
+Example 1 (Casual Chat):
+{"action_type": "CHAT", "is_probing_secret": false, "difficulty_class": 0, "reason": "Casual chat.", "responders": ["shadowheart"], "affection_changes": {}, "flags_changed": {}, "item_transfers": [], "hp_changes": [], "action_actor": "player", "action_target": ""}
+Example 2 (Commanding NPC to pick lock):
+{"action_type": "SLEIGHT_OF_HAND", "is_probing_secret": false, "difficulty_class": 15, "reason": "Player commanded Astarion to unlock the chest.", "responders": ["astarion"], "affection_changes": {}, "flags_changed": {}, "item_transfers": [], "hp_changes": [], "action_actor": "astarion", "action_target": "iron_chest"}
 Example with affection (Astarion only; NEVER include shadowheart):
-{"action_type": "CHAT", "is_probing_secret": false, "difficulty_class": 0, "reason": "Player mocked altruism.", "responders": ["astarion", "shadowheart"], "affection_changes": {"astarion": 3}, "flags_changed": {}, "item_transfers": [], "hp_changes": []}
+{"action_type": "CHAT", "is_probing_secret": false, "difficulty_class": 0, "reason": "Player mocked altruism.", "responders": ["astarion", "shadowheart"], "affection_changes": {"astarion": 3}, "flags_changed": {}, "item_transfers": [], "hp_changes": [], "action_actor": "player", "action_target": ""}

@@ -126,3 +126,37 @@ def apply_physics(
         )
 
     return journal_events
+
+
+def apply_environment_interaction(env_objects: dict, target_id: str, action_detail: str, actor_id: str) -> List[str]:
+    """
+    处理角色与环境物体（如宝箱、门）的物理交互。
+    """
+    events: List[str] = []
+    if target_id not in env_objects:
+        events.append(f"📦 [{actor_id}] 试图操作 {target_id}，但这里似乎没有这个东西。")
+        return events
+
+    obj = env_objects[target_id]
+    obj_name = obj.get("name", target_id)
+    current_status = obj.get("status", "unknown")
+
+    if action_detail in ["unlock", "open"]:
+        if current_status == "locked":
+            obj["status"] = "opened"
+            events.append(f"🔓 [{actor_id}] 灵巧地拨弄着锁芯，咔哒一声，【{obj_name}】被打开了！")
+        elif current_status == "opened":
+            events.append(f"📦 [{actor_id}] 检查了【{obj_name}】，但它已经是打开的状态了。")
+        else:
+            obj["status"] = "opened"
+            events.append(f"📦 [{actor_id}] 打开了【{obj_name}】。")
+    elif action_detail in ["close"]:
+        obj["status"] = "closed"
+        events.append(f"📦 [{actor_id}] 关上了【{obj_name}】。")
+    elif action_detail in ["attack", "destroy", "kick"]:
+        obj["status"] = "destroyed"
+        events.append(f"💥 [{actor_id}] 粗暴地破坏了【{obj_name}】！碎片散落一地。")
+    else:
+        events.append(f"📦 [{actor_id}] 对【{obj_name}】执行了动作：{action_detail}。")
+
+    return events

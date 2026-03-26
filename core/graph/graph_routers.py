@@ -30,6 +30,8 @@ ACTION_INTENTS: tuple[str, ...] = (
     "INSIGHT",
     "PERCEPTION",
     "INVESTIGATION",
+    "SLEIGHT_OF_HAND",
+    "ATHLETICS",
     "ACTION",
 )
 assert set(MECHANICS_REQUIRED_INTENTS).issubset(set(ACTION_INTENTS)), (
@@ -79,7 +81,8 @@ def route_after_dm(state: GameState) -> DM_ROUTE:
     3. 非动作意图（如 CHAT）且非刺探
        → generation
     """
-    intent = state.get("intent", "chat")
+    intent_raw = state.get("intent", "chat")
+    intent = str(intent_raw).strip().upper() if intent_raw else "CHAT"
     is_probing_secret = state.get("is_probing_secret", False)
 
     if is_probing_secret:

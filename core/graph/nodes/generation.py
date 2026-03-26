@@ -20,7 +20,7 @@ from langchain_openai import ChatOpenAI
 
 from config import settings
 from core.engine import generate_dialogue, parse_ai_response
-from core.engine.physics import apply_physics
+from core.engine.physics import apply_environment_interaction, apply_physics
 from core.graph.graph_state import GameState
 from core.graph.nodes.utils import (
     _build_item_lore,
@@ -31,7 +31,7 @@ from core.graph.nodes.utils import (
 )
 from core.systems.inventory import format_inventory_dict_to_display_list, get_registry
 from core.systems.memory_rag import episodic_memory
-from core.tools.npc_tools import check_target_inventory, execute_physical_action
+from core.tools.npc_tools import check_target_inventory
 from core.utils.text_processor import clean_npc_dialogue, format_history_message, parse_llm_json
 
 # 全局开关：设为 True 时打印发给大模型的 Payload（调试用）
@@ -192,6 +192,26 @@ def create_generation_node() -> Callable[[GameState], dict]:
         system_prompt += f"Current Speaker: {speaker}\n"
         system_prompt += f"Player's Current Inventory: {player_inv}\n"
 
+        # --- 【新增】环境感知注入 ---
+        loc = state.get("current_location", "Unknown Location")
+        env_objs = state.get("environment_objects") or {}
+        if not isinstance(env_objs, dict):
+            env_objs = {}
+        system_prompt += "\n[CURRENT ENVIRONMENT]\n"
+        system_prompt += f"You are currently at: {loc}\n"
+        if env_objs:
+            system_prompt += "Interactive Objects around you:\n"
+            for obj_id, obj_data in env_objs.items():
+                if not isinstance(obj_data, dict):
+                    continue
+                system_prompt += (
+                    f"- {obj_id} ({obj_data.get('name')}): "
+                    f"Status=[{obj_data.get('status')}], Desc=[{obj_data.get('description')}]\n"
+                )
+        else:
+            system_prompt += "There are no notable interactive objects around.\n"
+        # ----------------------------
+
         # --- 【新增】RAG 长期记忆注入 ---
         if user_input and user_input.strip():
             retrieved_memories = episodic_memory.retrieve_relevant_memories(user_input, top_k=2)
@@ -231,13 +251,19 @@ def create_generation_node() -> Callable[[GameState], dict]:
 
         # 近因效应：拼在最后一条 User 消息末尾（经 history_dicts 进入 lc_messages；避免先改 messages 以免污染 A-to-A 的 original_text）
         prompt_suffix = "\n*(现在轮到你做出反应了)*"
-        # 【终极疗法：利用 JSON 内联动作，打破动作幻觉】
+        # 【终极疗法：利用 JSON 内联动作，打破动作幻觉与拖延症】
         if intent not in ("chat", "banter"):
-            prompt_suffix += f"""\n\n🚨 [CRITICAL OVERRIDE - PHYSICAL ACTION REQUIRED]: 
-Listen carefully, {speaker}: Your text output is ONLY YOUR VOICE. It cannot move items in the physical world.
-If you decide to accept the item, YOU MUST output the `physical_action` field in your JSON response!
-Example: "physical_action": {{"action_type": "transfer_item", "source_id": "player", "target_id": "{speaker}", "item_id": "healing_potion", "amount": 1}}
-IF YOU DO NOT INCLUDE THIS FIELD IN YOUR JSON, THE ITEM WILL DROP ON THE GROUND!"""
+            prompt_suffix += f"""\n\n🚨 [CRITICAL OVERRIDE - PHYSICAL ACTION REQUIRED]:
+Listen carefully, {speaker}: Your text output is ONLY YOUR VOICE. It cannot move items or interact with the world.
+If you decide to accept an item OR interact with the environment (like opening a chest or unlocking a door), YOU MUST output the `physical_action` field in your JSON response!
+
+CRITICAL RULE: If the player just rolled a SUCCESSFUL skill check to command you, YOU MUST execute the action IMMEDIATELY in this turn. DO NOT delay it to the next turn, and DO NOT just roleplay doing it in text!
+
+Examples:
+1. Taking an item: "physical_action": {{"action_type": "transfer_item", "source_id": "player", "target_id": "{speaker}", "item_id": "healing_potion", "amount": 1}}
+2. Interacting with object: "physical_action": {{"action_type": "interact_object", "target_id": "iron_chest", "action_detail": "unlock"}}
+
+IF YOU DO NOT INCLUDE THIS FIELD IN YOUR JSON, YOU ARE JUST STANDING STILL AND DOING NOTHING!"""
 
         if len(prev_responses) > 0:
             last_speaker_id, last_speaker_text = prev_responses[-1]
@@ -277,19 +303,26 @@ IF YOU DO NOT INCLUDE THIS FIELD IN YOUR JSON, THE ITEM WILL DROP ON THE GROUND!
             current_entities[speaker]["affection"] = affection
         player_inv_for_physics = dict(player_inv)
 
+        _raw_env = state.get("environment_objects") or {}
+        current_env_objs: dict = {}
+        if isinstance(_raw_env, dict):
+            for _ek, _ev in _raw_env.items():
+                if isinstance(_ev, dict):
+                    current_env_objs[_ek] = dict(_ev)
+
         system_prompt += """
 
 <CRITICAL_SYSTEM_RULES>
 You are an autonomous AGENT. YOUR TEXT DESCRIPTIONS DO NOT AFFECT THE PHYSICAL WORLD.
 
-1. ITEM TRANSFERS: If you DECIDE TO ACCEPT an item, you MUST call the `execute_physical_action` tool with the exact item_id from the Player's Inventory. DO NOT write "*takes the item*" if you don't call the tool!
-2. CONSISTENCY IS MANDATORY: Your spoken dialogue, text actions, and tool calls must be 100% aligned.
+1. PHYSICAL ACTIONS: If you accept an item, give an item, or interact with an environment object (like opening a chest), YOU MUST output the `physical_action` field in your JSON response!
+2. CONSISTENCY IS MANDATORY: Your spoken dialogue, text actions, and the `physical_action` JSON field must be 100% aligned.
 
 [CRITICAL DICE RULE - READ CAREFULLY]:
-Check the most recent [SYSTEM] or DM events. If a skill check (like INTIMIDATION or PERSUASION) resulted in "FAILURE":
-- You MUST explicitly REJECT the player's action in your dialogue and text descriptions (e.g., *slaps the potion away*, *refuses to take it*).
-- You are STRICTLY FORBIDDEN from calling any tool to accept the item.
-If it resulted in "SUCCESS", you may accept it and call the tool.
+Check the most recent [SYSTEM] or DM events. If a skill check resulted in "FAILURE":
+- You MUST explicitly REJECT the player's action in your dialogue and text descriptions.
+- You are STRICTLY FORBIDDEN from outputting any `physical_action`.
+If a skill check resulted in "SUCCESS", you MUST output the corresponding `physical_action` IMMEDIATELY.
 </CRITICAL_SYSTEM_RULES>
 """
 
@@ -307,8 +340,8 @@ If it resulted in "SUCCESS", you may accept it and call the tool.
             temperature=0.7,
             max_completion_tokens=500,
         )
-        # 主路径仅此绑定工具；Banter 分支不走此处
-        llm_with_tools = llm.bind_tools([check_target_inventory, execute_physical_action])
+        # 主路径仅绑定查询工具，物理动作全面改用内联 JSON 字段
+        llm_with_tools = llm.bind_tools([check_target_inventory])
 
         if DEBUG_AI_PAYLOAD:
             messages_dbg = lc_messages
@@ -373,39 +406,8 @@ If it resulted in "SUCCESS", you may accept it and call the tool.
                     if not found:
                         tool_result_str = f"{target} 的背包里根本没有找到 '{keyword}'！他在撒谎或两手空空。"
 
-                elif tool_name == "execute_physical_action":
-                    action_type = tool_args.get("action_type", "")
-                    source_id = tool_args.get("source_id", "")
-                    target_id = tool_args.get("target_id", "player")
-                    item_id = tool_args.get("item_id", "")
-                    amount = int(tool_args.get("amount", 1))
-
-                    item_transfers = []
-                    hp_changes = []
-                    if action_type == "transfer_item":
-                        item_transfers.append(
-                            {"from": source_id, "to": target_id, "item_id": item_id, "count": amount}
-                        )
-                    elif action_type == "heal":
-                        hp_changes.append({"target": target_id, "amount": amount, "reason": "healed"})
-                    elif action_type == "damage":
-                        hp_changes.append({"target": target_id, "amount": -amount, "reason": "damaged"})
-
-                    new_events = apply_physics(current_entities, player_inv_for_physics, item_transfers, hp_changes)
-                    journal_events.extend(new_events)
-                    tool_physics_events.extend(new_events)
-
-                    # 让大模型调用的物理行为在终端可视化
-                    from ui.renderer import GameRenderer
-
-                    ui = GameRenderer()
-                    for evt in new_events:
-                        ui.print_system_info(evt)
-
-                    if new_events:
-                        tool_result_str = "\n".join(new_events)
-                    else:
-                        tool_result_str = "动作未产生任何效果。"
+                else:
+                    tool_result_str = f"[系统] 未知工具: {tool_name}（物理动作请使用 JSON 中的 physical_action 字段）。"
 
                 tool_msg = ToolMessage(content=tool_result_str, tool_call_id=tc.get("id", ""))
                 lc_messages.append(tool_msg)
@@ -453,6 +455,12 @@ If it resulted in "SUCCESS", you may accept it and call the tool.
         raw_output = str(response.content if hasattr(response, "content") else str(response or ""))
 
         json_parsed = parse_llm_json(raw_output)
+
+        # --- 调试用：看看大模型到底给的啥 JSON ---
+        if DEBUG_AI_PAYLOAD:
+            print(f"📦 [底层 JSON 透视] \n{raw_output}\n")
+        # ----------------------------------------
+
         if isinstance(json_parsed, dict) and "reply" in json_parsed:
             raw_text = (json_parsed.get("reply") or "...").strip()
             thought_process = (json_parsed.get("internal_monologue") or "").strip()
@@ -474,11 +482,15 @@ If it resulted in "SUCCESS", you may accept it and call the tool.
                     # 强行调用底层的物理引擎结算
                     new_events = apply_physics(current_entities, player_inv_for_physics, item_transfers, [])
                     
-                    # 状态回写与终端可视化
+                    # 状态回写（终端由 main 回合末统一打印 journal_events）
                     tool_physics_events.extend(new_events)
-                    from ui.renderer import GameRenderer
-                    for evt in new_events:
-                        GameRenderer().print_system_info(evt)
+                elif action_type == "interact_object":
+                    _tid = physical_action.get("target_id", "")
+                    _detail = (physical_action.get("action_detail") or "").strip() or "open"
+                    interaction_events = apply_environment_interaction(
+                        current_env_objs, _tid, _detail, speaker
+                    )
+                    tool_physics_events.extend(interaction_events)
         else:
             parsed = parse_ai_response(raw_output)
             raw_text = (parsed.get("text") or raw_output or "...").strip()
@@ -527,6 +539,7 @@ If it resulted in "SUCCESS", you may accept it and call the tool.
         if tool_physics_events:
             out["entities"] = current_entities
             out["player_inventory"] = player_inv_for_physics
+            out["environment_objects"] = current_env_objs
         if user_input and triggers_config:
             out["flags"] = flags
             out["player_inventory"] = player_inv_for_physics
