@@ -1,0 +1,142 @@
+"""
+BG3 LLM Agent — FastAPI 后端，供 Web UI 调用。
+"""
+
+import copy
+import json
+import os
+from typing import Any, Dict, List
+
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from langgraph.graph import START
+from pydantic import BaseModel
+
+from core import inventory
+from core.graph.graph_builder import build_graph
+from core.graph.nodes.utils import default_entities
+
+# 初始化物品数据库
+inventory.init_registry("config/items.yaml")
+
+app = FastAPI(title="BG3 LLM Agent API", version="2.0")
+
+# 允许跨域请求 (为了下周的前端网页做准备)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# --- Pydantic Data Models ---
+class ChatRequest(BaseModel):
+    user_input: str
+    session_id: str = "web_save_01"  # 支持多存档/多用户
+
+
+class ChatResponse(BaseModel):
+    responses: List[Dict[str, str]]  # 例如: [{"speaker": "astarion", "text": "亲爱的..."}]
+    journal_events: List[str]  # 本回合发生的新事件
+    current_location: str  # 当前位置
+    environment_objects: Dict[str, Any]  # 场景里的可交互物品 (如箱子、门)
+    party_status: Dict[str, Any]  # 队友的血量、好感度等状态
+
+
+@app.post("/api/chat", response_model=ChatResponse)
+async def chat_endpoint(req: ChatRequest):
+    if not req.user_input or not req.user_input.strip():
+        raise HTTPException(status_code=400, detail="User input cannot be empty.")
+
+    config = {"configurable": {"thread_id": req.session_id}}
+
+    # 连接 LangGraph 记忆库
+    async with AsyncSqliteSaver.from_conn_string("memory.db") as saver:
+        graph = build_graph(checkpointer=saver)
+
+        # 1. 检查是否为空存档 (创世逻辑，与 main.py 对齐)
+        try:
+            snapshot = await graph.aget_state(config)  # type: ignore[arg-type]
+            prev_values = snapshot.values if hasattr(snapshot, "values") else {}
+        except Exception:
+            prev_values = {}
+        if not isinstance(prev_values, dict):
+            prev_values = {}
+
+        # 记录本轮之前的日志长度，用于提取增量日志
+        prev_journal_len = len((prev_values or {}).get("journal_events") or [])
+
+        if not (prev_values or {}).get("entities"):
+            print("🌱 检测到空存档，正在执行创世初始化...")
+            init_player_inv: dict = {"healing_potion": 2}
+            if os.path.exists("data/player.json"):
+                try:
+                    with open("data/player.json", "r", encoding="utf-8") as f:
+                        p_data = json.load(f)
+                        inv = p_data.get("inventory", init_player_inv)
+                        init_player_inv = dict(inv) if isinstance(inv, dict) else init_player_inv
+                except Exception:
+                    pass
+
+            initial_state = {
+                "entities": copy.deepcopy(default_entities),
+                "player_inventory": init_player_inv,
+                "turn_count": 0,
+                "time_of_day": "晨曦 (Morning)",
+                "flags": {},
+                "messages": [],
+                "journal_events": [],
+                "current_location": "幽暗地域营地 (Underdark Camp)",
+                "environment_objects": {
+                    "iron_chest": {
+                        "name": "沉重的铁箱子",
+                        "status": "locked",
+                        "description": "一个上了锁的铁箱子，看起来很结实。(DC 15)",
+                    }
+                },
+            }
+            await graph.aupdate_state(config, initial_state, as_node=START)  # type: ignore[arg-type]
+
+            snapshot = await graph.aget_state(config)  # type: ignore[arg-type]
+            prev_values = snapshot.values if hasattr(snapshot, "values") else {}
+            if not isinstance(prev_values, dict):
+                prev_values = {}
+            prev_journal_len = len((prev_values or {}).get("journal_events") or [])
+
+        # 2. 驱动大图运转 (执行动作与对话)
+        # 使用 ainvoke 会直接返回执行完毕后的最终状态
+        print(f"🗣️ 收到玩家发言: {req.user_input}")
+        result_state = await graph.ainvoke({"user_input": req.user_input}, config=config)  # type: ignore[arg-type]
+
+        # 3. 提取需要返回给前端的“干净数据”
+        # 获取 NPC 回复
+        raw_responses = result_state.get("speaker_responses", [])
+        formatted_responses = [{"speaker": spk, "text": text} for spk, text in raw_responses]
+
+        # 提取增量日志 (只把这回合发生的事发给前端)
+        curr_journal = result_state.get("journal_events", [])
+        new_journal = curr_journal[prev_journal_len:] if len(curr_journal) > prev_journal_len else []
+
+        # 提取环境与状态
+        loc = result_state.get("current_location", "Unknown")
+        env_objs = result_state.get("environment_objects", {})
+        entities = result_state.get("entities", {})
+
+        return ChatResponse(
+            responses=formatted_responses,
+            journal_events=new_journal,
+            current_location=loc,
+            environment_objects=env_objs,
+            party_status=entities,
+        )
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    # 启动命令: python server.py
+    print("🚀 BG3 Engine API is starting...")
+    uvicorn.run(app, host="0.0.0.0", port=8000)
