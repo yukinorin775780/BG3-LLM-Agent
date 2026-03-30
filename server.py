@@ -2,9 +2,6 @@
 BG3 LLM Agent — FastAPI 后端，供 Web UI 调用。
 """
 
-import copy
-import json
-import os
 from typing import Any, Dict, List
 
 from fastapi import FastAPI, HTTPException
@@ -15,7 +12,7 @@ from pydantic import BaseModel
 
 from core import inventory
 from core.graph.graph_builder import build_graph
-from core.graph.nodes.utils import default_entities
+from core.systems.world_init import get_initial_world_state
 
 # 初始化物品数据库
 inventory.init_registry("config/items.yaml")
@@ -70,34 +67,7 @@ async def chat_endpoint(req: ChatRequest):
         prev_journal_len = len((prev_values or {}).get("journal_events") or [])
 
         if not (prev_values or {}).get("entities"):
-            print("🌱 检测到空存档，正在执行创世初始化...")
-            init_player_inv: dict = {"healing_potion": 2}
-            if os.path.exists("data/player.json"):
-                try:
-                    with open("data/player.json", "r", encoding="utf-8") as f:
-                        p_data = json.load(f)
-                        inv = p_data.get("inventory", init_player_inv)
-                        init_player_inv = dict(inv) if isinstance(inv, dict) else init_player_inv
-                except Exception:
-                    pass
-
-            initial_state = {
-                "entities": copy.deepcopy(default_entities),
-                "player_inventory": init_player_inv,
-                "turn_count": 0,
-                "time_of_day": "晨曦 (Morning)",
-                "flags": {},
-                "messages": [],
-                "journal_events": [],
-                "current_location": "幽暗地域营地 (Underdark Camp)",
-                "environment_objects": {
-                    "iron_chest": {
-                        "name": "沉重的铁箱子",
-                        "status": "locked",
-                        "description": "一个上了锁的铁箱子，看起来很结实。(DC 15)",
-                    }
-                },
-            }
+            initial_state = get_initial_world_state()
             await graph.aupdate_state(config, initial_state, as_node=START)  # type: ignore[arg-type]
 
             snapshot = await graph.aget_state(config)  # type: ignore[arg-type]

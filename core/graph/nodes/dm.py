@@ -2,6 +2,7 @@
 DM 分析、多人发言推进、旁白节点。
 """
 
+import asyncio
 import copy
 
 from langchain_core.messages import AIMessage
@@ -13,7 +14,7 @@ from core.llm.dm import analyze_intent
 from core.utils.text_processor import format_history_message
 
 
-def dm_node(state: GameState) -> dict:
+async def dm_node(state: GameState) -> dict:
     """
     分析玩家输入的意图。
     若 intent 为 command_done（系统指令已就地处理），直接跳过，不调用 LLM。
@@ -39,7 +40,8 @@ def dm_node(state: GameState) -> dict:
     fallback_speaker = first_entity_id(entities)
     current_npc_hp = entities.get(fallback_speaker, {}).get("hp", 20) if fallback_speaker != "unknown" else 20
     item_lore = _build_item_lore(state)
-    analysis = analyze_intent(
+    analysis = await asyncio.to_thread(
+        analyze_intent,
         state.get("user_input", ""),
         flags=state.get("flags", {}),
         time_of_day=state.get("time_of_day", "晨曦 (Morning)"),

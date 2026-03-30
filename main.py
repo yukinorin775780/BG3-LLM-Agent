@@ -6,8 +6,6 @@ BG3 LLM Agent - V2 Main Entry Point
 """
 
 import asyncio
-import copy
-import json
 import os
 import sys
 
@@ -19,8 +17,8 @@ from langgraph.graph import START
 from config import settings
 from core import inventory
 from core.graph.graph_builder import build_graph
-from core.graph.nodes.utils import default_entities
 from core.systems.memory_rag import episodic_memory
+from core.systems.world_init import get_initial_world_state
 from ui.renderer import GameRenderer
 
 
@@ -78,33 +76,7 @@ async def main_async():
 
         # --- 【新增】检测空存档并执行"创世"初始化 ---
         if not (prev_values or {}).get("entities"):
-            init_player_inv: dict = {"healing_potion": 2}
-            if os.path.exists("data/player.json"):
-                try:
-                    with open("data/player.json", "r", encoding="utf-8") as f:
-                        p_data = json.load(f)
-                        inv = p_data.get("inventory", init_player_inv)
-                        init_player_inv = dict(inv) if isinstance(inv, dict) else init_player_inv
-                except Exception:
-                    pass
-
-            initial_state = {
-                "entities": copy.deepcopy(default_entities),
-                "player_inventory": init_player_inv,
-                "turn_count": 0,
-                "time_of_day": "晨曦 (Morning)",
-                "flags": {},
-                "messages": [],
-                "journal_events": [],
-                "current_location": "幽暗地域营地 (Underdark Camp)",
-                "environment_objects": {
-                    "iron_chest": {
-                        "name": "沉重的铁箱子",
-                        "status": "locked",
-                        "description": "一个上了锁的铁箱（DC 5），看起来很结实。",
-                    }
-                },
-            }
+            initial_state = get_initial_world_state()
             await graph.aupdate_state(config, initial_state, as_node=START)  # type: ignore[arg-type]
 
             snapshot = await graph.aget_state(config)  # type: ignore[arg-type]

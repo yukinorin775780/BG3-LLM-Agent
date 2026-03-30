@@ -11,10 +11,13 @@ Generation 节点：NPC 台词生成（工厂模式 + ReAct 工具）。
   下一轮 prompt 中的背包与标志位与真实状态一致。
 """
 
+import asyncio
 import copy
 import os
-from typing import Any, Callable
+from collections.abc import Coroutine
+from typing import Any, Callable, List
 
+from jinja2 import Environment, FileSystemLoader
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_openai import ChatOpenAI
 
@@ -28,8 +31,11 @@ from core.graph.nodes.utils import (
     _msg_content,
     default_entities,
     first_entity_id,
+    merge_entities_with_defaults,
+    overlay_entity_state,
 )
-from core.systems.inventory import format_inventory_dict_to_display_list, get_registry
+from core.systems.inventory import Inventory, format_inventory_dict_to_display_list, get_registry
+from core.systems.mechanics import process_dialogue_triggers
 from core.systems.memory_rag import episodic_memory
 from core.tools.npc_tools import check_target_inventory
 from core.utils.text_processor import clean_npc_dialogue, format_history_message, parse_llm_json
@@ -58,20 +64,104 @@ def _latest_roll_is_meaningful(latest_roll: Any) -> bool:
     return bool(latest_roll.get("result")) or bool(latest_roll.get("intent"))
 
 
-def create_generation_node() -> Callable[[GameState], dict]:
+def _execute_json_action(
+    physical_action: dict,
+    speaker: str,
+    current_entities: dict,
+    player_inv_for_physics: dict,
+    current_env_objs: dict,
+) -> List[Any]:
+    """解析并执行 JSON 中的内联物理动作"""
+    tool_physics_events: List[Any] = []
+    if not physical_action or not isinstance(physical_action, dict):
+        return tool_physics_events
+
+    action_type = physical_action.get("action_type")
+    if action_type == "transfer_item":
+        item_transfers = [
+            {
+                "from": physical_action.get("source_id", "player"),
+                "to": physical_action.get("target_id", speaker),
+                "item_id": physical_action.get("item_id", ""),
+                "count": int(physical_action.get("amount", 1)),
+            }
+        ]
+        new_events = apply_physics(current_entities, player_inv_for_physics, item_transfers, [])
+        tool_physics_events.extend(new_events)
+    elif action_type == "interact_object":
+        _tid = physical_action.get("target_id", "")
+        _detail = (physical_action.get("action_detail") or "").strip() or "open"
+        interaction_events = apply_environment_interaction(current_env_objs, _tid, _detail, speaker)
+        tool_physics_events.extend(interaction_events)
+
+    return tool_physics_events
+
+
+def _build_dynamic_context_prompt(state: GameState, user_input: str, latest_roll: Any) -> str:
+    """组装环境感知、RAG 长期记忆和骰子检定结果的动态提示词"""
+    context_prompt = ""
+
+    # 1. 环境感知注入
+    loc = state.get("current_location", "Unknown Location")
+    env_objs = state.get("environment_objects") or {}
+    if not isinstance(env_objs, dict):
+        env_objs = {}
+    context_prompt += "\n[CURRENT ENVIRONMENT]\n"
+    context_prompt += f"You are currently at: {loc}\n"
+    if env_objs:
+        context_prompt += "Interactive Objects around you:\n"
+        for obj_id, obj_data in env_objs.items():
+            if isinstance(obj_data, dict):
+                context_prompt += (
+                    f"- {obj_id} ({obj_data.get('name')}): "
+                    f"Status=[{obj_data.get('status')}], Desc=[{obj_data.get('description')}]\n"
+                )
+    else:
+        context_prompt += "There are no notable interactive objects around.\n"
+
+    # 2. RAG 长期记忆注入
+    if user_input and user_input.strip():
+        retrieved_memories = episodic_memory.retrieve_relevant_memories(user_input, top_k=2)
+        if retrieved_memories:
+            context_prompt += "\n[LONG-TERM EPISODIC MEMORIES]\n"
+            context_prompt += "These are your past memories related to the current situation:\n"
+            for mem in retrieved_memories:
+                context_prompt += f"- {mem}\n"
+            context_prompt += "Use these memories to inform your reaction if they are relevant.\n"
+
+    # 3. 掷骰检定结果注入
+    if latest_roll and isinstance(latest_roll, dict) and _latest_roll_is_meaningful(latest_roll):
+        _roll_result = latest_roll.get("result")
+        _roll_result_dict = _roll_result if isinstance(_roll_result, dict) else {}
+        is_success = bool(_roll_result_dict.get("is_success", False))
+        roll_status = "SUCCESS" if is_success else "FAILURE"
+        context_prompt += (
+            f"\n🚨 [CRITICAL SYSTEM ALERT]: The player just attempted a skill check "
+            f"({latest_roll.get('intent')}). The result was: {roll_status}!\n"
+        )
+        if not is_success:
+            context_prompt += (
+                "Because the roll is a FAILURE, you MUST absolutely reject the player and their item "
+                "in your response. DO NOT ACCEPT IT.\n"
+            )
+
+    return context_prompt
+
+
+def create_generation_node() -> Callable[[GameState], Coroutine[Any, Any, dict]]:
     """
     工厂函数：创建 Generation 节点。
     根据 state["current_speaker"] 动态加载 YAML 灵魂，实现多智能体话语权路由。
     """
 
-    def generation_node(state: GameState) -> dict:
+    async def generation_node(state: GameState) -> dict:
         """
         LLM 生成节点。
         根据 current_speaker 动态加载对应角色，从 state 提取 affection / flags / inventory 等。
         """
         from characters.loader import load_character
 
-        entities = state.get("entities") or copy.deepcopy(default_entities)
+        entities = merge_entities_with_defaults(state.get("entities"))
         fallback_speaker = first_entity_id(entities)
         speaker = (state.get("current_speaker") or "").strip() or fallback_speaker
         character = load_character(speaker)
@@ -136,8 +226,6 @@ def create_generation_node() -> Callable[[GameState], dict]:
 
         if is_banter and dm_text:
             print(f"💬 [Banter Mode] {speaker.capitalize()} 使用极简模板吐槽...")
-            from jinja2 import Environment, FileSystemLoader
-
             _prompts_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "llm", "prompts")
             _banter_env = Environment(loader=FileSystemLoader(_prompts_dir), trim_blocks=True, lstrip_blocks=True)
             banter_tpl = _banter_env.get_template("banter.j2")
@@ -150,7 +238,9 @@ def create_generation_node() -> Callable[[GameState], dict]:
                 dm_text=dm_text,
             )
             history_dicts = [{"role": "user", "content": f"[DM]: {dm_text}"}]
-            raw_response = generate_dialogue(system_prompt, conversation_history=history_dicts)
+            raw_response = await asyncio.to_thread(
+                generate_dialogue, system_prompt, conversation_history=history_dicts
+            )
             parsed = parse_ai_response(raw_response)
             clean_text = clean_npc_dialogue(speaker, (parsed.get("text") or "...").strip())
             attributed_msg = format_history_message(speaker, clean_text)
@@ -162,7 +252,28 @@ def create_generation_node() -> Callable[[GameState], dict]:
             }
 
         triggers_config = character.data.get("dialogue_triggers", [])
-        trigger_result = {"journal_entries": [], "relationship_delta": 0}
+        trigger_result: dict[str, Any] = {"journal_entries": [], "relationship_delta": 0}
+        if user_input and triggers_config:
+            player_inv_obj = Inventory()
+            player_inv_obj.from_dict(dict(player_inv) if isinstance(player_inv, dict) else {})
+            npc_inv_obj = Inventory()
+            npc_inv_obj.from_dict(dict(npc_inv) if isinstance(npc_inv, dict) else {})
+            trigger_result = process_dialogue_triggers(
+                user_input,
+                triggers_config,
+                flags,
+                ui=None,
+                player_inv=player_inv_obj,
+                npc_inv=npc_inv_obj,
+            )
+            player_inv = player_inv_obj.to_dict()
+            npc_inv = npc_inv_obj.to_dict()
+            rd = int(trigger_result.get("relationship_delta", 0) or 0)
+            if rd != 0:
+                affection = max(-100, min(100, affection + rd))
+            if speaker in entities and isinstance(entities[speaker], dict):
+                entities[speaker]["affection"] = affection
+                entities[speaker]["inventory"] = dict(npc_inv)
 
         inventory_display_list = format_inventory_dict_to_display_list(npc_inv)
         has_healing_potion = (npc_inv.get("healing_potion", 0) or 0) >= 1
@@ -191,54 +302,7 @@ def create_generation_node() -> Callable[[GameState], dict]:
 
         system_prompt += f"Current Speaker: {speaker}\n"
         system_prompt += f"Player's Current Inventory: {player_inv}\n"
-
-        # --- 【新增】环境感知注入 ---
-        loc = state.get("current_location", "Unknown Location")
-        env_objs = state.get("environment_objects") or {}
-        if not isinstance(env_objs, dict):
-            env_objs = {}
-        system_prompt += "\n[CURRENT ENVIRONMENT]\n"
-        system_prompt += f"You are currently at: {loc}\n"
-        if env_objs:
-            system_prompt += "Interactive Objects around you:\n"
-            for obj_id, obj_data in env_objs.items():
-                if not isinstance(obj_data, dict):
-                    continue
-                system_prompt += (
-                    f"- {obj_id} ({obj_data.get('name')}): "
-                    f"Status=[{obj_data.get('status')}], Desc=[{obj_data.get('description')}]\n"
-                )
-        else:
-            system_prompt += "There are no notable interactive objects around.\n"
-        # ----------------------------
-
-        # --- 【新增】RAG 长期记忆注入 ---
-        if user_input and user_input.strip():
-            retrieved_memories = episodic_memory.retrieve_relevant_memories(user_input, top_k=2)
-            if retrieved_memories:
-                system_prompt += "\n[LONG-TERM EPISODIC MEMORIES]\n"
-                system_prompt += "These are your past memories related to the current situation:\n"
-                for mem in retrieved_memories:
-                    system_prompt += f"- {mem}\n"
-                system_prompt += "Use these memories to inform your reaction if they are relevant.\n"
-        # -------------------------------
-
-        # 【核心修复：将本回合检定结果注入 System Prompt，避免模型看不到 latest_roll】
-        # 仅在有实质掷骰数据时注入（与 needs_full_agent 判定一致），避免空 dict 噪声
-        if latest_roll and isinstance(latest_roll, dict) and _latest_roll_is_meaningful(latest_roll):
-            _roll_result = latest_roll.get("result")
-            _roll_result_dict = _roll_result if isinstance(_roll_result, dict) else {}
-            is_success = bool(_roll_result_dict.get("is_success", False))
-            roll_status = "SUCCESS" if is_success else "FAILURE"
-            system_prompt += (
-                f"\n🚨 [CRITICAL SYSTEM ALERT]: The player just attempted a skill check "
-                f"({latest_roll.get('intent')}). The result was: {roll_status}!\n"
-            )
-            if not is_success:
-                system_prompt += (
-                    "Because the roll is a FAILURE, you MUST absolutely reject the player and their item "
-                    "in your response. DO NOT ACCEPT IT.\n"
-                )
+        system_prompt += _build_dynamic_context_prompt(state, user_input, latest_roll)
 
         messages = list(state.get("messages", []))
         if is_first_npc_of_player_turn and user_input:
@@ -291,14 +355,23 @@ IF YOU DO NOT INCLUDE THIS FIELD IN YOUR JSON, YOU ARE JUST STANDING STILL AND D
             _last_u = history_dicts[-1].get("content") or ""
             history_dicts[-1]["content"] = _last_u + prompt_suffix
 
-        current_entities = {k: dict(v) for k, v in entities.items()}
+        current_entities: dict[str, Any] = {}
+        for k, v in entities.items():
+            if isinstance(v, dict):
+                current_entities[k] = dict(v)
         for k in current_entities:
             current_entities[k].setdefault("affection", 0)
             current_entities[k].setdefault("inventory", {})
             if not isinstance(current_entities[k].get("inventory"), dict):
                 current_entities[k]["inventory"] = {}
-        current_entities.setdefault(speaker, {"hp": 20, "active_buffs": [], "affection": 0, "inventory": {}})
-        if user_input and triggers_config:
+        if speaker not in current_entities:
+            current_entities[speaker] = copy.deepcopy(
+                default_entities.get(
+                    speaker,
+                    {"hp": 20, "active_buffs": [], "affection": 0, "inventory": {}},
+                )
+            )
+        if user_input:
             current_entities[speaker]["inventory"] = dict(npc_inv)
             current_entities[speaker]["affection"] = affection
         player_inv_for_physics = dict(player_inv)
@@ -310,21 +383,11 @@ IF YOU DO NOT INCLUDE THIS FIELD IN YOUR JSON, YOU ARE JUST STANDING STILL AND D
                 if isinstance(_ev, dict):
                     current_env_objs[_ek] = dict(_ev)
 
-        system_prompt += """
-
-<CRITICAL_SYSTEM_RULES>
-You are an autonomous AGENT. YOUR TEXT DESCRIPTIONS DO NOT AFFECT THE PHYSICAL WORLD.
-
-1. PHYSICAL ACTIONS: If you accept an item, give an item, or interact with an environment object (like opening a chest), YOU MUST output the `physical_action` field in your JSON response!
-2. CONSISTENCY IS MANDATORY: Your spoken dialogue, text actions, and the `physical_action` JSON field must be 100% aligned.
-
-[CRITICAL DICE RULE - READ CAREFULLY]:
-Check the most recent [SYSTEM] or DM events. If a skill check resulted in "FAILURE":
-- You MUST explicitly REJECT the player's action in your dialogue and text descriptions.
-- You are STRICTLY FORBIDDEN from outputting any `physical_action`.
-If a skill check resulted in "SUCCESS", you MUST output the corresponding `physical_action` IMMEDIATELY.
-</CRITICAL_SYSTEM_RULES>
-"""
+        # 加载并追加底层系统强规则
+        _prompts_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "llm", "prompts")
+        _rules_env = Environment(loader=FileSystemLoader(_prompts_dir), trim_blocks=True, lstrip_blocks=True)
+        rules_tpl = _rules_env.get_template("system_rules.j2")
+        system_prompt += "\n" + rules_tpl.render() + "\n"
 
         lc_messages: list[BaseMessage] = [SystemMessage(content=system_prompt)]
         for d in history_dicts:
@@ -369,7 +432,7 @@ If a skill check resulted in "SUCCESS", you MUST output the corresponding `physi
                     print(f"    ❓ 未知消息内容: {msg.content}")
             print("🔥" * 25 + "\n")
 
-        response = llm_with_tools.invoke(lc_messages)
+        response = await llm_with_tools.ainvoke(lc_messages)
 
         from ui.renderer import GameRenderer
 
@@ -438,7 +501,7 @@ If a skill check resulted in "SUCCESS", you MUST output the corresponding `physi
                         print(f"    ❓ 未知消息内容: {msg.content}")
                 print("🔥" * 25 + "\n")
 
-            response = llm_with_tools.invoke(lc_messages)
+            response = await llm_with_tools.ainvoke(lc_messages)
 
             GameRenderer().print_system_info(
                 f"🔧 [底层透视] LLM 返回的 tool_calls (ReAct #{iteration_count}): "
@@ -469,28 +532,11 @@ If a skill check resulted in "SUCCESS", you MUST output the corresponding `physi
             # --- 【新增】解析 JSON 内联的物理动作并直接结算 ---
             physical_action = json_parsed.get("physical_action")
             if physical_action and isinstance(physical_action, dict):
-                action_type = physical_action.get("action_type")
-                if action_type == "transfer_item":
-                    # 组装底层的转移意图
-                    item_transfers = [{
-                        "from": physical_action.get("source_id", "player"),
-                        "to": physical_action.get("target_id", speaker),
-                        "item_id": physical_action.get("item_id", ""),
-                        "count": int(physical_action.get("amount", 1))
-                    }]
-                    
-                    # 强行调用底层的物理引擎结算
-                    new_events = apply_physics(current_entities, player_inv_for_physics, item_transfers, [])
-                    
-                    # 状态回写（终端由 main 回合末统一打印 journal_events）
-                    tool_physics_events.extend(new_events)
-                elif action_type == "interact_object":
-                    _tid = physical_action.get("target_id", "")
-                    _detail = (physical_action.get("action_detail") or "").strip() or "open"
-                    interaction_events = apply_environment_interaction(
-                        current_env_objs, _tid, _detail, speaker
+                tool_physics_events.extend(
+                    _execute_json_action(
+                        physical_action, speaker, current_entities, player_inv_for_physics, current_env_objs
                     )
-                    tool_physics_events.extend(interaction_events)
+                )
         else:
             parsed = parse_ai_response(raw_output)
             raw_text = (parsed.get("text") or raw_output or "...").strip()
@@ -529,29 +575,34 @@ If a skill check resulted in "SUCCESS", you MUST output the corresponding `physi
             "thought_process": thought_process,
             "messages": out_messages,
         }
-        if state_changes_applied:
-            out["entities"] = current_entities
+        # 以进入本节点时的 state.entities 为底（含 DM 刚写入的他人好感度），再叠本节点变更，避免漏键导致覆盖为 0
+        entities_out = overlay_entity_state(state.get("entities"), current_entities)
         trigger_journal = trigger_result.get("journal_entries", [])
         if trigger_journal:
-            out["journal_events"] = trigger_journal
+            out["journal_events"] = out.get("journal_events", []) + list(trigger_journal)
         if tool_physics_events:
             out["journal_events"] = out.get("journal_events", []) + tool_physics_events
         if tool_physics_events:
-            out["entities"] = current_entities
             out["player_inventory"] = player_inv_for_physics
             out["environment_objects"] = current_env_objs
         if user_input and triggers_config:
             out["flags"] = flags
             out["player_inventory"] = player_inv_for_physics
-            out["entities"] = current_entities
+        if (
+            state_changes_applied
+            or tool_physics_events
+            or (user_input and triggers_config)
+            or user_input
+        ):
+            out["entities"] = entities_out
         return out
 
     return generation_node
 
 
-def generation_node(state: GameState) -> dict:
+async def generation_node(state: GameState) -> dict:
     """
     默认 Generation 节点（向后兼容 main_graph.py 等单测）。
     生产环境应使用 create_generation_node() 动态加载角色。
     """
-    return create_generation_node()(state)
+    return await create_generation_node()(state)

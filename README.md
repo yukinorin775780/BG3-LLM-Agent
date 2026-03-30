@@ -36,6 +36,32 @@
 
 ---
 
+## 🧠 Graph State, Dialogue Triggers & Data Bridging | 图状态、对话触发与数据桥接
+
+本节说明跑团引擎在 **LangGraph 状态流转**中的关键设计：在 LLM 开口之前先结算“硬规则”，在节点返回时合并“全局大盘”，并在 **dict** 与领域对象之间做无损转换，保证数值与叙事同源、不割裂。
+
+### 1. 对话触发器管线 (Dialogue Trigger Pipeline)
+
+* **执行时机**：在 Generation 节点调用角色 `render_prompt` **之前**，由 `core/systems/mechanics.py` 中的 `process_dialogue_triggers` 根据 YAML `dialogue_triggers`（关键字匹配等）先行结算。
+* **可写回内容**：原地更新 **Flags**、通过 `inventory.give:*` 效果在玩家与当前 NPC 之间转移物品、产出 `journal_entries` 剧情日志，并汇总 **`relationship_delta`**（机制侧好感修正）。
+* **与 LLM 的叠加**：机制层先把 `relationship_delta` 并入当前 NPC 的 **`affection`**，再进入系统提示词与 JSON 解析；回合末尾 LLM 输出的 `state_changes.affection_delta` 再叠加到**同一实体**上，使 **「规则加减」与「情感推断」** 落在同一数值管道，避免“系统加了两点、台词却当没发生”的割裂感。
+
+### 2. 多智能体状态合并 (Graph State Overlay)
+
+* **问题背景**：多角色轮流发言时，若某节点只返回“当前说话人”的切片，整表覆盖 `entities` 会冲掉 DM / 其他节点刚写入的他人好感度或背包。
+* **防御性策略**（`core/graph/nodes/utils.py`）：
+  - **`merge_entities_with_defaults`**：与 Input 节点对齐，将 `characters/*.yaml` 中尚未出现在存档里的 NPC **补键**，避免缺键被误当作 `affection: 0`。
+  - **`overlay_entity_state(state_entities, node_entities)`**：以 **进入本节点时的 `state["entities"]` 为底**（含 DM 刚写入的全局好感），再按 NPC id 用本节点算出的变更 **覆盖**；未出现在本节点输出中的角色 **原样保留**，从而消除多智能体并发对话场景下的 **状态覆盖 / 丢失**。
+* **工程语义**：当前说话 NPC 的变更被安全地“贴回”全局 `entities` 大盘，再随 Checkpoint 持久化，保证 API / CLI 读到的 `party_status` 与跑团规则一致。
+
+### 3. 数据结构无缝转换 (Dict ↔ Domain Objects)
+
+* **图状态侧**：`GameState` 中的 `player_inventory`、各实体 `inventory` 以 **`Dict[str, int]`**（物品 id → 数量）流转，便于 LangGraph 序列化与 SqliteSaver 存档。
+* **机制侧**：`process_dialogue_triggers` 等物品逻辑使用 **`Inventory`** 实例（`remove` / `add`、堆叠规则与注册表一致）。
+* **桥接方式**：在 Generation 节点内对触发器分支使用 **`Inventory.from_dict(...)`** 注入、`to_dict()` 写回，与既有 **`merge_entities_with_defaults` / `overlay_entity_state`** 衔接；从而在不动图状态契约的前提下，让底层机制复用强类型背包行为，实现 **dict 与领域对象**之间的平滑转换。
+
+---
+
 ## 🚀 V2 引擎迭代亮点 (The V2 Engine Evolution)
 
 在 V2 版本中，系统从「多智能体聊天机器人」正式跃迁为**真正的 TRPG (桌面角色扮演游戏) 引擎**。我们重构了底层状态机，并引入了物理与数值守恒法则。

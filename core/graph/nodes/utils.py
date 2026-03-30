@@ -2,7 +2,8 @@
 LangGraph 节点共享工具：实体快照、默认实体加载、消息转换、物品知识库等。
 """
 
-from typing import Any, Dict
+import copy
+from typing import Any, Dict, Optional
 
 import os
 import yaml
@@ -121,6 +122,38 @@ def load_default_entities() -> Dict[str, Dict[str, Any]]:
 
 # 模块加载时构建默认实体（从 YAML 驱动）
 default_entities = load_default_entities()
+
+
+def merge_entities_with_defaults(raw_entities: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    与 input_node 一致：把 characters/*.yaml 中尚未出现在存档里的 NPC 补进 entities，
+    避免多智能体路由下某轮只有部分 key 时，下游误用「缺键→0 好感」的假数据。
+    """
+    if not raw_entities:
+        entities = copy.deepcopy(default_entities)
+    else:
+        entities = copy.deepcopy(raw_entities)
+    if not isinstance(entities, dict):
+        return copy.deepcopy(default_entities)
+    for npc_id, default_data in default_entities.items():
+        if npc_id not in entities:
+            entities[npc_id] = copy.deepcopy(default_data)
+    return entities
+
+
+def overlay_entity_state(state_entities: Optional[Dict[str, Any]], node_entities: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    以进入本节点时的 state.entities 为基准（含 DM 刚写入的好感度），再叠加本节点算出的变更。
+    仅覆盖 node_entities 中出现的 NPC id，避免本节点漏拷贝其它角色导致好感度被「冲掉」。
+    """
+    out: Dict[str, Any] = {}
+    for k, v in (state_entities or {}).items():
+        if isinstance(v, dict):
+            out[k] = copy.deepcopy(v)
+    for k, v in (node_entities or {}).items():
+        if isinstance(v, dict):
+            out[k] = copy.deepcopy(v)
+    return out
 
 # 世界级出厂默认（角色无关）
 FACTORY_DEFAULT = {
