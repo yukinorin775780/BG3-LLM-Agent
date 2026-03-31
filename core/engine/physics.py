@@ -110,6 +110,7 @@ def apply_physics(
                 "affection": 0,
                 "inventory": {},
                 "active_buffs": [],
+                "position": "camp_center",
             }
         if target not in current_entities:
             continue
@@ -126,6 +127,23 @@ def apply_physics(
         )
 
     return journal_events
+
+
+def apply_movement(current_entities: dict, actor_id: str, target_location: str) -> List[str]:
+    """
+    语义地标移动：将 NPC 的 position 更新为语义 waypoint id（如 camp_fire），非绝对坐标。
+    直接修改 current_entities[actor_id]。
+    """
+    if not actor_id or not isinstance(current_entities, dict):
+        return []
+    if actor_id not in current_entities or not isinstance(current_entities[actor_id], dict):
+        return [f"❌ [移动失败] 未知角色: {actor_id}"]
+    tid = (target_location or "").strip()
+    if not tid:
+        return [f"❌ [移动失败] {actor_id} 未指定目标地点（target_id）。"]
+    ent = current_entities[actor_id]
+    ent["position"] = tid
+    return [f"🏃 [物理移动] {actor_id.capitalize()} 移动到了 {tid}。"]
 
 
 def apply_environment_interaction(env_objects: dict, target_id: str, action_detail: str, actor_id: str) -> List[str]:

@@ -31,7 +31,8 @@ app.add_middleware(
 
 # --- Pydantic Data Models ---
 class ChatRequest(BaseModel):
-    user_input: str
+    user_input: str = ""
+    intent: str | None = None  # 可选：系统级指令 / 挂机模式等预留意图通道
     session_id: str = "web_save_01"  # 支持多存档/多用户
 
 
@@ -45,8 +46,13 @@ class ChatResponse(BaseModel):
 
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat_endpoint(req: ChatRequest):
-    if not req.user_input or not req.user_input.strip():
-        raise HTTPException(status_code=400, detail="User input cannot be empty.")
+    uin = (req.user_input or "").strip()
+    intent_s = (req.intent or "").strip()
+    if not uin and not intent_s:
+        raise HTTPException(
+            status_code=400,
+            detail="At least one of user_input or intent must be non-empty.",
+        )
 
     config = {"configurable": {"thread_id": req.session_id}}
 
@@ -78,8 +84,11 @@ async def chat_endpoint(req: ChatRequest):
 
         # 2. 驱动大图运转 (执行动作与对话)
         # 使用 ainvoke 会直接返回执行完毕后的最终状态
-        print(f"🗣️ 收到玩家发言: {req.user_input}")
-        result_state = await graph.ainvoke({"user_input": req.user_input}, config=config)  # type: ignore[arg-type]
+        payload: Dict[str, Any] = {"user_input": uin}
+        if intent_s:
+            payload["intent"] = intent_s
+        print("🗣️ 收到请求:", "user_input=", repr(uin), "intent=", repr(intent_s))
+        result_state = await graph.ainvoke(payload, config=config)  # type: ignore[arg-type]
 
         # 3. 提取需要返回给前端的“干净数据”
         # 获取 NPC 回复

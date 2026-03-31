@@ -23,7 +23,7 @@ from langchain_openai import ChatOpenAI
 
 from config import settings
 from core.engine import generate_dialogue, parse_ai_response
-from core.engine.physics import apply_environment_interaction, apply_physics
+from core.engine.physics import apply_environment_interaction, apply_movement, apply_physics
 from core.graph.graph_state import GameState
 from core.graph.nodes.utils import (
     _build_item_lore,
@@ -93,6 +93,10 @@ def _execute_json_action(
         _detail = (physical_action.get("action_detail") or "").strip() or "open"
         interaction_events = apply_environment_interaction(current_env_objs, _tid, _detail, speaker)
         tool_physics_events.extend(interaction_events)
+    elif action_type == "move_to":
+        _loc = (physical_action.get("target_id") or "").strip()
+        move_events = apply_movement(current_entities, speaker, _loc)
+        tool_physics_events.extend(move_events)
 
     return tool_physics_events
 
@@ -110,12 +114,20 @@ def _build_dynamic_context_prompt(state: GameState, user_input: str, latest_roll
     context_prompt += f"You are currently at: {loc}\n"
     if env_objs:
         context_prompt += "Interactive Objects around you:\n"
+        waypoint_ids = []
         for obj_id, obj_data in env_objs.items():
             if isinstance(obj_data, dict):
+                waypoint_ids.append(obj_id)
                 context_prompt += (
                     f"- {obj_id} ({obj_data.get('name')}): "
                     f"Status=[{obj_data.get('status')}], Desc=[{obj_data.get('description')}]\n"
                 )
+        if waypoint_ids:
+            context_prompt += (
+                "\nSemantic waypoints (valid `target_id` for physical_action JSON with "
+                f"action_type \"move_to\"): {', '.join(waypoint_ids)}. "
+                "Use these exact ids as target_id when moving your character.\n"
+            )
     else:
         context_prompt += "There are no notable interactive objects around.\n"
 
@@ -318,14 +330,15 @@ def create_generation_node() -> Callable[[GameState], Coroutine[Any, Any, dict]]
         # 【终极疗法：利用 JSON 内联动作，打破动作幻觉与拖延症】
         if intent not in ("chat", "banter"):
             prompt_suffix += f"""\n\n🚨 [CRITICAL OVERRIDE - PHYSICAL ACTION REQUIRED]:
-Listen carefully, {speaker}: Your text output is ONLY YOUR VOICE. It cannot move items or interact with the world.
-If you decide to accept an item OR interact with the environment (like opening a chest or unlocking a door), YOU MUST output the `physical_action` field in your JSON response!
+Listen carefully, {speaker}: Your text output is ONLY YOUR VOICE. It cannot move items, move your body to a new location, or interact with the world.
+If you decide to accept an item, walk to a semantic waypoint, OR interact with the environment (like opening a chest or unlocking a door), YOU MUST output the `physical_action` field in your JSON response!
 
 CRITICAL RULE: If the player just rolled a SUCCESSFUL skill check to command you, YOU MUST execute the action IMMEDIATELY in this turn. DO NOT delay it to the next turn, and DO NOT just roleplay doing it in text!
 
 Examples:
 1. Taking an item: "physical_action": {{"action_type": "transfer_item", "source_id": "player", "target_id": "{speaker}", "item_id": "healing_potion", "amount": 1}}
 2. Interacting with object: "physical_action": {{"action_type": "interact_object", "target_id": "iron_chest", "action_detail": "unlock"}}
+3. Moving to a location: "physical_action": {{"action_type": "move_to", "target_id": "camp_fire"}}
 
 IF YOU DO NOT INCLUDE THIS FIELD IN YOUR JSON, YOU ARE JUST STANDING STILL AND DOING NOTHING!"""
 
@@ -362,13 +375,14 @@ IF YOU DO NOT INCLUDE THIS FIELD IN YOUR JSON, YOU ARE JUST STANDING STILL AND D
         for k in current_entities:
             current_entities[k].setdefault("affection", 0)
             current_entities[k].setdefault("inventory", {})
+            current_entities[k].setdefault("position", default_entities.get(k, {}).get("position", "camp_center"))
             if not isinstance(current_entities[k].get("inventory"), dict):
                 current_entities[k]["inventory"] = {}
         if speaker not in current_entities:
             current_entities[speaker] = copy.deepcopy(
                 default_entities.get(
                     speaker,
-                    {"hp": 20, "active_buffs": [], "affection": 0, "inventory": {}},
+                    {"hp": 20, "active_buffs": [], "affection": 0, "inventory": {}, "position": "camp_center"},
                 )
             )
         if user_input:

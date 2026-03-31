@@ -311,6 +311,7 @@ def world_tick_node(state: dict) -> dict:
         entity_data["active_buffs"] = surviving_buffs
         entity_data.setdefault("affection", 0)
         entity_data.setdefault("inventory", {})
+        entity_data.setdefault("position", default_entities.get(entity_id, {}).get("position", "camp_center"))
         if isinstance(entity_data.get("inventory"), list):
             entity_data["inventory"] = {
                 x.get("id", ""): x.get("count", 0) for x in entity_data["inventory"] if x.get("id")

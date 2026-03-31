@@ -38,10 +38,20 @@ def get_initial_world_state() -> Dict[str, Any]:
         "journal_events": [],
         "current_location": "幽暗地域营地 (Underdark Camp)",
         "environment_objects": {
+            "camp_center": {
+                "name": "营地中央",
+                "status": "open",
+                "description": "开阔的聚落中心，可作为语义地标 (Semantic Waypoint)。",
+            },
+            "camp_fire": {
+                "name": "篝火",
+                "status": "burning",
+                "description": "燃烧着的篝火，靠近可取暖。",
+            },
             "iron_chest": {
                 "name": "沉重的铁箱子",
                 "status": "locked",
                 "description": "一个上了锁的铁箱子，看起来很结实。(DC 15)",
-            }
+            },
         },
     }

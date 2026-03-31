@@ -56,6 +56,7 @@ def _entity_snapshot(v: Dict[str, Any]) -> Dict[str, Any]:
         "active_buffs": list(v.get("active_buffs", [])),
         "affection": v.get("affection", 0),
         "inventory": dict(v.get("inventory", {})),
+        "position": v.get("position", "camp_center"),
     }
     if "shar_faith" in v:
         out["shar_faith"] = v["shar_faith"]
@@ -87,7 +88,7 @@ def _parse_inventory(inv_raw: Any) -> Dict[str, int]:
 def load_default_entities() -> Dict[str, Dict[str, Any]]:
     """
     从 characters/*.yaml 动态加载所有角色的出厂初始状态（Data-Driven Design）。
-    返回 {entity_id: {hp, active_buffs, affection, inventory}}。
+    返回 {entity_id: {hp, active_buffs, affection, inventory, position, ...}}。
     """
     # core/graph/nodes/utils.py -> 项目根目录需向上三级
     chars_dir = os.path.join(os.path.dirname(__file__), "..", "..", "..", "characters")
@@ -109,6 +110,7 @@ def load_default_entities() -> Dict[str, Dict[str, Any]]:
                 "active_buffs": [],
                 "affection": base.get("affection", 0),
                 "inventory": inv_dict,
+                "position": base.get("position", "camp_center"),
             }
             if "shar_faith" in base:
                 entity_data["shar_faith"] = base["shar_faith"]
@@ -116,7 +118,13 @@ def load_default_entities() -> Dict[str, Dict[str, Any]]:
                 entity_data["memory_awakening"] = base["memory_awakening"]
             entities[entity_id] = entity_data
         except Exception:
-            entities[entity_id] = {"hp": 20, "active_buffs": [], "affection": 0, "inventory": {}}
+            entities[entity_id] = {
+                "hp": 20,
+                "active_buffs": [],
+                "affection": 0,
+                "inventory": {},
+                "position": "camp_center",
+            }
     return entities
 
 
@@ -138,6 +146,10 @@ def merge_entities_with_defaults(raw_entities: Optional[Dict[str, Any]]) -> Dict
     for npc_id, default_data in default_entities.items():
         if npc_id not in entities:
             entities[npc_id] = copy.deepcopy(default_data)
+    # 旧存档缺 position 时补默认语义坐标，避免 merge / overlay 后丢失
+    for npc_id, ent in list(entities.items()):
+        if isinstance(ent, dict) and "position" not in ent:
+            ent["position"] = default_entities.get(npc_id, {}).get("position", "camp_center")
     return entities
 
 
