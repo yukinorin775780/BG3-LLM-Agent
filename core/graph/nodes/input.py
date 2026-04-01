@@ -43,6 +43,10 @@ def input_node(state: GameState) -> dict:
     }
 
     if not user_input:
+        # 保留服务端传入的系统意图（如挂机闲聊），勿覆盖为 pending
+        incoming_intent = str(state.get("intent") or "").strip().lower()
+        if incoming_intent == "trigger_idle_banter":
+            return {**base, "intent": "trigger_idle_banter"}
         return base
 
     if not user_input.startswith("/"):

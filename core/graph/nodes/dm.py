@@ -4,6 +4,7 @@ DM 分析、多人发言推进、旁白节点。
 
 import asyncio
 import copy
+import random
 
 from langchain_core.messages import AIMessage
 
@@ -23,6 +24,38 @@ async def dm_node(state: GameState) -> dict:
     """
     if state.get("intent") in ("command_done", "gift_given", "item_used"):
         return {}
+
+    idle_intent = str(state.get("intent") or "").strip().lower()
+    if idle_intent == "trigger_idle_banter":
+        # 挂机闲聊：不调用 analyze_intent，随机一位队友作「主声线」模板；双人台词由 generation 一次 JSON 输出
+        entities_raw = dict(state.get("entities") or {})
+        if not entities_raw:
+            entities_raw = copy.deepcopy(default_entities)
+        entities = {k: dict(v) for k, v in entities_raw.items()}
+        for k in entities:
+            entities[k].setdefault("affection", 0)
+            entities[k].setdefault("inventory", {})
+            if not isinstance(entities[k].get("inventory"), dict):
+                entities[k]["inventory"] = {}
+        available_npcs = [k for k in entities.keys() if k and str(k).lower() != "unknown"]
+        if not available_npcs:
+            available_npcs = [first_entity_id(entities)]
+        current = random.choice(available_npcs)
+        print("🎲 DM Node: Idle banter (AFK) — skipping intent LLM, speaker seed:", current)
+        return {
+            "entities": entities,
+            "speaker_queue": [],
+            "current_speaker": current,
+            "speaker_responses": [],
+            "intent": "trigger_idle_banter",
+            "intent_context": {
+                "difficulty_class": 12,
+                "reason": "idle_banter",
+                "action_actor": "player",
+                "action_target": "",
+            },
+            "is_probing_secret": False,
+        }
 
     print("🎲 DM Node: Analyzing intent...")
     entities_raw = dict(state.get("entities") or {})

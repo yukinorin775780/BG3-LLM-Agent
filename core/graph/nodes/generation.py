@@ -214,8 +214,9 @@ def create_generation_node() -> Callable[[GameState], Coroutine[Any, Any, dict]]
 
         # Banter 仅用 generate_dialogue，无 bind_tools；须严格限制在「纯闲聊 + 无检定 + 无实体交接」场景
         intent = str(state.get("intent", "chat") or "chat").strip().lower()
+        idle_banter = intent == "trigger_idle_banter"
         latest_roll = state.get("latest_roll")
-        banter_allowed_intents = frozenset({"chat", "banter"})
+        banter_allowed_intents = frozenset({"chat", "banter", "trigger_idle_banter"})
         needs_full_agent = (
             intent not in banter_allowed_intents
             or _latest_roll_is_meaningful(latest_roll)
@@ -291,30 +292,50 @@ def create_generation_node() -> Callable[[GameState], Coroutine[Any, Any, dict]]
         has_healing_potion = (npc_inv.get("healing_potion", 0) or 0) >= 1
 
         current_npc_data = entities.get(speaker, {})
-        shar_faith = current_npc_data.get("shar_faith")
-        memory_awakening = current_npc_data.get("memory_awakening")
-        system_prompt = character.render_prompt(
-            relationship_score=affection,
-            affection=affection,
-            flags=flags,
-            summary=summary,
-            journal_entries=journal_events[-5:] if journal_events else [],
-            inventory_items=inventory_display_list,
-            has_healing_potion=has_healing_potion,
-            time_of_day=state.get("time_of_day", "晨曦 (Morning)"),
-            hp=current_npc_data.get("hp", 20),
-            active_buffs=current_npc_data.get("active_buffs", []),
-            shar_faith=shar_faith,
-            memory_awakening=memory_awakening,
-        )
+        if idle_banter:
+            loc = state.get("current_location", "Unknown Location")
+            party_ids = ", ".join(sorted(entities.keys()))
+            system_prompt = (
+                "[SYSTEM NOTE - IDLE BANTER MODE]: The player is AFK. You are no longer playing a single character, "
+                "but acting as the Omni-Director of the game engine. Your task is to generate a spontaneous ambient "
+                "interaction between the NPCs present in the current_location.\n\n"
+                "CRITICAL RULES:\n"
+                "1. Randomly choose whether to generate a SOLILOQUY (1 character mutters) or a BANTER "
+                "(2 characters exchange quick words).\n"
+                "2. If BANTER, pick TWO characters from the entities list. Output EXACTLY 2 dialogue objects in the JSON "
+                "'responses' array (e.g., Character A says something, Character B replies immediately).\n"
+                "3. Keep it extremely short, natural, and passing. Do NOT wait for or address the player.\n\n"
+                f"[CONTEXT]\n"
+                f"current_location: {loc}\n"
+                f"entities (valid speaker ids): {party_ids}\n"
+            )
+        else:
+            shar_faith = current_npc_data.get("shar_faith")
+            memory_awakening = current_npc_data.get("memory_awakening")
+            system_prompt = character.render_prompt(
+                relationship_score=affection,
+                affection=affection,
+                flags=flags,
+                summary=summary,
+                journal_entries=journal_events[-5:] if journal_events else [],
+                inventory_items=inventory_display_list,
+                has_healing_potion=has_healing_potion,
+                time_of_day=state.get("time_of_day", "晨曦 (Morning)"),
+                hp=current_npc_data.get("hp", 20),
+                active_buffs=current_npc_data.get("active_buffs", []),
+                shar_faith=shar_faith,
+                memory_awakening=memory_awakening,
+            )
 
-        item_lore = _build_item_lore(state)
-        if item_lore:
-            system_prompt += item_lore
+        if not idle_banter:
+            item_lore = _build_item_lore(state)
+            if item_lore:
+                system_prompt += item_lore
+            system_prompt += f"Current Speaker: {speaker}\n"
 
-        system_prompt += f"Current Speaker: {speaker}\n"
         system_prompt += f"Player's Current Inventory: {player_inv}\n"
-        system_prompt += _build_dynamic_context_prompt(state, user_input, latest_roll)
+        roll_for_prompt = None if idle_banter else latest_roll
+        system_prompt += _build_dynamic_context_prompt(state, user_input, roll_for_prompt)
 
         messages = list(state.get("messages", []))
         if is_first_npc_of_player_turn and user_input:
@@ -326,9 +347,9 @@ def create_generation_node() -> Callable[[GameState], Coroutine[Any, Any, dict]]
         history_dicts = [_message_to_dict(m) for m in recent_messages]
 
         # 近因效应：拼在最后一条 User 消息末尾（经 history_dicts 进入 lc_messages；避免先改 messages 以免污染 A-to-A 的 original_text）
-        prompt_suffix = "\n*(现在轮到你做出反应了)*"
+        prompt_suffix = "" if idle_banter else "\n*(现在轮到你做出反应了)*"
         # 【终极疗法：利用 JSON 内联动作，打破动作幻觉与拖延症】
-        if intent not in ("chat", "banter"):
+        if intent not in ("chat", "banter", "trigger_idle_banter"):
             prompt_suffix += f"""\n\n🚨 [CRITICAL OVERRIDE - PHYSICAL ACTION REQUIRED]:
 Listen carefully, {speaker}: Your text output is ONLY YOUR VOICE. It cannot move items, move your body to a new location, or interact with the world.
 If you decide to accept an item, walk to a semantic waypoint, OR interact with the environment (like opening a chest or unlocking a door), YOU MUST output the `physical_action` field in your JSON response!
@@ -342,7 +363,7 @@ Examples:
 
 IF YOU DO NOT INCLUDE THIS FIELD IN YOUR JSON, YOU ARE JUST STANDING STILL AND DOING NOTHING!"""
 
-        if len(prev_responses) > 0:
+        if not idle_banter and len(prev_responses) > 0:
             last_speaker_id, last_speaker_text = prev_responses[-1]
 
             system_prompt += (
@@ -364,7 +385,7 @@ IF YOU DO NOT INCLUDE THIS FIELD IN YOUR JSON, YOU ARE JUST STANDING STILL AND D
                     f"[刚刚发生] {last_speaker_id} 回应道：{last_speaker_text}"
                     + prompt_suffix
                 )
-        elif history_dicts and history_dicts[-1].get("role") == "user":
+        elif not idle_banter and history_dicts and history_dicts[-1].get("role") == "user":
             _last_u = history_dicts[-1].get("content") or ""
             history_dicts[-1]["content"] = _last_u + prompt_suffix
 
@@ -403,6 +424,16 @@ IF YOU DO NOT INCLUDE THIS FIELD IN YOUR JSON, YOU ARE JUST STANDING STILL AND D
         rules_tpl = _rules_env.get_template("system_rules.j2")
         system_prompt += "\n" + rules_tpl.render() + "\n"
 
+        if idle_banter:
+            system_prompt += (
+                "\n[OVERRIDE]: For this request only, ignore any single-NPC roleplay or solo `reply` schema "
+                "in the rules above. You are the Omni-Director; output only one JSON object with the `responses` array.\n"
+                "\nOutput ONLY valid JSON (no markdown fences) with this exact shape:\n"
+                '{ "responses": [ {"speaker": "<npc_id>", "text": "<line>"}, ... ] }\n'
+                "The array must have length 1 (SOLILOQUY) or 2 (BANTER). Use only speaker ids from [CONTEXT].\n"
+                "Do NOT address the player or ask for their input.\n"
+            )
+
         lc_messages: list[BaseMessage] = [SystemMessage(content=system_prompt)]
         for d in history_dicts:
             if d.get("role") == "user":
@@ -419,6 +450,8 @@ IF YOU DO NOT INCLUDE THIS FIELD IN YOUR JSON, YOU ARE JUST STANDING STILL AND D
         )
         # 主路径仅绑定查询工具，物理动作全面改用内联 JSON 字段
         llm_with_tools = llm.bind_tools([check_target_inventory])
+        if idle_banter:
+            llm_with_tools = llm
 
         if DEBUG_AI_PAYLOAD:
             messages_dbg = lc_messages
@@ -538,7 +571,28 @@ IF YOU DO NOT INCLUDE THIS FIELD IN YOUR JSON, YOU ARE JUST STANDING STILL AND D
             print(f"📦 [底层 JSON 透视] \n{raw_output}\n")
         # ----------------------------------------
 
-        if isinstance(json_parsed, dict) and "reply" in json_parsed:
+        idle_merged: list[tuple[str, str]] | None = None
+        if idle_banter and isinstance(json_parsed, dict):
+            _lines = json_parsed.get("responses") or json_parsed.get("idle_banter_lines")
+            if isinstance(_lines, list) and _lines:
+                _valid_ids = set(entities.keys())
+                _merged: list[tuple[str, str]] = []
+                for item in _lines[:2]:
+                    if not isinstance(item, dict):
+                        continue
+                    spk = str(item.get("speaker") or speaker).strip().lower()
+                    if spk not in _valid_ids:
+                        spk = speaker
+                    raw_line = (item.get("text") or "...").strip()
+                    _merged.append((spk, clean_npc_dialogue(spk, raw_line)))
+                if _merged:
+                    idle_merged = _merged
+
+        if idle_merged is not None:
+            raw_text = "\n".join(t for _, t in idle_merged)
+            thought_process = ""
+            state_changes = {}
+        elif isinstance(json_parsed, dict) and "reply" in json_parsed:
             raw_text = (json_parsed.get("reply") or "...").strip()
             thought_process = (json_parsed.get("internal_monologue") or "").strip()
             state_changes = json_parsed.get("state_changes") or {}
@@ -561,8 +615,12 @@ IF YOU DO NOT INCLUDE THIS FIELD IN YOUR JSON, YOU ARE JUST STANDING STILL AND D
                 "memory_awakening_delta": 0,
             }
 
-        clean_text = clean_npc_dialogue(speaker, raw_text)
-        attributed_msg = format_history_message(speaker, clean_text)
+        attributed_msg = ""
+        if idle_merged is not None:
+            clean_text = "\n".join(t for _, t in idle_merged)
+        else:
+            clean_text = clean_npc_dialogue(speaker, raw_text)
+            attributed_msg = format_history_message(speaker, clean_text)
 
         aff_delta = int(state_changes.get("affection_delta", 0))
         shar_delta = int(state_changes.get("shar_faith_delta", 0))
@@ -579,13 +637,22 @@ IF YOU DO NOT INCLUDE THIS FIELD IN YOUR JSON, YOU ARE JUST STANDING STILL AND D
             current_entities[speaker] = ent
             state_changes_applied = True
 
-        out_messages: list[BaseMessage] = [AIMessage(content=attributed_msg, name=speaker)]
-        if is_first_npc_of_player_turn and user_input:
-            out_messages = [HumanMessage(content=user_input), AIMessage(content=attributed_msg, name=speaker)]
+        if idle_merged is not None:
+            out_messages = [
+                AIMessage(content=format_history_message(spk, txt), name=spk) for spk, txt in idle_merged
+            ]
+            if is_first_npc_of_player_turn and user_input:
+                out_messages = [HumanMessage(content=user_input)] + out_messages
+            _speaker_responses = prev_responses + list(idle_merged)
+        else:
+            out_messages = [AIMessage(content=attributed_msg, name=speaker)]
+            if is_first_npc_of_player_turn and user_input:
+                out_messages = [HumanMessage(content=user_input), AIMessage(content=attributed_msg, name=speaker)]
+            _speaker_responses = prev_responses + [(speaker, clean_text)]
 
         out = {
             "final_response": clean_text,
-            "speaker_responses": prev_responses + [(speaker, clean_text)],
+            "speaker_responses": _speaker_responses,
             "thought_process": thought_process,
             "messages": out_messages,
         }
