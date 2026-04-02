@@ -8,6 +8,7 @@ import random
 import re
 from typing import Any, Dict, List, Optional
 
+from core.engine.physics import DEBUG_ALWAYS_PASS_CHECKS
 from core.systems.dice import roll_d20
 
 
@@ -258,6 +259,8 @@ def execute_skill_check(state: Any) -> Dict[str, Any]:
         f"Roll {rolls_str} + {modifier:+d} = {total} vs DC {dc} | "
         f"Result: {result_val}",
     ]
+    if DEBUG_ALWAYS_PASS_CHECKS:
+        journal_lines.append("  [DEV MODE] 自动大成功")
     if stat_mod != 0:
         journal_lines.append(f"  [Attribute modifier ({ability_name}): {stat_mod:+d}]")
     if rel_mod != 0:

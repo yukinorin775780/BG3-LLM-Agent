@@ -154,7 +154,92 @@
       min-width: 280px;
       display: flex;
       flex-direction: column;
+      min-height: 0;
       background: var(--bg-panel);
+    }
+
+    /* 上：队伍状态 ~30% */
+    #party-panel {
+      flex: 0 0 30%;
+      min-height: 100px;
+      max-height: 40vh;
+      overflow-y: auto;
+      padding: 0.5rem 0.75rem 0.65rem;
+      border-bottom: 1px solid var(--border);
+      background: linear-gradient(180deg, rgba(0, 212, 170, 0.04) 0%, transparent 100%);
+    }
+
+    .party-panel-title {
+      font-size: 0.68rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--text-dim);
+      margin-bottom: 0.45rem;
+    }
+
+    .party-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+      gap: 0.45rem;
+      align-items: start;
+    }
+
+    .party-card {
+      background: rgba(18, 24, 31, 0.95);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.45rem 0.5rem;
+      font-size: 0.78rem;
+      line-height: 1.35;
+    }
+
+    .party-card-name {
+      font-weight: 700;
+      font-size: 0.82rem;
+      margin-bottom: 0.35rem;
+      letter-spacing: 0.02em;
+    }
+
+    .party-card-stats {
+      color: var(--text-dim);
+      font-size: 0.72rem;
+      margin-bottom: 0.35rem;
+    }
+
+    .party-card-stats span {
+      display: block;
+    }
+
+    .party-inv {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.25rem;
+      align-items: center;
+    }
+
+    .inv-badge {
+      display: inline-block;
+      padding: 0.12rem 0.35rem;
+      border-radius: 999px;
+      font-size: 0.65rem;
+      font-family: ui-monospace, monospace;
+      background: rgba(42, 63, 82, 0.55);
+      border: 1px solid rgba(90, 112, 136, 0.45);
+      color: var(--text);
+    }
+
+    .inv-empty {
+      color: var(--text-dim);
+      font-size: 0.68rem;
+      font-style: italic;
+    }
+
+    /* 下：对话区 ~70% */
+    .chat-main {
+      flex: 1 1 70%;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
     }
 
     .chat-header {
@@ -167,6 +252,7 @@
 
     #chat-log {
       flex: 1;
+      min-height: 0;
       overflow-y: auto;
       padding: 1rem;
       font-size: 0.9rem;
@@ -272,6 +358,111 @@
       color: var(--text-dim);
       border-top: 1px solid var(--border);
     }
+
+    /* ----- 战利品弹窗 ----- */
+    #loot-modal {
+      position: fixed;
+      inset: 0;
+      z-index: 2000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1rem;
+      background: rgba(0, 0, 0, 0.58);
+      backdrop-filter: blur(2px);
+    }
+
+    #loot-modal.hidden {
+      display: none;
+    }
+
+    .loot-modal-panel {
+      width: 100%;
+      max-width: 440px;
+      background: linear-gradient(165deg, #161d26 0%, var(--bg-panel) 100%);
+      border: 2px solid var(--border);
+      border-radius: 10px;
+      box-shadow:
+        0 0 0 1px rgba(0, 212, 170, 0.12),
+        0 20px 50px rgba(0, 0, 0, 0.65);
+      padding: 1.15rem 1.25rem 1rem;
+    }
+
+    .loot-items {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.35rem;
+      align-items: center;
+      min-height: 2.5rem;
+      margin-bottom: 1rem;
+    }
+
+    .loot-empty {
+      color: var(--text-dim);
+      font-size: 0.85rem;
+      font-style: italic;
+      width: 100%;
+    }
+
+    #loot-title {
+      margin: 0 0 0.85rem;
+      font-size: 1rem;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      color: var(--accent);
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 0.65rem;
+    }
+
+    .loot-badge {
+      display: inline-block;
+      padding: 0.2rem 0.45rem;
+      border-radius: 999px;
+      font-size: 0.68rem;
+      font-family: ui-monospace, monospace;
+      background: rgba(42, 63, 82, 0.6);
+      border: 1px solid rgba(90, 112, 136, 0.5);
+      color: var(--text);
+    }
+
+    .loot-modal-actions {
+      display: flex;
+      gap: 0.6rem;
+      justify-content: flex-end;
+      flex-wrap: wrap;
+    }
+
+    #loot-all-btn {
+      padding: 0.5rem 1rem;
+      background: linear-gradient(180deg, #1e4d38 0%, #153528 100%);
+      border: 1px solid #2a9d6a;
+      color: #7ee0b8;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 0.82rem;
+      font-weight: 600;
+      font-family: inherit;
+    }
+
+    #loot-all-btn:hover {
+      filter: brightness(1.08);
+    }
+
+    #close-loot-btn {
+      padding: 0.5rem 1rem;
+      background: #2a333d;
+      border: 1px solid #4a5563;
+      color: var(--text-dim);
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 0.82rem;
+      font-family: inherit;
+    }
+
+    #close-loot-btn:hover {
+      color: var(--text);
+      border-color: var(--border);
+    }
   </style>
 </head>
 <body>
@@ -283,14 +474,31 @@
       </div>
     </section>
     <section class="chat-panel">
-      <div class="chat-header">对话记录 / 系统日志</div>
-      <div id="chat-log"></div>
-      <div class="idle-hint">挂机：30 秒无操作将触发同伴闲聊（trigger_idle_banter）</div>
-      <div class="chat-input-row">
-        <input type="text" id="user-input" placeholder="输入指令或对白…" autocomplete="off" />
-        <button type="button" id="send-btn">发送</button>
+      <div id="party-panel" aria-label="队伍状态与背包">
+        <div class="party-panel-title">队伍状态 · 背包</div>
+        <div id="party-panel-cards" class="party-grid"></div>
+      </div>
+      <div class="chat-main">
+        <div class="chat-header">对话记录 / 系统日志</div>
+        <div id="chat-log"></div>
+        <div class="idle-hint">挂机：30 秒无操作将触发同伴闲聊（trigger_idle_banter）</div>
+        <div class="chat-input-row">
+          <input type="text" id="user-input" placeholder="输入指令或对白…" autocomplete="off" />
+          <button type="button" id="send-btn">发送</button>
+        </div>
       </div>
     </section>
+  </div>
+
+  <div id="loot-modal" class="hidden" aria-hidden="true" role="dialog" aria-labelledby="loot-title">
+    <div class="loot-modal-panel">
+      <h3 id="loot-title">📦 搜刮</h3>
+      <div id="loot-items" class="loot-items"></div>
+      <div class="loot-modal-actions">
+        <button type="button" id="loot-all-btn">全部拾取</button>
+        <button type="button" id="close-loot-btn">关闭</button>
+      </div>
+    </div>
   </div>
 
   <script>
@@ -316,6 +524,62 @@
     const entityTokens = new Map();
     let idleTimer = null;
     const IDLE_MS = 30000;
+
+    /** 是否已执行「全部拾取」；为 true 后不再自动弹出开箱面板 */
+    let hasLootedChest = false;
+
+    /** 上一回合最后发言的 NPC id（小写），用于拾取者回退 */
+    let lastActor = "";
+
+    function distanceSq(ax, ay, bx, by) {
+      const dx = ax - bx;
+      const dy = ay - by;
+      return dx * dx + dy * dy;
+    }
+
+    /**
+     * 解析 UI「全部拾取」的承担者：优先站在 iron_chest 的队友；
+     * 否则取语义坐标上离铁箱最近者（平局时优先 lastActor）；
+     * 再否则使用 lastActor（若仍在队伍中）。
+     */
+    function resolveLootActor() {
+      const party = partyStatus || {};
+      const chestWp = WAYPOINT_POS.iron_chest;
+      const ids = Object.keys(party).filter(
+        (id) => id !== "player" && party[id] && typeof party[id] === "object"
+      );
+      if (!ids.length) return "";
+
+      const atChest = ids.filter((id) => (party[id].position || "") === "iron_chest");
+      if (atChest.length === 1) return atChest[0];
+      if (atChest.length > 1) {
+        const la = (lastActor || "").toLowerCase();
+        if (atChest.includes(la)) return la;
+        return atChest.sort()[0];
+      }
+
+      let bestD = Infinity;
+      const tied = [];
+      ids.forEach((id) => {
+        const pos = party[id].position || "camp_center";
+        const wp = WAYPOINT_POS[pos] || WAYPOINT_POS.camp_center;
+        const d = distanceSq(wp.left, wp.top, chestWp.left, chestWp.top);
+        if (d < bestD) {
+          bestD = d;
+          tied.length = 0;
+          tied.push(id);
+        } else if (d === bestD) {
+          tied.push(id);
+        }
+      });
+      if (tied.length === 1) return tied[0];
+      const la = (lastActor || "").toLowerCase();
+      if (tied.includes(la)) return la;
+      if (tied.length) return tied.sort()[0];
+
+      if (la && ids.includes(la)) return la;
+      return ids.sort()[0];
+    }
 
     function speakerColor(id) {
       const k = (id || "").toLowerCase();
@@ -358,8 +622,74 @@
       map.appendChild(frag);
     }
 
-    function updateMap(party) {
-      partyStatus = party && typeof party === "object" ? { ...party } : {};
+    function renderPartyPanel() {
+      const host = document.getElementById("party-panel-cards");
+      if (!host) return;
+      host.innerHTML = "";
+      const entries = Object.entries(partyStatus).filter(([, v]) => v && typeof v === "object");
+      entries.sort(([a], [b]) => a.localeCompare(b));
+      if (entries.length === 0) {
+        const empty = document.createElement("div");
+        empty.className = "inv-empty";
+        empty.style.gridColumn = "1 / -1";
+        empty.textContent = "（暂无队伍数据）";
+        host.appendChild(empty);
+        return;
+      }
+      entries.forEach(([id, data]) => {
+        const card = document.createElement("div");
+        card.className = "party-card";
+        const nameEl = document.createElement("div");
+        nameEl.className = "party-card-name";
+        nameEl.style.color = speakerColor(id);
+        nameEl.textContent = getNpcDisplayName(id);
+        const stats = document.createElement("div");
+        stats.className = "party-card-stats";
+        const hpVal = typeof data.hp === "number" ? data.hp : null;
+        const maxHp = typeof data.max_hp === "number" ? data.max_hp : 20;
+        const hpLine =
+          hpVal !== null ? "❤️ HP: " + hpVal + "/" + maxHp : "❤️ HP: —";
+        const aff = data.affection;
+        const affLine = "💖 好感: " + (typeof aff === "number" ? aff : "—");
+        const s1 = document.createElement("span");
+        s1.textContent = hpLine;
+        const s2 = document.createElement("span");
+        s2.textContent = affLine;
+        stats.appendChild(s1);
+        stats.appendChild(s2);
+        const invWrap = document.createElement("div");
+        invWrap.className = "party-inv";
+        const inv = data.inventory && typeof data.inventory === "object" ? data.inventory : {};
+        const invKeys = Object.keys(inv);
+        if (invKeys.length === 0) {
+          const span = document.createElement("span");
+          span.className = "inv-empty";
+          span.textContent = "(背包空空)";
+          invWrap.appendChild(span);
+        } else {
+          invKeys.sort().forEach((itemId) => {
+            const n = inv[itemId];
+            const badge = document.createElement("span");
+            badge.className = "inv-badge";
+            badge.textContent = "[ 🧪 " + itemId + " x" + (n != null ? n : 0) + " ]";
+            invWrap.appendChild(badge);
+          });
+        }
+        card.appendChild(nameEl);
+        card.appendChild(stats);
+        card.appendChild(invWrap);
+        host.appendChild(card);
+      });
+    }
+
+    /** 同步后端 party_status：队伍卡片 + 地图棋子 */
+    function updatePartyStatus(partyStatusData) {
+      partyStatus = partyStatusData && typeof partyStatusData === "object" ? { ...partyStatusData } : {};
+      renderPartyPanel();
+      updateMapTokens();
+    }
+
+    function updateMapTokens() {
       const map = document.getElementById("map-container");
 
       const entries = Object.entries(partyStatus).filter(
@@ -471,7 +801,72 @@
       }, IDLE_MS);
     }
 
-    async function sendMessage(text, intent) {
+    function hideLootModal() {
+      const modal = document.getElementById("loot-modal");
+      if (!modal) return;
+      modal.classList.add("hidden");
+      modal.setAttribute("aria-hidden", "true");
+    }
+
+    function lootItemEmoji(itemId) {
+      const low = (itemId || "").toLowerCase();
+      const map = {
+        gold_coin: "🪙",
+        rusty_dagger: "🗡️",
+        burnt_map: "🗺️",
+        healing_potion: "🧪",
+        rusty_key: "🗝️",
+      };
+      return map[low] || "📦";
+    }
+
+    /** 根据 environment_objects.iron_chest.inventory 填充 #loot-items */
+    function renderLootItems(environmentObjects) {
+      const host = document.getElementById("loot-items");
+      if (!host) return;
+      host.innerHTML = "";
+      const env = environmentObjects && typeof environmentObjects === "object" ? environmentObjects : {};
+      const chest = env.iron_chest;
+      const inv =
+        chest && typeof chest === "object" && chest.inventory && typeof chest.inventory === "object"
+          ? chest.inventory
+          : {};
+      const keys = Object.keys(inv);
+      if (keys.length === 0) {
+        const empty = document.createElement("div");
+        empty.className = "loot-empty";
+        empty.textContent = "里面什么也没有";
+        host.appendChild(empty);
+        return;
+      }
+      keys.sort().forEach((itemId) => {
+        const n = inv[itemId];
+        const span = document.createElement("span");
+        span.className = "loot-badge";
+        span.textContent =
+          "[ " + lootItemEmoji(itemId) + " " + itemId + " x" + (n != null ? n : 0) + " ]";
+        host.appendChild(span);
+      });
+    }
+
+    function maybeShowLootModal(environmentObjects) {
+      if (hasLootedChest) return;
+      const env = environmentObjects && typeof environmentObjects === "object" ? environmentObjects : {};
+      const chest = env.iron_chest;
+      const status =
+        chest && typeof chest === "object" && chest.status != null
+          ? String(chest.status).trim().toLowerCase()
+          : "";
+      // 后端 physics 解锁后为 "opened"，与 "open" 均视为已开启
+      if (status !== "open" && status !== "opened") return;
+      renderLootItems(env);
+      const modal = document.getElementById("loot-modal");
+      if (!modal) return;
+      modal.classList.remove("hidden");
+      modal.setAttribute("aria-hidden", "false");
+    }
+
+    async function sendMessage(text, intent, character) {
       const userLine = (text || "").trim();
       const intentVal = intent == null || intent === "" ? null : String(intent).trim();
       if (!userLine && !intentVal) return;
@@ -480,8 +875,15 @@
       const body = {
         user_input: userLine,
         intent: intentVal || null,
-        session_id: "web_ui_session",
+        session_id: "test_run_001",
       };
+      const charVal =
+        character != null && String(character).trim() !== ""
+          ? String(character).trim().toLowerCase()
+          : "";
+      if (charVal) {
+        body.character = charVal;
+      }
 
       try {
         const res = await fetch(API_URL, {
@@ -501,7 +903,16 @@
 
         updateChatLog(data, userLine || null);
 
-        updateMap(data.party_status || {});
+        updatePartyStatus(data.party_status || {});
+        maybeShowLootModal(data.environment_objects || {});
+
+        const respList = data.responses || [];
+        if (respList.length > 0) {
+          const last = respList[respList.length - 1];
+          if (last && last.speaker) {
+            lastActor = String(last.speaker).toLowerCase();
+          }
+        }
       } catch (e) {
         appendChat("msg-system", "◎ 网络", String(e.message || e));
       } finally {
@@ -522,8 +933,23 @@
       if (e.key === "Enter") onSend();
     });
 
+    document.getElementById("close-loot-btn").addEventListener("click", () => {
+      hideLootModal();
+    });
+
+    document.getElementById("loot-all-btn").addEventListener("click", () => {
+      hideLootModal();
+      hasLootedChest = true;
+      const actor = resolveLootActor();
+      if (!actor) {
+        appendChat("msg-system", "◎ 系统", "无法解析拾取角色，请等待队伍状态同步后再试。");
+        return;
+      }
+      sendMessage("", "ui_action_loot", actor);
+    });
+
     buildWaypoints();
-    updateMap({});
+    updatePartyStatus({});
     resetIdleTimer();
 
     appendChat("msg-system", "◎ 终端", "连接 " + API_URL + " — 输入对话或等待挂机事件。");

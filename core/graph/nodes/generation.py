@@ -23,7 +23,12 @@ from langchain_openai import ChatOpenAI
 
 from config import settings
 from core.engine import generate_dialogue, parse_ai_response
-from core.engine.physics import apply_environment_interaction, apply_movement, apply_physics
+from core.engine.physics import (
+    apply_environment_interaction,
+    apply_movement,
+    apply_physics,
+    execute_loot,
+)
 from core.graph.graph_state import GameState
 from core.graph.nodes.utils import (
     _build_item_lore,
@@ -97,6 +102,19 @@ def _execute_json_action(
         _loc = (physical_action.get("target_id") or "").strip()
         move_events = apply_movement(current_entities, speaker, _loc)
         tool_physics_events.extend(move_events)
+    elif action_type == "loot":
+        char_id = (
+            physical_action.get("character_id")
+            or physical_action.get("character")
+            or speaker
+        )
+        obj_id = (
+            physical_action.get("target_object")
+            or physical_action.get("target_id")
+            or "iron_chest"
+        )
+        loot_log = execute_loot(current_entities, current_env_objs, str(char_id), str(obj_id))
+        tool_physics_events.append(loot_log)
 
     return tool_physics_events
 
@@ -360,6 +378,9 @@ Examples:
 1. Taking an item: "physical_action": {{"action_type": "transfer_item", "source_id": "player", "target_id": "{speaker}", "item_id": "healing_potion", "amount": 1}}
 2. Interacting with object: "physical_action": {{"action_type": "interact_object", "target_id": "iron_chest", "action_detail": "unlock"}}
 3. Moving to a location: "physical_action": {{"action_type": "move_to", "target_id": "camp_fire"}}
+4. Looting an opened container (take all items into the acting character's inventory): "physical_action": {{"action_type": "loot", "character_id": "{speaker}", "target_object": "iron_chest"}}
+
+When the player tells you to take/grab loot from a chest or container you can reach, output `loot` with `character_id` and `target_object` (the environment object id).
 
 IF YOU DO NOT INCLUDE THIS FIELD IN YOUR JSON, YOU ARE JUST STANDING STILL AND DOING NOTHING!"""
 

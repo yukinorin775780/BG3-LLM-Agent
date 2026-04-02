@@ -2,6 +2,7 @@
 BG3 LLM Agent — FastAPI 后端，供 Web UI 调用。
 """
 
+import copy
 from typing import Any, Dict, List
 
 from fastapi import FastAPI, HTTPException
@@ -11,7 +12,9 @@ from langgraph.graph import START
 from pydantic import BaseModel
 
 from core import inventory
+from core.engine.physics import execute_loot
 from core.graph.graph_builder import build_graph
+from core.graph.nodes.utils import first_entity_id
 from core.systems.world_init import get_initial_world_state
 
 # 初始化物品数据库
@@ -33,7 +36,8 @@ app.add_middleware(
 class ChatRequest(BaseModel):
     user_input: str = ""
     intent: str | None = None  # 可选：系统级指令 / 挂机模式等预留意图通道
-    session_id: str = "web_save_01"  # 支持多存档/多用户
+    session_id: str = "test_run_001"  # 默认新会话，避开旧 SQLite 存档
+    character: str | None = None  # 可选：UI 拾取等指定角色 id（如 shadowheart）
 
 
 class ChatResponse(BaseModel):
@@ -82,7 +86,49 @@ async def chat_endpoint(req: ChatRequest):
                 prev_values = {}
             prev_journal_len = len((prev_values or {}).get("journal_events") or [])
 
-        # 2. 驱动大图运转 (执行动作与对话)
+        # 2a. UI 直连拾取：跳过 LLM，仅执行物理并写回 checkpoint
+        if intent_s == "ui_action_loot":
+            entities = copy.deepcopy((prev_values or {}).get("entities") or {})
+            env_objs = copy.deepcopy((prev_values or {}).get("environment_objects") or {})
+            if not entities:
+                raise HTTPException(status_code=400, detail="No entities in state; cannot loot.")
+            char_id = (req.character or "").strip().lower()
+            if not char_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail="character is required for ui_action_loot (e.g. shadowheart).",
+                )
+            if char_id not in entities:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Unknown character: {char_id}",
+                )
+            target_obj = "iron_chest"
+            loot_log = execute_loot(entities, env_objs, char_id, target_obj)
+            await graph.aupdate_state(  
+                config, # type: ignore[arg-type]
+                {
+                    "entities": entities,
+                    "environment_objects": env_objs,
+                    "journal_events": [loot_log],
+                },
+                as_node=START,
+            )
+            snap2 = await graph.aget_state(config)  # type: ignore[arg-type]
+            result_state = snap2.values if hasattr(snap2, "values") else {}
+            if not isinstance(result_state, dict):
+                result_state = {}
+            curr_journal = result_state.get("journal_events") or []
+            new_journal = curr_journal[prev_journal_len:] if len(curr_journal) > prev_journal_len else []
+            return ChatResponse(
+                responses=[],
+                journal_events=new_journal,
+                current_location=result_state.get("current_location", "Unknown"),
+                environment_objects=result_state.get("environment_objects") or {},
+                party_status=result_state.get("entities") or {},
+            )
+
+        # 2b. 驱动大图运转 (执行动作与对话)
         # 使用 ainvoke 会直接返回执行完毕后的最终状态
         payload: Dict[str, Any] = {"user_input": uin}
         if intent_s:

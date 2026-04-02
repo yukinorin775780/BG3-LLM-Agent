@@ -52,6 +52,11 @@ def get_initial_world_state() -> Dict[str, Any]:
                 "name": "沉重的铁箱子",
                 "status": "locked",
                 "description": "一个上了锁的铁箱子，看起来很结实。(DC 15)",
+                "inventory": {
+                    "gold_coin": 50,
+                    "rusty_dagger": 1,
+                    "burnt_map": 1,
+                },
             },
         },
     }

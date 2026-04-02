@@ -42,11 +42,46 @@ def roll_d20(dc: int, modifier: int = 0, roll_type: str = 'normal') -> Dict[str,
             - result_type: CheckResult enum value
             - log_str: Pre-formatted string for UI display
     """
+    from core.engine.physics import DEBUG_ALWAYS_PASS_CHECKS
+
     # Normalize roll_type
     roll_type = roll_type.lower()
     if roll_type not in ['normal', 'advantage', 'disadvantage']:
         roll_type = 'normal'
-    
+
+    if DEBUG_ALWAYS_PASS_CHECKS:
+        if roll_type == 'normal':
+            rolls = [20]
+        else:
+            rolls = [20, 20]
+        raw_roll = 20
+        total = raw_roll + modifier
+        result_type = CheckResult.CRITICAL_SUCCESS
+        is_success = True
+        dev_tag = " [DEV MODE] 自动大成功"
+        if roll_type == 'normal':
+            log_str = (
+                f"🎲 ({raw_roll}) + {modifier:+d} = {total} vs DC {dc} [{result_type.value}]{dev_tag}"
+            )
+        elif roll_type == 'advantage':
+            log_str = (
+                f"🎲 [ADV] ({rolls[0]}, {rolls[1]}) -> {raw_roll} + {modifier:+d} = {total} vs DC {dc} "
+                f"[{result_type.value}]{dev_tag}"
+            )
+        else:
+            log_str = (
+                f"🎲 [DIS] ({rolls[0]}, {rolls[1]}) -> {raw_roll} + {modifier:+d} = {total} vs DC {dc} "
+                f"[{result_type.value}]{dev_tag}"
+            )
+        return {
+            "total": total,
+            "raw_roll": raw_roll,
+            "rolls": rolls,
+            "is_success": is_success,
+            "result_type": result_type,
+            "log_str": log_str,
+        }
+
     # Roll the die(s)
     if roll_type == 'normal':
         rolls = [random.randint(1, 20)]

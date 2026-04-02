@@ -3,9 +3,12 @@
 V3 架构：从 dm_node 抽离，单一职责。
 """
 
-from typing import Dict, List, Any
+from typing import Any, Dict, List
 
 from core.systems.inventory import get_registry
+
+# 开发者测试：为 True 时 `core.systems.dice.roll_d20` 固定自然 20（大成功），跳过随机掷骰
+DEBUG_ALWAYS_PASS_CHECKS = True
 
 
 def apply_physics(
@@ -144,6 +147,51 @@ def apply_movement(current_entities: dict, actor_id: str, target_location: str) 
     ent = current_entities[actor_id]
     ent["position"] = tid
     return [f"🏃 [物理移动] {actor_id.capitalize()} 移动到了 {tid}。"]
+
+
+def execute_loot(
+    entities: Dict[str, Any],
+    environment_objects: Dict[str, Any],
+    character_id: str,
+    target_obj_id: str,
+) -> str:
+    """
+    将环境物体 inventory 内全部物品转移到指定角色背包，并清空该物体 inventory。
+    直接修改传入的 entities 与 environment_objects。
+    返回一条可写入 journal 的日志字符串。
+    """
+    if not character_id or character_id not in entities:
+        return f"❌ [系统] 未找到角色: {character_id}"
+    if not target_obj_id or target_obj_id not in environment_objects:
+        return f"❌ [系统] 未找到环境物体: {target_obj_id}"
+
+    obj = environment_objects[target_obj_id]
+    if not isinstance(obj, dict):
+        return f"❌ [系统] 无效的环境物体数据: {target_obj_id}"
+
+    inv = obj.get("inventory")
+    if not isinstance(inv, dict):
+        inv = {}
+
+    ent = entities[character_id]
+    dst = ent.setdefault("inventory", {})
+    if not isinstance(dst, dict):
+        dst = {}
+        entities[character_id]["inventory"] = dst
+
+    for item_id, count in list(inv.items()):
+        if not item_id:
+            continue
+        try:
+            c = int(count)
+        except (TypeError, ValueError):
+            continue
+        if c <= 0:
+            continue
+        dst[item_id] = dst.get(item_id, 0) + c
+
+    obj["inventory"] = {}
+    return f"🎒 [系统] {character_id} 搜刮了 {target_obj_id} 的所有物品。"
 
 
 def apply_environment_interaction(env_objects: dict, target_id: str, action_detail: str, actor_id: str) -> List[str]:
