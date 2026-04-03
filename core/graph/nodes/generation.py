@@ -46,7 +46,7 @@ from core.tools.npc_tools import check_target_inventory
 from core.utils.text_processor import clean_npc_dialogue, format_history_message, parse_llm_json
 
 # 全局开关：设为 True 时打印发给大模型的 Payload（调试用）
-DEBUG_AI_PAYLOAD = False
+DEBUG_AI_PAYLOAD = True
 
 
 def _player_message_suggests_item_offer(text: str) -> bool:
@@ -115,6 +115,25 @@ def _execute_json_action(
         )
         loot_log = execute_loot(current_entities, current_env_objs, str(char_id), str(obj_id))
         tool_physics_events.append(loot_log)
+    elif action_type in ("consume", "use_item", "use", "drink"):
+        item_id = (physical_action.get("item_id") or "").strip()
+        if item_id:
+            count = int(physical_action.get("amount", 1) or 1)
+            item_transfers = [
+                {
+                    "from": speaker,
+                    "to": "consumed",
+                    "item_id": item_id,
+                    "count": max(1, count),
+                }
+            ]
+            hp_changes: List[Any] = []
+            if "healing_potion" in item_id:
+                hp_changes.append({"target": speaker, "amount": 5})
+            consume_events = apply_physics(
+                current_entities, player_inv_for_physics, item_transfers, hp_changes
+            )
+            tool_physics_events.extend(consume_events)
 
     return tool_physics_events
 
@@ -174,6 +193,13 @@ def _build_dynamic_context_prompt(state: GameState, user_input: str, latest_roll
                 "Because the roll is a FAILURE, you MUST absolutely reject the player and their item "
                 "in your response. DO NOT ACCEPT IT.\n"
             )
+        else:
+            context_prompt += (
+                "Because the roll is a SUCCESS, you MUST completely COMPLY with the player's command in this turn. "
+                "Do NOT lie about your inventory, do NOT hoard items, and do NOT refuse. "
+                "You must immediately output the required `physical_action` (like `consume` or `transfer_item`) "
+                "to execute the task.\n"
+            )
 
     return context_prompt
 
@@ -218,9 +244,15 @@ def create_generation_node() -> Callable[[GameState], Coroutine[Any, Any, dict]]
         current_npc = entities.get(speaker, {})
         affection = current_npc.get("affection", 0)
         flags = state.get("flags", {})
-        npc_inv = current_npc.get("inventory", state.get("npc_inventory", {}))
-        if not isinstance(npc_inv, dict):
+        # 优先 entities[speaker].inventory（与前端 party_status 一致）；仅当键缺失时用旧字段 npc_inventory
+        _inv_raw = current_npc.get("inventory")
+        if _inv_raw is None:
+            _fb = state.get("npc_inventory")
+            _inv_raw = _fb if isinstance(_fb, dict) else {}
+        if not isinstance(_inv_raw, dict):
             npc_inv = {}
+        else:
+            npc_inv = dict(_inv_raw)
         player_inv = state.get("player_inventory", {})
         journal_events = list(state.get("journal_events", []))
         summary = state.get("summary", "Graph Mode Testing")
@@ -308,6 +340,9 @@ def create_generation_node() -> Callable[[GameState], Coroutine[Any, Any, dict]]
 
         inventory_display_list = format_inventory_dict_to_display_list(npc_inv)
         has_healing_potion = (npc_inv.get("healing_potion", 0) or 0) >= 1
+        print(f"🚨 [DEBUG 状态核对] Speaker: {speaker}")
+        print(f"🚨 [DEBUG 状态核对] npc_inv (字典): {npc_inv}")
+        print(f"🚨 [DEBUG 状态核对] has_healing_potion (布尔): {has_healing_potion}")
 
         current_npc_data = entities.get(speaker, {})
         if idle_banter:
@@ -368,7 +403,12 @@ def create_generation_node() -> Callable[[GameState], Coroutine[Any, Any, dict]]
         prompt_suffix = "" if idle_banter else "\n*(现在轮到你做出反应了)*"
         # 【终极疗法：利用 JSON 内联动作，打破动作幻觉与拖延症】
         if intent not in ("chat", "banter", "trigger_idle_banter"):
+            current_inv_str = str(npc_inv) if npc_inv else "Empty"
             prompt_suffix += f"""\n\n🚨 [CRITICAL OVERRIDE - PHYSICAL ACTION REQUIRED]:
+[YOUR ABSOLUTE TRUTH]: Your physical inventory exactly contains: {current_inv_str}.
+DO NOT hallucinate. DO NOT claim you don't have these items.
+If the player commands you to use or give an item you possess, YOU MUST COMPLY immediately and output the `physical_action` JSON.
+
 Listen carefully, {speaker}: Your text output is ONLY YOUR VOICE. It cannot move items, move your body to a new location, or interact with the world.
 If you decide to accept an item, walk to a semantic waypoint, OR interact with the environment (like opening a chest or unlocking a door), YOU MUST output the `physical_action` field in your JSON response!
 
@@ -379,8 +419,11 @@ Examples:
 2. Interacting with object: "physical_action": {{"action_type": "interact_object", "target_id": "iron_chest", "action_detail": "unlock"}}
 3. Moving to a location: "physical_action": {{"action_type": "move_to", "target_id": "camp_fire"}}
 4. Looting an opened container (take all items into the acting character's inventory): "physical_action": {{"action_type": "loot", "character_id": "{speaker}", "target_object": "iron_chest"}}
+5. Consuming an item (e.g. potion): "physical_action": {{"action_type": "consume", "item_id": "healing_potion"}}
+6. Giving an item to someone else: "physical_action": {{"action_type": "transfer_item", "source_id": "{speaker}", "target_id": "astarion", "item_id": "rusty_dagger", "amount": 1}}
 
 When the player tells you to take/grab loot from a chest or container you can reach, output `loot` with `character_id` and `target_object` (the environment object id).
+When you give an item from your inventory to another character, use `transfer_item` with `source_id` set to your character id. When you drink or eat something from your own inventory, use `consume` with `item_id`.
 
 IF YOU DO NOT INCLUDE THIS FIELD IN YOUR JSON, YOU ARE JUST STANDING STILL AND DOING NOTHING!"""
 

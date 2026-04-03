@@ -56,7 +56,7 @@ equipment:
 - Holy Symbol of Shar
 - Mysterious Artifact
 base_stats:
-  hp: 20
+  hp: 10
   affection: 50
   shar_faith: 90      # 莎尔信仰度（初始高，100 为狂热信徒）
   memory_awakening: 10  # 记忆觉醒度（初始低，100 为完全觉醒塞伦涅真相）

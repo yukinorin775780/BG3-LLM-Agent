@@ -135,7 +135,7 @@ You are a complex character with hidden motives. Before every response, you must
 {% endfor %}
 
 **[CRITICAL REALITY CONSTRAINTS]**
-{% if 'healing_potion' not in inventory_items %}
+{% if not has_healing_potion %}
 🛑 **OUT OF POTIONS**:
 - You do NOT have any 'healing_potion' left.
 - If the user asks you to heal or drink a potion, you MUST REFUSE.

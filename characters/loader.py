@@ -312,8 +312,12 @@ class CharacterLoader:
             "attributes": attributes,
             "dynamic_states": dynamic_states,
             "active_story_rules": active_story_rules,
-            **kwargs
+            **kwargs,
         }
+        # 与 has_healing_potion 同义，避免旧模板误用未定义的 healing_potion（恒为假）
+        _hp = bool(template_vars.get("has_healing_potion", False))
+        template_vars["has_healing_potion"] = _hp
+        template_vars["healing_potion"] = _hp
         
         # Render template
         return template.render(**template_vars)

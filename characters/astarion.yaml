@@ -40,7 +40,7 @@ equipment:
   - Leather Armor
   - Shortbow
 base_stats:
-  hp: 20
+  hp: 15
   affection: 0
   vampiric_hunger: 85   # 吸血鬼饥渴度（0-100，高=饥渴）
   ascension_desire: 50  # 飞升渴望（0-100）

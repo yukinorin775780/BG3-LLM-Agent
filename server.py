@@ -36,7 +36,7 @@ app.add_middleware(
 class ChatRequest(BaseModel):
     user_input: str = ""
     intent: str | None = None  # 可选：系统级指令 / 挂机模式等预留意图通道
-    session_id: str = "test_run_001"  # 默认新会话，避开旧 SQLite 存档
+    session_id: str = "test_consume_003"  # 默认新会话，避开旧 SQLite 存档
     character: str | None = None  # 可选：UI 拾取等指定角色 id（如 shadowheart）
 
 
