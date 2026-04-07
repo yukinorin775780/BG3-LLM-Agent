@@ -3,25 +3,35 @@ Dungeon Master (DM) Module
 Analyzes player intent and determines game mechanics (skill checks, DC, etc.)
 """
 
+import ast
+import logging
+import operator
 import os
-import re
-from characters.loader import load_character
-from core.utils.text_processor import parse_llm_json
-from typing import Dict, Any
+from typing import Any, Dict, List, Mapping, Optional
+
+from jinja2 import Environment, FileSystemLoader, Template, TemplateNotFound
 from openai import OpenAI
-from jinja2 import Environment, FileSystemLoader, TemplateNotFound
+
+from characters.loader import load_character
 from config import settings
+from core.utils.text_processor import parse_llm_json
 
-# 初始化客户端
-if not settings.API_KEY:
-    raise RuntimeError(
-        "未找到 API Key。请配置 BAILIAN_API_KEY 或 DASHSCOPE_API_KEY 环境变量。"
-    )
+logger = logging.getLogger(__name__)
 
-try:
-    client = OpenAI(api_key=settings.API_KEY, base_url=settings.BASE_URL)
-except Exception as e:
-    raise RuntimeError(f"初始化 AI 客户端失败: {e}")
+DEFAULT_AVAILABLE_NPCS = ["shadowheart", "astarion"]
+DEFAULT_TARGET_NPC = DEFAULT_AVAILABLE_NPCS[0]
+_COMPARISON_OPERATORS = {
+    ast.Eq: operator.eq,
+    ast.NotEq: operator.ne,
+    ast.Lt: operator.lt,
+    ast.LtE: operator.le,
+    ast.Gt: operator.gt,
+    ast.GtE: operator.ge,
+    ast.In: lambda left, right: left in right,
+    ast.NotIn: lambda left, right: left not in right,
+}
+_client: Optional[OpenAI] = None
+
 
 # 初始化 Jinja2 环境（用于加载 DM prompt 模板）
 # 获取当前文件所在目录（core/llm/），然后指向 core/llm/prompts/
@@ -35,7 +45,32 @@ _jinja_env = Environment(
 )
 
 
-def load_dm_template():
+class RuleEvaluationError(ValueError):
+    """Raised when a narrative rule contains unsupported syntax."""
+
+
+def _create_openai_client() -> OpenAI:
+    """Create the OpenAI client only when DM analysis actually needs it."""
+    if not settings.API_KEY:
+        raise RuntimeError(
+            "未找到 API Key。请配置 BAILIAN_API_KEY 或 DASHSCOPE_API_KEY 环境变量。"
+        )
+
+    try:
+        return OpenAI(api_key=settings.API_KEY, base_url=settings.BASE_URL)
+    except Exception as exc:
+        raise RuntimeError(f"初始化 AI 客户端失败: {exc}")
+
+
+def _get_openai_client() -> OpenAI:
+    """Return a cached OpenAI client with lazy initialization."""
+    global _client
+    if _client is None:
+        _client = _create_openai_client()
+    return _client
+
+
+def load_dm_template() -> Template:
     """
     Load the DM prompt template.
     
@@ -62,34 +97,125 @@ def parse_json_response(text: str) -> Dict[str, Any]:
     return parse_llm_json(text)
 
 
-def _evaluate_narrative_rules(analysis: dict, flags: dict, target_npc: str = "shadowheart") -> dict:
-    """数据驱动的规则引擎：解析 YAML 中的条件表达式，动态覆盖 DM 判定结果"""
+def _evaluate_rule_node(node: ast.AST, context: Mapping[str, Any]) -> Any:
+    """Safely evaluate a restricted AST used by narrative rule conditions."""
+    if isinstance(node, ast.BoolOp):
+        values = [_evaluate_rule_node(value, context) for value in node.values]
+        if isinstance(node.op, ast.And):
+            return all(values)
+        if isinstance(node.op, ast.Or):
+            return any(values)
+        raise RuleEvaluationError(f"Unsupported boolean operator: {type(node.op).__name__}")
+
+    if isinstance(node, ast.Compare):
+        left = _evaluate_rule_node(node.left, context)
+        for op_node, comparator in zip(node.ops, node.comparators):
+            right = _evaluate_rule_node(comparator, context)
+            comparator_fn = _COMPARISON_OPERATORS.get(type(op_node))
+            if comparator_fn is None:
+                raise RuleEvaluationError(
+                    f"Unsupported comparison operator: {type(op_node).__name__}"
+                )
+            if not comparator_fn(left, right):
+                return False
+            left = right
+        return True
+
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+        return not bool(_evaluate_rule_node(node.operand, context))
+
+    if isinstance(node, ast.Name):
+        if node.id in context:
+            return context[node.id]
+        raise RuleEvaluationError(f"Unknown variable: {node.id}")
+
+    if isinstance(node, ast.Constant):
+        return node.value
+
+    if isinstance(node, ast.List):
+        return [_evaluate_rule_node(element, context) for element in node.elts]
+
+    if isinstance(node, ast.Tuple):
+        return tuple(_evaluate_rule_node(element, context) for element in node.elts)
+
+    if isinstance(node, ast.Attribute):
+        if isinstance(node.value, ast.Name) and node.value.id == "flags":
+            flags = context.get("flags", {})
+            if isinstance(flags, Mapping):
+                return flags.get(node.attr)
+            raise RuleEvaluationError("flags must be a mapping for attribute access")
+        raise RuleEvaluationError(f"Unsupported attribute access: {ast.dump(node)}")
+
+    if isinstance(node, ast.Call):
+        if (
+            isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "flags"
+            and node.func.attr == "get"
+        ):
+            flags = context.get("flags", {})
+            if not isinstance(flags, Mapping):
+                raise RuleEvaluationError("flags must be a mapping for get() access")
+            args = [_evaluate_rule_node(argument, context) for argument in node.args]
+            if len(args) == 1:
+                return flags.get(args[0])
+            if len(args) == 2:
+                return flags.get(args[0], args[1])
+            raise RuleEvaluationError("flags.get only supports one or two arguments")
+        raise RuleEvaluationError(f"Unsupported function call: {ast.dump(node)}")
+
+    raise RuleEvaluationError(f"Unsupported AST node: {type(node).__name__}")
+
+
+def _evaluate_rule_condition(condition: str, context: Mapping[str, Any]) -> bool:
+    """Safely evaluate a narrative rule condition against the provided context."""
+    normalized_condition = str(condition or "").strip()
+    if not normalized_condition:
+        return False
+
+    try:
+        expression = ast.parse(normalized_condition, mode="eval")
+        return bool(_evaluate_rule_node(expression.body, context))
+    except (SyntaxError, RuleEvaluationError, TypeError, ValueError) as exc:
+        logger.warning("Unsupported rule expression '%s': %s", normalized_condition, exc)
+        return False
+
+
+def _evaluate_narrative_rules(
+    analysis: Dict[str, Any],
+    flags: Dict[str, Any],
+    target_npc: str = DEFAULT_TARGET_NPC,
+) -> Dict[str, Any]:
+    """数据驱动的规则引擎：安全解析条件表达式，动态覆盖 DM 判定结果。"""
     char = load_character(target_npc)
     rules = char.data.get("narrative_rules", [])
     if not rules:
         return analysis
 
-    action_type = analysis.get("action_type", "")
-    is_probing_secret = analysis.get("is_probing_secret", False)
+    context: Dict[str, Any] = dict(analysis)
+    context["flags"] = flags
 
     for rule in rules:
         condition_str = rule.get("condition", "False")
-        try:
-            if eval(
-                condition_str,
-                {"flags": flags, "action_type": action_type, "is_probing_secret": is_probing_secret},
-            ):
-                overrides = rule.get("overrides", {})
-                for key, value in overrides.items():
-                    analysis[key] = value
-                print(f"🔮 [Rule Engine] 触发叙事规则覆写: {rule.get('id')}")
-        except Exception as e:
-            print(f"⚠️ [Rule Engine] 规则 '{rule.get('id')}' 解析失败: {e}")
+        if _evaluate_rule_condition(str(condition_str), context):
+            overrides = rule.get("overrides", {})
+            if not isinstance(overrides, dict):
+                continue
+            analysis.update(overrides)
+            context.update(overrides)
+            logger.info("触发叙事规则覆写: %s", rule.get("id"))
 
     return analysis
 
 
-def analyze_intent(user_input: str, flags: Dict[str, Any] | None = None, time_of_day: str = "晨曦 (Morning)", hp: int = 20, available_npcs: list | None = None, item_lore: str | None = None) -> Dict[str, Any]:
+def analyze_intent(
+    user_input: str,
+    flags: Optional[Dict[str, Any]] = None,
+    time_of_day: str = "晨曦 (Morning)",
+    hp: int = 20,
+    available_npcs: Optional[List[str]] = None,
+    item_lore: Optional[str] = None,
+) -> Dict[str, Any]:
     """
     Analyze player intent and determine game mechanics.
     
@@ -117,7 +243,7 @@ def analyze_intent(user_input: str, flags: Dict[str, Any] | None = None, time_of
         }
 
     flags = flags or {}
-    available_npcs = available_npcs or ["shadowheart", "astarion"]
+    available_npcs = available_npcs or list(DEFAULT_AVAILABLE_NPCS)
     npcs_str = ", ".join(f'"{n}"' for n in available_npcs)
     # Load and render template
     template = load_dm_template()
@@ -125,11 +251,12 @@ def analyze_intent(user_input: str, flags: Dict[str, Any] | None = None, time_of
     if item_lore:
         prompt += "\n\n" + item_lore
     
-    response_text: str | None = None
+    response_text: Optional[str] = None
     
     try:
         # Call LLM
         messages = [{"role": "user", "content": prompt}]
+        client = _get_openai_client()
         
         completion = client.chat.completions.create(
             model=settings.MODEL_NAME,
@@ -152,7 +279,7 @@ def analyze_intent(user_input: str, flags: Dict[str, Any] | None = None, time_of
                 "difficulty_class": 0,
                 "reason": "JSON parse failed, fallback to CHAT.",
                 "is_probing_secret": False,
-                "responders": available_npcs[:1] or ["shadowheart"],
+                "responders": available_npcs[:1] or [DEFAULT_TARGET_NPC],
                 "affection_changes": {},
                 "flags_changed": {},
                 "item_transfers": [],
@@ -175,12 +302,12 @@ def analyze_intent(user_input: str, flags: Dict[str, Any] | None = None, time_of
         intent_data['is_probing_secret'] = bool(intent_data.get('is_probing_secret', False))
 
         # 多人发言队列：responders（DM 决定的发言顺序）
-        responders = intent_data.get("responders", ["shadowheart"])
+        responders = intent_data.get("responders", [DEFAULT_TARGET_NPC])
         if not isinstance(responders, list) or len(responders) == 0:
-            responders = ["shadowheart"]
+            responders = [DEFAULT_TARGET_NPC]
         responders = [str(r).strip().lower() for r in responders if str(r).strip().lower() in available_npcs]
         if not responders:
-            responders = [available_npcs[0]] if available_npcs else ["shadowheart"]
+            responders = [available_npcs[0]] if available_npcs else [DEFAULT_TARGET_NPC]
         intent_data["responders"] = responders
 
         # 剧情标志位变更：安全提取并过滤
@@ -221,12 +348,18 @@ def analyze_intent(user_input: str, flags: Dict[str, Any] | None = None, time_of
                 continue
             # 黑名单：shadowheart / 影心 由 Dynamic Persona 管理，DM 不得覆盖
             if npc_id == "shadowheart" or "影心" in raw_key:
-                print("[DM Intercept] Ignored affection change for Shadowheart (Dynamic Persona owns this).")
+                logger.info(
+                    "Ignored affection change for Shadowheart (Dynamic Persona owns this)."
+                )
                 continue
             filtered[npc_id] = int(v)
         intent_data["affection_changes"] = filtered
 
-        return _evaluate_narrative_rules(intent_data, flags, responders[0] if responders else "shadowheart")
+        return _evaluate_narrative_rules(
+            intent_data,
+            flags,
+            responders[0] if responders else DEFAULT_TARGET_NPC,
+        )
 
     except Exception as e:
         raise RuntimeError(f"DM intent analysis failed: {e}")

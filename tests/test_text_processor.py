@@ -3,6 +3,7 @@
 覆盖 clean_npc_dialogue、format_history_message、parse_llm_json。
 """
 
+import logging
 import sys
 from pathlib import Path
 
@@ -80,12 +81,78 @@ def test_parse_llm_json_markdown_json_prefix():
     assert result == {"key": "value"}
 
 
-def test_parse_llm_json_invalid_returns_empty(capsys):
-    """无效 JSON 应返回空字典并打印警告"""
-    result = parse_llm_json("not json at all")
+def test_parse_llm_json_extracts_json_from_surrounding_text():
+    """前后带说明文字时，仍应提取出 JSON 主体"""
+    raw = '分析如下：\n```json\n{"action_type": "ATTACK", "dc": 18}\n```\n请执行。'
+    result = parse_llm_json(raw)
+    assert result == {"action_type": "ATTACK", "dc": 18}
+
+
+def test_parse_llm_json_prefers_first_valid_fenced_json_block():
+    """多个代码块并存时，应优先使用第一个合法 JSON 代码块"""
+    raw = (
+        "先看示例：\n"
+        "```text\nnot json\n```\n"
+        "最终结果：\n"
+        "```json\n{\"reply\": \"准备好了\", \"state_changes\": {\"affection_delta\": 2}}\n```"
+    )
+    result = parse_llm_json(raw)
+    assert result == {
+        "reply": "准备好了",
+        "state_changes": {"affection_delta": 2},
+    }
+
+
+def test_parse_llm_json_falls_back_to_embedded_json_object():
+    """没有代码块时，应能从普通文本中提取嵌入的 JSON 对象"""
+    raw = '模型回复：{"action_type":"CHAT","difficulty_class":0,"reason":"safe"}，请继续。'
+    result = parse_llm_json(raw)
+    assert result == {
+        "action_type": "CHAT",
+        "difficulty_class": 0,
+        "reason": "safe",
+    }
+
+
+def test_parse_llm_json_sanitizes_positive_number_prefixes():
+    """应清洗对象、嵌套对象与数组中的非法正号前缀"""
+    raw = """
+    ```json
+    {
+      "difficulty_class": +15,
+      "state_changes": {"affection_delta": +2.5},
+      "roll_modifiers": [+1, 0, -2]
+    }
+    ```
+    """
+    result = parse_llm_json(raw)
+    assert result == {
+        "difficulty_class": 15,
+        "state_changes": {"affection_delta": 2.5},
+        "roll_modifiers": [1, 0, -2],
+    }
+
+
+def test_parse_llm_json_invalid_returns_empty(caplog):
+    """无效 JSON 应返回空字典并记录警告"""
+    with caplog.at_level(logging.WARNING):
+        result = parse_llm_json("not json at all")
+
     assert result == {}
-    captured = capsys.readouterr()
-    assert "系统警告" in captured.out or "无效" in captured.out
+    assert "无效的 JSON 格式" in caplog.text
+    assert "not json at all" in caplog.text
+
+
+def test_parse_llm_json_invalid_fenced_json_returns_empty(caplog):
+    """损坏的 JSON 代码块应回退为空字典并记录警告"""
+    raw = '```json\n{"action_type": "CHAT",}\n```'
+
+    with caplog.at_level(logging.WARNING):
+        result = parse_llm_json(raw)
+
+    assert result == {}
+    assert "无效的 JSON 格式" in caplog.text
+    assert '{"action_type": "CHAT",}' in caplog.text
 
 
 def test_parse_llm_json_empty_string():

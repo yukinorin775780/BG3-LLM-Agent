@@ -15,14 +15,14 @@ import asyncio
 import copy
 import os
 from collections.abc import Coroutine
-from typing import Any, Callable, List
+from typing import Any, Callable, Dict, List, Optional
 
 from jinja2 import Environment, FileSystemLoader
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_openai import ChatOpenAI
 
 from config import settings
-from core.engine import generate_dialogue, parse_ai_response
+from archive.v1_legacy.engine import generate_dialogue, parse_ai_response
 from core.engine.physics import (
     apply_environment_interaction,
     apply_movement,
@@ -46,7 +46,7 @@ from core.tools.npc_tools import check_target_inventory
 from core.utils.text_processor import clean_npc_dialogue, format_history_message, parse_llm_json
 
 # 全局开关：设为 True 时打印发给大模型的 Payload（调试用）
-DEBUG_AI_PAYLOAD = True
+DEBUG_AI_PAYLOAD = False
 
 
 def _player_message_suggests_item_offer(text: str) -> bool:
@@ -204,207 +204,226 @@ def _build_dynamic_context_prompt(state: GameState, user_input: str, latest_roll
     return context_prompt
 
 
-def create_generation_node() -> Callable[[GameState], Coroutine[Any, Any, dict]]:
-    """
-    工厂函数：创建 Generation 节点。
-    根据 state["current_speaker"] 动态加载 YAML 灵魂，实现多智能体话语权路由。
-    """
+def _prompt_environment() -> Environment:
+    prompts_dir = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "..", "..", "llm", "prompts"
+    )
+    return Environment(
+        loader=FileSystemLoader(prompts_dir),
+        trim_blocks=True,
+        lstrip_blocks=True,
+    )
 
-    async def generation_node(state: GameState) -> dict:
-        """
-        LLM 生成节点。
-        根据 current_speaker 动态加载对应角色，从 state 提取 affection / flags / inventory 等。
-        """
-        from characters.loader import load_character
 
-        entities = merge_entities_with_defaults(state.get("entities"))
-        fallback_speaker = first_entity_id(entities)
-        speaker = (state.get("current_speaker") or "").strip() or fallback_speaker
-        character = load_character(speaker)
-        print(f"🗣️ Generation Node: {speaker.capitalize()} is speaking...")
-        current_npc_hp = entities.get(speaker, {}).get("hp", 20)
-        char_display = character.data.get("name", speaker.capitalize())
-        if current_npc_hp <= 0:
-            death_msg = f"🩸 {char_display}倒在地上，失去了意识。周围陷入了死寂。"
-            prev_responses = list(state.get("speaker_responses", []))
-            return {
-                "final_response": death_msg,
-                "speaker_responses": prev_responses + [(speaker, death_msg)],
-                "thought_process": "",
-                "messages": [
-                    HumanMessage(content=state.get("user_input", "")),
-                    AIMessage(
-                        content=f"[SYSTEM] {char_display}已经倒在血泊中，失去了意识。你无法再与其交谈。",
-                        name=speaker,
-                    ),
-                ],
-            }
+def _debug_print_messages(messages: List[BaseMessage], label: str = "") -> None:
+    if not DEBUG_AI_PAYLOAD:
+        return
 
-        user_input = state.get("user_input", "")
-        current_npc = entities.get(speaker, {})
-        affection = current_npc.get("affection", 0)
-        flags = state.get("flags", {})
-        # 优先 entities[speaker].inventory（与前端 party_status 一致）；仅当键缺失时用旧字段 npc_inventory
-        _inv_raw = current_npc.get("inventory")
-        if _inv_raw is None:
-            _fb = state.get("npc_inventory")
-            _inv_raw = _fb if isinstance(_fb, dict) else {}
-        if not isinstance(_inv_raw, dict):
-            npc_inv = {}
+    if label:
+        print("\n" + "🔥" * 25)
+        print(label)
+    else:
+        print("\n" + "🔥" * 25)
+        print("🚨 正在打印发给大模型的最终 Payload...")
+    print(f"📊 当前消息总数: {len(messages)} 条")
+    for index, message in enumerate(messages):
+        msg_type = message.__class__.__name__
+        print(f"\n[{index}] 角色/类型: {msg_type}")
+        if msg_type == "SystemMessage":
+            content_str = str(getattr(message, "content", "") or "")
+            content_preview = content_str.replace("\n", " ")[:100]
+            print(f"    📝 内容预览: {content_preview}...")
+            print(f"    📏 总字符数: {len(content_str)}")
+        elif msg_type == "HumanMessage":
+            print(f"    🗣️ 玩家说: {message.content}")
+        elif msg_type == "AIMessage":
+            print(f"    🤖 AI 文本: {repr(message.content)}")
+            if getattr(message, "tool_calls", None):
+                print(f"    🔧 携带工具调用意图: {getattr(message, 'tool_calls', None)}")
+        elif msg_type == "ToolMessage":
+            print(f"    ⚙️ 工具执行结果: {message.content}")
+            print(f"    🔗 绑定的 Tool ID: {getattr(message, 'tool_call_id', '缺失!')}")
         else:
-            npc_inv = dict(_inv_raw)
-        player_inv = state.get("player_inventory", {})
-        journal_events = list(state.get("journal_events", []))
-        summary = state.get("summary", "Graph Mode Testing")
+            print(f"    ❓ 未知消息内容: {message.content}")
+    print("🔥" * 25 + "\n")
 
-        # 多人轮流发言：input_node 每轮开始时清空 speaker_responses。
-        # 仅第一位 NPC 应把本回合玩家句写入 messages / LLM history，后续 NPC 只追加自己的 AIMessage。
-        prev_responses = list(state.get("speaker_responses", []))
-        is_first_npc_of_player_turn = len(prev_responses) == 0
 
-        # Banter 仅用 generate_dialogue，无 bind_tools；须严格限制在「纯闲聊 + 无检定 + 无实体交接」场景
-        intent = str(state.get("intent", "chat") or "chat").strip().lower()
-        idle_banter = intent == "trigger_idle_banter"
-        latest_roll = state.get("latest_roll")
-        banter_allowed_intents = frozenset({"chat", "banter", "trigger_idle_banter"})
-        needs_full_agent = (
-            intent not in banter_allowed_intents
-            or _latest_roll_is_meaningful(latest_roll)
-            or bool(state.get("is_probing_secret"))
-            or _player_message_suggests_item_offer(user_input)
+def _build_unconscious_response(
+    state: GameState,
+    speaker: str,
+    character: Any,
+    entities: Dict[str, Any],
+) -> Optional[dict]:
+    current_npc_hp = entities.get(speaker, {}).get("hp", 20)
+    if current_npc_hp > 0:
+        return None
+
+    char_display = character.data.get("name", speaker.capitalize())
+    death_msg = f"🩸 {char_display}倒在地上，失去了意识。周围陷入了死寂。"
+    prev_responses = list(state.get("speaker_responses", []))
+    return {
+        "final_response": death_msg,
+        "speaker_responses": prev_responses + [(speaker, death_msg)],
+        "thought_process": "",
+        "messages": [
+            HumanMessage(content=state.get("user_input", "")),
+            AIMessage(
+                content=f"[SYSTEM] {char_display}已经倒在血泊中，失去了意识。你无法再与其交谈。",
+                name=speaker,
+            ),
+        ],
+    }
+
+
+def _extract_inventory_states(
+    state: GameState,
+    current_npc: Dict[str, Any],
+) -> Dict[str, Any]:
+    """统一提取玩家/NPC 背包，并兼容旧字段 npc_inventory 回退。"""
+    inventory_raw = current_npc.get("inventory")
+    if inventory_raw is None:
+        fallback_inventory = state.get("npc_inventory")
+        inventory_raw = fallback_inventory if isinstance(fallback_inventory, dict) else {}
+    npc_inv = dict(inventory_raw) if isinstance(inventory_raw, dict) else {}
+    player_inv = state.get("player_inventory", {})
+    if not isinstance(player_inv, dict):
+        player_inv = {}
+
+    inventory_display_list = format_inventory_dict_to_display_list(npc_inv)
+    has_healing_potion = (npc_inv.get("healing_potion", 0) or 0) >= 1
+    return {
+        "npc_inv": npc_inv,
+        "player_inv": dict(player_inv),
+        "inventory_display_list": inventory_display_list,
+        "has_healing_potion": has_healing_potion,
+    }
+
+
+def _process_dialogue_triggers(
+    user_input: str,
+    triggers_config: List[Any],
+    flags: Dict[str, Any],
+    player_inv: Dict[str, Any],
+    npc_inv: Dict[str, Any],
+    affection: int,
+    speaker: str,
+    entities: Dict[str, Any],
+) -> Dict[str, Any]:
+    """处理 dialogue triggers，并将背包/好感度的副作用显式返回。"""
+    trigger_result: Dict[str, Any] = {"journal_entries": [], "relationship_delta": 0}
+    if not (user_input and triggers_config):
+        return {
+            "trigger_result": trigger_result,
+            "player_inv": dict(player_inv),
+            "npc_inv": dict(npc_inv),
+            "affection": affection,
+            "entities": entities,
+        }
+
+    player_inv_obj = Inventory()
+    player_inv_obj.from_dict(dict(player_inv) if isinstance(player_inv, dict) else {})
+    npc_inv_obj = Inventory()
+    npc_inv_obj.from_dict(dict(npc_inv) if isinstance(npc_inv, dict) else {})
+    trigger_result = process_dialogue_triggers(
+        user_input,
+        triggers_config,
+        flags,
+        ui=None,
+        player_inv=player_inv_obj,
+        npc_inv=npc_inv_obj,
+    )
+
+    updated_player_inv = player_inv_obj.to_dict()
+    updated_npc_inv = npc_inv_obj.to_dict()
+    relationship_delta = int(trigger_result.get("relationship_delta", 0) or 0)
+    updated_affection = affection
+    if relationship_delta != 0:
+        updated_affection = max(-100, min(100, affection + relationship_delta))
+    if speaker in entities and isinstance(entities[speaker], dict):
+        entities[speaker]["affection"] = updated_affection
+        entities[speaker]["inventory"] = dict(updated_npc_inv)
+
+    return {
+        "trigger_result": trigger_result,
+        "player_inv": updated_player_inv,
+        "npc_inv": updated_npc_inv,
+        "affection": updated_affection,
+        "entities": entities,
+    }
+
+
+def _build_environmental_awareness(state: GameState) -> Dict[str, Any]:
+    """抽取当前位置和可交互对象快照，避免下游直接操作原始 state。"""
+    raw_env = state.get("environment_objects") or {}
+    current_env_objs: Dict[str, Any] = {}
+    if isinstance(raw_env, dict):
+        for env_id, env_data in raw_env.items():
+            if isinstance(env_data, dict):
+                current_env_objs[env_id] = dict(env_data)
+    return {
+        "current_location": state.get("current_location", "Unknown Location"),
+        "current_env_objs": current_env_objs,
+    }
+
+
+def _prepare_runtime_state(
+    speaker: str,
+    entities: Dict[str, Any],
+    npc_inv: Dict[str, Any],
+    player_inv: Dict[str, Any],
+    affection: int,
+    user_input: str,
+    current_env_objs: Dict[str, Any],
+) -> Dict[str, Any]:
+    current_entities: Dict[str, Any] = {}
+    for entity_id, entity_data in entities.items():
+        if isinstance(entity_data, dict):
+            current_entities[entity_id] = dict(entity_data)
+    for entity_id in current_entities:
+        current_entities[entity_id].setdefault("affection", 0)
+        current_entities[entity_id].setdefault("inventory", {})
+        current_entities[entity_id].setdefault(
+            "position",
+            default_entities.get(entity_id, {}).get("position", "camp_center"),
         )
-
-        messages = list(state.get("messages", []))
-        is_banter = False
-        dm_text = ""
-        if not needs_full_agent and messages:
-            last_msg = messages[-1]
-            last_content = _msg_content(last_msg)
-            last_name = getattr(last_msg, "name", None) or (
-                last_msg.get("name") if isinstance(last_msg, dict) else None
+        if not isinstance(current_entities[entity_id].get("inventory"), dict):
+            current_entities[entity_id]["inventory"] = {}
+    if speaker not in current_entities:
+        current_entities[speaker] = copy.deepcopy(
+            default_entities.get(
+                speaker,
+                {
+                    "hp": 20,
+                    "active_buffs": [],
+                    "affection": 0,
+                    "inventory": {},
+                    "position": "camp_center",
+                },
             )
-            if last_name == "DM" or (last_content and last_content.strip().startswith("[DM]:")):
-                is_banter = True
-                dm_text = last_content.replace("[DM]:", "").strip() if last_content else ""
+        )
+    if user_input:
+        current_entities[speaker]["inventory"] = dict(npc_inv)
+        current_entities[speaker]["affection"] = affection
 
-        if is_banter and dm_text:
-            print(f"💬 [Banter Mode] {speaker.capitalize()} 使用极简模板吐槽...")
-            _prompts_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "llm", "prompts")
-            _banter_env = Environment(loader=FileSystemLoader(_prompts_dir), trim_blocks=True, lstrip_blocks=True)
-            banter_tpl = _banter_env.get_template("banter.j2")
-            traits = character.data.get("personality", {}).get("traits", []) or []
-            core_traits = ", ".join(str(t) for t in traits[:3]) if traits else "mysterious"
-            system_prompt = banter_tpl.render(
-                npc_name=character.data.get("name", speaker.capitalize()),
-                core_traits=core_traits,
-                approval=affection,
-                dm_text=dm_text,
-            )
-            history_dicts = [{"role": "user", "content": f"[DM]: {dm_text}"}]
-            raw_response = await asyncio.to_thread(
-                generate_dialogue, system_prompt, conversation_history=history_dicts
-            )
-            parsed = parse_ai_response(raw_response)
-            clean_text = clean_npc_dialogue(speaker, (parsed.get("text") or "...").strip())
-            attributed_msg = format_history_message(speaker, clean_text)
-            return {
-                "final_response": clean_text,
-                "speaker_responses": prev_responses + [(speaker, clean_text)],
-                "thought_process": "",
-                "messages": [AIMessage(content=attributed_msg, name=speaker)],
-            }
+    player_inv_for_physics = dict(player_inv)
+    return {
+        "current_entities": current_entities,
+        "player_inv_for_physics": player_inv_for_physics,
+        "current_env_objs": current_env_objs,
+    }
 
-        triggers_config = character.data.get("dialogue_triggers", [])
-        trigger_result: dict[str, Any] = {"journal_entries": [], "relationship_delta": 0}
-        if user_input and triggers_config:
-            player_inv_obj = Inventory()
-            player_inv_obj.from_dict(dict(player_inv) if isinstance(player_inv, dict) else {})
-            npc_inv_obj = Inventory()
-            npc_inv_obj.from_dict(dict(npc_inv) if isinstance(npc_inv, dict) else {})
-            trigger_result = process_dialogue_triggers(
-                user_input,
-                triggers_config,
-                flags,
-                ui=None,
-                player_inv=player_inv_obj,
-                npc_inv=npc_inv_obj,
-            )
-            player_inv = player_inv_obj.to_dict()
-            npc_inv = npc_inv_obj.to_dict()
-            rd = int(trigger_result.get("relationship_delta", 0) or 0)
-            if rd != 0:
-                affection = max(-100, min(100, affection + rd))
-            if speaker in entities and isinstance(entities[speaker], dict):
-                entities[speaker]["affection"] = affection
-                entities[speaker]["inventory"] = dict(npc_inv)
 
-        inventory_display_list = format_inventory_dict_to_display_list(npc_inv)
-        has_healing_potion = (npc_inv.get("healing_potion", 0) or 0) >= 1
-        print(f"🚨 [DEBUG 状态核对] Speaker: {speaker}")
-        print(f"🚨 [DEBUG 状态核对] npc_inv (字典): {npc_inv}")
-        print(f"🚨 [DEBUG 状态核对] has_healing_potion (布尔): {has_healing_potion}")
-
-        current_npc_data = entities.get(speaker, {})
-        if idle_banter:
-            loc = state.get("current_location", "Unknown Location")
-            party_ids = ", ".join(sorted(entities.keys()))
-            system_prompt = (
-                "[SYSTEM NOTE - IDLE BANTER MODE]: The player is AFK. You are no longer playing a single character, "
-                "but acting as the Omni-Director of the game engine. Your task is to generate a spontaneous ambient "
-                "interaction between the NPCs present in the current_location.\n\n"
-                "CRITICAL RULES:\n"
-                "1. Randomly choose whether to generate a SOLILOQUY (1 character mutters) or a BANTER "
-                "(2 characters exchange quick words).\n"
-                "2. If BANTER, pick TWO characters from the entities list. Output EXACTLY 2 dialogue objects in the JSON "
-                "'responses' array (e.g., Character A says something, Character B replies immediately).\n"
-                "3. Keep it extremely short, natural, and passing. Do NOT wait for or address the player.\n\n"
-                f"[CONTEXT]\n"
-                f"current_location: {loc}\n"
-                f"entities (valid speaker ids): {party_ids}\n"
-            )
-        else:
-            shar_faith = current_npc_data.get("shar_faith")
-            memory_awakening = current_npc_data.get("memory_awakening")
-            system_prompt = character.render_prompt(
-                relationship_score=affection,
-                affection=affection,
-                flags=flags,
-                summary=summary,
-                journal_entries=journal_events[-5:] if journal_events else [],
-                inventory_items=inventory_display_list,
-                has_healing_potion=has_healing_potion,
-                time_of_day=state.get("time_of_day", "晨曦 (Morning)"),
-                hp=current_npc_data.get("hp", 20),
-                active_buffs=current_npc_data.get("active_buffs", []),
-                shar_faith=shar_faith,
-                memory_awakening=memory_awakening,
-            )
-
-        if not idle_banter:
-            item_lore = _build_item_lore(state)
-            if item_lore:
-                system_prompt += item_lore
-            system_prompt += f"Current Speaker: {speaker}\n"
-
-        system_prompt += f"Player's Current Inventory: {player_inv}\n"
-        roll_for_prompt = None if idle_banter else latest_roll
-        system_prompt += _build_dynamic_context_prompt(state, user_input, roll_for_prompt)
-
-        messages = list(state.get("messages", []))
-        if is_first_npc_of_player_turn and user_input:
-            if not messages or _msg_content(messages[-1]) != user_input:
-                messages.append({"role": "user", "content": user_input})
-        # 非首位 NPC：state.messages 已由首位写入 HumanMessage，此处不再重复注入玩家句
-
-        recent_messages = messages[-20:] if len(messages) > 20 else messages
-        history_dicts = [_message_to_dict(m) for m in recent_messages]
-
-        # 近因效应：拼在最后一条 User 消息末尾（经 history_dicts 进入 lc_messages；避免先改 messages 以免污染 A-to-A 的 original_text）
-        prompt_suffix = "" if idle_banter else "\n*(现在轮到你做出反应了)*"
-        # 【终极疗法：利用 JSON 内联动作，打破动作幻觉与拖延症】
-        if intent not in ("chat", "banter", "trigger_idle_banter"):
-            current_inv_str = str(npc_inv) if npc_inv else "Empty"
-            prompt_suffix += f"""\n\n🚨 [CRITICAL OVERRIDE - PHYSICAL ACTION REQUIRED]:
+def _build_physical_action_suffix(
+    idle_banter: bool,
+    intent: str,
+    speaker: str,
+    npc_inv: Dict[str, Any],
+) -> str:
+    """构建物理动作强约束后缀，字面内容必须与旧实现保持一致。"""
+    prompt_suffix = "" if idle_banter else "\n*(现在轮到你做出反应了)*"
+    if intent not in ("chat", "banter", "trigger_idle_banter"):
+        current_inv_str = str(npc_inv) if npc_inv else "Empty"
+        prompt_suffix += f"""\n\n🚨 [CRITICAL OVERRIDE - PHYSICAL ACTION REQUIRED]:
 [YOUR ABSOLUTE TRUTH]: Your physical inventory exactly contains: {current_inv_str}.
 DO NOT hallucinate. DO NOT claim you don't have these items.
 If the player commands you to use or give an item you possess, YOU MUST COMPLY immediately and output the `physical_action` JSON.
@@ -426,321 +445,568 @@ When the player tells you to take/grab loot from a chest or container you can re
 When you give an item from your inventory to another character, use `transfer_item` with `source_id` set to your character id. When you drink or eat something from your own inventory, use `consume` with `item_id`.
 
 IF YOU DO NOT INCLUDE THIS FIELD IN YOUR JSON, YOU ARE JUST STANDING STILL AND DOING NOTHING!"""
+    return prompt_suffix
 
-        if not idle_banter and len(prev_responses) > 0:
-            last_speaker_id, last_speaker_text = prev_responses[-1]
 
-            system_prompt += (
-                f"\n\n[CRITICAL A-TO-A NOTE: You are part of a group conversation. "
-                f"The player just acted, and {last_speaker_id} reacted by saying: '{last_speaker_text}'.\n"
-                f"YOUR TASK: Evaluate {last_speaker_id}'s statement based on your personality.\n"
-                "- If you STRONGLY DISAGREE, argue with them.\n"
-                "- If you AGREE, support or build on their point.\n"
-                "- If you think they are being ridiculous, MOCK them.\n"
-                "- If the topic is TRIVIAL or you don't care, DO NOT SPEAK. Output ONLY a brief physical action "
-                "(e.g., *rolls eyes*, *yawns*, *ignores them*).\n"
-                f"React naturally. Address {last_speaker_id} directly if you choose to speak.]"
+def _build_a_to_a_suffix(last_speaker_id: str, last_speaker_text: str) -> str:
+    """构建队友互评规则后缀，保留原有字面 Prompt。"""
+    return (
+        f"\n\n[CRITICAL A-TO-A NOTE: You are part of a group conversation. "
+        f"The player just acted, and {last_speaker_id} reacted by saying: '{last_speaker_text}'.\n"
+        f"YOUR TASK: Evaluate {last_speaker_id}'s statement based on your personality.\n"
+        "- If you STRONGLY DISAGREE, argue with them.\n"
+        "- If you AGREE, support or build on their point.\n"
+        "- If you think they are being ridiculous, MOCK them.\n"
+        "- If the topic is TRIVIAL or you don't care, DO NOT SPEAK. Output ONLY a brief physical action "
+        "(e.g., *rolls eyes*, *yawns*, *ignores them*).\n"
+        f"React naturally. Address {last_speaker_id} directly if you choose to speak.]"
+    )
+
+
+def _format_history_messages(
+    state: GameState,
+    context: Dict[str, Any],
+) -> List[Dict[str, str]]:
+    """将历史消息格式化为 LLM 输入，并保留旧实现的后缀注入位置。"""
+    messages = list(state.get("messages", []))
+    user_input = context["user_input"]
+    if context["is_first_npc_of_player_turn"] and user_input:
+        if not messages or _msg_content(messages[-1]) != user_input:
+            messages.append({"role": "user", "content": user_input})
+
+    recent_messages = messages[-20:] if len(messages) > 20 else messages
+    history_dicts = [_message_to_dict(message) for message in recent_messages]
+
+    prompt_suffix = _build_physical_action_suffix(
+        idle_banter=context["idle_banter"],
+        intent=context["intent"],
+        speaker=context["speaker"],
+        npc_inv=context["npc_inv"],
+    )
+
+    if not context["idle_banter"] and len(context["prev_responses"]) > 0:
+        last_speaker_id, last_speaker_text = context["prev_responses"][-1]
+        if history_dicts and history_dicts[-1]["role"] == "user":
+            original_text = history_dicts[-1]["content"]
+            history_dicts[-1]["content"] = (
+                f"[事件回顾] 玩家说：{original_text}\n"
+                f"[刚刚发生] {last_speaker_id} 回应道：{last_speaker_text}"
+                + prompt_suffix
             )
+    elif (
+        not context["idle_banter"]
+        and history_dicts
+        and history_dicts[-1].get("role") == "user"
+    ):
+        last_user_content = history_dicts[-1].get("content") or ""
+        history_dicts[-1]["content"] = last_user_content + prompt_suffix
 
-            if history_dicts and history_dicts[-1]["role"] == "user":
-                original_text = history_dicts[-1]["content"]
-                history_dicts[-1]["content"] = (
-                    f"[事件回顾] 玩家说：{original_text}\n"
-                    f"[刚刚发生] {last_speaker_id} 回应道：{last_speaker_text}"
-                    + prompt_suffix
-                )
-        elif not idle_banter and history_dicts and history_dicts[-1].get("role") == "user":
-            _last_u = history_dicts[-1].get("content") or ""
-            history_dicts[-1]["content"] = _last_u + prompt_suffix
+    return history_dicts
 
-        current_entities: dict[str, Any] = {}
-        for k, v in entities.items():
-            if isinstance(v, dict):
-                current_entities[k] = dict(v)
-        for k in current_entities:
-            current_entities[k].setdefault("affection", 0)
-            current_entities[k].setdefault("inventory", {})
-            current_entities[k].setdefault("position", default_entities.get(k, {}).get("position", "camp_center"))
-            if not isinstance(current_entities[k].get("inventory"), dict):
-                current_entities[k]["inventory"] = {}
-        if speaker not in current_entities:
-            current_entities[speaker] = copy.deepcopy(
-                default_entities.get(
-                    speaker,
-                    {"hp": 20, "active_buffs": [], "affection": 0, "inventory": {}, "position": "camp_center"},
-                )
-            )
-        if user_input:
-            current_entities[speaker]["inventory"] = dict(npc_inv)
-            current_entities[speaker]["affection"] = affection
-        player_inv_for_physics = dict(player_inv)
 
-        _raw_env = state.get("environment_objects") or {}
-        current_env_objs: dict = {}
-        if isinstance(_raw_env, dict):
-            for _ek, _ev in _raw_env.items():
-                if isinstance(_ev, dict):
-                    current_env_objs[_ek] = dict(_ev)
+def _build_history_dicts(state: GameState, context: Dict[str, Any]) -> List[Dict[str, str]]:
+    """兼容旧函数名，委托给新的 history formatter。"""
+    return _format_history_messages(state, context)
 
-        # 加载并追加底层系统强规则
-        _prompts_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "llm", "prompts")
-        _rules_env = Environment(loader=FileSystemLoader(_prompts_dir), trim_blocks=True, lstrip_blocks=True)
-        rules_tpl = _rules_env.get_template("system_rules.j2")
-        system_prompt += "\n" + rules_tpl.render() + "\n"
 
-        if idle_banter:
-            system_prompt += (
-                "\n[OVERRIDE]: For this request only, ignore any single-NPC roleplay or solo `reply` schema "
-                "in the rules above. You are the Omni-Director; output only one JSON object with the `responses` array.\n"
-                "\nOutput ONLY valid JSON (no markdown fences) with this exact shape:\n"
-                '{ "responses": [ {"speaker": "<npc_id>", "text": "<line>"}, ... ] }\n'
-                "The array must have length 1 (SOLILOQUY) or 2 (BANTER). Use only speaker ids from [CONTEXT].\n"
-                "Do NOT address the player or ask for their input.\n"
-            )
+def _prepare_generation_context(
+    state: GameState,
+    speaker: str,
+    character: Any,
+    entities: Dict[str, Any],
+) -> Dict[str, Any]:
+    user_input = state.get("user_input", "")
+    current_npc = entities.get(speaker, {})
+    affection = current_npc.get("affection", 0)
+    flags = state.get("flags", {})
+    inventory_state = _extract_inventory_states(state, current_npc)
+    npc_inv = inventory_state["npc_inv"]
+    player_inv = inventory_state["player_inv"]
+    journal_events = list(state.get("journal_events", []))
+    summary = state.get("summary", "Graph Mode Testing")
+    prev_responses = list(state.get("speaker_responses", []))
+    is_first_npc_of_player_turn = len(prev_responses) == 0
+    environmental_awareness = _build_environmental_awareness(state)
 
-        lc_messages: list[BaseMessage] = [SystemMessage(content=system_prompt)]
-        for d in history_dicts:
-            if d.get("role") == "user":
-                lc_messages.append(HumanMessage(content=d.get("content", "")))
-            else:
-                lc_messages.append(AIMessage(content=d.get("content", "")))
+    intent = str(state.get("intent", "chat") or "chat").strip().lower()
+    idle_banter = intent == "trigger_idle_banter"
+    latest_roll = state.get("latest_roll")
+    banter_allowed_intents = frozenset({"chat", "banter", "trigger_idle_banter"})
+    needs_full_agent = (
+        intent not in banter_allowed_intents
+        or _latest_roll_is_meaningful(latest_roll)
+        or bool(state.get("is_probing_secret"))
+        or _player_message_suggests_item_offer(user_input)
+    )
 
-        llm = ChatOpenAI(
-            model=settings.MODEL_NAME,
-            api_key=settings.API_KEY,  # type: ignore[arg-type]
-            base_url=settings.BASE_URL,
-            temperature=0.7,
-            max_completion_tokens=500,
+    messages = list(state.get("messages", []))
+    is_banter = False
+    dm_text = ""
+    if not needs_full_agent and messages:
+        last_msg = messages[-1]
+        last_content = _msg_content(last_msg)
+        last_name = getattr(last_msg, "name", None) or (
+            last_msg.get("name") if isinstance(last_msg, dict) else None
         )
-        # 主路径仅绑定查询工具，物理动作全面改用内联 JSON 字段
-        llm_with_tools = llm.bind_tools([check_target_inventory])
-        if idle_banter:
-            llm_with_tools = llm
+        if last_name == "DM" or (last_content and last_content.strip().startswith("[DM]:")):
+                is_banter = True
+                dm_text = last_content.replace("[DM]:", "").strip() if last_content else ""
 
-        if DEBUG_AI_PAYLOAD:
-            messages_dbg = lc_messages
-            print("\n" + "🔥" * 25)
-            print("🚨 正在打印发给大模型的最终 Payload...")
-            print(f"📊 当前消息总数: {len(messages_dbg)} 条")
-            for i, msg in enumerate(messages_dbg):
-                msg_type = msg.__class__.__name__
-                print(f"\n[{i}] 角色/类型: {msg_type}")
-                if msg_type == "SystemMessage":
-                    content_str = str(getattr(msg, "content", "") or "")
-                    content_preview = content_str.replace("\n", " ")[:100]
-                    print(f"    📝 内容预览: {content_preview}...")
-                    print(f"    📏 总字符数: {len(content_str)}")
-                elif msg_type == "HumanMessage":
-                    print(f"    🗣️ 玩家说: {msg.content}")
-                elif msg_type == "AIMessage":
-                    print(f"    🤖 AI 文本: {repr(msg.content)}")
-                    if getattr(msg, "tool_calls", None):
-                        print(f"    🔧 携带工具调用意图: {getattr(msg, 'tool_calls', None)}")
-                elif msg_type == "ToolMessage":
-                    print(f"    ⚙️ 工具执行结果: {msg.content}")
-                    print(f"    🔗 绑定的 Tool ID: {getattr(msg, 'tool_call_id', '缺失!')}")
-                else:
-                    print(f"    ❓ 未知消息内容: {msg.content}")
-            print("🔥" * 25 + "\n")
+    triggers_config = character.data.get("dialogue_triggers", [])
+    trigger_state = _process_dialogue_triggers(
+        user_input=user_input,
+        triggers_config=triggers_config,
+        flags=flags,
+        player_inv=player_inv,
+        npc_inv=npc_inv,
+        affection=affection,
+        speaker=speaker,
+        entities=entities,
+    )
+    player_inv = trigger_state["player_inv"]
+    npc_inv = trigger_state["npc_inv"]
+    affection = trigger_state["affection"]
+    trigger_result = trigger_state["trigger_result"]
+    inventory_display_list = format_inventory_dict_to_display_list(npc_inv)
+    has_healing_potion = (npc_inv.get("healing_potion", 0) or 0) >= 1
+    print(f"🚨 [DEBUG 状态核对] Speaker: {speaker}")
+    print(f"🚨 [DEBUG 状态核对] npc_inv (字典): {npc_inv}")
+    print(f"🚨 [DEBUG 状态核对] has_healing_potion (布尔): {has_healing_potion}")
 
-        response = await llm_with_tools.ainvoke(lc_messages)
+    current_npc_data = entities.get(speaker, {})
+    runtime_state = _prepare_runtime_state(
+        speaker=speaker,
+        entities=entities,
+        npc_inv=npc_inv,
+        player_inv=player_inv,
+        affection=affection,
+        user_input=user_input,
+        current_env_objs=environmental_awareness["current_env_objs"],
+    )
 
-        from ui.renderer import GameRenderer
+    context: Dict[str, Any] = {
+        "speaker": speaker,
+        "character": character,
+        "entities": entities,
+        "user_input": user_input,
+        "affection": affection,
+        "flags": flags,
+        "npc_inv": npc_inv,
+        "player_inv": player_inv,
+        "journal_events": journal_events,
+        "summary": summary,
+        "prev_responses": prev_responses,
+        "is_first_npc_of_player_turn": is_first_npc_of_player_turn,
+        "intent": intent,
+        "idle_banter": idle_banter,
+        "latest_roll": latest_roll,
+        "is_banter": is_banter,
+        "dm_text": dm_text,
+        "triggers_config": triggers_config,
+        "trigger_result": trigger_result,
+        "inventory_display_list": inventory_display_list,
+        "has_healing_potion": has_healing_potion,
+        "current_npc_data": current_npc_data,
+        "environment": environmental_awareness,
+        **runtime_state,
+    }
+    context["history_dicts"] = _format_history_messages(state, context)
+    return context
 
-        GameRenderer().print_system_info(
-            f"🔧 [底层透视] LLM 返回的 tool_calls: {getattr(response, 'tool_calls', [])}"
+
+async def _maybe_generate_banter_response(
+    state: GameState,
+    context: Dict[str, Any],
+) -> Optional[dict]:
+    if not (context["is_banter"] and context["dm_text"]):
+        return None
+
+    speaker = context["speaker"]
+    character = context["character"]
+    affection = context["affection"]
+    print(f"💬 [Banter Mode] {speaker.capitalize()} 使用极简模板吐槽...")
+    banter_tpl = _prompt_environment().get_template("banter.j2")
+    traits = character.data.get("personality", {}).get("traits", []) or []
+    core_traits = ", ".join(str(trait) for trait in traits[:3]) if traits else "mysterious"
+    system_prompt = banter_tpl.render(
+        npc_name=character.data.get("name", speaker.capitalize()),
+        core_traits=core_traits,
+        approval=affection,
+        dm_text=context["dm_text"],
+    )
+    history_dicts = [{"role": "user", "content": f"[DM]: {context['dm_text']}"}]
+    raw_response = await asyncio.to_thread(
+        generate_dialogue, system_prompt, conversation_history=history_dicts
+    )
+    parsed = parse_ai_response(raw_response)
+    clean_text = clean_npc_dialogue(speaker, (parsed.get("text") or "...").strip())
+    attributed_msg = format_history_message(speaker, clean_text)
+    return {
+        "final_response": clean_text,
+        "speaker_responses": context["prev_responses"] + [(speaker, clean_text)],
+        "thought_process": "",
+        "messages": [AIMessage(content=attributed_msg, name=speaker)],
+    }
+
+
+def _build_system_prompt(state: GameState, context: Dict[str, Any]) -> str:
+    speaker = context["speaker"]
+    character = context["character"]
+    idle_banter = context["idle_banter"]
+    if idle_banter:
+        location = context["environment"]["current_location"]
+        party_ids = ", ".join(sorted(context["entities"].keys()))
+        system_prompt = (
+            "[SYSTEM NOTE - IDLE BANTER MODE]: The player is AFK. You are no longer playing a single character, "
+            "but acting as the Omni-Director of the game engine. Your task is to generate a spontaneous ambient "
+            "interaction between the NPCs present in the current_location.\n\n"
+            "CRITICAL RULES:\n"
+            "1. Randomly choose whether to generate a SOLILOQUY (1 character mutters) or a BANTER "
+            "(2 characters exchange quick words).\n"
+            "2. If BANTER, pick TWO characters from the entities list. Output EXACTLY 2 dialogue objects in the JSON "
+            "'responses' array (e.g., Character A says something, Character B replies immediately).\n"
+            "3. Keep it extremely short, natural, and passing. Do NOT wait for or address the player.\n\n"
+            f"[CONTEXT]\n"
+            f"current_location: {location}\n"
+            f"entities (valid speaker ids): {party_ids}\n"
+        )
+    else:
+        current_npc_data = context["current_npc_data"]
+        system_prompt = character.render_prompt(
+            relationship_score=context["affection"],
+            affection=context["affection"],
+            flags=context["flags"],
+            summary=context["summary"],
+            journal_entries=context["journal_events"][-5:] if context["journal_events"] else [],
+            inventory_items=context["inventory_display_list"],
+            has_healing_potion=context["has_healing_potion"],
+            time_of_day=state.get("time_of_day", "晨曦 (Morning)"),
+            hp=current_npc_data.get("hp", 20),
+            active_buffs=current_npc_data.get("active_buffs", []),
+            shar_faith=current_npc_data.get("shar_faith"),
+            memory_awakening=current_npc_data.get("memory_awakening"),
+        )
+        item_lore = _build_item_lore(state)
+        if item_lore:
+            system_prompt += item_lore
+        system_prompt += f"Current Speaker: {speaker}\n"
+
+    system_prompt += f"Player's Current Inventory: {context['player_inv']}\n"
+    roll_for_prompt = None if idle_banter else context["latest_roll"]
+    system_prompt += _build_dynamic_context_prompt(
+        state, context["user_input"], roll_for_prompt
+    )
+
+    if not idle_banter and len(context["prev_responses"]) > 0:
+        last_speaker_id, last_speaker_text = context["prev_responses"][-1]
+        system_prompt += _build_a_to_a_suffix(last_speaker_id, last_speaker_text)
+
+    rules_tpl = _prompt_environment().get_template("system_rules.j2")
+    system_prompt += "\n" + rules_tpl.render() + "\n"
+
+    if idle_banter:
+        system_prompt += (
+            "\n[OVERRIDE]: For this request only, ignore any single-NPC roleplay or solo `reply` schema "
+            "in the rules above. You are the Omni-Director; output only one JSON object with the `responses` array.\n"
+            "\nOutput ONLY valid JSON (no markdown fences) with this exact shape:\n"
+            '{ "responses": [ {"speaker": "<npc_id>", "text": "<line>"}, ... ] }\n'
+            "The array must have length 1 (SOLILOQUY) or 2 (BANTER). Use only speaker ids from [CONTEXT].\n"
+            "Do NOT address the player or ask for their input.\n"
         )
 
-        tool_physics_events = []
-        MAX_ITERATIONS = 5
-        iteration_count = 0
-        while response.tool_calls:
-            iteration_count += 1
-            lc_messages.append(response)
-            registry = get_registry()
-            for tc in response.tool_calls:
-                tool_name = tc.get("name", "")
-                tool_args = tc.get("args") or {}
-                tool_result_str = "操作失败"
+    return system_prompt
 
-                if tool_name == "check_target_inventory":
-                    target = tool_args.get("target_id", "player")
-                    keyword = (tool_args.get("item_keyword") or "").lower()
-                    if target == "player":
-                        inv = player_inv_for_physics
-                    else:
-                        inv = current_entities.get(target, {}).get("inventory", {})
-                    inv = inv or {}
-                    found = False
-                    for i_id, count in inv.items():
-                        if keyword in i_id.lower() or keyword in registry.get_name(i_id).lower():
-                            tool_result_str = f"{target} 拥有 {count} 个 {i_id}。"
-                            found = True
-                            break
-                    if not found:
-                        tool_result_str = f"{target} 的背包里根本没有找到 '{keyword}'！他在撒谎或两手空空。"
 
+def _build_lc_messages(system_prompt: str, history_dicts: List[Dict[str, str]]) -> List[BaseMessage]:
+    lc_messages: List[BaseMessage] = [SystemMessage(content=system_prompt)]
+    for history_item in history_dicts:
+        if history_item.get("role") == "user":
+            lc_messages.append(HumanMessage(content=history_item.get("content", "")))
+        else:
+            lc_messages.append(AIMessage(content=history_item.get("content", "")))
+    return lc_messages
+
+
+def _create_llm_client(idle_banter: bool) -> Any:
+    llm = ChatOpenAI(
+        model=settings.MODEL_NAME,
+        api_key=settings.API_KEY,  # type: ignore[arg-type]
+        base_url=settings.BASE_URL,
+        temperature=0.7,
+        max_completion_tokens=500,
+    )
+    if idle_banter:
+        return llm
+    return llm.bind_tools([check_target_inventory])
+
+
+async def _execute_llm_with_tools(
+    llm_with_tools: Any,
+    lc_messages: List[BaseMessage],
+    player_inv_for_physics: Dict[str, Any],
+    current_entities: Dict[str, Any],
+    idle_banter: bool,
+) -> tuple[Any, List[BaseMessage]]:
+    from ui.renderer import GameRenderer
+
+    _debug_print_messages(lc_messages)
+    response = await llm_with_tools.ainvoke(lc_messages)
+    GameRenderer().print_system_info(
+        f"🔧 [底层透视] LLM 返回的 tool_calls: {getattr(response, 'tool_calls', [])}"
+    )
+
+    if idle_banter:
+        return response, lc_messages
+
+    max_iterations = 5
+    iteration_count = 0
+    while getattr(response, "tool_calls", None):
+        iteration_count += 1
+        lc_messages.append(response)
+        registry = get_registry()
+        for tool_call in response.tool_calls:
+            tool_name = tool_call.get("name", "")
+            tool_args = tool_call.get("args") or {}
+            tool_result_str = "操作失败"
+
+            if tool_name == "check_target_inventory":
+                target = tool_args.get("target_id", "player")
+                keyword = (tool_args.get("item_keyword") or "").lower()
+                if target == "player":
+                    inventory = player_inv_for_physics
                 else:
-                    tool_result_str = f"[系统] 未知工具: {tool_name}（物理动作请使用 JSON 中的 physical_action 字段）。"
-
-                tool_msg = ToolMessage(content=tool_result_str, tool_call_id=tc.get("id", ""))
-                lc_messages.append(tool_msg)
-
-            if DEBUG_AI_PAYLOAD:
-                messages_dbg = lc_messages
-                print("\n" + "🔥" * 25)
-                print(f"🚨 [ReAct 第 {iteration_count} 轮] 正在打印发给大模型的 Payload (含工具返回)...")
-                print(f"📊 当前消息总数: {len(messages_dbg)} 条")
-                for i, msg in enumerate(messages_dbg):
-                    msg_type = msg.__class__.__name__
-                    print(f"\n[{i}] 角色/类型: {msg_type}")
-                    if msg_type == "SystemMessage":
-                        content_str = str(getattr(msg, "content", "") or "")
-                        content_preview = content_str.replace("\n", " ")[:100]
-                        print(f"    📝 内容预览: {content_preview}...")
-                        print(f"    📏 总字符数: {len(content_str)}")
-                    elif msg_type == "HumanMessage":
-                        print(f"    🗣️ 玩家说: {msg.content}")
-                    elif msg_type == "AIMessage":
-                        print(f"    🤖 AI 文本: {repr(msg.content)}")
-                        if getattr(msg, "tool_calls", None):
-                            print(f"    🔧 携带工具调用意图: {getattr(msg, 'tool_calls', None)}")
-                    elif msg_type == "ToolMessage":
-                        print(f"    ⚙️ 工具执行结果: {msg.content}")
-                        print(f"    🔗 绑定的 Tool ID: {getattr(msg, 'tool_call_id', '缺失!')}")
-                    else:
-                        print(f"    ❓ 未知消息内容: {msg.content}")
-                print("🔥" * 25 + "\n")
-
-            response = await llm_with_tools.ainvoke(lc_messages)
-
-            GameRenderer().print_system_info(
-                f"🔧 [底层透视] LLM 返回的 tool_calls (ReAct #{iteration_count}): "
-                f"{getattr(response, 'tool_calls', [])}"
-            )
-
-            if iteration_count >= MAX_ITERATIONS:
-                print("⚠️ [安全拦截] Agent 内部工具调用次数超限 (>=5次)，强制终止循环！")
-                break
-
-        if getattr(response, "tool_calls", None) and not (getattr(response, "content", None) or "").strip():
-            response = AIMessage(content="*（陷入了深深的沉思，暂时没有回应）*")
-
-        raw_output = str(response.content if hasattr(response, "content") else str(response or ""))
-
-        json_parsed = parse_llm_json(raw_output)
-
-        # --- 调试用：看看大模型到底给的啥 JSON ---
-        if DEBUG_AI_PAYLOAD:
-            print(f"📦 [底层 JSON 透视] \n{raw_output}\n")
-        # ----------------------------------------
-
-        idle_merged: list[tuple[str, str]] | None = None
-        if idle_banter and isinstance(json_parsed, dict):
-            _lines = json_parsed.get("responses") or json_parsed.get("idle_banter_lines")
-            if isinstance(_lines, list) and _lines:
-                _valid_ids = set(entities.keys())
-                _merged: list[tuple[str, str]] = []
-                for item in _lines[:2]:
-                    if not isinstance(item, dict):
-                        continue
-                    spk = str(item.get("speaker") or speaker).strip().lower()
-                    if spk not in _valid_ids:
-                        spk = speaker
-                    raw_line = (item.get("text") or "...").strip()
-                    _merged.append((spk, clean_npc_dialogue(spk, raw_line)))
-                if _merged:
-                    idle_merged = _merged
-
-        if idle_merged is not None:
-            raw_text = "\n".join(t for _, t in idle_merged)
-            thought_process = ""
-            state_changes = {}
-        elif isinstance(json_parsed, dict) and "reply" in json_parsed:
-            raw_text = (json_parsed.get("reply") or "...").strip()
-            thought_process = (json_parsed.get("internal_monologue") or "").strip()
-            state_changes = json_parsed.get("state_changes") or {}
-
-            # --- 【新增】解析 JSON 内联的物理动作并直接结算 ---
-            physical_action = json_parsed.get("physical_action")
-            if physical_action and isinstance(physical_action, dict):
-                tool_physics_events.extend(
-                    _execute_json_action(
-                        physical_action, speaker, current_entities, player_inv_for_physics, current_env_objs
+                    inventory = current_entities.get(target, {}).get("inventory", {})
+                inventory = inventory or {}
+                found = False
+                for item_id, count in inventory.items():
+                    if keyword in item_id.lower() or keyword in registry.get_name(item_id).lower():
+                        tool_result_str = f"{target} 拥有 {count} 个 {item_id}。"
+                        found = True
+                        break
+                if not found:
+                    tool_result_str = (
+                        f"{target} 的背包里根本没有找到 '{keyword}'！他在撒谎或两手空空。"
                     )
+            else:
+                tool_result_str = (
+                    f"[系统] 未知工具: {tool_name}（物理动作请使用 JSON 中的 physical_action 字段）。"
                 )
-        else:
-            parsed = parse_ai_response(raw_output)
-            raw_text = (parsed.get("text") or raw_output or "...").strip()
-            thought_process = (parsed.get("thought") or "").strip()
-            state_changes = {
-                "affection_delta": parsed.get("approval", 0),
-                "shar_faith_delta": 0,
-                "memory_awakening_delta": 0,
-            }
 
-        attributed_msg = ""
-        if idle_merged is not None:
-            clean_text = "\n".join(t for _, t in idle_merged)
-        else:
-            clean_text = clean_npc_dialogue(speaker, raw_text)
-            attributed_msg = format_history_message(speaker, clean_text)
+            lc_messages.append(
+                ToolMessage(content=tool_result_str, tool_call_id=tool_call.get("id", ""))
+            )
 
-        aff_delta = int(state_changes.get("affection_delta", 0))
-        shar_delta = int(state_changes.get("shar_faith_delta", 0))
-        mem_delta = int(state_changes.get("memory_awakening_delta", 0))
-        state_changes_applied = False
-        if aff_delta != 0 or shar_delta != 0 or mem_delta != 0:
-            ent = current_entities.get(speaker, {})
-            ent = dict(ent)
-            ent["affection"] = max(-100, min(100, ent.get("affection", 0) + aff_delta))
-            if "shar_faith" in ent:
-                ent["shar_faith"] = max(0, min(100, ent["shar_faith"] + shar_delta))
-            if "memory_awakening" in ent:
-                ent["memory_awakening"] = max(0, min(100, ent["memory_awakening"] + mem_delta))
-            current_entities[speaker] = ent
-            state_changes_applied = True
+        _debug_print_messages(
+            lc_messages,
+            f"🚨 [ReAct 第 {iteration_count} 轮] 正在打印发给大模型的 Payload (含工具返回)...",
+        )
+        response = await llm_with_tools.ainvoke(lc_messages)
+        GameRenderer().print_system_info(
+            f"🔧 [底层透视] LLM 返回的 tool_calls (ReAct #{iteration_count}): "
+            f"{getattr(response, 'tool_calls', [])}"
+        )
+        if iteration_count >= max_iterations:
+            print("⚠️ [安全拦截] Agent 内部工具调用次数超限 (>=5次)，强制终止循环！")
+            break
 
-        if idle_merged is not None:
-            out_messages = [
-                AIMessage(content=format_history_message(spk, txt), name=spk) for spk, txt in idle_merged
-            ]
-            if is_first_npc_of_player_turn and user_input:
-                out_messages = [HumanMessage(content=user_input)] + out_messages
-            _speaker_responses = prev_responses + list(idle_merged)
-        else:
-            out_messages = [AIMessage(content=attributed_msg, name=speaker)]
-            if is_first_npc_of_player_turn and user_input:
-                out_messages = [HumanMessage(content=user_input), AIMessage(content=attributed_msg, name=speaker)]
-            _speaker_responses = prev_responses + [(speaker, clean_text)]
+    if getattr(response, "tool_calls", None) and not (getattr(response, "content", None) or "").strip():
+        response = AIMessage(content="*（陷入了深深的沉思，暂时没有回应）*")
+    return response, lc_messages
 
-        out = {
-            "final_response": clean_text,
-            "speaker_responses": _speaker_responses,
-            "thought_process": thought_process,
-            "messages": out_messages,
+
+def _parse_and_apply_actions(
+    raw_output: str,
+    idle_banter: bool,
+    speaker: str,
+    entities: Dict[str, Any],
+    current_entities: Dict[str, Any],
+    player_inv_for_physics: Dict[str, Any],
+    current_env_objs: Dict[str, Any],
+) -> Dict[str, Any]:
+    json_parsed = parse_llm_json(raw_output)
+    if DEBUG_AI_PAYLOAD:
+        print(f"📦 [底层 JSON 透视] \n{raw_output}\n")
+
+    idle_merged: Optional[List[tuple[str, str]]] = None
+    tool_physics_events: List[Any] = []
+    if idle_banter and isinstance(json_parsed, dict):
+        lines = json_parsed.get("responses") or json_parsed.get("idle_banter_lines")
+        if isinstance(lines, list) and lines:
+            valid_ids = set(entities.keys())
+            merged: List[tuple[str, str]] = []
+            for item in lines[:2]:
+                if not isinstance(item, dict):
+                    continue
+                merged_speaker = str(item.get("speaker") or speaker).strip().lower()
+                if merged_speaker not in valid_ids:
+                    merged_speaker = speaker
+                raw_line = (item.get("text") or "...").strip()
+                merged.append((merged_speaker, clean_npc_dialogue(merged_speaker, raw_line)))
+            if merged:
+                idle_merged = merged
+
+    if idle_merged is not None:
+        clean_text = "\n".join(text for _, text in idle_merged)
+        thought_process = ""
+        state_changes: Dict[str, Any] = {}
+    elif isinstance(json_parsed, dict) and "reply" in json_parsed:
+        raw_text = (json_parsed.get("reply") or "...").strip()
+        thought_process = (json_parsed.get("internal_monologue") or "").strip()
+        state_changes = json_parsed.get("state_changes") or {}
+        physical_action = json_parsed.get("physical_action")
+        if physical_action and isinstance(physical_action, dict):
+            tool_physics_events.extend(
+                _execute_json_action(
+                    physical_action,
+                    speaker,
+                    current_entities,
+                    player_inv_for_physics,
+                    current_env_objs,
+                )
+            )
+        clean_text = clean_npc_dialogue(speaker, raw_text)
+    else:
+        parsed = parse_ai_response(raw_output)
+        raw_text = (parsed.get("text") or raw_output or "...").strip()
+        thought_process = (parsed.get("thought") or "").strip()
+        state_changes = {
+            "affection_delta": parsed.get("approval", 0),
+            "shar_faith_delta": 0,
+            "memory_awakening_delta": 0,
         }
-        # 以进入本节点时的 state.entities 为底（含 DM 刚写入的他人好感度），再叠本节点变更，避免漏键导致覆盖为 0
-        entities_out = overlay_entity_state(state.get("entities"), current_entities)
-        trigger_journal = trigger_result.get("journal_entries", [])
-        if trigger_journal:
-            out["journal_events"] = out.get("journal_events", []) + list(trigger_journal)
-        if tool_physics_events:
-            out["journal_events"] = out.get("journal_events", []) + tool_physics_events
-        if tool_physics_events:
-            out["player_inventory"] = player_inv_for_physics
-            out["environment_objects"] = current_env_objs
-        if user_input and triggers_config:
-            out["flags"] = flags
-            out["player_inventory"] = player_inv_for_physics
-        if (
-            state_changes_applied
-            or tool_physics_events
-            or (user_input and triggers_config)
-            or user_input
-        ):
-            out["entities"] = entities_out
-        return out
+        clean_text = clean_npc_dialogue(speaker, raw_text)
+
+    affection_delta = int(state_changes.get("affection_delta", 0))
+    shar_faith_delta = int(state_changes.get("shar_faith_delta", 0))
+    memory_delta = int(state_changes.get("memory_awakening_delta", 0))
+    state_changes_applied = False
+    if affection_delta != 0 or shar_faith_delta != 0 or memory_delta != 0:
+        entity_state = dict(current_entities.get(speaker, {}))
+        entity_state["affection"] = max(
+            -100, min(100, entity_state.get("affection", 0) + affection_delta)
+        )
+        if "shar_faith" in entity_state:
+            entity_state["shar_faith"] = max(
+                0, min(100, entity_state["shar_faith"] + shar_faith_delta)
+            )
+        if "memory_awakening" in entity_state:
+            entity_state["memory_awakening"] = max(
+                0, min(100, entity_state["memory_awakening"] + memory_delta)
+            )
+        current_entities[speaker] = entity_state
+        state_changes_applied = True
+
+    return {
+        "clean_text": clean_text,
+        "thought_process": thought_process,
+        "tool_physics_events": tool_physics_events,
+        "state_changes_applied": state_changes_applied,
+        "idle_merged": idle_merged,
+    }
+
+
+def _assemble_generation_output(
+    state: GameState,
+    context: Dict[str, Any],
+    parsed_result: Dict[str, Any],
+) -> dict:
+    speaker = context["speaker"]
+    clean_text = parsed_result["clean_text"]
+    idle_merged = parsed_result["idle_merged"]
+    attributed_msg = ""
+    if idle_merged is not None:
+        out_messages = [
+            AIMessage(content=format_history_message(spk, txt), name=spk)
+            for spk, txt in idle_merged
+        ]
+        if context["is_first_npc_of_player_turn"] and context["user_input"]:
+            out_messages = [HumanMessage(content=context["user_input"])] + out_messages
+        speaker_responses = context["prev_responses"] + list(idle_merged)
+    else:
+        attributed_msg = format_history_message(speaker, clean_text)
+        out_messages = [AIMessage(content=attributed_msg, name=speaker)]
+        if context["is_first_npc_of_player_turn"] and context["user_input"]:
+            out_messages = [
+                HumanMessage(content=context["user_input"]),
+                AIMessage(content=attributed_msg, name=speaker),
+            ]
+        speaker_responses = context["prev_responses"] + [(speaker, clean_text)]
+
+    out = {
+        "final_response": clean_text,
+        "speaker_responses": speaker_responses,
+        "thought_process": parsed_result["thought_process"],
+        "messages": out_messages,
+    }
+    entities_out = overlay_entity_state(state.get("entities"), context["current_entities"])
+    trigger_journal = context["trigger_result"].get("journal_entries", [])
+    if trigger_journal:
+        out["journal_events"] = out.get("journal_events", []) + list(trigger_journal)
+    if parsed_result["tool_physics_events"]:
+        out["journal_events"] = out.get("journal_events", []) + parsed_result["tool_physics_events"]
+        out["player_inventory"] = context["player_inv_for_physics"]
+        out["environment_objects"] = context["current_env_objs"]
+    if context["user_input"] and context["triggers_config"]:
+        out["flags"] = context["flags"]
+        out["player_inventory"] = context["player_inv_for_physics"]
+    if (
+        parsed_result["state_changes_applied"]
+        or parsed_result["tool_physics_events"]
+        or (context["user_input"] and context["triggers_config"])
+        or context["user_input"]
+    ):
+        out["entities"] = entities_out
+    return out
+
+
+def create_generation_node() -> Callable[[GameState], Coroutine[Any, Any, dict]]:
+    """
+    工厂函数：创建 Generation 节点。
+    根据 state["current_speaker"] 动态加载 YAML 灵魂，实现多智能体话语权路由。
+    """
+
+    async def generation_node(state: GameState) -> dict:
+        """
+        LLM 生成节点。
+        根据 current_speaker 动态加载对应角色，从 state 提取 affection / flags / inventory 等。
+        """
+        from characters.loader import load_character
+
+        entities = merge_entities_with_defaults(state.get("entities"))
+        fallback_speaker = first_entity_id(entities)
+        speaker = (state.get("current_speaker") or "").strip() or fallback_speaker
+        character = load_character(speaker)
+        print(f"🗣️ Generation Node: {speaker.capitalize()} is speaking...")
+        early_return = _build_unconscious_response(state, speaker, character, entities)
+        if early_return is not None:
+            return early_return
+
+        context = _prepare_generation_context(state, speaker, character, entities)
+        banter_response = await _maybe_generate_banter_response(state, context)
+        if banter_response is not None:
+            return banter_response
+
+        system_prompt = _build_system_prompt(state, context)
+        lc_messages = _build_lc_messages(system_prompt, context["history_dicts"])
+        llm_with_tools = _create_llm_client(context["idle_banter"])
+        response, _ = await _execute_llm_with_tools(
+            llm_with_tools=llm_with_tools,
+            lc_messages=lc_messages,
+            player_inv_for_physics=context["player_inv_for_physics"],
+            current_entities=context["current_entities"],
+            idle_banter=context["idle_banter"],
+        )
+        raw_output = str(response.content if hasattr(response, "content") else str(response or ""))
+        parsed_result = _parse_and_apply_actions(
+            raw_output=raw_output,
+            idle_banter=context["idle_banter"],
+            speaker=speaker,
+            entities=context["entities"],
+            current_entities=context["current_entities"],
+            player_inv_for_physics=context["player_inv_for_physics"],
+            current_env_objs=context["current_env_objs"],
+        )
+        return _assemble_generation_output(state, context, parsed_result)
 
     return generation_node
 
