@@ -3,11 +3,13 @@ BG3 LLM Agent — FastAPI 后端，供 Web UI 调用。
 """
 
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from core import inventory
@@ -16,6 +18,9 @@ from core.application.game_service import (
     GameServiceError,
     InvalidChatRequestError,
 )
+
+BASE_DIR = Path(__file__).resolve().parent
+WEB_UI_DIR = BASE_DIR / "web_ui"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -37,6 +42,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+if WEB_UI_DIR.exists():
+    app.mount("/web_ui", StaticFiles(directory=str(WEB_UI_DIR), html=True), name="web_ui")
 
 
 @app.exception_handler(InvalidChatRequestError)
@@ -69,6 +77,14 @@ class ChatResponse(BaseModel):
     current_location: str  # 当前位置
     environment_objects: Dict[str, Any]  # 场景里的可交互物品 (如箱子、门)
     party_status: Dict[str, Any]  # 队友的血量、好感度等状态
+    player_inventory: Dict[str, Any]  # 玩家背包
+
+
+@app.get("/", include_in_schema=False)
+async def root() -> RedirectResponse:
+    if WEB_UI_DIR.exists():
+        return RedirectResponse(url="/web_ui/")
+    return RedirectResponse(url="/docs")
 
 
 @app.post("/api/chat", response_model=ChatResponse)

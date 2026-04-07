@@ -23,6 +23,7 @@ class ChatTurnResult(TypedDict):
     current_location: str
     environment_objects: Dict[str, Any]
     party_status: Dict[str, Any]
+    player_inventory: Dict[str, Any]
 
 
 class GraphProtocol(Protocol):
@@ -103,6 +104,12 @@ class GameService:
             if not previous_state.get("entities"):
                 previous_state = await self._initialize_world_state(graph, config)
                 previous_journal_len = len(previous_state.get("journal_events") or [])
+
+            if normalized_intent == "init_sync":
+                return self._build_chat_result(
+                    previous_state,
+                    previous_journal_len=previous_journal_len,
+                )
 
             if normalized_intent == "ui_action_loot":
                 result_state = await self._process_loot_action(
@@ -252,12 +259,14 @@ class GameService:
             if len(current_journal) > previous_journal_len
             else []
         )
+        player_inventory = state.get("player_inventory")
         return {
             "responses": formatted_responses,
             "journal_events": new_journal,
             "current_location": state.get("current_location", "Unknown"),
             "environment_objects": state.get("environment_objects") or {},
             "party_status": state.get("entities") or {},
+            "player_inventory": player_inventory if isinstance(player_inventory, dict) else {},
         }
 
     @staticmethod

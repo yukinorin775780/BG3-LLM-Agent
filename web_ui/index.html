@@ -3,956 +3,155 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>BG3 LLM — 赛博跑团终端</title>
-  <style>
-    :root {
-      --bg-deep: #0a0e14;
-      --bg-panel: #12181f;
-      --bg-map: #1a222c;
-      --border: #2a3f52;
-      --text: #c8d4e0;
-      --text-dim: #6b7c8f;
-      --accent: #00d4aa;
-      --system: #e8a838;
-      --player: #6eb5ff;
-      --shadowheart: #9b7ebd;
-      --astarion: #c45c5c;
-      --laezel: #5cb89b;
-      --npc-default: #8fa3b8;
-      --waypoint: #3d4f63;
-    }
-
-    * {
-      box-sizing: border-box;
-    }
-
-    html, body {
-      margin: 0;
-      height: 100%;
-      font-family: "Segoe UI", "Palatino Linotype", "Book Antiqua", Palatino, Georgia, serif;
-      background: radial-gradient(ellipse at 20% 0%, #152028 0%, var(--bg-deep) 55%);
-      color: var(--text);
-      overflow: hidden;
-    }
-
-    .app {
-      display: flex;
-      height: 100vh;
-      width: 100%;
-    }
-
-    /* ----- 左侧地图 60% ----- */
-    .map-panel {
-      width: 60%;
-      min-width: 320px;
-      display: flex;
-      flex-direction: column;
-      border-right: 2px solid var(--border);
-      background: linear-gradient(180deg, #0f1419 0%, var(--bg-panel) 100%);
-    }
-
-    .location-bar {
-      padding: 0.65rem 1rem;
-      font-size: 0.95rem;
-      letter-spacing: 0.06em;
-      text-transform: uppercase;
-      color: var(--accent);
-      border-bottom: 1px solid var(--border);
-      background: rgba(0, 212, 170, 0.06);
-      font-variant: small-caps;
-    }
-
-    .location-bar span {
-      color: var(--text);
-      font-weight: 600;
-    }
-
-    #map-container {
-      flex: 1;
-      position: relative;
-      margin: 1rem;
-      background: var(--bg-map);
-      border: 1px solid var(--border);
-      border-radius: 4px;
-      box-shadow: inset 0 0 80px rgba(0, 0, 0, 0.45);
-      overflow: hidden;
-    }
-
-    /* 网格纹理 */
-    #map-container::before {
-      content: "";
-      position: absolute;
-      inset: 0;
-      background-image:
-        linear-gradient(rgba(42, 63, 82, 0.15) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(42, 63, 82, 0.15) 1px, transparent 1px);
-      background-size: 32px 32px;
-      pointer-events: none;
-    }
-
-    .waypoint {
-      position: absolute;
-      width: 14px;
-      height: 14px;
-      border-radius: 50%;
-      background: var(--waypoint);
-      border: 2px solid #5a7088;
-      transform: translate(-50%, -50%);
-      z-index: 1;
-      box-shadow: 0 0 12px rgba(90, 112, 136, 0.4);
-    }
-
-    .waypoint-label {
-      position: absolute;
-      left: 50%;
-      top: 100%;
-      transform: translateX(-50%);
-      margin-top: 6px;
-      font-size: 0.65rem;
-      color: var(--text-dim);
-      white-space: nowrap;
-      pointer-events: none;
-      font-family: ui-monospace, monospace;
-    }
-
-    .entity-token {
-      position: absolute;
-      width: 36px;
-      height: 36px;
-      border-radius: 50%;
-      transform: translate(-50%, -50%);
-      z-index: 5;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 0.6rem;
-      font-weight: 700;
-      color: #fff;
-      text-shadow: 0 1px 2px #000;
-      border: 2px solid rgba(255, 255, 255, 0.35);
-      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
-      transition: top 1s ease, left 1s ease;
-      cursor: default;
-    }
-
-    .entity-token .entity-name {
-      position: absolute;
-      bottom: -1.35rem;
-      left: 50%;
-      transform: translateX(-50%);
-      font-size: 0.62rem;
-      font-weight: 600;
-      color: var(--text);
-      white-space: nowrap;
-      text-shadow: 0 0 4px #000;
-      pointer-events: none;
-    }
-
-    /* ----- 右侧对话 40% ----- */
-    .chat-panel {
-      width: 40%;
-      min-width: 280px;
-      display: flex;
-      flex-direction: column;
-      min-height: 0;
-      background: var(--bg-panel);
-    }
-
-    /* 上：队伍状态 ~30% */
-    #party-panel {
-      flex: 0 0 30%;
-      min-height: 100px;
-      max-height: 40vh;
-      overflow-y: auto;
-      padding: 0.5rem 0.75rem 0.65rem;
-      border-bottom: 1px solid var(--border);
-      background: linear-gradient(180deg, rgba(0, 212, 170, 0.04) 0%, transparent 100%);
-    }
-
-    .party-panel-title {
-      font-size: 0.68rem;
-      letter-spacing: 0.12em;
-      text-transform: uppercase;
-      color: var(--text-dim);
-      margin-bottom: 0.45rem;
-    }
-
-    .party-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-      gap: 0.45rem;
-      align-items: start;
-    }
-
-    .party-card {
-      background: rgba(18, 24, 31, 0.95);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 0.45rem 0.5rem;
-      font-size: 0.78rem;
-      line-height: 1.35;
-    }
-
-    .party-card-name {
-      font-weight: 700;
-      font-size: 0.82rem;
-      margin-bottom: 0.35rem;
-      letter-spacing: 0.02em;
-    }
-
-    .party-card-stats {
-      color: var(--text-dim);
-      font-size: 0.72rem;
-      margin-bottom: 0.35rem;
-    }
-
-    .party-card-stats span {
-      display: block;
-    }
-
-    .party-inv {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 0.25rem;
-      align-items: center;
-    }
-
-    .inv-badge {
-      display: inline-block;
-      padding: 0.12rem 0.35rem;
-      border-radius: 999px;
-      font-size: 0.65rem;
-      font-family: ui-monospace, monospace;
-      background: rgba(42, 63, 82, 0.55);
-      border: 1px solid rgba(90, 112, 136, 0.45);
-      color: var(--text);
-    }
-
-    .inv-empty {
-      color: var(--text-dim);
-      font-size: 0.68rem;
-      font-style: italic;
-    }
-
-    /* 下：对话区 ~70% */
-    .chat-main {
-      flex: 1 1 70%;
-      min-height: 0;
-      display: flex;
-      flex-direction: column;
-    }
-
-    .chat-header {
-      padding: 0.75rem 1rem;
-      font-size: 0.85rem;
-      color: var(--text-dim);
-      border-bottom: 1px solid var(--border);
-      letter-spacing: 0.08em;
-    }
-
-    #chat-log {
-      flex: 1;
-      min-height: 0;
-      overflow-y: auto;
-      padding: 1rem;
-      font-size: 0.9rem;
-      line-height: 1.55;
-    }
-
-    .msg {
-      margin-bottom: 0.85rem;
-      padding: 0.5rem 0.65rem;
-      border-radius: 3px;
-      border-left: 3px solid transparent;
-    }
-
-    .msg-player {
-      border-left-color: var(--player);
-      background: rgba(110, 181, 255, 0.08);
-    }
-
-    .msg-player .label {
-      color: var(--player);
-      font-size: 0.72rem;
-      margin-bottom: 0.25rem;
-    }
-
-    .msg-npc {
-      border-left-color: var(--npc-default);
-      background: rgba(143, 163, 184, 0.06);
-    }
-
-    .msg-npc .label {
-      font-size: 0.72rem;
-      margin-bottom: 0.25rem;
-    }
-
-    .msg-system {
-      border-left-color: var(--system);
-      background: rgba(232, 168, 56, 0.08);
-      font-family: ui-monospace, monospace;
-      font-size: 0.82rem;
-      color: #e8c878;
-    }
-
-    .msg-system .label {
-      color: var(--system);
-      font-size: 0.7rem;
-      margin-bottom: 0.25rem;
-    }
-
-    .chat-input-row {
-      display: flex;
-      gap: 0.5rem;
-      padding: 0.75rem 1rem;
-      border-top: 1px solid var(--border);
-      background: #0e1318;
-    }
-
-    #user-input {
-      flex: 1;
-      padding: 0.55rem 0.75rem;
-      background: var(--bg-deep);
-      border: 1px solid var(--border);
-      border-radius: 3px;
-      color: var(--text);
-      font-size: 0.9rem;
-      font-family: inherit;
-    }
-
-    #user-input:focus {
-      outline: none;
-      border-color: var(--accent);
-      box-shadow: 0 0 0 1px rgba(0, 212, 170, 0.25);
-    }
-
-    #user-input:disabled {
-      opacity: 0.55;
-    }
-
-    #send-btn {
-      padding: 0.55rem 1rem;
-      background: linear-gradient(180deg, #1e3d35 0%, #152a24 100%);
-      border: 1px solid var(--accent);
-      color: var(--accent);
-      border-radius: 3px;
-      cursor: pointer;
-      font-size: 0.85rem;
-      font-weight: 600;
-      letter-spacing: 0.04em;
-      min-width: 88px;
-    }
-
-    #send-btn:hover:not(:disabled) {
-      background: linear-gradient(180deg, #2a5248 0%, #1a3830 100%);
-    }
-
-    #send-btn:disabled {
-      opacity: 0.6;
-      cursor: not-allowed;
-    }
-
-    .idle-hint {
-      padding: 0.35rem 1rem;
-      font-size: 0.7rem;
-      color: var(--text-dim);
-      border-top: 1px solid var(--border);
-    }
-
-    /* ----- 战利品弹窗 ----- */
-    #loot-modal {
-      position: fixed;
-      inset: 0;
-      z-index: 2000;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: 1rem;
-      background: rgba(0, 0, 0, 0.58);
-      backdrop-filter: blur(2px);
-    }
-
-    #loot-modal.hidden {
-      display: none;
-    }
-
-    .loot-modal-panel {
-      width: 100%;
-      max-width: 440px;
-      background: linear-gradient(165deg, #161d26 0%, var(--bg-panel) 100%);
-      border: 2px solid var(--border);
-      border-radius: 10px;
-      box-shadow:
-        0 0 0 1px rgba(0, 212, 170, 0.12),
-        0 20px 50px rgba(0, 0, 0, 0.65);
-      padding: 1.15rem 1.25rem 1rem;
-    }
-
-    .loot-items {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 0.35rem;
-      align-items: center;
-      min-height: 2.5rem;
-      margin-bottom: 1rem;
-    }
-
-    .loot-empty {
-      color: var(--text-dim);
-      font-size: 0.85rem;
-      font-style: italic;
-      width: 100%;
-    }
-
-    #loot-title {
-      margin: 0 0 0.85rem;
-      font-size: 1rem;
-      font-weight: 700;
-      letter-spacing: 0.02em;
-      color: var(--accent);
-      border-bottom: 1px solid var(--border);
-      padding-bottom: 0.65rem;
-    }
-
-    .loot-badge {
-      display: inline-block;
-      padding: 0.2rem 0.45rem;
-      border-radius: 999px;
-      font-size: 0.68rem;
-      font-family: ui-monospace, monospace;
-      background: rgba(42, 63, 82, 0.6);
-      border: 1px solid rgba(90, 112, 136, 0.5);
-      color: var(--text);
-    }
-
-    .loot-modal-actions {
-      display: flex;
-      gap: 0.6rem;
-      justify-content: flex-end;
-      flex-wrap: wrap;
-    }
-
-    #loot-all-btn {
-      padding: 0.5rem 1rem;
-      background: linear-gradient(180deg, #1e4d38 0%, #153528 100%);
-      border: 1px solid #2a9d6a;
-      color: #7ee0b8;
-      border-radius: 4px;
-      cursor: pointer;
-      font-size: 0.82rem;
-      font-weight: 600;
-      font-family: inherit;
-    }
-
-    #loot-all-btn:hover {
-      filter: brightness(1.08);
-    }
-
-    #close-loot-btn {
-      padding: 0.5rem 1rem;
-      background: #2a333d;
-      border: 1px solid #4a5563;
-      color: var(--text-dim);
-      border-radius: 4px;
-      cursor: pointer;
-      font-size: 0.82rem;
-      font-family: inherit;
-    }
-
-    #close-loot-btn:hover {
-      color: var(--text);
-      border-color: var(--border);
-    }
-  </style>
+  <title>BG3 LLM | 赛博羊皮纸战术桌</title>
+  <link rel="icon" href="data:," />
+  <link rel="stylesheet" href="./style.css" />
 </head>
 <body>
-  <div class="app">
-    <section class="map-panel">
-      <div class="location-bar">当前位置 · <span id="current-location">—</span></div>
-      <div id="map-container">
-        <!-- 地标由 JS 注入 -->
+  <div class="app-shell">
+    <header class="topbar panel-frame">
+      <div class="brand-block">
+        <p class="eyebrow">BG3 LLM / Tactical Console</p>
+        <h1>赛博羊皮纸战术桌</h1>
       </div>
-    </section>
-    <section class="chat-panel">
-      <div id="party-panel" aria-label="队伍状态与背包">
-        <div class="party-panel-title">队伍状态 · 背包</div>
-        <div id="party-panel-cards" class="party-grid"></div>
-      </div>
-      <div class="chat-main">
-        <div class="chat-header">对话记录 / 系统日志</div>
-        <div id="chat-log"></div>
-        <div class="idle-hint">挂机：30 秒无操作将触发同伴闲聊（trigger_idle_banter）</div>
-        <div class="chat-input-row">
-          <input type="text" id="user-input" placeholder="输入指令或对白…" autocomplete="off" />
-          <button type="button" id="send-btn">发送</button>
+      <div class="status-strip">
+        <div class="status-cell">
+          <span class="status-label">Current Location</span>
+          <strong id="current-location">未知区域</strong>
+        </div>
+        <div class="status-cell">
+          <span class="status-label">Net Link</span>
+          <strong id="network-state" data-state="idle">链路待命</strong>
+        </div>
+        <div class="status-cell">
+          <span class="status-label">Turn</span>
+          <strong id="turn-counter">00</strong>
         </div>
       </div>
-    </section>
+    </header>
+
+    <main class="battlefield-layout">
+      <div class="left-column">
+        <section class="world-panel panel-frame">
+          <div class="panel-header">
+            <div>
+              <p class="panel-eyebrow">Main Log / World View</p>
+              <h2>主叙事区</h2>
+            </div>
+            <div class="panel-chip-row" id="log-filter-bar" aria-label="日志筛选">
+              <button type="button" class="panel-chip log-filter-btn is-active" data-filter="dialogue" aria-pressed="true">对话</button>
+              <button type="button" class="panel-chip log-filter-btn is-active" data-filter="system" aria-pressed="true">系统事件</button>
+              <button type="button" class="panel-chip log-filter-btn is-active" data-filter="narration" aria-pressed="true">掷骰旁白</button>
+            </div>
+          </div>
+
+          <div id="world-log" class="world-log" aria-live="polite" aria-label="主叙事日志"></div>
+        </section>
+
+        <footer class="console panel-frame">
+          <div class="console-head">
+            <div>
+              <p class="panel-eyebrow">Command Input</p>
+              <h2>控制台</h2>
+            </div>
+            <span class="console-subtitle">快捷动作会自动写入并执行指令</span>
+          </div>
+
+          <div class="shortcut-bar" aria-label="快捷动作">
+            <button type="button" class="shortcut-btn" data-command="查看周围">查看周围</button>
+            <button type="button" class="shortcut-btn" data-command="查看背包">查看背包</button>
+            <button type="button" class="shortcut-btn" data-command="检查铁箱">检查铁箱</button>
+            <button type="button" class="shortcut-btn" data-command="靠近篝火">靠近篝火</button>
+            <button type="button" class="shortcut-btn" data-command="汇报当前队伍状态">队伍状态</button>
+            <button type="button" class="shortcut-btn shortcut-btn--danger" data-command="我准备战斗，汇报当前可用的战斗动作">战斗动作</button>
+          </div>
+
+          <div class="console-body">
+            <label class="sr-only" for="user-input">输入你的指令</label>
+            <textarea
+              id="user-input"
+              rows="3"
+              placeholder="输入对白、行动或战术指令……"
+              autocomplete="off"
+            ></textarea>
+
+            <div class="console-actions">
+              <p class="console-hint">30 秒无动作将触发同伴闲聊 `trigger_idle_banter`</p>
+              <button type="button" id="send-btn" class="send-btn">执行指令</button>
+            </div>
+          </div>
+        </footer>
+      </div>
+
+      <aside class="side-column sidebar-container">
+        <section class="party-panel panel-frame">
+          <div class="panel-header">
+            <div>
+              <p class="panel-eyebrow">Party Roster</p>
+              <h2>队伍状态栏</h2>
+            </div>
+            <span id="party-count" class="panel-badge">0 名单位</span>
+          </div>
+
+          <div class="panel-body">
+            <div id="party-roster" class="party-roster" aria-label="队伍状态"></div>
+          </div>
+        </section>
+
+        <section class="state-panel panel-frame">
+          <div class="panel-header">
+            <div>
+              <p class="panel-eyebrow">Environment & Inventory</p>
+              <h2>环境与背包区</h2>
+            </div>
+            <span id="environment-count" class="panel-badge">0 个对象</span>
+          </div>
+
+          <div class="panel-body">
+            <div class="state-stack">
+              <section class="subpanel">
+                <div class="subpanel-header">
+                  <h3>玩家背包</h3>
+                  <span id="inventory-owner" class="subpanel-meta">随身行囊</span>
+                </div>
+                <div class="subpanel-body">
+                  <div id="player-inventory-list" class="inventory-grid" aria-label="玩家背包"></div>
+                </div>
+              </section>
+
+              <section class="subpanel">
+                <div class="subpanel-header">
+                  <h3>场景对象</h3>
+                </div>
+                <div class="subpanel-body">
+                  <div id="environment-list" class="environment-list" aria-label="环境物品"></div>
+                </div>
+              </section>
+            </div>
+          </div>
+        </section>
+      </aside>
+    </main>
   </div>
 
-  <div id="loot-modal" class="hidden" aria-hidden="true" role="dialog" aria-labelledby="loot-title">
-    <div class="loot-modal-panel">
-      <h3 id="loot-title">📦 搜刮</h3>
-      <div id="loot-items" class="loot-items"></div>
-      <div class="loot-modal-actions">
-        <button type="button" id="loot-all-btn">全部拾取</button>
-        <button type="button" id="close-loot-btn">关闭</button>
+  <div id="loot-modal" class="loot-modal hidden" aria-hidden="true" role="dialog" aria-labelledby="loot-title">
+    <div class="loot-panel panel-frame">
+      <div class="loot-head">
+        <div>
+          <p class="panel-eyebrow">Container Access</p>
+          <h3 id="loot-title">铁箱内容物</h3>
+        </div>
+        <button type="button" id="close-loot-btn" class="loot-close" aria-label="关闭搜刮面板">关闭</button>
+      </div>
+
+      <div id="loot-items" class="loot-grid"></div>
+
+      <div class="loot-actions">
+        <button type="button" id="loot-all-btn" class="loot-confirm">全部拾取</button>
       </div>
     </div>
   </div>
 
-  <script>
-    const API_URL = "http://localhost:8000/api/chat";
-
-    /** 语义地标 → 地图百分比坐标（与后端 environment_objects key 对齐） */
-    const WAYPOINT_POS = {
-      camp_center: { left: 50, top: 50 },
-      camp_fire: { left: 70, top: 30 },
-      iron_chest: { left: 20, top: 80 },
-    };
-
-    /** NPC id → 代表色（hex，便于 style 与边框） */
-    const SPEAKER_HEX = {
-      shadowheart: "#9b7ebd",
-      astarion: "#c45c5c",
-      laezel: "#5cb89b",
-      player: "#6eb5ff",
-      dm: "#8899aa",
-    };
-
-    let partyStatus = {};
-    const entityTokens = new Map();
-    let idleTimer = null;
-    const IDLE_MS = 30000;
-
-    /** 是否已执行「全部拾取」；为 true 后不再自动弹出开箱面板 */
-    let hasLootedChest = false;
-
-    /** 上一回合最后发言的 NPC id（小写），用于拾取者回退 */
-    let lastActor = "";
-
-    function distanceSq(ax, ay, bx, by) {
-      const dx = ax - bx;
-      const dy = ay - by;
-      return dx * dx + dy * dy;
-    }
-
-    /**
-     * 解析 UI「全部拾取」的承担者：优先站在 iron_chest 的队友；
-     * 否则取语义坐标上离铁箱最近者（平局时优先 lastActor）；
-     * 再否则使用 lastActor（若仍在队伍中）。
-     */
-    function resolveLootActor() {
-      const party = partyStatus || {};
-      const chestWp = WAYPOINT_POS.iron_chest;
-      const ids = Object.keys(party).filter(
-        (id) => id !== "player" && party[id] && typeof party[id] === "object"
-      );
-      if (!ids.length) return "";
-
-      const atChest = ids.filter((id) => (party[id].position || "") === "iron_chest");
-      if (atChest.length === 1) return atChest[0];
-      if (atChest.length > 1) {
-        const la = (lastActor || "").toLowerCase();
-        if (atChest.includes(la)) return la;
-        return atChest.sort()[0];
-      }
-
-      let bestD = Infinity;
-      const tied = [];
-      ids.forEach((id) => {
-        const pos = party[id].position || "camp_center";
-        const wp = WAYPOINT_POS[pos] || WAYPOINT_POS.camp_center;
-        const d = distanceSq(wp.left, wp.top, chestWp.left, chestWp.top);
-        if (d < bestD) {
-          bestD = d;
-          tied.length = 0;
-          tied.push(id);
-        } else if (d === bestD) {
-          tied.push(id);
-        }
-      });
-      if (tied.length === 1) return tied[0];
-      const la = (lastActor || "").toLowerCase();
-      if (tied.includes(la)) return la;
-      if (tied.length) return tied.sort()[0];
-
-      if (la && ids.includes(la)) return la;
-      return ids.sort()[0];
-    }
-
-    function speakerColor(id) {
-      const k = (id || "").toLowerCase();
-      return SPEAKER_HEX[k] || "#6b8fae";
-    }
-
-    function getNpcDisplayName(id) {
-      const m = {
-        shadowheart: "影心",
-        astarion: "阿斯代伦",
-        laezel: "莱埃泽尔",
-        player: "玩家",
-      };
-      return m[id.toLowerCase()] || id;
-    }
-
-    /** 同地标多个单位时的像素偏移，避免重叠 */
-    function stackOffset(index, total) {
-      if (total <= 1) return { x: 0, y: 0 };
-      const r = 22;
-      const angle = (index / total) * Math.PI * 2 - Math.PI / 2;
-      return { x: Math.cos(angle) * r, y: Math.sin(angle) * r };
-    }
-
-    function buildWaypoints() {
-      const map = document.getElementById("map-container");
-      const frag = document.createDocumentFragment();
-      Object.entries(WAYPOINT_POS).forEach(([id, pos]) => {
-        const dot = document.createElement("div");
-        dot.className = "waypoint";
-        dot.style.left = pos.left + "%";
-        dot.style.top = pos.top + "%";
-        dot.dataset.waypointId = id;
-        const lab = document.createElement("span");
-        lab.className = "waypoint-label";
-        lab.textContent = id;
-        dot.appendChild(lab);
-        frag.appendChild(dot);
-      });
-      map.appendChild(frag);
-    }
-
-    function renderPartyPanel() {
-      const host = document.getElementById("party-panel-cards");
-      if (!host) return;
-      host.innerHTML = "";
-      const entries = Object.entries(partyStatus).filter(([, v]) => v && typeof v === "object");
-      entries.sort(([a], [b]) => a.localeCompare(b));
-      if (entries.length === 0) {
-        const empty = document.createElement("div");
-        empty.className = "inv-empty";
-        empty.style.gridColumn = "1 / -1";
-        empty.textContent = "（暂无队伍数据）";
-        host.appendChild(empty);
-        return;
-      }
-      entries.forEach(([id, data]) => {
-        const card = document.createElement("div");
-        card.className = "party-card";
-        const nameEl = document.createElement("div");
-        nameEl.className = "party-card-name";
-        nameEl.style.color = speakerColor(id);
-        nameEl.textContent = getNpcDisplayName(id);
-        const stats = document.createElement("div");
-        stats.className = "party-card-stats";
-        const hpVal = typeof data.hp === "number" ? data.hp : null;
-        const maxHp = typeof data.max_hp === "number" ? data.max_hp : 20;
-        const hpLine =
-          hpVal !== null ? "❤️ HP: " + hpVal + "/" + maxHp : "❤️ HP: —";
-        const aff = data.affection;
-        const affLine = "💖 好感: " + (typeof aff === "number" ? aff : "—");
-        const s1 = document.createElement("span");
-        s1.textContent = hpLine;
-        const s2 = document.createElement("span");
-        s2.textContent = affLine;
-        stats.appendChild(s1);
-        stats.appendChild(s2);
-        const invWrap = document.createElement("div");
-        invWrap.className = "party-inv";
-        const inv = data.inventory && typeof data.inventory === "object" ? data.inventory : {};
-        const invKeys = Object.keys(inv);
-        if (invKeys.length === 0) {
-          const span = document.createElement("span");
-          span.className = "inv-empty";
-          span.textContent = "(背包空空)";
-          invWrap.appendChild(span);
-        } else {
-          invKeys.sort().forEach((itemId) => {
-            const n = inv[itemId];
-            const badge = document.createElement("span");
-            badge.className = "inv-badge";
-            badge.textContent = "[ 🧪 " + itemId + " x" + (n != null ? n : 0) + " ]";
-            invWrap.appendChild(badge);
-          });
-        }
-        card.appendChild(nameEl);
-        card.appendChild(stats);
-        card.appendChild(invWrap);
-        host.appendChild(card);
-      });
-    }
-
-    /** 同步后端 party_status：队伍卡片 + 地图棋子 */
-    function updatePartyStatus(partyStatusData) {
-      partyStatus = partyStatusData && typeof partyStatusData === "object" ? { ...partyStatusData } : {};
-      renderPartyPanel();
-      updateMapTokens();
-    }
-
-    function updateMapTokens() {
-      const map = document.getElementById("map-container");
-
-      const entries = Object.entries(partyStatus).filter(
-        ([id, d]) => id !== "player" && d && typeof d === "object" && d.position
-      );
-
-      const byPos = {};
-      entries.forEach(([id, data]) => {
-        const pos = data.position;
-        if (!byPos[pos]) byPos[pos] = [];
-        byPos[pos].push({ id, data });
-      });
-
-      const seen = new Set();
-      entries.forEach(([id, data]) => {
-        seen.add(id);
-        const posKey = data.position || "camp_center";
-        const base = WAYPOINT_POS[posKey] || WAYPOINT_POS.camp_center;
-        const group = byPos[posKey] || [];
-        const idx = group.findIndex((g) => g.id === id);
-        const off = stackOffset(idx, group.length);
-
-        const left = "calc(" + base.left + "% + " + off.x + "px)";
-        const top = "calc(" + base.top + "% + " + off.y + "px)";
-
-        let token = entityTokens.get(id);
-        if (!token) {
-          token = document.createElement("div");
-          token.className = "entity-token";
-          token.dataset.entityId = id;
-          const ini = document.createElement("span");
-          ini.className = "entity-initials";
-          const nameEl = document.createElement("span");
-          nameEl.className = "entity-name";
-          token.appendChild(ini);
-          token.appendChild(nameEl);
-          map.appendChild(token);
-          entityTokens.set(id, token);
-        }
-        token.style.background = speakerColor(id);
-        token.style.left = left;
-        token.style.top = top;
-        token.querySelector(".entity-initials").textContent = id.slice(0, 2).toUpperCase();
-        token.querySelector(".entity-name").textContent = getNpcDisplayName(id);
-      });
-
-      entityTokens.forEach((el, id) => {
-        if (!seen.has(id)) {
-          el.remove();
-          entityTokens.delete(id);
-        }
-      });
-    }
-
-    function appendChat(htmlClass, label, text) {
-      const log = document.getElementById("chat-log");
-      const div = document.createElement("div");
-      div.className = "msg " + htmlClass;
-      const lab = document.createElement("div");
-      lab.className = "label";
-      lab.textContent = label;
-      div.appendChild(lab);
-      const body = document.createElement("div");
-      body.textContent = text;
-      div.appendChild(body);
-      log.appendChild(div);
-      log.scrollTop = log.scrollHeight;
-    }
-
-    function updateChatLog(data, userLine) {
-      if (userLine) {
-        appendChat("msg-player", "你", userLine);
-      }
-      const responses = data.responses || [];
-      const log = document.getElementById("chat-log");
-      responses.forEach((r) => {
-        const sp = (r.speaker || "npc").toLowerCase();
-        const div = document.createElement("div");
-        div.className = "msg msg-npc";
-        div.style.borderLeftColor = speakerColor(sp);
-        const lab = document.createElement("div");
-        lab.className = "label";
-        lab.style.color = speakerColor(sp);
-        lab.textContent = getNpcDisplayName(sp) + " · " + sp;
-        div.appendChild(lab);
-        const body = document.createElement("div");
-        body.textContent = r.text || "";
-        div.appendChild(body);
-        log.appendChild(div);
-      });
-      (data.journal_events || []).forEach((line) => {
-        appendChat("msg-system", "◎ 系统", line);
-      });
-      log.scrollTop = log.scrollHeight;
-    }
-
-    function setLoading(loading) {
-      const inp = document.getElementById("user-input");
-      const btn = document.getElementById("send-btn");
-      inp.disabled = loading;
-      btn.disabled = loading;
-      btn.textContent = loading ? "思考中…" : "发送";
-    }
-
-    function resetIdleTimer() {
-      if (idleTimer) clearTimeout(idleTimer);
-      idleTimer = setTimeout(() => {
-        sendMessage("", "trigger_idle_banter");
-      }, IDLE_MS);
-    }
-
-    function hideLootModal() {
-      const modal = document.getElementById("loot-modal");
-      if (!modal) return;
-      modal.classList.add("hidden");
-      modal.setAttribute("aria-hidden", "true");
-    }
-
-    function lootItemEmoji(itemId) {
-      const low = (itemId || "").toLowerCase();
-      const map = {
-        gold_coin: "🪙",
-        rusty_dagger: "🗡️",
-        burnt_map: "🗺️",
-        healing_potion: "🧪",
-        rusty_key: "🗝️",
-      };
-      return map[low] || "📦";
-    }
-
-    /** 根据 environment_objects.iron_chest.inventory 填充 #loot-items */
-    function renderLootItems(environmentObjects) {
-      const host = document.getElementById("loot-items");
-      if (!host) return;
-      host.innerHTML = "";
-      const env = environmentObjects && typeof environmentObjects === "object" ? environmentObjects : {};
-      const chest = env.iron_chest;
-      const inv =
-        chest && typeof chest === "object" && chest.inventory && typeof chest.inventory === "object"
-          ? chest.inventory
-          : {};
-      const keys = Object.keys(inv);
-      if (keys.length === 0) {
-        const empty = document.createElement("div");
-        empty.className = "loot-empty";
-        empty.textContent = "里面什么也没有";
-        host.appendChild(empty);
-        return;
-      }
-      keys.sort().forEach((itemId) => {
-        const n = inv[itemId];
-        const span = document.createElement("span");
-        span.className = "loot-badge";
-        span.textContent =
-          "[ " + lootItemEmoji(itemId) + " " + itemId + " x" + (n != null ? n : 0) + " ]";
-        host.appendChild(span);
-      });
-    }
-
-    function maybeShowLootModal(environmentObjects) {
-      if (hasLootedChest) return;
-      const env = environmentObjects && typeof environmentObjects === "object" ? environmentObjects : {};
-      const chest = env.iron_chest;
-      const status =
-        chest && typeof chest === "object" && chest.status != null
-          ? String(chest.status).trim().toLowerCase()
-          : "";
-      // 后端 physics 解锁后为 "opened"，与 "open" 均视为已开启
-      if (status !== "open" && status !== "opened") return;
-      renderLootItems(env);
-      const modal = document.getElementById("loot-modal");
-      if (!modal) return;
-      modal.classList.remove("hidden");
-      modal.setAttribute("aria-hidden", "false");
-    }
-
-    async function sendMessage(text, intent, character) {
-      const userLine = (text || "").trim();
-      const intentVal = intent == null || intent === "" ? null : String(intent).trim();
-      if (!userLine && !intentVal) return;
-
-      setLoading(true);
-      const body = {
-        user_input: userLine,
-        intent: intentVal || null,
-        session_id: "test_consume_003",
-      };
-      const charVal =
-        character != null && String(character).trim() !== ""
-          ? String(character).trim().toLowerCase()
-          : "";
-      if (charVal) {
-        body.character = charVal;
-      }
-
-      try {
-        const res = await fetch(API_URL, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-        });
-        if (!res.ok) {
-          const err = await res.text();
-          appendChat("msg-system", "◎ 错误", "HTTP " + res.status + ": " + err);
-          return;
-        }
-        const data = await res.json();
-
-        document.getElementById("current-location").textContent =
-          data.current_location || "—";
-
-        updateChatLog(data, userLine || null);
-
-        updatePartyStatus(data.party_status || {});
-        maybeShowLootModal(data.environment_objects || {});
-
-        const respList = data.responses || [];
-        if (respList.length > 0) {
-          const last = respList[respList.length - 1];
-          if (last && last.speaker) {
-            lastActor = String(last.speaker).toLowerCase();
-          }
-        }
-      } catch (e) {
-        appendChat("msg-system", "◎ 网络", String(e.message || e));
-      } finally {
-        setLoading(false);
-        resetIdleTimer();
-      }
-    }
-
-    function onSend() {
-      const inp = document.getElementById("user-input");
-      const t = inp.value.trim();
-      inp.value = "";
-      sendMessage(t, null);
-    }
-
-    document.getElementById("send-btn").addEventListener("click", onSend);
-    document.getElementById("user-input").addEventListener("keydown", (e) => {
-      if (e.key === "Enter") onSend();
-    });
-
-    document.getElementById("close-loot-btn").addEventListener("click", () => {
-      hideLootModal();
-    });
-
-    document.getElementById("loot-all-btn").addEventListener("click", () => {
-      hideLootModal();
-      hasLootedChest = true;
-      const actor = resolveLootActor();
-      if (!actor) {
-        appendChat("msg-system", "◎ 系统", "无法解析拾取角色，请等待队伍状态同步后再试。");
-        return;
-      }
-      sendMessage("", "ui_action_loot", actor);
-    });
-
-    buildWaypoints();
-    updatePartyStatus({});
-    resetIdleTimer();
-
-    appendChat("msg-system", "◎ 终端", "连接 " + API_URL + " — 输入对话或等待挂机事件。");
-  </script>
+  <script src="./app.js" defer></script>
 </body>
 </html>
