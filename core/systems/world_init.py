@@ -10,6 +10,32 @@ from typing import Any, Dict
 from core.graph.nodes.utils import default_entities
 
 
+def _build_initial_entities() -> Dict[str, Any]:
+    """
+    基于默认实体表构建初始场景实体，并确保战斗测试怪物存在。
+    """
+    entities = copy.deepcopy(default_entities)
+    entities.setdefault(
+        "goblin_1",
+        {
+            "name": "地精巡逻兵",
+            "faction": "hostile",
+            "hp": 7,
+            "max_hp": 7,
+            "ac": 15,
+            "status": "alive",
+            "inventory": {
+                "gold_coin": 5,
+                "scimitar": 1,
+            },
+            "position": "camp_center",
+            "active_buffs": [],
+            "affection": 0,
+        },
+    )
+    return entities
+
+
 def get_initial_world_state() -> Dict[str, Any]:
     """
     生成一个全新的、初始化的游戏世界状态（空存档创世）。
@@ -29,7 +55,7 @@ def get_initial_world_state() -> Dict[str, Any]:
 
     # 构建并返回完整的初始状态字典
     return {
-        "entities": copy.deepcopy(default_entities),
+        "entities": _build_initial_entities(),
         "player_inventory": init_player_inv,
         "turn_count": 0,
         "time_of_day": "晨曦 (Morning)",

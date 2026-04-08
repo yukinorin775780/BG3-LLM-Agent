@@ -54,3 +54,11 @@ items:
     stackable: false
     weight: 4.0
     damage: "1d6"
+
+  scimitar:
+    name: "弯刀"
+    description: "一把轻巧锋利的弯刀，常见于地精与匪徒手中。"
+    type: "weapon"
+    stackable: false
+    weight: 3.0
+    damage: "1d6"

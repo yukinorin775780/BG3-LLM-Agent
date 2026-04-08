@@ -230,14 +230,18 @@ textarea {
 .left-column {
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 1rem;
   min-height: 0;
+  height: 100%; /* 核心：强制高度不能超过父级 Grid 网格 */
+  overflow: hidden; /* 核心：截断任何试图撑爆布局的后代 */
 }
 
 .world-panel {
   display: flex;
   flex-direction: column;
   flex: 1 1 0;
+  min-height: 0;
+  overflow: hidden; /* 核心：防止被 header 挤压导致内容溢出 */
   padding: 22px;
 }
 
@@ -331,7 +335,11 @@ textarea {
 .world-log {
   display: flex;
   flex-direction: column;
+  flex: 1 1 0;
+  min-height: 0;
   gap: 12px;
+  overflow-y: auto;
+  overflow-x: hidden;
   padding-right: 6px;
 }
 

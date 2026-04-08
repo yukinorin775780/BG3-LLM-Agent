@@ -3,12 +3,6 @@
   const SESSION_ID = "test_consume_003";
   const IDLE_MS = 30000;
 
-  const WAYPOINT_POS = {
-    camp_center: { left: 50, top: 50 },
-    camp_fire: { left: 70, top: 30 },
-    iron_chest: { left: 20, top: 80 },
-  };
-
   const SPEAKER_META = {
     player: { name: "玩家", color: "#6eb5ff", sigil: "⌘" },
     shadowheart: { name: "影心", color: "#9b84c6", sigil: "✦" },
@@ -43,8 +37,8 @@
     turnCount: 0,
     idleTimer: null,
     isLoading: false,
-    hasLootedChest: false,
-    lastActor: "",
+    currentLootTargetId: "",
+    seenLootTargets: new Set(),
   };
 
   const els = {
@@ -56,14 +50,13 @@
     partyCount: document.getElementById("party-count"),
     environmentList: document.getElementById("environment-list"),
     environmentCount: document.getElementById("environment-count"),
-    playerInventoryList: document.getElementById("player-inventory-list"),
-    inventoryOwner: document.getElementById("inventory-owner"),
     userInput: document.getElementById("user-input"),
     sendBtn: document.getElementById("send-btn"),
     shortcutButtons: Array.from(document.querySelectorAll(".shortcut-btn")),
     logFilterBar: document.getElementById("log-filter-bar"),
     logFilterButtons: Array.from(document.querySelectorAll(".log-filter-btn")),
     lootModal: document.getElementById("loot-modal"),
+    lootTitle: document.getElementById("loot-title"),
     lootItems: document.getElementById("loot-items"),
     lootAllBtn: document.getElementById("loot-all-btn"),
     closeLootBtn: document.getElementById("close-loot-btn"),
@@ -132,6 +125,12 @@
 
   function inventoryEntries(inv) {
     return Object.entries(safeObject(inv)).filter(([, count]) => Number(count) > 0);
+  }
+
+  function canLootTarget(target) {
+    const data = safeObject(target);
+    const status = normalizeId(data.status);
+    return inventoryEntries(data.inventory).length > 0 && (status === "open" || status === "opened" || status === "dead");
   }
 
   function clamp(value, min, max) {
@@ -261,64 +260,51 @@
     els.turnCounter.textContent = padTurn(state.turnCount);
   }
 
-  function renderPartyRoster() {
-    const entries = objectEntries(state.partyStatus).sort(([leftId], [rightId]) => {
-      if (leftId === "player") return -1;
-      if (rightId === "player") return 1;
-      return leftId.localeCompare(rightId);
-    });
+  function createPartyCard(id, rawData) {
+    const data = safeObject(rawData);
+    const isPlayer = normalizeId(id) === "player";
+    const card = document.createElement("article");
+    card.className = "party-card";
 
-    els.partyCount.textContent = entries.length + " 名单位";
-    els.partyRoster.innerHTML = "";
+    const meta = getSpeakerMeta(id);
+    const avatar = document.createElement("div");
+    avatar.className = "avatar-medallion";
+    avatar.textContent = getInitials(id);
+    avatar.style.background = "radial-gradient(circle at 30% 30%, " + meta.color + ", #101319 72%)";
 
-    if (entries.length === 0) {
-      els.partyRoster.appendChild(createEmptyState("队伍状态尚未同步。发出一条指令后，这里会显示同伴的 HP、好感度与背包。"));
-      return;
-    }
+    const content = document.createElement("div");
 
-    const fragment = document.createDocumentFragment();
+    const head = document.createElement("div");
+    head.className = "party-card-head";
 
-    entries.forEach(([id, data]) => {
-      const card = document.createElement("article");
-      card.className = "party-card";
+    const headText = document.createElement("div");
+    const name = document.createElement("h3");
+    name.textContent = getDisplayName(id);
+    name.style.color = meta.color;
+    const role = document.createElement("p");
+    role.className = "party-role";
+    role.textContent = "位置 · " + formatLocation(data.position || "camp_center");
 
-      const meta = getSpeakerMeta(id);
-      const avatar = document.createElement("div");
-      avatar.className = "avatar-medallion";
-      avatar.textContent = getInitials(id);
-      avatar.style.background = "radial-gradient(circle at 30% 30%, " + meta.color + ", #101319 72%)";
+    headText.appendChild(name);
+    headText.appendChild(role);
 
-      const content = document.createElement("div");
-
-      const head = document.createElement("div");
-      head.className = "party-card-head";
-
-      const headText = document.createElement("div");
-      const name = document.createElement("h3");
-      name.textContent = getDisplayName(id);
-      name.style.color = meta.color;
-      const role = document.createElement("p");
-      role.className = "party-role";
-      role.textContent = "位置 · " + formatLocation(data.position || "camp_center");
-
-      headText.appendChild(name);
-      headText.appendChild(role);
-
+    head.appendChild(headText);
+    if (!isPlayer) {
       const affinity = document.createElement("span");
       affinity.className = "status-pill";
       affinity.textContent = affectionLabel(Number(data.affection));
-
-      head.appendChild(headText);
       head.appendChild(affinity);
+    }
 
-      const bars = document.createElement("div");
-      bars.className = "party-bars";
+    const bars = document.createElement("div");
+    bars.className = "party-bars";
 
-      const hp = Number(data.hp);
-      const maxHp = Number(data.max_hp || data.hp || 20);
-      const aff = Number(data.affection);
+    const hp = Number(data.hp);
+    const maxHp = Number(data.max_hp || data.hp || 20);
+    const aff = Number(data.affection);
 
-      bars.appendChild(createMeter("HP", Number.isFinite(hp) ? hp + " / " + maxHp : "—", hpPercent(hp, maxHp), false));
+    bars.appendChild(createMeter("HP", Number.isFinite(hp) ? hp + " / " + maxHp : "—", hpPercent(hp, maxHp), false));
+    if (!isPlayer) {
       bars.appendChild(
         createMeter(
           "好感度",
@@ -327,27 +313,57 @@
           true
         )
       );
+    }
 
-      const pack = document.createElement("div");
-      pack.className = "party-pack";
+    const pack = document.createElement("div");
+    pack.className = "party-pack";
 
-      const invItems = inventoryEntries(data.inventory).slice(0, 4);
-      if (invItems.length === 0) {
-        pack.appendChild(makeItemTag("空背包", "⟡"));
-      } else {
-        invItems.forEach(([itemId, count]) => {
-          const metaItem = itemMeta(itemId);
-          pack.appendChild(makeItemTag(metaItem.label + " x" + count, metaItem.icon));
-        });
-      }
+    const invItems = inventoryEntries(data.inventory).slice(0, 4);
+    if (invItems.length === 0) {
+      pack.appendChild(makeItemTag("空背包", "⟡"));
+    } else {
+      invItems.forEach(([itemId, count]) => {
+        const metaItem = itemMeta(itemId);
+        pack.appendChild(makeItemTag(metaItem.label + " x" + count, metaItem.icon));
+      });
+    }
 
-      content.appendChild(head);
-      content.appendChild(bars);
-      content.appendChild(pack);
+    content.appendChild(head);
+    content.appendChild(bars);
+    content.appendChild(pack);
 
-      card.appendChild(avatar);
-      card.appendChild(content);
-      fragment.appendChild(card);
+    card.appendChild(avatar);
+    card.appendChild(content);
+    return card;
+  }
+
+  function renderPartyRoster() {
+    const party = safeObject(state.partyStatus);
+    const companionEntries = objectEntries(party)
+      .filter(([id]) => normalizeId(id) !== "player")
+      .sort(([leftId], [rightId]) => leftId.localeCompare(rightId));
+
+    els.partyCount.textContent = companionEntries.length + 1 + " 名单位";
+    els.partyRoster.innerHTML = "";
+
+    const fragment = document.createDocumentFragment();
+    const playerData = {
+      ...safeObject(party.player),
+      hp: safeObject(party.player).hp ?? 20,
+      max_hp: safeObject(party.player).max_hp ?? safeObject(party.player).hp ?? 20,
+      affection: safeObject(party.player).affection ?? 100,
+      position: safeObject(party.player).position || "camp_center",
+      inventory: state.playerInventory,
+    };
+    fragment.appendChild(createPartyCard("player", playerData));
+
+    if (companionEntries.length === 0) {
+      els.partyRoster.appendChild(fragment);
+      return;
+    }
+
+    companionEntries.forEach(([id, data]) => {
+      fragment.appendChild(createPartyCard(id, data));
     });
 
     els.partyRoster.appendChild(fragment);
@@ -452,12 +468,12 @@
       inspectBtn.textContent = "检查";
       actions.appendChild(inspectBtn);
 
-      const chestStatus = normalizeId(data.status);
-      if (id === "iron_chest" && (chestStatus === "open" || chestStatus === "opened")) {
+      if (canLootTarget(data)) {
         const lootBtn = document.createElement("button");
         lootBtn.type = "button";
         lootBtn.className = "object-action";
         lootBtn.dataset.loot = "true";
+        lootBtn.dataset.targetId = id;
         lootBtn.textContent = "搜刮";
         actions.appendChild(lootBtn);
       }
@@ -472,59 +488,17 @@
     host.appendChild(fragment);
   }
 
-  function renderPlayerInventory(playerInventoryData) {
-    const host = els.playerInventoryList;
-    const inventory = safeObject(playerInventoryData);
-    const items = Object.entries(inventory).filter(([, count]) => Number(count) > 0);
-
-    els.inventoryOwner.textContent = "玩家 · 随身行囊";
-    host.innerHTML = "";
-
-    if (items.length === 0) {
-      const note = document.createElement("div");
-      note.className = "inventory-note";
-      note.textContent = "行囊空空如也...";
-      host.appendChild(note);
-      return;
-    }
-
-    const fragment = document.createDocumentFragment();
-
-    items.forEach(([itemId, count]) => {
-      const meta = itemMeta(itemId);
-      const slot = document.createElement("article");
-      slot.className = "inventory-slot inventory-slot--filled inventory-item";
-      slot.setAttribute("data-item-id", itemId);
-
-      const icon = document.createElement("div");
-      icon.className = "inventory-slot-icon";
-      icon.textContent = meta.icon;
-
-      const rawName = document.createElement("div");
-      rawName.className = "inventory-slot-name";
-      rawName.textContent = itemId;
-
-      const label = document.createElement("div");
-      label.className = "inventory-slot-count";
-      label.textContent = meta.label + " x " + count;
-
-      slot.appendChild(icon);
-      slot.appendChild(rawName);
-      slot.appendChild(label);
-      fragment.appendChild(slot);
-    });
-
-    host.appendChild(fragment);
-  }
-
-  function renderLootItems(environmentObjects) {
+  function renderLootItems(environmentObjects, targetId) {
     const env = safeObject(environmentObjects);
-    const chest = safeObject(env.iron_chest);
-    const items = inventoryEntries(chest.inventory);
+    const normalizedTargetId = normalizeId(targetId);
+    const target = safeObject(env[normalizedTargetId]);
+    const targetName = target.name || prettifyId(normalizedTargetId);
+    const items = inventoryEntries(target.inventory);
     els.lootItems.innerHTML = "";
+    els.lootTitle.textContent = "搜刮: " + targetName;
 
     if (items.length === 0) {
-      els.lootItems.appendChild(createEmptyState("铁箱已经被搬空。"));
+      els.lootItems.appendChild(createEmptyState(targetName + " 已经被搬空。"));
       return;
     }
 
@@ -560,53 +534,21 @@
     els.lootModal.setAttribute("aria-hidden", "true");
   }
 
-  function maybeShowLootModal(environmentObjects) {
-    if (state.hasLootedChest) return;
-    const chest = safeObject(safeObject(environmentObjects).iron_chest);
-    const status = normalizeId(chest.status);
-    if (status !== "open" && status !== "opened") return;
-    renderLootItems(environmentObjects);
+  function openLootModalForTarget(targetId) {
+    const normalizedTargetId = normalizeId(targetId);
+    if (!normalizedTargetId) return;
+    state.currentLootTargetId = normalizedTargetId;
+    renderLootItems(state.environmentObjects, normalizedTargetId);
     showLootModal();
   }
 
-  function distanceSq(ax, ay, bx, by) {
-    const dx = ax - bx;
-    const dy = ay - by;
-    return dx * dx + dy * dy;
-  }
-
-  function resolveLootActor() {
-    const party = safeObject(state.partyStatus);
-    const ids = Object.keys(party).filter((id) => id !== "player" && party[id] && typeof party[id] === "object");
-    if (!ids.length) return "";
-
-    const chestWaypoint = WAYPOINT_POS.iron_chest;
-    const atChest = ids.filter((id) => normalizeId(party[id].position) === "iron_chest");
-
-    if (atChest.length === 1) return atChest[0];
-    if (atChest.length > 1) {
-      const last = normalizeId(state.lastActor);
-      if (atChest.includes(last)) return last;
-      return atChest.sort()[0];
-    }
-
-    let bestDistance = Number.POSITIVE_INFINITY;
-    let bestIds = [];
-
-    ids.forEach((id) => {
-      const waypoint = WAYPOINT_POS[normalizeId(party[id].position)] || WAYPOINT_POS.camp_center;
-      const distance = distanceSq(waypoint.left, waypoint.top, chestWaypoint.left, chestWaypoint.top);
-      if (distance < bestDistance) {
-        bestDistance = distance;
-        bestIds = [id];
-      } else if (distance === bestDistance) {
-        bestIds.push(id);
-      }
+  function maybeShowLootModal(environmentObjects) {
+    const env = safeObject(environmentObjects);
+    const eligibleTarget = Object.entries(env).find(([id, rawData]) => {
+      return !state.seenLootTargets.has(normalizeId(id)) && canLootTarget(rawData);
     });
-
-    const last = normalizeId(state.lastActor);
-    if (bestIds.includes(last)) return last;
-    return bestIds.sort()[0] || "";
+    if (!eligibleTarget) return;
+    openLootModalForTarget(eligibleTarget[0]);
   }
 
   function updateWorldLog(data, userLine) {
@@ -716,13 +658,7 @@
         renderChrome(els.currentLocation.textContent);
       }
 
-      const responses = Array.isArray(data.responses) ? data.responses : [];
-      if (responses.length > 0 && responses[responses.length - 1].speaker) {
-        state.lastActor = normalizeId(responses[responses.length - 1].speaker);
-      }
-
       renderPartyRoster();
-      renderPlayerInventory(data.player_inventory);
       renderEnvironmentObjects();
       if (!opts.skipLogUpdate) {
         updateWorldLog(data, userLine || null);
@@ -767,8 +703,7 @@
     const actionButton = event.target.closest(".object-action");
     if (!actionButton) return;
     if (actionButton.dataset.loot === "true") {
-      renderLootItems(state.environmentObjects);
-      showLootModal();
+      openLootModalForTarget(actionButton.dataset.targetId || "");
       return;
     }
     queueCommand(actionButton.dataset.command || "");
@@ -795,18 +730,11 @@
     });
 
     els.lootAllBtn.addEventListener("click", () => {
+      const targetId = normalizeId(state.currentLootTargetId);
       hideLootModal();
-      state.hasLootedChest = true;
-      const actor = resolveLootActor();
-      if (!actor) {
-        appendLogEntry("system", "系统裁定", "无法定位负责搜刮铁箱的同伴，请等待队伍状态同步。", {
-          color: "#d0ab67",
-          sigil: "◎",
-          logType: "system",
-        });
-        return;
-      }
-      sendMessage("", "ui_action_loot", actor);
+      if (!targetId) return;
+      state.seenLootTargets.add(targetId);
+      sendMessage("我要搜刮 " + targetId, "ui_action_loot", "player");
     });
 
     ["keydown", "pointerdown"].forEach((eventName) => {
@@ -847,7 +775,6 @@
     bindEvents();
     renderChrome("幽暗地域营地");
     renderPartyRoster();
-    renderPlayerInventory(state.playerInventory);
     renderEnvironmentObjects();
     appendLogEntry("system", "终端接入", "战术桌已连入 `/api/chat`。发出第一条指令后，主叙事区会开始记录世界变化。", {
       color: "#d0ab67",

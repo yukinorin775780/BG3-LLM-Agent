@@ -22,6 +22,7 @@ MECHANICS_REQUIRED_INTENTS: tuple[str, ...] = ("PERSUASION", "DECEPTION", "STEAL
 # 需要掷骰子的动作意图（DM 分析结果），必须包含 MECHANICS_REQUIRED_INTENTS
 ACTION_INTENTS: tuple[str, ...] = (
     "ATTACK",
+    "LOOT",
     "STEAL",
     "PERSUASION",
     "DECEPTION",
@@ -131,7 +132,7 @@ def route_after_mechanics(state: GameState) -> MECHANICS_ROUTE:
         return "narration"
 
     # 战斗等 → DM 旁白
-    if intent in ("attack", "cast_spell"):
+    if intent in ("attack", "cast_spell", "loot"):
         return "narration"
 
     # 默认兜底交还给 NPC

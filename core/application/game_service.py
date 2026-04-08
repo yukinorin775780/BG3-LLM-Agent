@@ -4,6 +4,7 @@
 
 import copy
 import logging
+import re
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Protocol, TypedDict
 
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
@@ -11,10 +12,12 @@ from langgraph.graph import START
 
 from core.engine.physics import execute_loot
 from core.graph.graph_builder import build_graph
+from core.systems import mechanics
 from core.systems.world_init import get_initial_world_state
 
 logger = logging.getLogger(__name__)
 StreamHandler = Callable[[str, Dict[str, Any]], Awaitable[None]]
+PARTY_MEMBER_IDS = frozenset({"astarion", "shadowheart", "laezel"})
 
 
 class ChatTurnResult(TypedDict):
@@ -117,6 +120,7 @@ class GameService:
                     config=config,
                     previous_state=previous_state,
                     previous_journal_len=previous_journal_len,
+                    user_input=normalized_input,
                     character=character,
                 )
                 return self._build_chat_result(
@@ -203,10 +207,12 @@ class GameService:
         config: Dict[str, Any],
         previous_state: Dict[str, Any],
         previous_journal_len: int,
+        user_input: str,
         character: Optional[str],
     ) -> Dict[str, Any]:
         entities = copy.deepcopy(previous_state.get("entities") or {})
         environment_objects = copy.deepcopy(previous_state.get("environment_objects") or {})
+        player_inventory = copy.deepcopy(previous_state.get("player_inventory") or {})
         if not entities:
             raise InvalidChatRequestError("No entities in state; cannot loot.")
 
@@ -215,23 +221,34 @@ class GameService:
             raise InvalidChatRequestError(
                 "character is required for ui_action_loot (e.g. shadowheart)."
             )
-        if character_id not in entities:
+        if character_id != "player" and character_id not in entities:
             raise InvalidChatRequestError(f"Unknown character: {character_id}")
 
-        loot_log = self._loot_executor(
-            entities,
-            environment_objects,
-            character_id,
-            "iron_chest",
+        target_id = self._extract_loot_target_id(
+            user_input=user_input,
+            entities=entities,
+            environment_objects=environment_objects,
+        )
+        loot_result = mechanics.execute_loot_action(
+            {
+                "entities": entities,
+                "environment_objects": environment_objects,
+                "player_inventory": player_inventory,
+                "intent_context": {
+                    "action_actor": "player",
+                    "action_target": target_id or "iron_chest",
+                },
+            }
         )
 
         try:
             await graph.aupdate_state(
                 config,
                 {
-                    "entities": entities,
-                    "environment_objects": environment_objects,
-                    "journal_events": [loot_log],
+                    "entities": loot_result.get("entities", entities),
+                    "environment_objects": loot_result.get("environment_objects", environment_objects),
+                    "player_inventory": loot_result.get("player_inventory", player_inventory),
+                    "journal_events": loot_result.get("journal_events", []),
                 },
                 as_node=START,
             )
@@ -259,19 +276,113 @@ class GameService:
             if len(current_journal) > previous_journal_len
             else []
         )
+        environment_objects = self._build_environment_objects_payload(state)
         player_inventory = state.get("player_inventory")
         return {
             "responses": formatted_responses,
             "journal_events": new_journal,
             "current_location": state.get("current_location", "Unknown"),
-            "environment_objects": state.get("environment_objects") or {},
-            "party_status": state.get("entities") or {},
+            "environment_objects": environment_objects,
+            "party_status": self._build_party_status_payload(state),
             "player_inventory": player_inventory if isinstance(player_inventory, dict) else {},
         }
 
     @staticmethod
     def _normalize_state(state: Any) -> Dict[str, Any]:
         return state if isinstance(state, dict) else {}
+
+    @staticmethod
+    def _build_environment_objects_payload(state: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        将静态环境物体与可渲染的场景实体合并成前端使用的 environment_objects。
+        当前至少保证 hostile 实体（如怪物）不会在 API 层丢失。
+        """
+        payload = copy.deepcopy(state.get("environment_objects") or {})
+        if not isinstance(payload, dict):
+            payload = {}
+
+        entities = state.get("entities") or {}
+        if not isinstance(entities, dict):
+            return payload
+
+        for entity_id, entity in entities.items():
+            if not isinstance(entity, dict):
+                continue
+            faction = str(entity.get("faction", "")).strip().lower()
+            if faction != "hostile":
+                continue
+            payload[str(entity_id)] = {
+                "id": str(entity_id),
+                "type": "entity",
+                "name": entity.get("name", str(entity_id)),
+                "description": (
+                    f"敌对单位 · HP {entity.get('hp', '—')}/{entity.get('max_hp', entity.get('hp', '—'))}"
+                    f" · AC {entity.get('ac', '—')} · 位置 {entity.get('position', 'unknown')}"
+                ),
+                "hp": entity.get("hp"),
+                "max_hp": entity.get("max_hp"),
+                "ac": entity.get("ac"),
+                "status": entity.get("status", "alive"),
+                "faction": entity.get("faction", ""),
+                "position": entity.get("position", ""),
+                "inventory": copy.deepcopy(entity.get("inventory") or {}),
+            }
+
+        return payload
+
+    @staticmethod
+    def _build_party_status_payload(state: Dict[str, Any]) -> Dict[str, Any]:
+        entities = state.get("entities") or {}
+        if not isinstance(entities, dict):
+            return {}
+
+        party_status: Dict[str, Any] = {}
+        for entity_id, entity in entities.items():
+            if not isinstance(entity, dict):
+                continue
+            if not GameService._is_party_member_entity(str(entity_id), entity):
+                continue
+            party_status[str(entity_id)] = copy.deepcopy(entity)
+        return party_status
+
+    @staticmethod
+    def _is_party_member_entity(entity_id: str, entity: Dict[str, Any]) -> bool:
+        normalized_id = str(entity_id or "").strip().lower()
+        if normalized_id == "player":
+            return False
+        if normalized_id in PARTY_MEMBER_IDS:
+            return True
+
+        faction = str(entity.get("faction", "")).strip().lower()
+        if faction in {"hostile", "neutral"}:
+            return False
+        if re.fullmatch(r".+_\d+", normalized_id):
+            return False
+        return True
+
+    @staticmethod
+    def _extract_loot_target_id(
+        *,
+        user_input: str,
+        entities: Dict[str, Any],
+        environment_objects: Dict[str, Any],
+    ) -> str:
+        normalized_input = str(user_input or "").strip().lower()
+        candidates = [
+            str(target_id).strip().lower()
+            for target_id in list(entities.keys()) + list(environment_objects.keys())
+            if str(target_id).strip()
+        ]
+
+        for candidate in candidates:
+            if candidate and candidate in normalized_input:
+                return candidate
+
+        match = re.search(r"(?:loot|搜刮|搜尸|摸尸|拾取)\s+([a-zA-Z0-9_]+)", normalized_input)
+        if match:
+            return match.group(1).strip().lower()
+
+        return ""
 
 
 async def process_chat_turn(

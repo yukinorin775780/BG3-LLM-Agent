@@ -52,7 +52,12 @@ def _entity_snapshot(v: Dict[str, Any]) -> Dict[str, Any]:
     确保 LangGraph 状态持久化时，各角色 Persona 状态机数值不丢失。
     """
     out: Dict[str, Any] = {
+        "name": v.get("name", ""),
+        "faction": v.get("faction", "neutral"),
         "hp": v.get("hp", 20),
+        "max_hp": v.get("max_hp", v.get("hp", 20)),
+        "ac": v.get("ac", 10),
+        "status": v.get("status", "alive"),
         "active_buffs": list(v.get("active_buffs", [])),
         "affection": v.get("affection", 0),
         "inventory": dict(v.get("inventory", {})),
@@ -103,10 +108,17 @@ def load_default_entities() -> Dict[str, Dict[str, Any]]:
                 data = yaml.safe_load(f)
             data = data or {}
             base = data.get("base_stats") or {}
+            combat = data.get("combat") or {}
             inv_raw = data.get("inventory") or []
             inv_dict = _parse_inventory(inv_raw)
+            max_hp = base.get("max_hp", base.get("hp", combat.get("hit_points", 20)))
             entity_data: Dict[str, Any] = {
-                "hp": base.get("hp", 20),
+                "name": data.get("name", entity_id.replace("_", " ").title()),
+                "faction": base.get("faction", "neutral"),
+                "hp": base.get("hp", max_hp),
+                "max_hp": max_hp,
+                "ac": base.get("ac", combat.get("armor_class", 10)),
+                "status": base.get("status", "alive"),
                 "active_buffs": [],
                 "affection": base.get("affection", 0),
                 "inventory": inv_dict,
@@ -119,7 +131,12 @@ def load_default_entities() -> Dict[str, Dict[str, Any]]:
             entities[entity_id] = entity_data
         except Exception:
             entities[entity_id] = {
+                "name": entity_id.replace("_", " ").title(),
+                "faction": "neutral",
                 "hp": 20,
+                "max_hp": 20,
+                "ac": 10,
+                "status": "alive",
                 "active_buffs": [],
                 "affection": 0,
                 "inventory": {},
@@ -146,10 +163,19 @@ def merge_entities_with_defaults(raw_entities: Optional[Dict[str, Any]]) -> Dict
     for npc_id, default_data in default_entities.items():
         if npc_id not in entities:
             entities[npc_id] = copy.deepcopy(default_data)
-    # 旧存档缺 position 时补默认语义坐标，避免 merge / overlay 后丢失
+    # 旧存档缺战斗字段时补默认值，避免 UI 与 mechanics 在旧状态上缺关键键。
     for npc_id, ent in list(entities.items()):
-        if isinstance(ent, dict) and "position" not in ent:
-            ent["position"] = default_entities.get(npc_id, {}).get("position", "camp_center")
+        if not isinstance(ent, dict):
+            continue
+        defaults = default_entities.get(npc_id, {})
+        ent.setdefault("name", defaults.get("name", npc_id.replace("_", " ").title()))
+        ent.setdefault("faction", defaults.get("faction", "neutral"))
+        ent.setdefault("max_hp", defaults.get("max_hp", ent.get("hp", 20)))
+        ent.setdefault("ac", defaults.get("ac", 10))
+        ent.setdefault("status", defaults.get("status", "alive"))
+        ent.setdefault("position", defaults.get("position", "camp_center"))
+        ent.setdefault("active_buffs", [])
+        ent.setdefault("inventory", {})
     return entities
 
 

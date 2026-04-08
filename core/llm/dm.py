@@ -7,6 +7,7 @@ import ast
 import logging
 import operator
 import os
+import re
 from typing import Any, Dict, List, Mapping, Optional
 
 from jinja2 import Environment, FileSystemLoader, Template, TemplateNotFound
@@ -208,6 +209,53 @@ def _evaluate_narrative_rules(
     return analysis
 
 
+def _detect_loot_intent(user_input: str, available_targets: List[str]) -> Optional[Dict[str, Any]]:
+    """
+    轻量规则：前端点击搜刮时的固定文案优先直达 LOOT，避免依赖 LLM 分类。
+    """
+    text = str(user_input or "").strip()
+    if not text:
+        return None
+
+    lowered = text.lower()
+    loot_keywords = ("搜刮", "搜尸", "摸尸", "拾取", "loot")
+    if not any(keyword in lowered or keyword in text for keyword in loot_keywords):
+        return None
+
+    normalized_targets = [str(target).strip().lower() for target in available_targets if str(target).strip()]
+    target_id = ""
+    for candidate in normalized_targets:
+        if candidate and candidate in lowered:
+            target_id = candidate
+            break
+
+    if not target_id:
+        match = re.search(r"(?:loot|搜刮|搜尸|摸尸|拾取)\s+([a-zA-Z0-9_]+)", text, flags=re.IGNORECASE)
+        if match:
+            target_id = match.group(1).strip().lower()
+
+    if not target_id:
+        return None
+
+    responders = [target for target in normalized_targets if target != target_id]
+    if not responders:
+        responders = normalized_targets[:1] or [DEFAULT_TARGET_NPC]
+
+    return {
+        "action_type": "LOOT",
+        "difficulty_class": 0,
+        "reason": "Player is attempting to loot a target.",
+        "is_probing_secret": False,
+        "responders": responders[:1],
+        "affection_changes": {},
+        "flags_changed": {},
+        "item_transfers": [],
+        "hp_changes": [],
+        "action_actor": "player",
+        "action_target": target_id,
+    }
+
+
 def analyze_intent(
     user_input: str,
     flags: Optional[Dict[str, Any]] = None,
@@ -233,6 +281,11 @@ def analyze_intent(
     Raises:
         RuntimeError: If template loading or LLM call fails
     """
+    available_npcs = available_npcs or list(DEFAULT_AVAILABLE_NPCS)
+    shortcut_result = _detect_loot_intent(user_input, available_npcs)
+    if shortcut_result is not None:
+        return shortcut_result
+
     # 濒死拦截：HP <= 0 时 NPC 已昏迷，跳过 LLM 判定
     if hp <= 0:
         return {
@@ -243,7 +296,6 @@ def analyze_intent(
         }
 
     flags = flags or {}
-    available_npcs = available_npcs or list(DEFAULT_AVAILABLE_NPCS)
     npcs_str = ", ".join(f'"{n}"' for n in available_npcs)
     # Load and render template
     template = load_dm_template()
@@ -297,6 +349,8 @@ def analyze_intent(
         
         # Ensure action_type is uppercase
         intent_data['action_type'] = str(intent_data['action_type']).upper()
+        intent_data["action_actor"] = str(intent_data.get("action_actor", "player")).strip().lower() or "player"
+        intent_data["action_target"] = str(intent_data.get("action_target", "")).strip().lower()
         
         # Topic flag: is_probing_secret (optional, default False)
         intent_data['is_probing_secret'] = bool(intent_data.get('is_probing_secret', False))

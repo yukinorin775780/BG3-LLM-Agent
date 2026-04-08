@@ -19,9 +19,21 @@ def mechanics_node(state: GameState) -> dict:
         return {}
 
     print(f"⚙️ Mechanics Node: Processing {intent} (is_probing_secret={is_probing_secret})...")
-    result = mechanics.execute_skill_check(state)
+    normalized_intent = str(intent).strip().upper()
+    if normalized_intent == "ATTACK":
+        result = mechanics.execute_attack_action(state)
+    elif normalized_intent == "LOOT":
+        result = mechanics.execute_loot_action(state)
+    else:
+        result = mechanics.execute_skill_check(state)
 
     out: dict = {"journal_events": result.get("journal_events", [])}
     if "raw_roll_data" in result:
         out["latest_roll"] = result["raw_roll_data"]
+    if "entities" in result:
+        out["entities"] = result["entities"]
+    if "player_inventory" in result:
+        out["player_inventory"] = result["player_inventory"]
+    if "environment_objects" in result:
+        out["environment_objects"] = result["environment_objects"]
     return out

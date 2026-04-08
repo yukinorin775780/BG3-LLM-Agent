@@ -7,7 +7,7 @@ Time of Day: {{ time_of_day }}
 **Player Input:**
 "{{ user_input }}"
 
-**Active party members:** {{ available_npcs }}
+**Active scene entities / valid ids:** {{ available_npcs }}
 
 **Task:**
 Analyze the intent behind the player's words and determine WHO should respond, AND how their affection changes.
@@ -38,7 +38,7 @@ Spoken dialogue is often an action!
 
 - CRITICAL RULE FOR COMMANDS: If the player commands an NPC to perform a physical task (e.g., "Astarion, open that chest", "Laezel, smash the door"), DO NOT use PERSUASION. You MUST use the actual physical skill (e.g., SLEIGHT_OF_HAND, ATHLETICS) and set the 'action_actor' to that NPC's ID.
 
-- CRITICAL RULE FOR INTENT: If the player describes an ACTION like looking around, LISTENING carefully, searching, hiding, or attacking, you MUST output the appropriate action_type (e.g., PERCEPTION for listening/looking, INVESTIGATION for searching, STEALTH for hiding, ATTACK for attacking). Do NOT treat physical environment sensing as "CHAT".
+- CRITICAL RULE FOR INTENT: If the player describes an ACTION like looking around, LISTENING carefully, searching, hiding, attacking, or looting a corpse/container, you MUST output the appropriate action_type (e.g., PERCEPTION for listening/looking, INVESTIGATION for searching, STEALTH for hiding, ATTACK for attacking, LOOT for looting). Do NOT treat physical environment sensing as "CHAT".
 
 - FREE ACTION / GIFTING: If the player is simply handing over or giving a beneficial item to a willing ally (e.g., "I give you this potion"), you MUST classify the "action_type" as "CHAT". DO NOT trigger a skill check (like PERSUASION) for freely giving gifts!
 
@@ -47,7 +47,7 @@ Spoken dialogue is often an action!
   - ONLY use "hp_changes" for environmental damage (traps, falling) or ambient healing.
   - DO NOT EVER use these arrays for Social Interactions (e.g., player giving a gift to an NPC, or an NPC hitting the player). The NPCs will manage their own inventories and combat actions! If the player gives an item to an ally, output EMPTY arrays for item_transfers and hp_changes, and let the NPC handle the transaction.
 
-1.  `action_type`: Choose one of [PERSUASION, DECEPTION, STEALTH, INTIMIDATION, INSIGHT, ATTACK, PERCEPTION, INVESTIGATION, SLEIGHT_OF_HAND, ATHLETICS, CHAT].
+1.  `action_type`: Choose one of [PERSUASION, DECEPTION, STEALTH, INTIMIDATION, INSIGHT, ATTACK, LOOT, PERCEPTION, INVESTIGATION, SLEIGHT_OF_HAND, ATHLETICS, CHAT].
     -   `PERSUASION`: Reasoning, bargaining, honest convincing.
     -   `DECEPTION`: Lying, misleading, hiding truth.
     -   `STEALTH`: Hiding or moving silently.
@@ -58,6 +58,7 @@ Spoken dialogue is often an action!
     -   `INTIMIDATION`: Threatening, aggressive posturing.
     -   `INSIGHT`: Trying to read emotions or detect lies.
     -   `ATTACK`: Physical aggression or casting hostile spells.
+    -   `LOOT`: Looting a dead creature or an opened container/object.
     -   `CHAT`: Casual conversation or non-gameplay interactions.
 
 2.  `is_probing_secret` (Boolean): If the player is trying to ask about Shar worship, the artifact, Night Cleric, personal pain, or other core privacy of Shadowheart, set to true. Otherwise false.
@@ -75,7 +76,7 @@ FLAGS PROVIDED:
 5.  `responders` (Array of strings): **CRITICAL — global party awareness**
     -   Format: `["npc_id_1", "npc_id_2", ...]` — **every NPC ID listed here MUST speak in this turn order** (primary addressee first, then anyone who would realistically react).
     -   **List ALL party members who would be affected, offended, pleased, or provoked** by the player's line or the situation (e.g. insult to the group → multiple responders; gift aimed at one → that NPC first, others only if they would chime in).
-    -   IDs **must** come only from: {{ available_npcs }}. Use lowercase snake_case ids (e.g. `shadowheart`, `astarion`, `laezel`).
+    -   IDs **must** come only from: {{ available_npcs }}. Use lowercase snake_case ids (e.g. `shadowheart`, `astarion`, `goblin_1`).
     -   Do **not** omit a clearly involved NPC to save tokens. Do **not** pad with unrelated NPCs.
     -   If the player addressed someone specific, that NPC must be `responders[0]`.
     -   If intent is ambiguous, default to **one** responder: the NPC the player most likely addressed; if still unclear, use the **first** id in `available_npcs` as printed above (do not invent ids).
@@ -108,7 +109,7 @@ FLAGS PROVIDED:
 
 10. `action_actor` (String): The ID of the character performing the action. If the player is doing it themselves, output "player". If the player commands an NPC (e.g., "Astarion, pick the lock"), output that NPC's ID (e.g., "astarion").
 
-11. `action_target` (String): The ID of the object or person being targeted (e.g., "iron_chest", "wooden_door"). Leave as empty string "" if not applicable.
+11. `action_target` (String): The ID of the object or person being targeted (e.g., "iron_chest", "goblin_1"). Leave as empty string "" if not applicable.
 
 **Output Format:**
 Strictly output ONLY the JSON object. Do not add markdown blocks like ```json.
@@ -116,5 +117,7 @@ Example 1 (Casual Chat):
 {"action_type": "CHAT", "is_probing_secret": false, "difficulty_class": 0, "reason": "Casual chat.", "responders": ["shadowheart"], "affection_changes": {}, "flags_changed": {}, "item_transfers": [], "hp_changes": [], "action_actor": "player", "action_target": ""}
 Example 2 (Commanding NPC to pick lock):
 {"action_type": "SLEIGHT_OF_HAND", "is_probing_secret": false, "difficulty_class": 15, "reason": "Player commanded Astarion to unlock the chest.", "responders": ["astarion"], "affection_changes": {}, "flags_changed": {}, "item_transfers": [], "hp_changes": [], "action_actor": "astarion", "action_target": "iron_chest"}
+Example 3 (Looting a corpse):
+{"action_type": "LOOT", "is_probing_secret": false, "difficulty_class": 0, "reason": "Player is looting a corpse.", "responders": ["shadowheart"], "affection_changes": {}, "flags_changed": {}, "item_transfers": [], "hp_changes": [], "action_actor": "player", "action_target": "goblin_1"}
 Example with affection (Astarion only; NEVER include shadowheart):
 {"action_type": "CHAT", "is_probing_secret": false, "difficulty_class": 0, "reason": "Player mocked altruism.", "responders": ["astarion", "shadowheart"], "affection_changes": {"astarion": 3}, "flags_changed": {}, "item_transfers": [], "hp_changes": [], "action_actor": "player", "action_target": ""}

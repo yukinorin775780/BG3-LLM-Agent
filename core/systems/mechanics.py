@@ -4,12 +4,19 @@ Pure logic and calculation functions - no UI dependencies
 """
 
 import ast
+import copy
 import random
 import re
 from typing import Any, Dict, List, Optional
 
 from core.engine.physics import DEBUG_ALWAYS_PASS_CHECKS
 from core.systems.dice import roll_d20
+from core.systems.inventory import get_registry
+
+DEFAULT_ATTACK_BONUS = 4
+DEFAULT_DAMAGE_BONUS = 2
+DEFAULT_DAMAGE_DIE_SIDES = 8
+LOOTABLE_STATUSES = frozenset({"dead", "open", "opened"})
 
 
 def calculate_ability_modifier(ability_score: int) -> int:
@@ -66,6 +73,329 @@ def normalize_ability_name(ability_name: str) -> Optional[str]:
     return ability_map.get(ability_name)
 
 
+def _normalize_entity_id(entity_id: Any) -> str:
+    return str(entity_id or "").strip().lower()
+
+
+def _display_entity_name(entity: Dict[str, Any], fallback_id: str) -> str:
+    name = str(entity.get("name") or "").strip()
+    if name:
+        return name
+    if fallback_id == "player":
+        return "玩家"
+    return fallback_id.replace("_", " ").strip().title() or "未知目标"
+
+
+def _build_player_combatant() -> Dict[str, Any]:
+    return {
+        "id": "player",
+        "name": "玩家",
+        "faction": "player",
+        "hp": 20,
+        "max_hp": 20,
+        "ac": 10,
+        "status": "alive",
+        "inventory": {},
+        "position": "camp_center",
+        "active_buffs": [],
+        "affection": 0,
+    }
+
+
+def _build_action_result(
+    *,
+    intent: str,
+    actor: str,
+    target: str,
+    is_success: bool,
+    result_type: str,
+    extra: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    payload = {
+        "intent": intent,
+        "actor": actor,
+        "target": target,
+        "result": {
+            "is_success": is_success,
+            "result_type": result_type,
+        },
+    }
+    if extra:
+        payload.update(extra)
+    return payload
+
+
+def _resolve_loot_destination(
+    *,
+    actor_id: str,
+    entities: Dict[str, Any],
+    player_inventory: Dict[str, int],
+) -> tuple[Dict[str, int], str]:
+    if actor_id == "player":
+        return player_inventory, "玩家"
+
+    actor = entities.get(actor_id)
+    if not isinstance(actor, dict):
+        return player_inventory, "玩家"
+
+    actor_inventory = actor.setdefault("inventory", {})
+    if not isinstance(actor_inventory, dict):
+        actor_inventory = {}
+        actor["inventory"] = actor_inventory
+    return actor_inventory, _display_entity_name(actor, actor_id)
+
+
+def _format_loot_entries(items: Dict[str, int]) -> str:
+    registry = get_registry()
+    entries: List[str] = []
+    for item_id, count in items.items():
+        if not item_id:
+            continue
+        try:
+            qty = int(count)
+        except (TypeError, ValueError):
+            continue
+        if qty <= 0:
+            continue
+        entries.append(f"{registry.get_name(item_id)} x {qty}")
+    return ", ".join(entries)
+
+
+def execute_combat_attack(
+    attacker: Dict[str, Any],
+    defender: Dict[str, Any],
+    weapon: str = "",
+) -> Dict[str, Any]:
+    """
+    执行一次最小化 D20 攻击检定。
+    规则骨架：1d20 + 4 vs AC；命中后造成 1d8 + 2 伤害，并直接修改 defender.hp/status。
+    """
+    attacker_id = _normalize_entity_id(attacker.get("id", "player")) or "player"
+    defender_id = _normalize_entity_id(defender.get("id", ""))
+    attacker_name = _display_entity_name(attacker, attacker_id)
+    defender_name = _display_entity_name(defender, defender_id)
+    defender_ac = int(defender.get("ac", 10))
+
+    attack_roll = random.randint(1, 20)
+    attack_total = attack_roll + DEFAULT_ATTACK_BONUS
+    is_hit = attack_total >= defender_ac
+    damage_roll = 0
+    damage_total = 0
+
+    if is_hit:
+        damage_roll = random.randint(1, DEFAULT_DAMAGE_DIE_SIDES)
+        damage_total = damage_roll + DEFAULT_DAMAGE_BONUS
+        current_hp = int(defender.get("hp", 0))
+        max_hp = int(defender.get("max_hp", current_hp))
+        new_hp = max(0, current_hp - damage_total)
+        defender["hp"] = new_hp
+        defender["max_hp"] = max_hp
+        defender["status"] = "dead" if new_hp <= 0 else "alive"
+
+    attack_text = (
+        f"🎲 [战斗检定] {attacker_name}对 {defender_name} 发起攻击。"
+        f"掷骰 {attack_roll}(+{DEFAULT_ATTACK_BONUS})={attack_total} vs AC {defender_ac}，"
+    )
+    if is_hit:
+        attack_text += f"命中！造成 {damage_total} 点伤害。"
+    else:
+        attack_text += "未命中。"
+
+    journal_events = [attack_text]
+    if is_hit and defender.get("status") == "dead":
+        journal_events.append(f"☠️ [战斗结果] {defender_name} 倒下了。")
+
+    return {
+        "journal_events": journal_events,
+        "raw_roll_data": {
+            "intent": "ATTACK",
+            "actor": attacker_id,
+            "target": defender_id,
+            "weapon": str(weapon or "").strip() or "weapon_attack",
+            "dc": defender_ac,
+            "modifier": DEFAULT_ATTACK_BONUS,
+            "damage": {
+                "rolls": [damage_roll] if damage_roll else [],
+                "modifier": DEFAULT_DAMAGE_BONUS,
+                "total": damage_total,
+            },
+            "result": {
+                "total": attack_total,
+                "raw_roll": attack_roll,
+                "rolls": [attack_roll],
+                "is_success": is_hit,
+                "result_type": "HIT" if is_hit else "MISS",
+                "target_ac": defender_ac,
+            },
+        },
+    }
+
+
+def execute_attack_action(state: Any) -> Dict[str, Any]:
+    """
+    从 Graph state 中解析 ATTACK 行为，执行攻击结算并返回新的 entities / journal / latest_roll 数据。
+    """
+    entities = copy.deepcopy(state.get("entities") or {})
+    intent_context = state.get("intent_context") or {}
+    attacker_id = _normalize_entity_id(intent_context.get("action_actor", "player")) or "player"
+    target_id = _normalize_entity_id(intent_context.get("action_target", ""))
+    weapon = str(intent_context.get("weapon") or "").strip()
+
+    if not target_id:
+        return {
+            "journal_events": ["❌ [战斗检定] 攻击失败：未指定目标。"],
+            "entities": entities,
+        }
+    if target_id not in entities or not isinstance(entities.get(target_id), dict):
+        return {
+            "journal_events": [f"❌ [战斗检定] 攻击失败：找不到目标 {target_id}。"],
+            "entities": entities,
+        }
+
+    defender = entities[target_id]
+    if str(defender.get("status", "alive")).lower() == "dead":
+        defender_name = _display_entity_name(defender, target_id)
+        return {
+            "journal_events": [f"⚔️ [战斗检定] {defender_name} 已经倒下，无需再次攻击。"],
+            "entities": entities,
+        }
+
+    if attacker_id == "player":
+        attacker = _build_player_combatant()
+    else:
+        raw_attacker = entities.get(attacker_id)
+        if not isinstance(raw_attacker, dict):
+            return {
+                "journal_events": [f"❌ [战斗检定] 攻击失败：找不到攻击者 {attacker_id}。"],
+                "entities": entities,
+            }
+        attacker = dict(raw_attacker)
+
+    attacker["id"] = attacker_id
+    defender["id"] = target_id
+    return {
+        **execute_combat_attack(attacker=attacker, defender=defender, weapon=weapon),
+        "entities": entities,
+    }
+
+
+def execute_loot_action(state: Any) -> Dict[str, Any]:
+    """
+    处理玩家/队友对死亡实体或已打开目标的搜刮。
+    支持 entities 与 environment_objects 作为 loot source。
+    """
+    entities = copy.deepcopy(state.get("entities") or {})
+    environment_objects = copy.deepcopy(state.get("environment_objects") or {})
+    player_inventory = copy.deepcopy(state.get("player_inventory") or {})
+    intent_context = state.get("intent_context") or {}
+
+    actor_id = _normalize_entity_id(intent_context.get("action_actor", "player")) or "player"
+    target_id = _normalize_entity_id(intent_context.get("action_target", ""))
+    if not target_id:
+        return {
+            "journal_events": ["❌ [搜刮] 搜刮失败：未指定目标。"],
+            "entities": entities,
+            "environment_objects": environment_objects,
+            "player_inventory": player_inventory,
+            "raw_roll_data": _build_action_result(
+                intent="LOOT",
+                actor=actor_id,
+                target=target_id,
+                is_success=False,
+                result_type="INVALID_TARGET",
+            ),
+        }
+
+    target_obj: Optional[Dict[str, Any]] = None
+    target_name = target_id.replace("_", " ").strip().title()
+    if isinstance(entities.get(target_id), dict):
+        target_obj = entities[target_id]
+        target_name = _display_entity_name(target_obj, target_id)
+    elif isinstance(environment_objects.get(target_id), dict):
+        target_obj = environment_objects[target_id]
+        target_name = str(target_obj.get("name") or target_name)
+
+    if not isinstance(target_obj, dict):
+        return {
+            "journal_events": [f"❌ [搜刮] 搜刮失败：找不到目标 {target_id}。"],
+            "entities": entities,
+            "environment_objects": environment_objects,
+            "player_inventory": player_inventory,
+            "raw_roll_data": _build_action_result(
+                intent="LOOT",
+                actor=actor_id,
+                target=target_id,
+                is_success=False,
+                result_type="NOT_FOUND",
+            ),
+        }
+
+    target_status = str(target_obj.get("status", "")).strip().lower()
+    if target_status not in LOOTABLE_STATUSES:
+        return {
+            "journal_events": [f"❌ [搜刮] {target_name} 还无法被搜刮。"],
+            "entities": entities,
+            "environment_objects": environment_objects,
+            "player_inventory": player_inventory,
+            "raw_roll_data": _build_action_result(
+                intent="LOOT",
+                actor=actor_id,
+                target=target_id,
+                is_success=False,
+                result_type="NOT_LOOTABLE",
+                extra={"status": target_status},
+            ),
+        }
+
+    source_inventory = target_obj.setdefault("inventory", {})
+    if not isinstance(source_inventory, dict):
+        source_inventory = {}
+        target_obj["inventory"] = source_inventory
+
+    loot_items: Dict[str, int] = {}
+    for item_id, count in list(source_inventory.items()):
+        if not item_id:
+            continue
+        try:
+            qty = int(count)
+        except (TypeError, ValueError):
+            continue
+        if qty <= 0:
+            continue
+        loot_items[item_id] = qty
+
+    destination_inventory, actor_name = _resolve_loot_destination(
+        actor_id=actor_id,
+        entities=entities,
+        player_inventory=player_inventory,
+    )
+
+    for item_id, qty in loot_items.items():
+        destination_inventory[item_id] = destination_inventory.get(item_id, 0) + qty
+    target_obj["inventory"] = {}
+
+    if loot_items:
+        items_text = _format_loot_entries(loot_items)
+        journal_events = [f"📦 [系统裁定] {actor_name}搜刮了 {target_name}，获得了 {items_text}。"]
+    else:
+        journal_events = [f"📦 [系统裁定] {actor_name}搜刮了 {target_name}，但里面空空如也。"]
+
+    return {
+        "journal_events": journal_events,
+        "entities": entities,
+        "environment_objects": environment_objects,
+        "player_inventory": player_inventory,
+        "raw_roll_data": _build_action_result(
+            intent="LOOT",
+            actor=actor_id,
+            target=target_id,
+            is_success=True,
+            result_type="SUCCESS",
+            extra={"loot_items": loot_items},
+        ),
+    }
+
+
 # -----------------------------------------------------------------------------
 # 技能检定类型与属性映射
 # -----------------------------------------------------------------------------
@@ -81,6 +411,7 @@ SKILL_CHECK_TYPES = (
     "INTIMIDATION",
     "INSIGHT",
     "ATTACK",
+    "LOOT",
     "STEAL",
     "ACTION",
     "PERCEPTION",
@@ -106,6 +437,7 @@ def get_ability_for_action(action_type: str) -> str:
         "SLEIGHT_OF_HAND": "DEX",
         "ATHLETICS": "STR",
         "ATTACK": "STR",
+        "LOOT": "DEX",
         "STEAL": "DEX",
         "ACTION": "CHA",
         "NONE": "CHA",
