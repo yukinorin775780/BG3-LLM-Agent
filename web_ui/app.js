@@ -299,8 +299,9 @@
     const bars = document.createElement("div");
     bars.className = "party-bars";
 
-    const hp = Number(data.hp);
-    const maxHp = Number(data.max_hp || data.hp || 20);
+    const rawHp = Number(data.hp);
+    const maxHp = Number(data.max_hp || 20);
+    const hp = Number.isFinite(rawHp) ? Math.min(rawHp, maxHp) : rawHp;
     const aff = Number(data.affection);
 
     bars.appendChild(createMeter("HP", Number.isFinite(hp) ? hp + " / " + maxHp : "—", hpPercent(hp, maxHp), false));
@@ -386,8 +387,14 @@
     const track = document.createElement("div");
     track.className = "meter-track";
     const fill = document.createElement("div");
-    fill.className = "meter-fill" + (isAffection ? " meter-fill--affection" : "");
-    fill.style.width = percent + "%";
+    if (isAffection) {
+      track.classList.add("meter-track--bipolar");
+      fill.className = "meter-cursor";
+      fill.style.left = percent + "%";
+    } else {
+      fill.className = "meter-fill";
+      fill.style.width = percent + "%";
+    }
     track.appendChild(fill);
 
     wrap.appendChild(head);

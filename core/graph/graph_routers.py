@@ -23,6 +23,8 @@ MECHANICS_REQUIRED_INTENTS: tuple[str, ...] = ("PERSUASION", "DECEPTION", "STEAL
 ACTION_INTENTS: tuple[str, ...] = (
     "ATTACK",
     "LOOT",
+    "USE_ITEM",
+    "CONSUME",
     "STEAL",
     "PERSUASION",
     "DECEPTION",
@@ -132,7 +134,7 @@ def route_after_mechanics(state: GameState) -> MECHANICS_ROUTE:
         return "narration"
 
     # 战斗等 → DM 旁白
-    if intent in ("attack", "cast_spell", "loot"):
+    if intent in ("attack", "cast_spell", "loot", "use_item", "consume"):
         return "narration"
 
     # 默认兜底交还给 NPC

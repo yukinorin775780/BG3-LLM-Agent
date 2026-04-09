@@ -17,6 +17,7 @@ DEFAULT_ATTACK_BONUS = 4
 DEFAULT_DAMAGE_BONUS = 2
 DEFAULT_DAMAGE_DIE_SIDES = 8
 LOOTABLE_STATUSES = frozenset({"dead", "open", "opened"})
+USE_ITEM_INTENTS = frozenset({"USE_ITEM", "CONSUME"})
 
 
 def calculate_ability_modifier(ability_score: int) -> int:
@@ -102,6 +103,46 @@ def _build_player_combatant() -> Dict[str, Any]:
     }
 
 
+def _ensure_actor_entity(
+    *,
+    actor_id: str,
+    entities: Dict[str, Any],
+    state: Any,
+) -> Dict[str, Any]:
+    if actor_id == "player":
+        existing = entities.get("player")
+        if isinstance(existing, dict):
+            existing.setdefault("name", "玩家")
+            existing.setdefault("max_hp", existing.get("hp", 20))
+            existing.setdefault("status", "alive")
+            existing.setdefault("inventory", {})
+            return existing
+
+        fallback = state.get("party_status", {}).get("player") if isinstance(state, dict) else None
+        player_data = _build_player_combatant()
+        if isinstance(fallback, dict):
+            player_data["hp"] = int(fallback.get("hp", player_data["hp"]))
+            player_data["max_hp"] = int(fallback.get("max_hp", player_data["max_hp"]))
+            player_data["status"] = str(fallback.get("status", player_data["status"]))
+        entities["player"] = player_data
+        return entities["player"]
+
+    actor = entities.get(actor_id)
+    if not isinstance(actor, dict):
+        actor = {
+            "name": actor_id.replace("_", " ").title(),
+            "hp": 20,
+            "max_hp": 20,
+            "status": "alive",
+            "inventory": {},
+        }
+        entities[actor_id] = actor
+    actor.setdefault("max_hp", actor.get("hp", 20))
+    actor.setdefault("status", "alive")
+    actor.setdefault("inventory", {})
+    return actor
+
+
 def _build_action_result(
     *,
     intent: str,
@@ -159,6 +200,32 @@ def _format_loot_entries(items: Dict[str, int]) -> str:
             continue
         entries.append(f"{registry.get_name(item_id)} x {qty}")
     return ", ".join(entries)
+
+
+def _is_unlockable_skill_success(
+    *,
+    intent: str,
+    intent_context: Dict[str, Any],
+    environment_objects: Dict[str, Any],
+    result: Dict[str, Any],
+) -> bool:
+    if not bool(result.get("is_success", False)):
+        return False
+
+    target_id = _normalize_entity_id(intent_context.get("action_target", ""))
+    if not target_id or target_id not in environment_objects:
+        return False
+
+    target_obj = environment_objects.get(target_id)
+    if not isinstance(target_obj, dict):
+        return False
+
+    status = str(target_obj.get("status", "")).strip().lower()
+    if status != "locked":
+        return False
+
+    normalized_intent = str(intent or "").strip().upper()
+    return normalized_intent in {"SLEIGHT_OF_HAND", "ACTION"}
 
 
 def execute_combat_attack(
@@ -396,6 +463,87 @@ def execute_loot_action(state: Any) -> Dict[str, Any]:
     }
 
 
+def execute_use_item(state: Any) -> Dict[str, Any]:
+    """
+    执行物品使用：扣除背包物品，并把效果写回实体状态。
+    当前最小闭环聚焦治疗类消耗品。
+    """
+    entities = copy.deepcopy(state.get("entities") or {})
+    player_inventory = copy.deepcopy(state.get("player_inventory") or {})
+    intent = str(state.get("intent", "USE_ITEM") or "USE_ITEM").strip().upper()
+    intent_context = state.get("intent_context") or {}
+
+    actor_id = _normalize_entity_id(intent_context.get("action_actor", "player")) or "player"
+    item_id = str(intent_context.get("item_id") or intent_context.get("target_item") or "").strip()
+    if not item_id:
+        return {
+            "journal_events": ["❌ [物品使用] 使用失败：未指定物品。"],
+            "entities": entities,
+            "player_inventory": player_inventory,
+            "raw_roll_data": _build_action_result(
+                intent=intent,
+                actor=actor_id,
+                target="",
+                is_success=False,
+                result_type="INVALID_ITEM",
+            ),
+        }
+
+    item_name = get_registry().get_name(item_id)
+    if player_inventory.get(item_id, 0) <= 0:
+        return {
+            "journal_events": [f"❌ [物品使用] 玩家背包里没有 {item_name}。"],
+            "entities": entities,
+            "player_inventory": player_inventory,
+            "raw_roll_data": _build_action_result(
+                intent=intent,
+                actor=actor_id,
+                target=item_id,
+                is_success=False,
+                result_type="ITEM_NOT_FOUND",
+            ),
+        }
+
+    item_data = get_registry().get(item_id)
+    effect = apply_item_effect(item_id, item_data)
+
+    player_inventory[item_id] = player_inventory.get(item_id, 0) - 1
+    if player_inventory[item_id] <= 0:
+        del player_inventory[item_id]
+
+    actor = _ensure_actor_entity(actor_id=actor_id, entities=entities, state=state)
+    actor_name = _display_entity_name(actor, actor_id)
+    journal_events: List[str]
+
+    if effect.get("success") and effect.get("type") == "heal":
+        heal_value = int(effect.get("value", 0))
+        current_hp = int(actor.get("hp", 0))
+        max_hp = int(actor.get("max_hp", current_hp or 20))
+        new_hp = min(max_hp, current_hp + heal_value)
+        actual_heal = max(0, new_hp - current_hp)
+        actor["hp"] = new_hp
+        actor["max_hp"] = max_hp
+        journal_events = [
+            f"🧪 [物品使用] {actor_name}喝下了 {item_name}，恢复了 {actual_heal} 点 HP。"
+        ]
+    else:
+        journal_events = [f"🧪 [物品使用] {actor_name}使用了 {item_name}。"]
+
+    return {
+        "journal_events": journal_events,
+        "entities": entities,
+        "player_inventory": player_inventory,
+        "raw_roll_data": _build_action_result(
+            intent=intent,
+            actor=actor_id,
+            target=item_id,
+            is_success=bool(effect.get("success", True)),
+            result_type=str(effect.get("type", "generic")).upper(),
+            extra={"effect": effect},
+        ),
+    }
+
+
 # -----------------------------------------------------------------------------
 # 技能检定类型与属性映射
 # -----------------------------------------------------------------------------
@@ -418,6 +566,8 @@ SKILL_CHECK_TYPES = (
     "INVESTIGATION",
     "SLEIGHT_OF_HAND",
     "ATHLETICS",
+    "USE_ITEM",
+    "CONSUME",
 )
 
 
@@ -439,6 +589,8 @@ def get_ability_for_action(action_type: str) -> str:
         "ATTACK": "STR",
         "LOOT": "DEX",
         "STEAL": "DEX",
+        "USE_ITEM": "DEX",
+        "CONSUME": "CON",
         "ACTION": "CHA",
         "NONE": "CHA",
     }
@@ -541,6 +693,7 @@ def execute_skill_check(state: Any) -> Dict[str, Any]:
     intent_raw = state.get("intent", "ACTION")
     intent = str(intent_raw).strip().upper() if intent_raw else "ACTION"
     intent_context = state.get("intent_context") or {}
+    environment_objects = copy.deepcopy(state.get("environment_objects") or {})
 
     action_actor = str(intent_context.get("action_actor", "player") or "player").strip().lower()
 
@@ -598,7 +751,7 @@ def execute_skill_check(state: Any) -> Dict[str, Any]:
     if rel_mod != 0:
         journal_lines.append(f"  [Affection modifier: {rel_mod:+d} (affection={affection})]")
 
-    return {
+    payload: Dict[str, Any] = {
         "journal_events": journal_lines,
         "raw_roll_data": {
             "intent": intent,
@@ -608,6 +761,20 @@ def execute_skill_check(state: Any) -> Dict[str, Any]:
             "result": result,
         },
     }
+
+    if _is_unlockable_skill_success(
+        intent=intent,
+        intent_context=intent_context,
+        environment_objects=environment_objects,
+        result=result,
+    ):
+        target_id = _normalize_entity_id(intent_context.get("action_target", ""))
+        target_obj = environment_objects[target_id]
+        target_obj["status"] = "opened"
+        target_name = str(target_obj.get("name") or target_id.replace("_", " ").title())
+        journal_lines.append(f"🔓 [场景交互] 随着咔哒一声，{target_name} 被解锁了！")
+        payload["environment_objects"] = environment_objects
+    return payload
 
 
 def calculate_passive_dc(action_type: str, npc_attributes: dict) -> Optional[int]:

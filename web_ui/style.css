@@ -534,6 +534,23 @@ textarea {
   background: rgba(255, 255, 255, 0.06);
 }
 
+.meter-track--bipolar {
+  overflow: visible;
+  background: linear-gradient(to right, rgba(226, 138, 128, 0.3) 0%, rgba(42, 46, 51, 0.8) 50%, rgba(115, 198, 195, 0.3) 100%);
+}
+
+.meter-track--bipolar::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background-color: #3b424d;
+  transform: translateX(-50%);
+  z-index: 1;
+}
+
 .meter-fill {
   position: absolute;
   inset: 0 auto 0 0;
@@ -541,8 +558,17 @@ textarea {
   background: linear-gradient(90deg, rgba(232, 85, 79, 0.9), rgba(227, 165, 95, 0.9));
 }
 
-.meter-fill--affection {
-  background: linear-gradient(90deg, rgba(104, 160, 105, 0.5), rgba(115, 198, 195, 0.88));
+.meter-cursor {
+  position: absolute;
+  top: -3px;
+  bottom: -3px;
+  width: 6px;
+  background-color: #e2d3b4;
+  border-radius: 3px;
+  transform: translateX(-50%);
+  z-index: 2;
+  box-shadow: 0 0 6px rgba(0, 0, 0, 0.8);
+  transition: left 0.3s ease;
 }
 
 .party-pack {
