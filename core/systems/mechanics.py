@@ -18,6 +18,8 @@ DEFAULT_DAMAGE_BONUS = 2
 DEFAULT_DAMAGE_DIE_SIDES = 8
 LOOTABLE_STATUSES = frozenset({"dead", "open", "opened"})
 USE_ITEM_INTENTS = frozenset({"USE_ITEM", "CONSUME"})
+MOVE_INTENTS = frozenset({"MOVE", "APPROACH"})
+PLAYER_TARGET_ALIASES = frozenset({"我", "自己", "玩家", "me", "player"})
 
 
 def calculate_ability_modifier(ability_score: int) -> int:
@@ -98,6 +100,8 @@ def _build_player_combatant() -> Dict[str, Any]:
         "status": "alive",
         "inventory": {},
         "position": "camp_center",
+        "x": 4,
+        "y": 9,
         "active_buffs": [],
         "affection": 0,
     }
@@ -141,6 +145,128 @@ def _ensure_actor_entity(
     actor.setdefault("status", "alive")
     actor.setdefault("inventory", {})
     return actor
+
+
+def _coerce_int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _normalize_match_text(value: Any) -> str:
+    return re.sub(r"[\s_\-]+", "", str(value or "").strip().lower())
+
+
+def _target_text_matches(normalized_query: str, candidate_id: str, candidate_name: str) -> bool:
+    if (
+        normalized_query in candidate_id
+        or normalized_query in candidate_name
+        or candidate_id in normalized_query
+        or candidate_name in normalized_query
+    ):
+        return True
+
+    chest_aliases = ("宝箱", "箱子", "铁箱子", "chest")
+    if any(alias in normalized_query for alias in chest_aliases):
+        return "chest" in candidate_id or "箱" in candidate_name
+
+    goblin_aliases = ("地精", "哥布林", "goblin")
+    if any(alias in normalized_query for alias in goblin_aliases):
+        return "goblin" in candidate_id or "地精" in candidate_name or "哥布林" in candidate_name
+
+    fire_aliases = ("篝火", "营火", "火堆", "campfire", "fire")
+    if any(alias in normalized_query for alias in fire_aliases):
+        return (
+            "campfire" in candidate_id
+            or "篝火" in candidate_name
+            or "营火" in candidate_name
+            or "火堆" in candidate_name
+        )
+
+    return False
+
+
+def _resolve_target_reference(
+    *,
+    target_id: str,
+    entities: Dict[str, Any],
+    environment_objects: Dict[str, Any],
+) -> tuple[str, Optional[Dict[str, Any]], str]:
+    normalized_target = _normalize_entity_id(target_id)
+    if not normalized_target:
+        return "", None, ""
+
+    if normalized_target in PLAYER_TARGET_ALIASES:
+        normalized_target = "player"
+
+    if normalized_target in entities and isinstance(entities[normalized_target], dict):
+        target = entities[normalized_target]
+        return normalized_target, target, _display_entity_name(target, normalized_target)
+
+    if normalized_target in environment_objects and isinstance(environment_objects[normalized_target], dict):
+        target = environment_objects[normalized_target]
+        return normalized_target, target, str(target.get("name") or normalized_target.replace("_", " ").title())
+
+    normalized_query = _normalize_match_text(target_id)
+    if not normalized_query:
+        return "", None, ""
+
+    search_spaces = (
+        ("environment", environment_objects),
+        ("entity", entities),
+    )
+    for _, collection in search_spaces:
+        for actual_id, target in collection.items():
+            if not isinstance(target, dict):
+                continue
+            candidate_id = _normalize_match_text(actual_id)
+            candidate_name = _normalize_match_text(target.get("name", ""))
+            if not any((candidate_id, candidate_name)):
+                continue
+            if _target_text_matches(normalized_query, candidate_id, candidate_name):
+                display_name = (
+                    _display_entity_name(target, str(actual_id))
+                    if collection is entities
+                    else str(target.get("name") or str(actual_id).replace("_", " ").title())
+                )
+                return str(actual_id).strip().lower(), target, display_name
+
+    return normalized_target, None, normalized_target.replace("_", " ").title()
+
+
+def _resolve_move_target(
+    *,
+    target_id: str,
+    entities: Dict[str, Any],
+    environment_objects: Dict[str, Any],
+) -> tuple[Optional[Dict[str, Any]], str]:
+    _, target, target_name = _resolve_target_reference(
+        target_id=target_id,
+        entities=entities,
+        environment_objects=environment_objects,
+    )
+    return target, target_name
+
+
+def _move_toward_target(
+    *,
+    actor_x: int,
+    actor_y: int,
+    target_x: int,
+    target_y: int,
+) -> tuple[int, int]:
+    dx = target_x - actor_x
+    dy = target_y - actor_y
+
+    # 已经与目标相邻（含对角相邻）时，不再移动，避免棋子重叠。
+    if abs(dx) <= 1 and abs(dy) <= 1:
+        return actor_x, actor_y
+
+    if abs(dx) > abs(dy):
+        return target_x - (1 if dx > 0 else -1), target_y
+
+    return target_x, target_y - (1 if dy > 0 else -1)
 
 
 def _build_action_result(
@@ -205,18 +331,12 @@ def _format_loot_entries(items: Dict[str, int]) -> str:
 def _is_unlockable_skill_success(
     *,
     intent: str,
-    intent_context: Dict[str, Any],
-    environment_objects: Dict[str, Any],
+    target_obj: Optional[Dict[str, Any]],
     result: Dict[str, Any],
 ) -> bool:
     if not bool(result.get("is_success", False)):
         return False
 
-    target_id = _normalize_entity_id(intent_context.get("action_target", ""))
-    if not target_id or target_id not in environment_objects:
-        return False
-
-    target_obj = environment_objects.get(target_id)
     if not isinstance(target_obj, dict):
         return False
 
@@ -303,9 +423,15 @@ def execute_attack_action(state: Any) -> Dict[str, Any]:
     从 Graph state 中解析 ATTACK 行为，执行攻击结算并返回新的 entities / journal / latest_roll 数据。
     """
     entities = copy.deepcopy(state.get("entities") or {})
+    environment_objects = copy.deepcopy(state.get("environment_objects") or {})
     intent_context = state.get("intent_context") or {}
     attacker_id = _normalize_entity_id(intent_context.get("action_actor", "player")) or "player"
-    target_id = _normalize_entity_id(intent_context.get("action_target", ""))
+    target_query = str(intent_context.get("action_target", "") or "").strip()
+    target_id, _, _ = _resolve_target_reference(
+        target_id=target_query,
+        entities=entities,
+        environment_objects=environment_objects,
+    )
     weapon = str(intent_context.get("weapon") or "").strip()
 
     if not target_id:
@@ -357,7 +483,12 @@ def execute_loot_action(state: Any) -> Dict[str, Any]:
     intent_context = state.get("intent_context") or {}
 
     actor_id = _normalize_entity_id(intent_context.get("action_actor", "player")) or "player"
-    target_id = _normalize_entity_id(intent_context.get("action_target", ""))
+    target_query = str(intent_context.get("action_target", "") or "").strip()
+    target_id, target_obj, target_name = _resolve_target_reference(
+        target_id=target_query,
+        entities=entities,
+        environment_objects=environment_objects,
+    )
     if not target_id:
         return {
             "journal_events": ["❌ [搜刮] 搜刮失败：未指定目标。"],
@@ -372,15 +503,6 @@ def execute_loot_action(state: Any) -> Dict[str, Any]:
                 result_type="INVALID_TARGET",
             ),
         }
-
-    target_obj: Optional[Dict[str, Any]] = None
-    target_name = target_id.replace("_", " ").strip().title()
-    if isinstance(entities.get(target_id), dict):
-        target_obj = entities[target_id]
-        target_name = _display_entity_name(target_obj, target_id)
-    elif isinstance(environment_objects.get(target_id), dict):
-        target_obj = environment_objects[target_id]
-        target_name = str(target_obj.get("name") or target_name)
 
     if not isinstance(target_obj, dict):
         return {
@@ -544,6 +666,78 @@ def execute_use_item(state: Any) -> Dict[str, Any]:
     }
 
 
+def execute_move_action(state: Any) -> Dict[str, Any]:
+    """
+    极简移动：玩家/角色朝目标方向最多移动 3 格，并停在目标邻近格。
+    """
+    entities = copy.deepcopy(state.get("entities") or {})
+    environment_objects = copy.deepcopy(state.get("environment_objects") or {})
+    intent = str(state.get("intent", "MOVE") or "MOVE").strip().upper()
+    intent_context = state.get("intent_context") or {}
+
+    actor_id = _normalize_entity_id(intent_context.get("action_actor", "player")) or "player"
+    target_query = str(intent_context.get("action_target", "") or "").strip()
+    target_id, target, target_name = _resolve_target_reference(
+        target_id=target_query,
+        entities=entities,
+        environment_objects=environment_objects,
+    )
+    if not target_id:
+        return {
+            "journal_events": ["❌ [空间移动] 移动失败：未指定目标。"],
+            "entities": entities,
+            "raw_roll_data": _build_action_result(
+                intent=intent,
+                actor=actor_id,
+                target="",
+                is_success=False,
+                result_type="INVALID_TARGET",
+            ),
+        }
+
+    actor = _ensure_actor_entity(actor_id=actor_id, entities=entities, state=state)
+    if not isinstance(target, dict):
+        return {
+            "journal_events": [f"❌ [空间移动] 移动失败：找不到目标 {target_id}。"],
+            "entities": entities,
+            "raw_roll_data": _build_action_result(
+                intent=intent,
+                actor=actor_id,
+                target=target_id,
+                is_success=False,
+                result_type="NOT_FOUND",
+            ),
+        }
+
+    actor_x = _coerce_int(actor.get("x"), 4)
+    actor_y = _coerce_int(actor.get("y"), 9)
+    target_x = _coerce_int(target.get("x"), actor_x)
+    target_y = _coerce_int(target.get("y"), actor_y)
+    new_x, new_y = _move_toward_target(
+        actor_x=actor_x,
+        actor_y=actor_y,
+        target_x=target_x,
+        target_y=target_y,
+    )
+    actor["x"] = new_x
+    actor["y"] = new_y
+    actor["position"] = f"靠近 {target_name}"
+    actor_name = _display_entity_name(actor, actor_id)
+
+    return {
+        "journal_events": [f"🚶 [空间移动] {actor_name}移动到了 {target_name} 附近。"],
+        "entities": entities,
+        "raw_roll_data": _build_action_result(
+            intent=intent,
+            actor=actor_id,
+            target=target_id,
+            is_success=True,
+            result_type="SUCCESS",
+            extra={"destination": {"x": new_x, "y": new_y}},
+        ),
+    }
+
+
 # -----------------------------------------------------------------------------
 # 技能检定类型与属性映射
 # -----------------------------------------------------------------------------
@@ -568,6 +762,8 @@ SKILL_CHECK_TYPES = (
     "ATHLETICS",
     "USE_ITEM",
     "CONSUME",
+    "MOVE",
+    "APPROACH",
 )
 
 
@@ -591,6 +787,8 @@ def get_ability_for_action(action_type: str) -> str:
         "STEAL": "DEX",
         "USE_ITEM": "DEX",
         "CONSUME": "CON",
+        "MOVE": "DEX",
+        "APPROACH": "DEX",
         "ACTION": "CHA",
         "NONE": "CHA",
     }
@@ -694,6 +892,13 @@ def execute_skill_check(state: Any) -> Dict[str, Any]:
     intent = str(intent_raw).strip().upper() if intent_raw else "ACTION"
     intent_context = state.get("intent_context") or {}
     environment_objects = copy.deepcopy(state.get("environment_objects") or {})
+    entities = copy.deepcopy(state.get("entities") or {})
+    target_query = str(intent_context.get("action_target", "") or "").strip()
+    actual_target_id, target_obj, _ = _resolve_target_reference(
+        target_id=target_query,
+        entities=entities,
+        environment_objects=environment_objects,
+    )
 
     action_actor = str(intent_context.get("action_actor", "player") or "player").strip().lower()
 
@@ -756,6 +961,7 @@ def execute_skill_check(state: Any) -> Dict[str, Any]:
         "raw_roll_data": {
             "intent": intent,
             "actor": action_actor,
+            "target": actual_target_id,
             "dc": dc,
             "modifier": modifier,
             "result": result,
@@ -764,11 +970,10 @@ def execute_skill_check(state: Any) -> Dict[str, Any]:
 
     if _is_unlockable_skill_success(
         intent=intent,
-        intent_context=intent_context,
-        environment_objects=environment_objects,
+        target_obj=target_obj,
         result=result,
     ):
-        target_id = _normalize_entity_id(intent_context.get("action_target", ""))
+        target_id = actual_target_id
         target_obj = environment_objects[target_id]
         target_obj["status"] = "opened"
         target_name = str(target_obj.get("name") or target_id.replace("_", " ").title())

@@ -10,6 +10,14 @@ import yaml
 
 from core.systems.inventory import get_registry
 
+DEFAULT_ENTITY_COORDS: Dict[str, Dict[str, int]] = {
+    "player": {"x": 4, "y": 9},
+    "shadowheart": {"x": 3, "y": 8},
+    "astarion": {"x": 5, "y": 8},
+    "laezel": {"x": 6, "y": 8},
+    "goblin_1": {"x": 4, "y": 3},
+}
+
 
 def _build_item_lore(state: Any) -> str:
     """收集场上所有物品并生成 LLM 可用的物品知识库文本"""
@@ -62,6 +70,8 @@ def _entity_snapshot(v: Dict[str, Any]) -> Dict[str, Any]:
         "affection": v.get("affection", 0),
         "inventory": dict(v.get("inventory", {})),
         "position": v.get("position", "camp_center"),
+        "x": v.get("x", 4),
+        "y": v.get("y", 8),
     }
     if "shar_faith" in v:
         out["shar_faith"] = v["shar_faith"]
@@ -112,6 +122,7 @@ def load_default_entities() -> Dict[str, Dict[str, Any]]:
             inv_raw = data.get("inventory") or []
             inv_dict = _parse_inventory(inv_raw)
             max_hp = base.get("max_hp", base.get("hp", combat.get("hit_points", 20)))
+            coord_defaults = DEFAULT_ENTITY_COORDS.get(entity_id, {})
             entity_data: Dict[str, Any] = {
                 "name": data.get("name", entity_id.replace("_", " ").title()),
                 "faction": base.get("faction", "neutral"),
@@ -123,6 +134,8 @@ def load_default_entities() -> Dict[str, Dict[str, Any]]:
                 "affection": base.get("affection", 0),
                 "inventory": inv_dict,
                 "position": base.get("position", "camp_center"),
+                "x": base.get("x", coord_defaults.get("x", 4)),
+                "y": base.get("y", coord_defaults.get("y", 8)),
             }
             if "shar_faith" in base:
                 entity_data["shar_faith"] = base["shar_faith"]
@@ -141,6 +154,8 @@ def load_default_entities() -> Dict[str, Dict[str, Any]]:
                 "affection": 0,
                 "inventory": {},
                 "position": "camp_center",
+                "x": DEFAULT_ENTITY_COORDS.get(entity_id, {}).get("x", 4),
+                "y": DEFAULT_ENTITY_COORDS.get(entity_id, {}).get("y", 8),
             }
     return entities
 
@@ -174,6 +189,8 @@ def merge_entities_with_defaults(raw_entities: Optional[Dict[str, Any]]) -> Dict
         ent.setdefault("ac", defaults.get("ac", 10))
         ent.setdefault("status", defaults.get("status", "alive"))
         ent.setdefault("position", defaults.get("position", "camp_center"))
+        ent.setdefault("x", defaults.get("x", DEFAULT_ENTITY_COORDS.get(npc_id, {}).get("x", 4)))
+        ent.setdefault("y", defaults.get("y", DEFAULT_ENTITY_COORDS.get(npc_id, {}).get("y", 8)))
         ent.setdefault("active_buffs", [])
         ent.setdefault("inventory", {})
     return entities

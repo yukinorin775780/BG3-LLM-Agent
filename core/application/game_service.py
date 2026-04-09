@@ -325,6 +325,8 @@ class GameService:
                 "status": entity.get("status", "alive"),
                 "faction": entity.get("faction", ""),
                 "position": entity.get("position", ""),
+                "x": entity.get("x"),
+                "y": entity.get("y"),
                 "inventory": copy.deepcopy(entity.get("inventory") or {}),
             }
 
@@ -349,7 +351,7 @@ class GameService:
     def _is_party_member_entity(entity_id: str, entity: Dict[str, Any]) -> bool:
         normalized_id = str(entity_id or "").strip().lower()
         if normalized_id == "player":
-            return False
+            return True
         if normalized_id in PARTY_MEMBER_IDS:
             return True
 

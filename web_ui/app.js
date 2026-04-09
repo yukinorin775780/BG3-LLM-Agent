@@ -45,6 +45,7 @@
     currentLocation: document.getElementById("current-location"),
     networkState: document.getElementById("network-state"),
     turnCounter: document.getElementById("turn-counter"),
+    tacticalGrid: document.getElementById("tactical-grid"),
     worldLog: document.getElementById("world-log"),
     partyRoster: document.getElementById("party-roster"),
     partyCount: document.getElementById("party-count"),
@@ -119,6 +120,42 @@
     return ITEM_META[key] || { label: prettifyId(itemId), icon: "◻" };
   }
 
+  function clamp(value, min, max) {
+    return Math.max(min, Math.min(max, value));
+  }
+
+  function normalizeGridCoord(value) {
+    const num = Number(value);
+    if (!Number.isFinite(num)) return null;
+    return clamp(Math.round(num), 0, 9);
+  }
+
+  function readGridPosition(data) {
+    const entity = safeObject(data);
+    const x = normalizeGridCoord(entity.x);
+    const y = normalizeGridCoord(entity.y);
+    if (x === null || y === null) return null;
+    return { x, y };
+  }
+
+  function tokenLabel(id, data) {
+    const name = String(safeObject(data).name || id || "").trim();
+    if (!name) return "?";
+    const cjkMatch = name.match(/[\u4e00-\u9fff]/);
+    if (cjkMatch) return cjkMatch[0];
+    const alnumMatch = name.match(/[A-Za-z0-9]/);
+    return alnumMatch ? alnumMatch[0].toUpperCase() : name.slice(0, 1).toUpperCase();
+  }
+
+  function tokenClass(id, data, source) {
+    const entity = safeObject(data);
+    if (normalizeId(id) === "player") return "token-player";
+    if (source === "environment") {
+      return normalizeId(entity.faction) === "hostile" ? "token-hostile" : "token-object";
+    }
+    return normalizeId(entity.faction) === "hostile" ? "token-hostile" : "token-neutral";
+  }
+
   function objectEntries(obj) {
     return Object.entries(safeObject(obj)).filter(([, value]) => value && typeof value === "object");
   }
@@ -131,10 +168,6 @@
     const data = safeObject(target);
     const status = normalizeId(data.status);
     return inventoryEntries(data.inventory).length > 0 && (status === "open" || status === "opened" || status === "dead");
-  }
-
-  function clamp(value, min, max) {
-    return Math.max(min, Math.min(max, value));
   }
 
   function hpPercent(hp, maxHp) {
@@ -258,6 +291,73 @@
   function renderChrome(currentLocation) {
     els.currentLocation.textContent = currentLocation || "未知区域";
     els.turnCounter.textContent = padTurn(state.turnCount);
+  }
+
+  function renderTacticalGrid(partyStatus, environmentObjects) {
+    const host = els.tacticalGrid;
+    if (!host) return;
+
+    const occupants = [];
+    const registerOccupant = (id, rawData, source) => {
+      const position = readGridPosition(rawData);
+      if (!position) return;
+      occupants.push({ id, data: safeObject(rawData), source, x: position.x, y: position.y });
+    };
+
+    objectEntries(partyStatus).forEach(([id, data]) => {
+      registerOccupant(id, data, "party");
+    });
+
+    objectEntries(environmentObjects).forEach(([id, data]) => {
+      registerOccupant(id, data, "environment");
+    });
+
+    host.querySelectorAll(".grid-cell").forEach((cell) => cell.remove());
+    const cellFragment = document.createDocumentFragment();
+
+    for (let y = 0; y < 10; y += 1) {
+      for (let x = 0; x < 10; x += 1) {
+        const cell = document.createElement("div");
+        cell.className = "grid-cell";
+        cell.dataset.x = String(x);
+        cell.dataset.y = String(y);
+        cellFragment.appendChild(cell);
+      }
+    }
+
+    host.appendChild(cellFragment);
+
+    const activeTokenIds = new Set();
+    occupants.forEach(({ id, data, source, x, y }) => {
+      const tokenId = "token-" + normalizeId(id);
+      let token = document.getElementById(tokenId);
+
+      if (!token) {
+        token = document.createElement("div");
+        token.id = tokenId;
+        token.dataset.entityId = normalizeId(id);
+        token.className = "token " + tokenClass(id, data, source);
+        token.textContent = tokenLabel(id, data);
+        token.title = safeObject(data).name || prettifyId(id);
+        token.style.left = x * 10 + "%";
+        token.style.top = y * 10 + "%";
+        host.appendChild(token);
+      }
+
+      token.className = "token " + tokenClass(id, data, source);
+      token.textContent = tokenLabel(id, data);
+      token.title = safeObject(data).name || prettifyId(id);
+      token.style.left = x * 10 + "%";
+      token.style.top = y * 10 + "%";
+
+      activeTokenIds.add(normalizeId(id));
+    });
+
+    host.querySelectorAll(".token[data-entity-id]").forEach((token) => {
+      if (!activeTokenIds.has(token.dataset.entityId || "")) {
+        token.remove();
+      }
+    });
   }
 
   function createPartyCard(id, rawData) {
@@ -667,6 +767,7 @@
 
       renderPartyRoster();
       renderEnvironmentObjects();
+      renderTacticalGrid(state.partyStatus, state.environmentObjects);
       if (!opts.skipLogUpdate) {
         updateWorldLog(data, userLine || null);
       }
@@ -783,6 +884,7 @@
     renderChrome("幽暗地域营地");
     renderPartyRoster();
     renderEnvironmentObjects();
+    renderTacticalGrid(state.partyStatus, state.environmentObjects);
     appendLogEntry("system", "终端接入", "战术桌已连入 `/api/chat`。发出第一条指令后，主叙事区会开始记录世界变化。", {
       color: "#d0ab67",
       sigil: "◎",

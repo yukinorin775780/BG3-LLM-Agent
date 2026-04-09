@@ -16,6 +16,23 @@ def _build_initial_entities() -> Dict[str, Any]:
     """
     entities = copy.deepcopy(default_entities)
     entities.setdefault(
+        "player",
+        {
+            "name": "玩家",
+            "faction": "player",
+            "hp": 20,
+            "max_hp": 20,
+            "ac": 10,
+            "status": "alive",
+            "inventory": {},
+            "position": "camp_center",
+            "x": 4,
+            "y": 9,
+            "active_buffs": [],
+            "affection": 0,
+        },
+    )
+    entities.setdefault(
         "goblin_1",
         {
             "name": "地精巡逻兵",
@@ -29,6 +46,8 @@ def _build_initial_entities() -> Dict[str, Any]:
                 "scimitar": 1,
             },
             "position": "camp_center",
+            "x": 4,
+            "y": 3,
             "active_buffs": [],
             "affection": 0,
         },
@@ -68,11 +87,15 @@ def get_initial_world_state() -> Dict[str, Any]:
                 "name": "营地中央",
                 "status": "open",
                 "description": "开阔的聚落中心，可作为语义地标 (Semantic Waypoint)。",
+                "x": 4,
+                "y": 5,
             },
             "camp_fire": {
                 "name": "篝火",
                 "status": "burning",
                 "description": "燃烧着的篝火，靠近可取暖。",
+                "x": 4,
+                "y": 6,
             },
             "iron_chest": {
                 "name": "沉重的铁箱子",
@@ -83,6 +106,8 @@ def get_initial_world_state() -> Dict[str, Any]:
                     "rusty_dagger": 1,
                     "burnt_map": 1,
                 },
+                "x": 6,
+                "y": 2,
             },
         },
     }

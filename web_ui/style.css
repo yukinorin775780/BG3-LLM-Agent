@@ -332,6 +332,87 @@ textarea {
   min-height: 0;
 }
 
+.tactical-viewport {
+  width: 100%;
+  padding: 1rem;
+  margin-bottom: 16px;
+  background: #1a1c20;
+  border: 1px solid #3b424d;
+  border-radius: 16px;
+  display: flex;
+  justify-content: center;
+  flex: 0 0 auto;
+  box-shadow: inset 0 1px 0 rgba(255, 248, 228, 0.03);
+}
+
+.tactical-grid {
+  display: grid;
+  grid-template-columns: repeat(10, 1fr);
+  grid-template-rows: repeat(10, 1fr);
+  position: relative;
+  width: 300px;
+  height: 300px;
+  background-color: #2a2e33;
+  border: 2px solid #5a4b3c;
+  gap: 1px;
+}
+
+.grid-cell {
+  background-color: #1e2126;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 2px;
+}
+
+.token {
+  position: absolute;
+  width: calc(10% - 6px);
+  height: calc(10% - 6px);
+  margin: 3px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: #fff;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
+  transition: top 0.4s ease-in-out, left 0.4s ease-in-out;
+  z-index: 10;
+}
+
+.token:hover {
+  z-index: 200 !important;
+  transform: scale(1.2);
+}
+
+.token-player {
+  background: linear-gradient(135deg, #4a90e2, #003366);
+  border: 2px solid #8ab4f8;
+  z-index: 100 !important;
+  box-shadow: 0 0 10px rgba(74, 144, 226, 0.8);
+}
+
+.token-hostile {
+  background: linear-gradient(135deg, #e24a4a, #660000);
+  border: 2px solid #f88a8a;
+}
+
+.token-neutral {
+  background: linear-gradient(135deg, #95a5a6, #2c3e50);
+  border: 2px solid #d5dbdb;
+}
+
+.token-object {
+  background: linear-gradient(135deg, #e67e22, #8e44ad);
+  border: 2px solid #f39c12;
+  border-radius: 4px;
+}
+
 .world-log {
   display: flex;
   flex-direction: column;

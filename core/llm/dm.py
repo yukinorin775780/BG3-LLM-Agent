@@ -32,6 +32,30 @@ _COMPARISON_OPERATORS = {
     ast.NotIn: lambda left, right: left not in right,
 }
 _client: Optional[OpenAI] = None
+PLAYER_TARGET_ALIASES = frozenset({"我", "自己", "玩家", "me", "player"})
+MOVE_KEYWORDS = ("移动到", "走向", "走到", "靠近", "接近", "过去", "move", "approach", "去")
+RETURN_TO_PLAYER_KEYWORDS = (
+    "过来",
+    "来我这",
+    "来这里",
+    "到我这",
+    "我身边",
+    "我旁边",
+    "我这里",
+    "我这边",
+    "comehere",
+    "cometome",
+)
+ATTACK_KEYWORDS = ("攻击", "砍", "砍死", "杀", "干掉", "宰了", "attack", "hit", "strike")
+LOOT_KEYWORDS = ("搜刮", "搜尸", "摸尸", "拾取", "loot")
+ENTITY_ALIAS_MAP = {
+    "shadowheart": ("shadowheart", "影心"),
+    "astarion": ("astarion", "阿斯代伦", "阿斯"),
+    "laezel": ("laezel", "莱埃泽尔", "莱泽尔", "莱埃", "莱泽"),
+    "player": tuple(PLAYER_TARGET_ALIASES),
+    "camp_fire": ("camp_fire", "campfire", "篝火", "营火", "火堆", "fire"),
+    "iron_chest": ("iron_chest", "铁箱子", "箱子", "宝箱", "chest"),
+}
 
 
 # 初始化 Jinja2 环境（用于加载 DM prompt 模板）
@@ -209,7 +233,155 @@ def _evaluate_narrative_rules(
     return analysis
 
 
-def _detect_loot_intent(user_input: str, available_targets: List[str]) -> Optional[Dict[str, Any]]:
+def _normalize_reference_text(value: str) -> str:
+    return re.sub(r"[\s_\-，,。.!！？:：]+", "", str(value or "").strip().lower())
+
+
+def _candidate_aliases(entity_id: str) -> List[str]:
+    normalized_id = str(entity_id or "").strip().lower()
+    aliases = list(ENTITY_ALIAS_MAP.get(normalized_id, ()))
+    aliases.append(normalized_id)
+    return [alias for alias in aliases if str(alias).strip()]
+
+
+def _extract_command_actor(user_input: str, available_npcs: List[str]) -> Optional[str]:
+    normalized_text = _normalize_reference_text(user_input)
+    if not normalized_text:
+        return None
+
+    normalized_npcs = [str(npc).strip().lower() for npc in available_npcs if str(npc).strip()]
+    for actor_id in normalized_npcs:
+        if actor_id == "player":
+            continue
+        for alias in _candidate_aliases(actor_id):
+            normalized_alias = _normalize_reference_text(alias)
+            if not normalized_alias:
+                continue
+            alias_position = normalized_text.find(normalized_alias)
+            if alias_position < 0:
+                continue
+            if (
+                normalized_text.startswith(f"让{normalized_alias}")
+                or normalized_text.startswith(f"叫{normalized_alias}")
+                or normalized_text.startswith(f"请{normalized_alias}")
+                or normalized_text.startswith(normalized_alias)
+            ):
+                return actor_id
+
+    return None
+
+
+def _extract_target_segment(user_input: str, actor_id: str) -> str:
+    return _extract_target_segment_for_keywords(user_input, actor_id, MOVE_KEYWORDS)
+
+
+def _extract_target_segment_for_keywords(user_input: str, actor_id: str, keywords: tuple[str, ...]) -> str:
+    normalized_text = _normalize_reference_text(user_input)
+    normalized_actor_aliases = [_normalize_reference_text(alias) for alias in _candidate_aliases(actor_id)]
+    if actor_id != "player" and any(keyword in normalized_text for keyword in RETURN_TO_PLAYER_KEYWORDS):
+        return "player"
+
+    for keyword in keywords:
+        normalized_keyword = _normalize_reference_text(keyword)
+        keyword_position = normalized_text.find(normalized_keyword)
+        if keyword_position < 0:
+            continue
+        segment = normalized_text[keyword_position + len(normalized_keyword):]
+        for alias in normalized_actor_aliases:
+            if alias and segment.startswith(alias):
+                segment = segment[len(alias):]
+        return segment
+    return ""
+
+
+def _resolve_target_id_from_segment(
+    *,
+    available_targets: List[str],
+    actor_id: str,
+    normalized_segment: str,
+) -> str:
+    normalized_targets = [str(target).strip().lower() for target in available_targets if str(target).strip()]
+    if normalized_segment in PLAYER_TARGET_ALIASES:
+        return "player"
+
+    for candidate in normalized_targets:
+        if candidate == actor_id:
+            continue
+        candidate_id = _normalize_reference_text(candidate)
+        if candidate_id and (
+            candidate_id in normalized_segment or normalized_segment in candidate_id
+        ):
+            return candidate
+
+    for candidate in normalized_targets:
+        if candidate == actor_id:
+            continue
+        normalized_aliases = [_normalize_reference_text(alias) for alias in _candidate_aliases(candidate)]
+        if any(alias and (alias in normalized_segment or normalized_segment in alias) for alias in normalized_aliases):
+            return candidate
+
+    if any(alias in normalized_segment for alias in ("地精", "哥布林", "goblin")):
+        for candidate in normalized_targets:
+            if candidate != actor_id and candidate.startswith("goblin"):
+                return candidate
+
+    if any(alias in normalized_segment for alias in ("宝箱", "箱子", "铁箱子", "chest")):
+        if "iron_chest" in normalized_targets and actor_id != "iron_chest":
+            return "iron_chest"
+
+    if any(alias in normalized_segment for alias in ("篝火", "营火", "火堆", "campfire", "fire")):
+        if "camp_fire" in normalized_targets and actor_id != "camp_fire":
+            return "camp_fire"
+
+    return ""
+
+
+def _resolve_move_target_id(
+    *,
+    user_input: str,
+    available_targets: List[str],
+    actor_id: str,
+) -> str:
+    target_segment = _extract_target_segment(user_input, actor_id)
+    normalized_segment = _normalize_reference_text(target_segment)
+    return _resolve_target_id_from_segment(
+        available_targets=available_targets,
+        actor_id=actor_id,
+        normalized_segment=normalized_segment,
+    )
+
+
+def _resolve_action_target_id(
+    *,
+    user_input: str,
+    available_targets: List[str],
+    actor_id: str,
+    keywords: tuple[str, ...],
+) -> str:
+    target_segment = _extract_target_segment_for_keywords(user_input, actor_id, keywords)
+    normalized_segment = _normalize_reference_text(target_segment)
+    return _resolve_target_id_from_segment(
+        available_targets=available_targets,
+        actor_id=actor_id,
+        normalized_segment=normalized_segment,
+    )
+
+
+def _build_responders(actor_id: str, available_npcs: List[str]) -> List[str]:
+    normalized_npcs = [str(npc).strip().lower() for npc in available_npcs if str(npc).strip()]
+    responders = [npc for npc in normalized_npcs if npc != actor_id]
+    if actor_id != "player" and actor_id in normalized_npcs:
+        responders = [actor_id] + [npc for npc in responders if npc != actor_id]
+    if not responders:
+        responders = normalized_npcs[:1] or [DEFAULT_TARGET_NPC]
+    return responders[:1]
+
+
+def _detect_loot_intent(
+    user_input: str,
+    available_npcs: List[str],
+    available_targets: List[str],
+) -> Optional[Dict[str, Any]]:
     """
     轻量规则：前端点击搜刮时的固定文案优先直达 LOOT，避免依赖 LLM 分类。
     """
@@ -218,16 +390,25 @@ def _detect_loot_intent(user_input: str, available_targets: List[str]) -> Option
         return None
 
     lowered = text.lower()
-    loot_keywords = ("搜刮", "搜尸", "摸尸", "拾取", "loot")
-    if not any(keyword in lowered or keyword in text for keyword in loot_keywords):
+    if not any(keyword in lowered or keyword in text for keyword in LOOT_KEYWORDS):
         return None
 
+    normalized_npcs = [str(npc).strip().lower() for npc in available_npcs if str(npc).strip()]
+    actor_id = _extract_command_actor(text, normalized_npcs) or "player"
     normalized_targets = [str(target).strip().lower() for target in available_targets if str(target).strip()]
     target_id = ""
     for candidate in normalized_targets:
         if candidate and candidate in lowered:
             target_id = candidate
             break
+
+    if not target_id:
+        target_id = _resolve_action_target_id(
+            user_input=text,
+            available_targets=available_targets,
+            actor_id=actor_id,
+            keywords=LOOT_KEYWORDS,
+        )
 
     if not target_id:
         match = re.search(r"(?:loot|搜刮|搜尸|摸尸|拾取)\s+([a-zA-Z0-9_]+)", text, flags=re.IGNORECASE)
@@ -237,21 +418,99 @@ def _detect_loot_intent(user_input: str, available_targets: List[str]) -> Option
     if not target_id:
         return None
 
-    responders = [target for target in normalized_targets if target != target_id]
-    if not responders:
-        responders = normalized_targets[:1] or [DEFAULT_TARGET_NPC]
-
     return {
         "action_type": "LOOT",
         "difficulty_class": 0,
-        "reason": "Player is attempting to loot a target.",
+        "reason": "A character is attempting to loot a target.",
         "is_probing_secret": False,
-        "responders": responders[:1],
+        "responders": _build_responders(actor_id, available_npcs),
         "affection_changes": {},
         "flags_changed": {},
         "item_transfers": [],
         "hp_changes": [],
-        "action_actor": "player",
+        "action_actor": actor_id,
+        "action_target": target_id,
+    }
+
+
+def _detect_attack_intent(
+    user_input: str,
+    available_npcs: List[str],
+    available_targets: List[str],
+) -> Optional[Dict[str, Any]]:
+    text = str(user_input or "").strip()
+    if not text:
+        return None
+
+    lowered = text.lower()
+    if not any(keyword in lowered or keyword in text for keyword in ATTACK_KEYWORDS):
+        return None
+
+    normalized_npcs = [str(npc).strip().lower() for npc in available_npcs if str(npc).strip()]
+    actor_id = _extract_command_actor(text, normalized_npcs) or "player"
+    target_id = _resolve_action_target_id(
+        user_input=text,
+        available_targets=available_targets,
+        actor_id=actor_id,
+        keywords=ATTACK_KEYWORDS,
+    )
+    if not target_id:
+        return None
+
+    return {
+        "action_type": "ATTACK",
+        "difficulty_class": 0,
+        "reason": "A character is attacking a target.",
+        "is_probing_secret": False,
+        "responders": _build_responders(actor_id, available_npcs),
+        "affection_changes": {},
+        "flags_changed": {},
+        "item_transfers": [],
+        "hp_changes": [],
+        "action_actor": actor_id,
+        "action_target": target_id,
+    }
+
+
+def _detect_move_intent(
+    user_input: str,
+    available_npcs: List[str],
+    available_targets: List[str],
+) -> Optional[Dict[str, Any]]:
+    """
+    轻量规则：移动/靠近类输入优先直达 MOVE，避免依赖 LLM 输出稳定性。
+    """
+    text = str(user_input or "").strip()
+    if not text:
+        return None
+
+    lowered = text.lower()
+    move_keywords = (*MOVE_KEYWORDS, *RETURN_TO_PLAYER_KEYWORDS)
+    if not any(keyword in lowered or keyword in text for keyword in move_keywords):
+        return None
+
+    normalized_npcs = [str(npc).strip().lower() for npc in available_npcs if str(npc).strip()]
+    actor_id = _extract_command_actor(text, normalized_npcs) or "player"
+    target_id = _resolve_move_target_id(
+        user_input=text,
+        available_targets=available_targets,
+        actor_id=actor_id,
+    )
+
+    if not target_id:
+        return None
+
+    return {
+        "action_type": "MOVE",
+        "difficulty_class": 0,
+        "reason": "A character is moving toward a target.",
+        "is_probing_secret": False,
+        "responders": _build_responders(actor_id, available_npcs),
+        "affection_changes": {},
+        "flags_changed": {},
+        "item_transfers": [],
+        "hp_changes": [],
+        "action_actor": actor_id,
         "action_target": target_id,
     }
 
@@ -262,6 +521,7 @@ def analyze_intent(
     time_of_day: str = "晨曦 (Morning)",
     hp: int = 20,
     available_npcs: Optional[List[str]] = None,
+    available_targets: Optional[List[str]] = None,
     item_lore: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
@@ -282,7 +542,14 @@ def analyze_intent(
         RuntimeError: If template loading or LLM call fails
     """
     available_npcs = available_npcs or list(DEFAULT_AVAILABLE_NPCS)
-    shortcut_result = _detect_loot_intent(user_input, available_npcs)
+    available_targets = available_targets or list(available_npcs)
+    move_result = _detect_move_intent(user_input, available_npcs, available_targets)
+    if move_result is not None:
+        return move_result
+    attack_result = _detect_attack_intent(user_input, available_npcs, available_targets)
+    if attack_result is not None:
+        return attack_result
+    shortcut_result = _detect_loot_intent(user_input, available_npcs, available_targets)
     if shortcut_result is not None:
         return shortcut_result
 
@@ -297,9 +564,16 @@ def analyze_intent(
 
     flags = flags or {}
     npcs_str = ", ".join(f'"{n}"' for n in available_npcs)
+    targets_str = ", ".join(f'"{t}"' for t in available_targets)
     # Load and render template
     template = load_dm_template()
-    prompt = template.render(user_input=user_input, flags=flags, time_of_day=time_of_day, available_npcs=npcs_str)
+    prompt = template.render(
+        user_input=user_input,
+        flags=flags,
+        time_of_day=time_of_day,
+        available_npcs=npcs_str,
+        available_targets=targets_str,
+    )
     if item_lore:
         prompt += "\n\n" + item_lore
     
@@ -351,7 +625,20 @@ def analyze_intent(
         intent_data['action_type'] = str(intent_data['action_type']).upper()
         intent_data["action_actor"] = str(intent_data.get("action_actor", "player")).strip().lower() or "player"
         intent_data["action_target"] = str(intent_data.get("action_target", "")).strip().lower()
-        
+        heuristic_actor = _extract_command_actor(user_input, available_npcs)
+        if heuristic_actor and intent_data["action_type"] != "CHAT" and intent_data["action_actor"] == "player":
+            intent_data["action_actor"] = heuristic_actor
+        if intent_data["action_type"] in {"MOVE", "APPROACH"}:
+            heuristic_target = _resolve_move_target_id(
+                user_input=user_input,
+                available_targets=available_targets,
+                actor_id=intent_data["action_actor"],
+            )
+            if heuristic_target and not intent_data["action_target"]:
+                intent_data["action_target"] = heuristic_target
+            if intent_data["action_target"] in PLAYER_TARGET_ALIASES:
+                intent_data["action_target"] = "player"
+
         # Topic flag: is_probing_secret (optional, default False)
         intent_data['is_probing_secret'] = bool(intent_data.get('is_probing_secret', False))
 

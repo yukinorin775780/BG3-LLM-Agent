@@ -70,6 +70,11 @@ async def dm_node(state: GameState) -> dict:
     available_npcs = list(entities.keys())
     if not available_npcs:
         available_npcs = ["unknown"]
+    available_targets = list(
+        dict.fromkeys(
+            list(entities.keys()) + list((state.get("environment_objects") or {}).keys())
+        )
+    )
     fallback_speaker = first_entity_id(entities)
     current_npc_hp = entities.get(fallback_speaker, {}).get("hp", 20) if fallback_speaker != "unknown" else 20
     item_lore = _build_item_lore(state)
@@ -80,6 +85,7 @@ async def dm_node(state: GameState) -> dict:
         time_of_day=state.get("time_of_day", "晨曦 (Morning)"),
         hp=current_npc_hp,
         available_npcs=available_npcs,
+        available_targets=available_targets,
         item_lore=item_lore if item_lore else None,
     )
 
