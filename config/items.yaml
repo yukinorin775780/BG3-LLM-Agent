@@ -47,18 +47,11 @@ items:
     weight: 0.01
     value: 1
 
-  mace:
-    name: "钉头锤"
-    description: "一把结实的钉头锤，适合近战。"
-    type: "weapon"
+  scale_mail:
+    name: "鳞甲"
+    description: "由金属鳞片缀成的中甲。"
+    type: "armor"
     stackable: false
-    weight: 4.0
-    damage: "1d6"
-
-  scimitar:
-    name: "弯刀"
-    description: "一把轻巧锋利的弯刀，常见于地精与匪徒手中。"
-    type: "weapon"
-    stackable: false
-    weight: 3.0
-    damage: "1d6"
+    weight: 45.0
+    equip_slot: "armor"
+    armor_class: 14

@@ -15,6 +15,7 @@ from openai import OpenAI
 
 from characters.loader import load_character
 from config import settings
+from core.systems.inventory import get_registry
 from core.utils.text_processor import parse_llm_json
 
 logger = logging.getLogger(__name__)
@@ -46,8 +47,11 @@ RETURN_TO_PLAYER_KEYWORDS = (
     "comehere",
     "cometome",
 )
-ATTACK_KEYWORDS = ("攻击", "砍", "砍死", "杀", "干掉", "宰了", "attack", "hit", "strike")
-LOOT_KEYWORDS = ("搜刮", "搜尸", "摸尸", "拾取", "loot")
+ATTACK_KEYWORDS = ("攻击", "砍", "砍死", "打", "杀", "干掉", "宰了", "attack", "hit", "strike")
+LOOT_KEYWORDS = ("搜刮", "舔包", "搜尸", "摸尸", "摸", "拾取", "loot")
+UNLOCK_KEYWORDS = ("撬开", "解锁", "开锁", "打开", "撬锁", "unlock", "open")
+EQUIP_KEYWORDS = ("装备", "拿上", "拿起", "穿上", "佩戴", "equip", "wear")
+UNEQUIP_KEYWORDS = ("卸下", "脱下", "取下", "unequip", "remove")
 ENTITY_ALIAS_MAP = {
     "shadowheart": ("shadowheart", "影心"),
     "astarion": ("astarion", "阿斯代伦", "阿斯"),
@@ -55,6 +59,13 @@ ENTITY_ALIAS_MAP = {
     "player": tuple(PLAYER_TARGET_ALIASES),
     "camp_fire": ("camp_fire", "campfire", "篝火", "营火", "火堆", "fire"),
     "iron_chest": ("iron_chest", "铁箱子", "箱子", "宝箱", "chest"),
+}
+ITEM_ALIAS_MAP = {
+    "scimitar": ("scimitar", "弯刀"),
+    "rusty_dagger": ("rusty_dagger", "生锈匕首", "匕首"),
+    "shortbow": ("shortbow", "短弓", "弓"),
+    "mace": ("mace", "钉头锤", "锤"),
+    "healing_potion": ("healing_potion", "治疗药水", "药水"),
 }
 
 
@@ -290,6 +301,10 @@ def _extract_target_segment_for_keywords(user_input: str, actor_id: str, keyword
         for alias in normalized_actor_aliases:
             if alias and segment.startswith(alias):
                 segment = segment[len(alias):]
+        for prefix in ("把", "将", "那个", "那只", "那个儿", "这只", "这个"):
+            normalized_prefix = _normalize_reference_text(prefix)
+            if normalized_prefix and segment.startswith(normalized_prefix):
+                segment = segment[len(normalized_prefix):]
         return segment
     return ""
 
@@ -360,6 +375,8 @@ def _resolve_action_target_id(
 ) -> str:
     target_segment = _extract_target_segment_for_keywords(user_input, actor_id, keywords)
     normalized_segment = _normalize_reference_text(target_segment)
+    if not normalized_segment:
+        normalized_segment = _normalize_reference_text(user_input)
     return _resolve_target_id_from_segment(
         available_targets=available_targets,
         actor_id=actor_id,
@@ -375,6 +392,33 @@ def _build_responders(actor_id: str, available_npcs: List[str]) -> List[str]:
     if not responders:
         responders = normalized_npcs[:1] or [DEFAULT_TARGET_NPC]
     return responders[:1]
+
+
+def _resolve_item_id_from_text(user_input: str) -> str:
+    normalized_text = _normalize_reference_text(user_input)
+    if not normalized_text:
+        return ""
+
+    for item_id, aliases in ITEM_ALIAS_MAP.items():
+        if any(_normalize_reference_text(alias) in normalized_text for alias in aliases):
+            return item_id
+
+    try:
+        all_items = get_registry().all_items()
+    except Exception:
+        all_items = {}
+    for item_id, item_data in all_items.items():
+        normalized_id = _normalize_reference_text(item_id)
+        normalized_name = _normalize_reference_text(item_data.get("name", ""))
+        if normalized_id and normalized_id in normalized_text:
+            return str(item_id).strip().lower()
+        if normalized_name and normalized_name in normalized_text:
+            return str(item_id).strip().lower()
+
+    match = re.search(r"(?:equip|wear|unequip|remove)\s+([a-zA-Z0-9_]+)", user_input, flags=re.IGNORECASE)
+    if match:
+        return match.group(1).strip().lower()
+    return ""
 
 
 def _detect_loot_intent(
@@ -472,6 +516,83 @@ def _detect_attack_intent(
     }
 
 
+def _detect_equipment_intent(
+    user_input: str,
+    available_npcs: List[str],
+    *,
+    is_unequip: bool,
+) -> Optional[Dict[str, Any]]:
+    text = str(user_input or "").strip()
+    if not text:
+        return None
+
+    lowered = text.lower()
+    keywords = UNEQUIP_KEYWORDS if is_unequip else EQUIP_KEYWORDS
+    if not any(keyword in lowered or keyword in text for keyword in keywords):
+        return None
+
+    normalized_npcs = [str(npc).strip().lower() for npc in available_npcs if str(npc).strip()]
+    actor_id = _extract_command_actor(text, normalized_npcs) or "player"
+    item_id = _resolve_item_id_from_text(text)
+    if not item_id:
+        return None
+
+    intent = "UNEQUIP" if is_unequip else "EQUIP"
+    return {
+        "action_type": intent,
+        "difficulty_class": 0,
+        "reason": "A character is changing equipment.",
+        "is_probing_secret": False,
+        "responders": _build_responders(actor_id, available_npcs),
+        "affection_changes": {},
+        "flags_changed": {},
+        "item_transfers": [],
+        "hp_changes": [],
+        "action_actor": actor_id,
+        "action_target": item_id,
+        "item_id": item_id,
+    }
+
+
+def _detect_unlock_intent(
+    user_input: str,
+    available_npcs: List[str],
+    available_targets: List[str],
+) -> Optional[Dict[str, Any]]:
+    text = str(user_input or "").strip()
+    if not text:
+        return None
+
+    lowered = text.lower()
+    if not any(keyword in lowered or keyword in text for keyword in UNLOCK_KEYWORDS):
+        return None
+
+    normalized_npcs = [str(npc).strip().lower() for npc in available_npcs if str(npc).strip()]
+    actor_id = _extract_command_actor(text, normalized_npcs) or "player"
+    target_id = _resolve_action_target_id(
+        user_input=text,
+        available_targets=available_targets,
+        actor_id=actor_id,
+        keywords=UNLOCK_KEYWORDS,
+    )
+    if not target_id:
+        return None
+
+    return {
+        "action_type": "SLEIGHT_OF_HAND",
+        "difficulty_class": 15,
+        "reason": "A character is attempting to unlock or open a target.",
+        "is_probing_secret": False,
+        "responders": _build_responders(actor_id, available_npcs),
+        "affection_changes": {},
+        "flags_changed": {},
+        "item_transfers": [],
+        "hp_changes": [],
+        "action_actor": actor_id,
+        "action_target": target_id,
+    }
+
+
 def _detect_move_intent(
     user_input: str,
     available_npcs: List[str],
@@ -543,15 +664,24 @@ def analyze_intent(
     """
     available_npcs = available_npcs or list(DEFAULT_AVAILABLE_NPCS)
     available_targets = available_targets or list(available_npcs)
-    move_result = _detect_move_intent(user_input, available_npcs, available_targets)
-    if move_result is not None:
-        return move_result
-    attack_result = _detect_attack_intent(user_input, available_npcs, available_targets)
-    if attack_result is not None:
-        return attack_result
+    unequip_result = _detect_equipment_intent(user_input, available_npcs, is_unequip=True)
+    if unequip_result is not None:
+        return unequip_result
+    equip_result = _detect_equipment_intent(user_input, available_npcs, is_unequip=False)
+    if equip_result is not None:
+        return equip_result
     shortcut_result = _detect_loot_intent(user_input, available_npcs, available_targets)
     if shortcut_result is not None:
         return shortcut_result
+    attack_result = _detect_attack_intent(user_input, available_npcs, available_targets)
+    if attack_result is not None:
+        return attack_result
+    unlock_result = _detect_unlock_intent(user_input, available_npcs, available_targets)
+    if unlock_result is not None:
+        return unlock_result
+    move_result = _detect_move_intent(user_input, available_npcs, available_targets)
+    if move_result is not None:
+        return move_result
 
     # 濒死拦截：HP <= 0 时 NPC 已昏迷，跳过 LLM 判定
     if hp <= 0:
@@ -625,6 +755,8 @@ def analyze_intent(
         intent_data['action_type'] = str(intent_data['action_type']).upper()
         intent_data["action_actor"] = str(intent_data.get("action_actor", "player")).strip().lower() or "player"
         intent_data["action_target"] = str(intent_data.get("action_target", "")).strip().lower()
+        if intent_data["action_type"] in {"EQUIP", "UNEQUIP"} and not intent_data.get("item_id"):
+            intent_data["item_id"] = _resolve_item_id_from_text(user_input)
         heuristic_actor = _extract_command_actor(user_input, available_npcs)
         if heuristic_actor and intent_data["action_type"] != "CHAT" and intent_data["action_actor"] == "player":
             intent_data["action_actor"] = heuristic_actor

@@ -15,7 +15,23 @@ class ItemRegistry:
     """
     _instance: Optional['ItemRegistry'] = None
     _items: Dict[str, Dict[str, Any]] = {}
+    _weapons: Dict[str, Dict[str, Any]] = {}
     _loaded: bool = False
+
+    @classmethod
+    def _default_config_path(cls) -> str:
+        return os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..", "..", "config", "items.yaml")
+        )
+
+    @classmethod
+    def _ensure_loaded(cls) -> None:
+        if not cls._loaded:
+            cls.load(cls._default_config_path())
+
+    @staticmethod
+    def _normalize_lookup_key(value: Any) -> str:
+        return str(value or "").strip().lower().replace(" ", "_").replace("-", "_")
     
     def __new__(cls) -> 'ItemRegistry':
         if cls._instance is None:
@@ -25,10 +41,11 @@ class ItemRegistry:
     @classmethod
     def load(cls, filepath: str) -> bool:
         """
-        Load item definitions from YAML file.
+        Load item and weapon definitions from YAML files.
         
         Args:
-            filepath: Path to the items.yaml configuration file
+            filepath: Path to the items.yaml configuration file. The registry also
+                auto-loads weapons.yaml from the same directory when present.
             
         Returns:
             bool: True if loaded successfully, False otherwise
@@ -42,7 +59,13 @@ class ItemRegistry:
                 data = yaml.safe_load(f)
             
             if data and 'items' in data:
-                cls._items = data['items']
+                cls._items = data['items'] or {}
+                cls._weapons = {}
+                weapons_path = os.path.join(os.path.dirname(filepath), "weapons.yaml")
+                if os.path.exists(weapons_path):
+                    with open(weapons_path, 'r', encoding='utf-8') as wf:
+                        weapons_data = yaml.safe_load(wf) or {}
+                    cls._weapons = weapons_data.get("weapons", {}) or {}
                 cls._loaded = True
                 return True
             else:
@@ -64,8 +87,12 @@ class ItemRegistry:
         Returns:
             Dict containing item data, or fallback data if not found
         """
-        if item_id in cls._items:
-            return cls._items[item_id]
+        cls._ensure_loaded()
+        normalized_id = cls.resolve_item_id(item_id) or str(item_id or "").strip().lower()
+        if normalized_id in cls._items:
+            return cls._items[normalized_id]
+        if normalized_id in cls._weapons:
+            return cls._weapons[normalized_id]
         
         # Fallback data for unknown items
         return {
@@ -89,6 +116,34 @@ class ItemRegistry:
         """
         item_data = cls.get(item_id)
         return item_data.get("name", item_id)
+
+    @classmethod
+    def get_item_data(cls, item_id: str) -> Dict[str, Any]:
+        """Alias for get(), kept explicit for systems that read item/weapon data."""
+        return cls.get(item_id)
+
+    @classmethod
+    def resolve_item_id(cls, item_ref: Any) -> str:
+        """
+        Resolve a YAML equipment entry or display name to a canonical item id.
+        Supports exact ids, case-insensitive names, normalized English names,
+        and optional aliases from item/weapon config.
+        """
+        cls._ensure_loaded()
+        raw_ref = str(item_ref or "").strip()
+        if not raw_ref:
+            return ""
+        normalized_ref = cls._normalize_lookup_key(raw_ref)
+        all_data = {**cls._items, **cls._weapons}
+        for item_id, item_data in all_data.items():
+            normalized_id = cls._normalize_lookup_key(item_id)
+            normalized_name = cls._normalize_lookup_key(item_data.get("name", ""))
+            if normalized_ref in {normalized_id, normalized_name}:
+                return str(item_id)
+            for alias in item_data.get("aliases", []) or []:
+                if normalized_ref == cls._normalize_lookup_key(alias):
+                    return str(item_id)
+        return normalized_ref
     
     @classmethod
     def is_stackable(cls, item_id: str) -> bool:
@@ -127,8 +182,15 @@ class ItemRegistry:
     
     @classmethod
     def all_items(cls) -> Dict[str, Dict[str, Any]]:
-        """Get all registered items."""
-        return cls._items.copy()
+        """Get all registered items and weapons through a unified view."""
+        cls._ensure_loaded()
+        return {**cls._items, **cls._weapons}
+
+    @classmethod
+    def all_weapons(cls) -> Dict[str, Dict[str, Any]]:
+        """Get all registered weapon definitions."""
+        cls._ensure_loaded()
+        return cls._weapons.copy()
 
 
 # Global registry instance
@@ -138,6 +200,11 @@ _registry = ItemRegistry()
 def get_registry() -> ItemRegistry:
     """Get the global ItemRegistry instance."""
     return _registry
+
+
+def get_item_data(item_id: str) -> Dict[str, Any]:
+    """Unified item/weapon lookup convenience function."""
+    return _registry.get_item_data(item_id)
 
 
 def format_inventory_dict_to_display_list(inv_dict: Dict[str, int]) -> List[str]:

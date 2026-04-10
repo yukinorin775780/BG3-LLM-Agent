@@ -15,11 +15,29 @@
   const ITEM_META = {
     gold: { label: "金币", icon: "🪙" },
     gold_coin: { label: "金币", icon: "🪙" },
+    scimitar: { label: "弯刀", icon: "🗡" },
     rusty_dagger: { label: "生锈匕首", icon: "🗡" },
+    leather_armor: { label: "皮甲", icon: "▣" },
+    shield: { label: "盾牌", icon: "◖" },
+    shortbow: { label: "短弓", icon: "🏹" },
+    longbow: { label: "长弓", icon: "🏹" },
+    chain_mail: { label: "锁子甲", icon: "▣" },
     burnt_map: { label: "烧焦地图", icon: "🗺" },
     healing_potion: { label: "治疗药水", icon: "🧪" },
     mysterious_artifact: { label: "神秘遗物", icon: "🜄" },
     rusty_key: { label: "锈钥匙", icon: "🗝" },
+  };
+
+  const EQUIPMENT_SLOT_LABELS = {
+    weapon: "主手",
+    main_hand: "主手",
+    ranged: "远程",
+    offhand: "副手",
+    armor: "护甲",
+    shield: "盾牌",
+    helmet: "头盔",
+    boots: "靴子",
+    accessory: "饰品",
   };
 
   const LOCATION_LABELS = {
@@ -118,6 +136,20 @@
   function itemMeta(itemId) {
     const key = normalizeId(itemId);
     return ITEM_META[key] || { label: prettifyId(itemId), icon: "◻" };
+  }
+
+  function equipmentSlotLabel(slot) {
+    const key = normalizeId(slot);
+    return EQUIPMENT_SLOT_LABELS[key] || prettifyId(slot);
+  }
+
+  function equipmentSlotIcon(slot) {
+    const key = normalizeId(slot);
+    if (key === "main_hand" || key === "weapon") return "⚔";
+    if (key === "ranged") return "🏹";
+    if (key === "armor") return "▣";
+    if (key === "shield" || key === "offhand") return "◖";
+    return "◆";
   }
 
   function clamp(value, min, max) {
@@ -293,6 +325,101 @@
     els.turnCounter.textContent = padTurn(state.turnCount);
   }
 
+  function createItemAction(label, action, itemId, ownerId) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "item-action";
+    if (action === "equip") button.classList.add("btn-equip");
+    if (action === "unequip") button.classList.add("btn-unequip");
+    button.dataset.partyAction = action;
+    button.dataset.itemId = itemId;
+    button.dataset.ownerId = ownerId;
+    button.textContent = label;
+    return button;
+  }
+
+  function createEquipmentPanel(ownerId, equipment) {
+    const panel = document.createElement("div");
+    panel.className = "equipped-container equipment-panel";
+
+    const label = document.createElement("p");
+    label.className = "gear-section-label";
+    label.textContent = "已装备 Equipped";
+    panel.appendChild(label);
+
+    const gear = safeObject(equipment);
+    const slots = [
+      { key: "main_hand", empty: "拳头 (未装备主手)" },
+      { key: "ranged", empty: "未装备远程武器" },
+      { key: "armor", empty: "未装备护甲" },
+    ];
+
+    slots.forEach(({ key, empty }) => {
+      const rawItemId = gear[key];
+      const normalizedItemId = normalizeId(rawItemId);
+      const meta = itemMeta(normalizedItemId);
+      const item = document.createElement("div");
+      item.className = "equipped-item";
+
+      const text = document.createElement("span");
+      if (!normalizedItemId) {
+        item.classList.add("equipped-item--empty");
+        text.className = "empty-slot";
+        text.textContent = equipmentSlotIcon(key) + " " + empty;
+        item.appendChild(text);
+        panel.appendChild(item);
+        return;
+      }
+
+      text.textContent = equipmentSlotIcon(key) + " " + meta.label + " (" + equipmentSlotLabel(key) + ")";
+
+      const actions = document.createElement("div");
+      actions.className = "item-actions";
+      actions.appendChild(createItemAction("卸下", "unequip", normalizedItemId, ownerId));
+
+      item.appendChild(text);
+      item.appendChild(actions);
+      panel.appendChild(item);
+    });
+
+    return panel;
+  }
+
+  function createInventoryPanel(ownerId, inventory) {
+    const panel = document.createElement("div");
+    panel.className = "party-pack inventory-list";
+
+    const label = document.createElement("p");
+    label.className = "gear-section-label";
+    label.textContent = "你的背包 Inventory";
+    panel.appendChild(label);
+
+    const invItems = inventoryEntries(inventory).slice(0, 6);
+    if (invItems.length === 0) {
+      panel.appendChild(makeItemTag("空背包", "⟡"));
+      return panel;
+    }
+
+    invItems.forEach(([itemId, count]) => {
+      const normalizedItemId = normalizeId(itemId);
+      const metaItem = itemMeta(normalizedItemId);
+      const row = document.createElement("div");
+      row.className = "inventory-item-row";
+
+      const itemTag = makeItemTag(metaItem.label + " x" + count, metaItem.icon);
+      const actions = document.createElement("div");
+      actions.className = "item-actions";
+      actions.appendChild(createItemAction("检查", "inspect", normalizedItemId, ownerId));
+      actions.appendChild(createItemAction("装备", "equip", normalizedItemId, ownerId));
+
+      row.appendChild(itemTag);
+      row.appendChild(actions);
+      panel.appendChild(row);
+    });
+
+    return panel;
+  }
+
   function renderTacticalGrid(partyStatus, environmentObjects) {
     const host = els.tacticalGrid;
     if (!host) return;
@@ -416,22 +543,10 @@
       );
     }
 
-    const pack = document.createElement("div");
-    pack.className = "party-pack";
-
-    const invItems = inventoryEntries(data.inventory).slice(0, 4);
-    if (invItems.length === 0) {
-      pack.appendChild(makeItemTag("空背包", "⟡"));
-    } else {
-      invItems.forEach(([itemId, count]) => {
-        const metaItem = itemMeta(itemId);
-        pack.appendChild(makeItemTag(metaItem.label + " x" + count, metaItem.icon));
-      });
-    }
-
     content.appendChild(head);
     content.appendChild(bars);
-    content.appendChild(pack);
+    content.appendChild(createEquipmentPanel(normalizeId(id), data.equipment));
+    content.appendChild(createInventoryPanel(normalizeId(id), data.inventory));
 
     card.appendChild(avatar);
     card.appendChild(content);
@@ -699,6 +814,9 @@
     Array.from(document.querySelectorAll(".object-action")).forEach((button) => {
       button.disabled = loading;
     });
+    Array.from(document.querySelectorAll(".item-action")).forEach((button) => {
+      button.disabled = loading;
+    });
     els.lootAllBtn.disabled = loading;
     if (loading) {
       setNetworkState("命运演算中", "loading");
@@ -732,6 +850,9 @@
     const characterId = character ? normalizeId(character) : "";
     if (characterId) {
       payload.character = characterId;
+    }
+    if (opts.target) {
+      payload.target = String(opts.target).trim();
     }
 
     try {
@@ -817,6 +938,32 @@
     queueCommand(actionButton.dataset.command || "");
   }
 
+  function handlePartyAction(event) {
+    const button = event.target.closest(".item-action");
+    if (!button || state.isLoading) return;
+
+    const itemId = normalizeId(button.dataset.itemId);
+    const action = normalizeId(button.dataset.partyAction);
+    const characterId = normalizeId(button.dataset.ownerId) || "player";
+    if (!itemId || !action) return;
+
+    if (action === "inspect") {
+      queueCommand("检查 " + itemId);
+      return;
+    }
+
+    if (action === "equip") {
+      const command = characterId === "player" ? "我要装备 " + itemId : "让 " + characterId + " 装备 " + itemId;
+      sendMessage(command);
+      return;
+    }
+
+    if (action === "unequip") {
+      const command = characterId === "player" ? "我要卸下 " + itemId : "让 " + characterId + " 卸下 " + itemId;
+      sendMessage(command);
+    }
+  }
+
   function bindEvents() {
     els.sendBtn.addEventListener("click", submitInput);
     els.userInput.addEventListener("keydown", (event) => {
@@ -828,6 +975,7 @@
 
     document.querySelector(".shortcut-bar").addEventListener("click", handleShortcutClick);
     els.logFilterBar.addEventListener("click", handleLogFilterClick);
+    els.partyRoster.addEventListener("click", handlePartyAction);
     els.environmentList.addEventListener("click", handleEnvironmentAction);
 
     els.closeLootBtn.addEventListener("click", hideLootModal);

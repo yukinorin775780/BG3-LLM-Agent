@@ -3,12 +3,23 @@
 V3 架构：从 dm_node 抽离，单一职责。
 """
 
+import logging
 from typing import Any, Dict, List
 
 from core.systems.inventory import get_registry
 
+logger = logging.getLogger(__name__)
+
 # 开发者测试：为 True 时 `core.systems.dice.roll_d20` 固定自然 20（大成功），跳过随机掷骰
 DEBUG_ALWAYS_PASS_CHECKS = True
+
+
+def _is_consumable_item(item_id: str, item_data: Dict[str, Any]) -> bool:
+    if item_data.get("equip_slot"):
+        return False
+    if item_data.get("is_consumable") is True:
+        return True
+    return str(item_data.get("type", "")).strip().lower() == "consumable"
 
 
 def apply_physics(
@@ -66,11 +77,16 @@ def apply_physics(
         else:
             continue
 
+        item_data = registry.get_item_data(item_id)
         item_name = registry.get_name(item_id)
         # 【修复物理黑洞】先校验 dst 是否合法，不合法则报错并 continue，绝不扣除源物品
         dst_valid = dst in ("consumed", "player") or (dst and dst in current_entities)
         if not dst_valid:
             journal_events.append(f"❌ [动作失败] 无效的目标: {dst}")
+            continue
+        if dst == "consumed" and not _is_consumable_item(item_id, item_data):
+            logger.warning("拦截了 LLM 试图消耗武器的行为: %s", item_id)
+            journal_events.append(f"❌ [物品使用] {item_name} 不是可消耗物品，不能被消耗。")
             continue
 
         has_enough = src_inv.get(item_id, 0) >= count

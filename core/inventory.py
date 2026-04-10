@@ -7,6 +7,7 @@ from core.systems.inventory import (
     ItemRegistry,
     Inventory,
     get_registry,
+    get_item_data,
     format_inventory_dict_to_display_list,
     init_registry,
 )
@@ -15,6 +16,7 @@ __all__ = [
     "ItemRegistry",
     "Inventory",
     "get_registry",
+    "get_item_data",
     "format_inventory_dict_to_display_list",
     "init_registry",
 ]

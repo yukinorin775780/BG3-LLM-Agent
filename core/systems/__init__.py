@@ -9,6 +9,7 @@ _EXPORTS = {
     "ItemRegistry": ("core.systems.inventory", "ItemRegistry"),
     "Inventory": ("core.systems.inventory", "Inventory"),
     "get_registry": ("core.systems.inventory", "get_registry"),
+    "get_item_data": ("core.systems.inventory", "get_item_data"),
     "format_inventory_dict_to_display_list": (
         "core.systems.inventory",
         "format_inventory_dict_to_display_list",
@@ -36,6 +37,7 @@ __all__ = [
     "ItemRegistry",
     "Inventory",
     "get_registry",
+    "get_item_data",
     "format_inventory_dict_to_display_list",
     "init_registry",
     "execute_skill_check",

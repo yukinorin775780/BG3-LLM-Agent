@@ -26,6 +26,10 @@ def mechanics_node(state: GameState) -> dict:
         result = mechanics.execute_loot_action(state)
     elif normalized_intent in ("USE_ITEM", "CONSUME"):
         result = mechanics.execute_use_item(state)
+    elif normalized_intent == "EQUIP":
+        result = mechanics.execute_equip_action(state)
+    elif normalized_intent == "UNEQUIP":
+        result = mechanics.execute_unequip_action(state)
     elif normalized_intent in ("MOVE", "APPROACH"):
         result = mechanics.execute_move_action(state)
     else:

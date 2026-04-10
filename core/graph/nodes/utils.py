@@ -10,6 +10,8 @@ import yaml
 
 from core.systems.inventory import get_registry
 
+DEFAULT_EQUIPMENT: Dict[str, Any] = {"main_hand": None, "ranged": None, "armor": None}
+
 DEFAULT_ENTITY_COORDS: Dict[str, Dict[str, int]] = {
     "player": {"x": 4, "y": 9},
     "shadowheart": {"x": 3, "y": 8},
@@ -59,6 +61,13 @@ def _entity_snapshot(v: Dict[str, Any]) -> Dict[str, Any]:
     从实体数据提取快照，保留 hp/affection/inventory 及三维状态机字段（shar_faith, memory_awakening）。
     确保 LangGraph 状态持久化时，各角色 Persona 状态机数值不丢失。
     """
+    equipment = dict(v.get("equipment", DEFAULT_EQUIPMENT))
+    legacy_weapon = equipment.pop("weapon", None)
+    if legacy_weapon and not equipment.get("main_hand"):
+        equipment["main_hand"] = legacy_weapon
+    equipment.setdefault("main_hand", None)
+    equipment.setdefault("ranged", None)
+    equipment.setdefault("armor", None)
     out: Dict[str, Any] = {
         "name": v.get("name", ""),
         "faction": v.get("faction", "neutral"),
@@ -69,6 +78,7 @@ def _entity_snapshot(v: Dict[str, Any]) -> Dict[str, Any]:
         "active_buffs": list(v.get("active_buffs", [])),
         "affection": v.get("affection", 0),
         "inventory": dict(v.get("inventory", {})),
+        "equipment": equipment,
         "position": v.get("position", "camp_center"),
         "x": v.get("x", 4),
         "y": v.get("y", 8),
@@ -91,13 +101,49 @@ def _parse_inventory(inv_raw: Any) -> Dict[str, int]:
         return inv_dict
     for item in inv_raw:
         if isinstance(item, str):
-            inv_dict[item] = inv_dict.get(item, 0) + 1
+            item_id = get_registry().resolve_item_id(item)
+            inv_dict[item_id] = inv_dict.get(item_id, 0) + 1
         elif isinstance(item, dict):
-            iid = item.get("id")
+            iid = get_registry().resolve_item_id(item.get("id"))
             cnt = item.get("count", 1)
             if iid:
                 inv_dict[iid] = inv_dict.get(iid, 0) + cnt
     return inv_dict
+
+
+def _normalize_equipment(raw_equipment: Any) -> Dict[str, Any]:
+    """
+    将角色 YAML 中的装备列表/旧字典转换为槽位字典。
+    例：["Mace", "Scale Mail"] -> {"main_hand": "mace", "ranged": None, "armor": "scale_mail"}
+    """
+    equipment = dict(DEFAULT_EQUIPMENT)
+    registry = get_registry()
+
+    if isinstance(raw_equipment, dict):
+        for raw_slot, raw_item in raw_equipment.items():
+            slot = str(raw_slot or "").strip().lower()
+            if slot == "weapon":
+                slot = "main_hand"
+            if slot not in equipment:
+                continue
+            item_id = registry.resolve_item_id(raw_item)
+            if item_id:
+                equipment[slot] = item_id
+        return equipment
+
+    if not isinstance(raw_equipment, list):
+        return equipment
+
+    for raw_item in raw_equipment:
+        raw_ref = raw_item.get("id") if isinstance(raw_item, dict) else raw_item
+        item_id = registry.resolve_item_id(raw_ref)
+        if not item_id:
+            continue
+        item_data = registry.get_item_data(item_id)
+        slot = str(item_data.get("equip_slot", "")).strip().lower()
+        if slot in equipment and equipment.get(slot) is None:
+            equipment[slot] = item_id
+    return equipment
 
 
 def load_default_entities() -> Dict[str, Dict[str, Any]]:
@@ -121,6 +167,7 @@ def load_default_entities() -> Dict[str, Dict[str, Any]]:
             combat = data.get("combat") or {}
             inv_raw = data.get("inventory") or []
             inv_dict = _parse_inventory(inv_raw)
+            equipment = _normalize_equipment(base.get("equipment", data.get("equipment")))
             max_hp = base.get("max_hp", base.get("hp", combat.get("hit_points", 20)))
             coord_defaults = DEFAULT_ENTITY_COORDS.get(entity_id, {})
             entity_data: Dict[str, Any] = {
@@ -133,6 +180,7 @@ def load_default_entities() -> Dict[str, Dict[str, Any]]:
                 "active_buffs": [],
                 "affection": base.get("affection", 0),
                 "inventory": inv_dict,
+                "equipment": equipment,
                 "position": base.get("position", "camp_center"),
                 "x": base.get("x", coord_defaults.get("x", 4)),
                 "y": base.get("y", coord_defaults.get("y", 8)),
@@ -153,6 +201,7 @@ def load_default_entities() -> Dict[str, Dict[str, Any]]:
                 "active_buffs": [],
                 "affection": 0,
                 "inventory": {},
+                "equipment": dict(DEFAULT_EQUIPMENT),
                 "position": "camp_center",
                 "x": DEFAULT_ENTITY_COORDS.get(entity_id, {}).get("x", 4),
                 "y": DEFAULT_ENTITY_COORDS.get(entity_id, {}).get("y", 8),
@@ -193,6 +242,16 @@ def merge_entities_with_defaults(raw_entities: Optional[Dict[str, Any]]) -> Dict
         ent.setdefault("y", defaults.get("y", DEFAULT_ENTITY_COORDS.get(npc_id, {}).get("y", 8)))
         ent.setdefault("active_buffs", [])
         ent.setdefault("inventory", {})
+        equipment = ent.setdefault("equipment", dict(DEFAULT_EQUIPMENT))
+        if not isinstance(equipment, dict):
+            equipment = dict(DEFAULT_EQUIPMENT)
+            ent["equipment"] = equipment
+        legacy_weapon = equipment.pop("weapon", None)
+        if legacy_weapon and not equipment.get("main_hand"):
+            equipment["main_hand"] = legacy_weapon
+        equipment.setdefault("main_hand", None)
+        equipment.setdefault("ranged", None)
+        equipment.setdefault("armor", None)
     return entities
 
 

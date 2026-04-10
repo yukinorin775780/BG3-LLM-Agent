@@ -33,6 +33,7 @@ Return a JSON object with the following fields:
 
 CRITICAL RULE FOR ACTION_TYPE:
 Spoken dialogue is often an action!
+- Heuristic priority: classify concrete actions before movement. If a sentence contains equipment words (装备/拿上/穿上/卸下/脱下), use `EQUIP` or `UNEQUIP`; if it contains loot words (搜刮/舔包/摸), use `LOOT`; if it contains attack words (攻击/砍/打/杀), use `ATTACK`; if it contains unlock/open words (撬开/解锁/打开), use `SLEIGHT_OF_HAND` or `ACTION`. Only use `MOVE` when no higher-priority concrete action is present.
 - If the user threatens, demands, or uses violence in dialogue -> MUST output "INTIMIDATION".
 - If the user lies or manipulates -> MUST output "DECEPTION".
 - If the user asks for an item or favor -> MUST output "PERSUASION".
@@ -50,7 +51,7 @@ Spoken dialogue is often an action!
   - ONLY use "hp_changes" for environmental damage (traps, falling) or ambient healing.
   - DO NOT EVER use these arrays for Social Interactions (e.g., player giving a gift to an NPC, or an NPC hitting the player). The NPCs will manage their own inventories and combat actions! If the player gives an item to an ally, output EMPTY arrays for item_transfers and hp_changes, and let the NPC handle the transaction.
 
-1.  `action_type`: Choose one of [PERSUASION, DECEPTION, STEALTH, INTIMIDATION, INSIGHT, ATTACK, MOVE, APPROACH, LOOT, PERCEPTION, INVESTIGATION, SLEIGHT_OF_HAND, ATHLETICS, CHAT].
+1.  `action_type`: Choose one of [PERSUASION, DECEPTION, STEALTH, INTIMIDATION, INSIGHT, ATTACK, MOVE, APPROACH, LOOT, EQUIP, UNEQUIP, PERCEPTION, INVESTIGATION, SLEIGHT_OF_HAND, ATHLETICS, CHAT].
     -   `PERSUASION`: Reasoning, bargaining, honest convincing.
     -   `DECEPTION`: Lying, misleading, hiding truth.
     -   `STEALTH`: Hiding or moving silently.
@@ -63,6 +64,8 @@ Spoken dialogue is often an action!
     -   `ATTACK`: Physical aggression or casting hostile spells.
     -   `MOVE` / `APPROACH`: Moving toward a target object or creature.
     -   `LOOT`: Looting a dead creature or an opened container/object.
+    -   `EQUIP`: Equipping a weapon or armor from inventory.
+    -   `UNEQUIP`: Removing currently equipped weapon or armor.
     -   `CHAT`: Casual conversation or non-gameplay interactions.
 
 2.  `is_probing_secret` (Boolean): If the player is trying to ask about Shar worship, the artifact, Night Cleric, personal pain, or other core privacy of Shadowheart, set to true. Otherwise false.
@@ -113,7 +116,7 @@ FLAGS PROVIDED:
 
 10. `action_actor` (String): The ID of the character performing the action. If the player is doing it themselves, output "player". If the player commands an NPC (e.g., "Astarion, pick the lock"), output that NPC's ID (e.g., "astarion").
 
-11. `action_target` (String): The ID of the object or person being targeted (e.g., "iron_chest", "goblin_1", "camp_fire", "player"). IDs must come only from: {{ available_targets }}. Leave as empty string "" if not applicable.
+11. `action_target` (String): The ID of the object or person being targeted (e.g., "iron_chest", "goblin_1", "camp_fire", "player") or the item id for EQUIP/UNEQUIP (e.g., "scimitar"). Target IDs should come from: {{ available_targets }} when targeting scene objects. Leave as empty string "" if not applicable.
 
 **Output Format:**
 Strictly output ONLY the JSON object. Do not add markdown blocks like ```json.
@@ -131,5 +134,9 @@ Example 6 (Commanded attack):
 {"action_type": "ATTACK", "is_probing_secret": false, "difficulty_class": 0, "reason": "Player ordered Laezel to attack the goblin.", "responders": ["laezel"], "affection_changes": {}, "flags_changed": {}, "item_transfers": [], "hp_changes": [], "action_actor": "laezel", "action_target": "goblin_1"}
 Example 7 (Non-tactical question stays chat):
 {"action_type": "CHAT", "is_probing_secret": false, "difficulty_class": 0, "reason": "Player is asking Astarion for his opinion.", "responders": ["astarion"], "affection_changes": {}, "flags_changed": {}, "item_transfers": [], "hp_changes": [], "action_actor": "player", "action_target": "astarion"}
+Example 8 (Move word plus unlock action is NOT movement):
+{"action_type": "SLEIGHT_OF_HAND", "is_probing_secret": false, "difficulty_class": 15, "reason": "Player ordered Astarion to unlock the chest.", "responders": ["astarion"], "affection_changes": {}, "flags_changed": {}, "item_transfers": [], "hp_changes": [], "action_actor": "astarion", "action_target": "iron_chest"}
+Example 9 (Equipping a weapon):
+{"action_type": "EQUIP", "is_probing_secret": false, "difficulty_class": 0, "reason": "Player equips a scimitar.", "responders": ["shadowheart"], "affection_changes": {}, "flags_changed": {}, "item_transfers": [], "hp_changes": [], "action_actor": "player", "action_target": "scimitar", "item_id": "scimitar"}
 Example with affection (Astarion only; NEVER include shadowheart):
 {"action_type": "CHAT", "is_probing_secret": false, "difficulty_class": 0, "reason": "Player mocked altruism.", "responders": ["astarion", "shadowheart"], "affection_changes": {"astarion": 3}, "flags_changed": {}, "item_transfers": [], "hp_changes": [], "action_actor": "player", "action_target": ""}

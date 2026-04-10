@@ -25,6 +25,25 @@ def test_physics_void_prevention():
     assert any("无效的目标" in event or "动作失败" in event for event in events)
 
 
+def test_physics_rejects_weapon_consumption():
+    """验证物理引擎：LLM 不能把武器伪装成消耗品扣除。"""
+    from core import inventory
+    from core.engine.physics import apply_physics
+
+    inventory.init_registry("config/items.yaml")
+
+    current_entities = {"shadowheart": {"inventory": {}}}
+    player_inventory = {"scimitar": 1}
+    item_transfers = [
+        {"from": "player", "to": "consumed", "item_id": "scimitar", "count": 1}
+    ]
+
+    events = apply_physics(current_entities, player_inventory, item_transfers, [])
+
+    assert player_inventory == {"scimitar": 1}
+    assert any("不是可消耗物品" in event for event in events)
+
+
 def test_llm_tool_parameters():
     """验证工具调用参数不会混淆 source_id / target_id。"""
     fake_llm_with_tools = Mock()

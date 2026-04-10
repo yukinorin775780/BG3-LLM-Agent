@@ -39,6 +39,8 @@ inventory:
     count: 5
   - id: scimitar
     count: 1
+equipment:
+  - Scimitar
 dialogue_style:
   tone: "尖利、戒备、充满恶意"
   common_phrases:

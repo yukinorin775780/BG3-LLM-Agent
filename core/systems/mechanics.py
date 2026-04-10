@@ -5,6 +5,7 @@ Pure logic and calculation functions - no UI dependencies
 
 import ast
 import copy
+import logging
 import random
 import re
 from typing import Any, Dict, List, Optional
@@ -13,12 +14,17 @@ from core.engine.physics import DEBUG_ALWAYS_PASS_CHECKS
 from core.systems.dice import roll_d20
 from core.systems.inventory import get_registry
 
+logger = logging.getLogger(__name__)
+
 DEFAULT_ATTACK_BONUS = 4
 DEFAULT_DAMAGE_BONUS = 2
 DEFAULT_DAMAGE_DIE_SIDES = 8
+DEFAULT_EQUIPMENT = {"main_hand": None, "ranged": None, "armor": None}
+EMPTY_EQUIPMENT = {"main_hand": None, "ranged": None, "armor": None}
 LOOTABLE_STATUSES = frozenset({"dead", "open", "opened"})
 USE_ITEM_INTENTS = frozenset({"USE_ITEM", "CONSUME"})
 MOVE_INTENTS = frozenset({"MOVE", "APPROACH"})
+EQUIP_INTENTS = frozenset({"EQUIP", "UNEQUIP"})
 PLAYER_TARGET_ALIASES = frozenset({"我", "自己", "玩家", "me", "player"})
 
 
@@ -99,6 +105,7 @@ def _build_player_combatant() -> Dict[str, Any]:
         "ac": 10,
         "status": "alive",
         "inventory": {},
+        "equipment": dict(DEFAULT_EQUIPMENT),
         "position": "camp_center",
         "x": 4,
         "y": 9,
@@ -120,6 +127,7 @@ def _ensure_actor_entity(
             existing.setdefault("max_hp", existing.get("hp", 20))
             existing.setdefault("status", "alive")
             existing.setdefault("inventory", {})
+            _get_equipment(existing)
             return existing
 
         fallback = state.get("party_status", {}).get("player") if isinstance(state, dict) else None
@@ -139,11 +147,13 @@ def _ensure_actor_entity(
             "max_hp": 20,
             "status": "alive",
             "inventory": {},
+            "equipment": dict(EMPTY_EQUIPMENT),
         }
         entities[actor_id] = actor
     actor.setdefault("max_hp", actor.get("hp", 20))
     actor.setdefault("status", "alive")
     actor.setdefault("inventory", {})
+    _get_equipment(actor)
     return actor
 
 
@@ -269,6 +279,170 @@ def _move_toward_target(
     return target_x, target_y - (1 if dy > 0 else -1)
 
 
+def _chebyshev_distance(
+    *,
+    actor_x: int,
+    actor_y: int,
+    target_x: int,
+    target_y: int,
+) -> int:
+    return max(abs(target_x - actor_x), abs(target_y - actor_y))
+
+
+def _move_toward_target_with_range(
+    *,
+    actor_x: int,
+    actor_y: int,
+    target_x: int,
+    target_y: int,
+    desired_range: int,
+) -> tuple[int, int]:
+    desired_range = max(1, int(desired_range or 1))
+    if _chebyshev_distance(
+        actor_x=actor_x,
+        actor_y=actor_y,
+        target_x=target_x,
+        target_y=target_y,
+    ) <= desired_range:
+        return actor_x, actor_y
+
+    def _sign(value: int) -> int:
+        return 1 if value > 0 else -1 if value < 0 else 0
+
+    dx = target_x - actor_x
+    dy = target_y - actor_y
+    new_x = actor_x
+    new_y = actor_y
+    if abs(dx) > desired_range:
+        new_x = target_x - (_sign(dx) * desired_range)
+    if abs(dy) > desired_range:
+        new_y = target_y - (_sign(dy) * desired_range)
+    return new_x, new_y
+
+
+def _auto_approach_actor_to_target(
+    *,
+    entities: Dict[str, Any],
+    state: Any,
+    actor_id: str,
+    target: Dict[str, Any],
+    target_name: str,
+    desired_range: int = 1,
+    journal_template: str = "🚶 [自动寻路] {actor_name} 走向了 {target_name}。",
+) -> List[str]:
+    actor = _ensure_actor_entity(actor_id=actor_id, entities=entities, state=state)
+    actor_x = _coerce_int(actor.get("x"), 4)
+    actor_y = _coerce_int(actor.get("y"), 9)
+    target_x = _coerce_int(target.get("x"), actor_x)
+    target_y = _coerce_int(target.get("y"), actor_y)
+
+    if _chebyshev_distance(
+        actor_x=actor_x,
+        actor_y=actor_y,
+        target_x=target_x,
+        target_y=target_y,
+    ) <= max(1, int(desired_range or 1)):
+        return []
+
+    new_x, new_y = _move_toward_target_with_range(
+        actor_x=actor_x,
+        actor_y=actor_y,
+        target_x=target_x,
+        target_y=target_y,
+        desired_range=desired_range,
+    )
+    actor["x"] = new_x
+    actor["y"] = new_y
+    actor["position"] = f"靠近 {target_name}"
+    actor_name = _display_entity_name(actor, actor_id)
+    return [journal_template.format(actor_name=actor_name, target_name=target_name)]
+
+
+def _resolve_item_id_from_context(intent_context: Dict[str, Any]) -> str:
+    return str(
+        intent_context.get("item_id")
+        or intent_context.get("target_item")
+        or intent_context.get("action_target")
+        or ""
+    ).strip().lower()
+
+
+def _get_equipment(entity: Dict[str, Any]) -> Dict[str, Any]:
+    equipment = entity.setdefault("equipment", dict(EMPTY_EQUIPMENT))
+    if not isinstance(equipment, dict):
+        equipment = dict(EMPTY_EQUIPMENT)
+        entity["equipment"] = equipment
+    legacy_weapon = equipment.pop("weapon", None)
+    if legacy_weapon and not equipment.get("main_hand"):
+        equipment["main_hand"] = legacy_weapon
+    equipment.setdefault("main_hand", None)
+    equipment.setdefault("ranged", None)
+    equipment.setdefault("armor", None)
+    return equipment
+
+
+def _resolve_inventory_for_actor(
+    *,
+    actor_id: str,
+    entities: Dict[str, Any],
+    player_inventory: Dict[str, int],
+) -> tuple[Dict[str, int], str]:
+    if actor_id == "player":
+        return player_inventory, "玩家"
+
+    actor = entities.get(actor_id)
+    if not isinstance(actor, dict):
+        return player_inventory, "玩家"
+
+    actor_inventory = actor.setdefault("inventory", {})
+    if not isinstance(actor_inventory, dict):
+        actor_inventory = {}
+        actor["inventory"] = actor_inventory
+    return actor_inventory, _display_entity_name(actor, actor_id)
+
+
+def _equipment_slot_for_item(item_data: Dict[str, Any]) -> str:
+    equip_slot = str(item_data.get("equip_slot", "")).strip().lower()
+    if equip_slot in {"main_hand", "ranged", "armor"}:
+        return equip_slot
+    item_type = str(item_data.get("type", "")).strip().lower()
+    if item_type == "weapon":
+        return "main_hand"
+    if item_type == "armor":
+        return "armor"
+    return ""
+
+
+def _get_weapon_profile(attacker: Dict[str, Any]) -> Dict[str, Any]:
+    equipment = _get_equipment(attacker)
+    weapon_id = str(equipment.get("main_hand") or "").strip().lower()
+    if not weapon_id:
+        return {
+            "id": "unarmed",
+            "name": "徒手",
+            "damage_dice": "1d4",
+            "damage_bonus": 0,
+            "range": 1,
+        }
+
+    item_data = get_registry().get(weapon_id)
+    return {
+        "id": weapon_id,
+        "name": get_registry().get_name(weapon_id),
+        "damage_dice": str(item_data.get("damage_dice") or item_data.get("damage") or "1d4"),
+        "damage_bonus": _coerce_int(item_data.get("damage_bonus"), 0),
+        "range": _coerce_int(item_data.get("range"), 1),
+    }
+
+
+def _is_consumable_item(item_id: str, item_data: Dict[str, Any]) -> bool:
+    if item_data.get("equip_slot"):
+        return False
+    if item_data.get("is_consumable") is True:
+        return True
+    return str(item_data.get("type", "")).strip().lower() == "consumable"
+
+
 def _build_action_result(
     *,
     intent: str,
@@ -351,7 +525,6 @@ def _is_unlockable_skill_success(
 def execute_combat_attack(
     attacker: Dict[str, Any],
     defender: Dict[str, Any],
-    weapon: str = "",
 ) -> Dict[str, Any]:
     """
     执行一次最小化 D20 攻击检定。
@@ -362,16 +535,22 @@ def execute_combat_attack(
     attacker_name = _display_entity_name(attacker, attacker_id)
     defender_name = _display_entity_name(defender, defender_id)
     defender_ac = int(defender.get("ac", 10))
+    weapon_profile = _get_weapon_profile(attacker)
+    weapon_name = str(weapon_profile.get("name") or "徒手打击")
+    if str(weapon_profile.get("id") or "") == "unarmed":
+        weapon_name = "徒手打击"
+    damage_dice = str(weapon_profile.get("damage_dice", "1d4"))
+    damage_bonus = _coerce_int(weapon_profile.get("damage_bonus"), 0)
 
     attack_roll = random.randint(1, 20)
     attack_total = attack_roll + DEFAULT_ATTACK_BONUS
     is_hit = attack_total >= defender_ac
-    damage_roll = 0
+    dice_roll_result = 0
     damage_total = 0
 
     if is_hit:
-        damage_roll = random.randint(1, DEFAULT_DAMAGE_DIE_SIDES)
-        damage_total = damage_roll + DEFAULT_DAMAGE_BONUS
+        dice_roll_result = parse_dice_string(damage_dice)
+        damage_total = dice_roll_result + damage_bonus
         current_hp = int(defender.get("hp", 0))
         max_hp = int(defender.get("max_hp", current_hp))
         new_hp = max(0, current_hp - damage_total)
@@ -380,13 +559,16 @@ def execute_combat_attack(
         defender["status"] = "dead" if new_hp <= 0 else "alive"
 
     attack_text = (
-        f"🎲 [战斗检定] {attacker_name}对 {defender_name} 发起攻击。"
-        f"掷骰 {attack_roll}(+{DEFAULT_ATTACK_BONUS})={attack_total} vs AC {defender_ac}，"
+        f"🎲 [战斗检定] {attacker_name} 使用 {weapon_name} 对 {defender_name} 发起攻击。"
+        f"命中检定: {attack_roll}(+{DEFAULT_ATTACK_BONUS}) = {attack_total} vs AC {defender_ac}，"
     )
     if is_hit:
-        attack_text += f"命中！造成 {damage_total} 点伤害。"
+        attack_text += (
+            f"命中！造成 {damage_total} 点伤害 "
+            f"(伤害骰: {damage_dice}[掷出 {dice_roll_result}] + 加成 {damage_bonus})。"
+        )
     else:
-        attack_text += "未命中。"
+        attack_text += "未命中！"
 
     journal_events = [attack_text]
     if is_hit and defender.get("status") == "dead":
@@ -398,12 +580,15 @@ def execute_combat_attack(
             "intent": "ATTACK",
             "actor": attacker_id,
             "target": defender_id,
-            "weapon": str(weapon or "").strip() or "weapon_attack",
+            "weapon": str(weapon_profile.get("id") or "unarmed"),
+            "weapon_name": weapon_name,
+            "range": int(weapon_profile.get("range", 1)),
             "dc": defender_ac,
             "modifier": DEFAULT_ATTACK_BONUS,
             "damage": {
-                "rolls": [damage_roll] if damage_roll else [],
-                "modifier": DEFAULT_DAMAGE_BONUS,
+                "rolls": [dice_roll_result] if dice_roll_result else [],
+                "formula": damage_dice,
+                "modifier": damage_bonus,
                 "total": damage_total,
             },
             "result": {
@@ -427,13 +612,11 @@ def execute_attack_action(state: Any) -> Dict[str, Any]:
     intent_context = state.get("intent_context") or {}
     attacker_id = _normalize_entity_id(intent_context.get("action_actor", "player")) or "player"
     target_query = str(intent_context.get("action_target", "") or "").strip()
-    target_id, _, _ = _resolve_target_reference(
+    target_id, target_obj, target_name = _resolve_target_reference(
         target_id=target_query,
         entities=entities,
         environment_objects=environment_objects,
     )
-    weapon = str(intent_context.get("weapon") or "").strip()
-
     if not target_id:
         return {
             "journal_events": ["❌ [战斗检定] 攻击失败：未指定目标。"],
@@ -453,23 +636,36 @@ def execute_attack_action(state: Any) -> Dict[str, Any]:
             "entities": entities,
         }
 
-    if attacker_id == "player":
-        attacker = _build_player_combatant()
-    else:
-        raw_attacker = entities.get(attacker_id)
-        if not isinstance(raw_attacker, dict):
-            return {
-                "journal_events": [f"❌ [战斗检定] 攻击失败：找不到攻击者 {attacker_id}。"],
-                "entities": entities,
-            }
-        attacker = dict(raw_attacker)
+    raw_attacker = _ensure_actor_entity(actor_id=attacker_id, entities=entities, state=state)
+    if not isinstance(raw_attacker, dict):
+        return {
+            "journal_events": [f"❌ [战斗检定] 攻击失败：找不到攻击者 {attacker_id}。"],
+            "entities": entities,
+        }
 
+    weapon_profile = _get_weapon_profile(raw_attacker)
+    approach_events = _auto_approach_actor_to_target(
+        entities=entities,
+        state=state,
+        actor_id=attacker_id,
+        target=target_obj or defender,
+        target_name=target_name or _display_entity_name(defender, target_id),
+        desired_range=int(weapon_profile.get("range", 1)),
+        journal_template=(
+            f"🚶 [战术走位] {{actor_name}} 拔出 {weapon_profile.get('name', '武器')}，"
+            "{target_name} 进入了射程。"
+        ),
+    )
+    attacker = dict(raw_attacker)
     attacker["id"] = attacker_id
     defender["id"] = target_id
-    return {
-        **execute_combat_attack(attacker=attacker, defender=defender, weapon=weapon),
+    result = {
+        **execute_combat_attack(attacker=attacker, defender=defender),
         "entities": entities,
     }
+    attack_events = result.get("journal_events", [])
+    result["journal_events"] = attack_events[:1] + approach_events + attack_events[1:]
+    return result
 
 
 def execute_loot_action(state: Any) -> Dict[str, Any]:
@@ -520,9 +716,16 @@ def execute_loot_action(state: Any) -> Dict[str, Any]:
         }
 
     target_status = str(target_obj.get("status", "")).strip().lower()
+    approach_events = _auto_approach_actor_to_target(
+        entities=entities,
+        state=state,
+        actor_id=actor_id,
+        target=target_obj,
+        target_name=target_name,
+    )
     if target_status not in LOOTABLE_STATUSES:
         return {
-            "journal_events": [f"❌ [搜刮] {target_name} 还无法被搜刮。"],
+            "journal_events": [f"❌ [搜刮] {target_name} 还无法被搜刮。"] + approach_events,
             "entities": entities,
             "environment_objects": environment_objects,
             "player_inventory": player_inventory,
@@ -565,9 +768,9 @@ def execute_loot_action(state: Any) -> Dict[str, Any]:
 
     if loot_items:
         items_text = _format_loot_entries(loot_items)
-        journal_events = [f"📦 [系统裁定] {actor_name}搜刮了 {target_name}，获得了 {items_text}。"]
+        journal_events = [f"📦 [系统裁定] {actor_name}搜刮了 {target_name}，获得了 {items_text}。"] + approach_events
     else:
-        journal_events = [f"📦 [系统裁定] {actor_name}搜刮了 {target_name}，但里面空空如也。"]
+        journal_events = [f"📦 [系统裁定] {actor_name}搜刮了 {target_name}，但里面空空如也。"] + approach_events
 
     return {
         "journal_events": journal_events,
@@ -611,7 +814,23 @@ def execute_use_item(state: Any) -> Dict[str, Any]:
             ),
         }
 
+    item_data = get_registry().get_item_data(item_id)
     item_name = get_registry().get_name(item_id)
+    if not _is_consumable_item(item_id, item_data):
+        logger.warning("拦截了 LLM 试图消耗非消耗品的行为: %s", item_id)
+        return {
+            "journal_events": [f"❌ [物品使用] {item_name} 不是可消耗物品，不能被使用消耗。"],
+            "entities": entities,
+            "player_inventory": player_inventory,
+            "raw_roll_data": _build_action_result(
+                intent=intent,
+                actor=actor_id,
+                target=item_id,
+                is_success=False,
+                result_type="NOT_CONSUMABLE",
+            ),
+        }
+
     if player_inventory.get(item_id, 0) <= 0:
         return {
             "journal_events": [f"❌ [物品使用] 玩家背包里没有 {item_name}。"],
@@ -626,7 +845,6 @@ def execute_use_item(state: Any) -> Dict[str, Any]:
             ),
         }
 
-    item_data = get_registry().get(item_id)
     effect = apply_item_effect(item_id, item_data)
 
     player_inventory[item_id] = player_inventory.get(item_id, 0) - 1
@@ -662,6 +880,160 @@ def execute_use_item(state: Any) -> Dict[str, Any]:
             is_success=bool(effect.get("success", True)),
             result_type=str(effect.get("type", "generic")).upper(),
             extra={"effect": effect},
+        ),
+    }
+
+
+def execute_equip_action(state: Any) -> Dict[str, Any]:
+    """
+    装备物品：从执行者背包/玩家全局背包移入实体 equipment 槽位。
+    """
+    entities = copy.deepcopy(state.get("entities") or {})
+    player_inventory = copy.deepcopy(state.get("player_inventory") or {})
+    intent_context = state.get("intent_context") or {}
+    actor_id = _normalize_entity_id(intent_context.get("action_actor", "player")) or "player"
+    item_id = _resolve_item_id_from_context(intent_context)
+
+    actor = _ensure_actor_entity(actor_id=actor_id, entities=entities, state=state)
+    actor_inventory, actor_name = _resolve_inventory_for_actor(
+        actor_id=actor_id,
+        entities=entities,
+        player_inventory=player_inventory,
+    )
+
+    if not item_id:
+        return {
+            "journal_events": ["❌ [装备] 装备失败：未指定物品。"],
+            "entities": entities,
+            "player_inventory": player_inventory,
+            "raw_roll_data": _build_action_result(
+                intent="EQUIP",
+                actor=actor_id,
+                target="",
+                is_success=False,
+                result_type="INVALID_ITEM",
+            ),
+        }
+
+    item_data = get_registry().get(item_id)
+    item_name = get_registry().get_name(item_id)
+    slot = _equipment_slot_for_item(item_data)
+    if not slot:
+        return {
+            "journal_events": [f"❌ [装备] {item_name} 不能被装备。"],
+            "entities": entities,
+            "player_inventory": player_inventory,
+            "raw_roll_data": _build_action_result(
+                intent="EQUIP",
+                actor=actor_id,
+                target=item_id,
+                is_success=False,
+                result_type="NOT_EQUIPPABLE",
+            ),
+        }
+
+    if int(actor_inventory.get(item_id, 0) or 0) <= 0:
+        return {
+            "journal_events": [f"❌ [装备] {actor_name} 的背包里没有 {item_name}。"],
+            "entities": entities,
+            "player_inventory": player_inventory,
+            "raw_roll_data": _build_action_result(
+                intent="EQUIP",
+                actor=actor_id,
+                target=item_id,
+                is_success=False,
+                result_type="ITEM_NOT_FOUND",
+            ),
+        }
+
+    equipment = _get_equipment(actor)
+    previous_item = str(equipment.get(slot) or "").strip().lower()
+    if previous_item:
+        actor_inventory[previous_item] = int(actor_inventory.get(previous_item, 0) or 0) + 1
+
+    actor_inventory[item_id] = int(actor_inventory.get(item_id, 0) or 0) - 1
+    if actor_inventory[item_id] <= 0:
+        del actor_inventory[item_id]
+    equipment[slot] = item_id
+
+    swap_text = f"，并卸下了 {get_registry().get_name(previous_item)}" if previous_item else ""
+    return {
+        "journal_events": [f"🛡️ [装备系统] {actor_name} 装备了 {item_name}{swap_text}。"],
+        "entities": entities,
+        "player_inventory": player_inventory,
+        "raw_roll_data": _build_action_result(
+            intent="EQUIP",
+            actor=actor_id,
+            target=item_id,
+            is_success=True,
+            result_type="SUCCESS",
+            extra={"slot": slot},
+        ),
+    }
+
+
+def execute_unequip_action(state: Any) -> Dict[str, Any]:
+    """
+    卸下装备：从 equipment 槽位移回执行者背包/玩家全局背包。
+    """
+    entities = copy.deepcopy(state.get("entities") or {})
+    player_inventory = copy.deepcopy(state.get("player_inventory") or {})
+    intent_context = state.get("intent_context") or {}
+    actor_id = _normalize_entity_id(intent_context.get("action_actor", "player")) or "player"
+    requested_item_id = _resolve_item_id_from_context(intent_context)
+
+    actor = _ensure_actor_entity(actor_id=actor_id, entities=entities, state=state)
+    actor_inventory, actor_name = _resolve_inventory_for_actor(
+        actor_id=actor_id,
+        entities=entities,
+        player_inventory=player_inventory,
+    )
+    equipment = _get_equipment(actor)
+
+    slot = ""
+    item_id = ""
+    if requested_item_id:
+        for candidate_slot in ("main_hand", "ranged", "armor"):
+            if str(equipment.get(candidate_slot) or "").strip().lower() == requested_item_id:
+                slot = candidate_slot
+                item_id = requested_item_id
+                break
+    else:
+        for candidate_slot in ("main_hand", "ranged", "armor"):
+            candidate_item = str(equipment.get(candidate_slot) or "").strip().lower()
+            if candidate_item:
+                slot = candidate_slot
+                item_id = candidate_item
+                break
+
+    if not slot or not item_id:
+        return {
+            "journal_events": [f"❌ [装备] {actor_name} 没有可卸下的装备。"],
+            "entities": entities,
+            "player_inventory": player_inventory,
+            "raw_roll_data": _build_action_result(
+                intent="UNEQUIP",
+                actor=actor_id,
+                target=requested_item_id,
+                is_success=False,
+                result_type="NOT_EQUIPPED",
+            ),
+        }
+
+    equipment[slot] = None
+    actor_inventory[item_id] = int(actor_inventory.get(item_id, 0) or 0) + 1
+    item_name = get_registry().get_name(item_id)
+    return {
+        "journal_events": [f"🧳 [装备系统] {actor_name} 卸下了 {item_name}。"],
+        "entities": entities,
+        "player_inventory": player_inventory,
+        "raw_roll_data": _build_action_result(
+            intent="UNEQUIP",
+            actor=actor_id,
+            target=item_id,
+            is_success=True,
+            result_type="SUCCESS",
+            extra={"slot": slot},
         ),
     }
 
@@ -762,6 +1134,8 @@ SKILL_CHECK_TYPES = (
     "ATHLETICS",
     "USE_ITEM",
     "CONSUME",
+    "EQUIP",
+    "UNEQUIP",
     "MOVE",
     "APPROACH",
 )
@@ -787,6 +1161,8 @@ def get_ability_for_action(action_type: str) -> str:
         "STEAL": "DEX",
         "USE_ITEM": "DEX",
         "CONSUME": "CON",
+        "EQUIP": "DEX",
+        "UNEQUIP": "DEX",
         "MOVE": "DEX",
         "APPROACH": "DEX",
         "ACTION": "CHA",
@@ -894,13 +1270,22 @@ def execute_skill_check(state: Any) -> Dict[str, Any]:
     environment_objects = copy.deepcopy(state.get("environment_objects") or {})
     entities = copy.deepcopy(state.get("entities") or {})
     target_query = str(intent_context.get("action_target", "") or "").strip()
-    actual_target_id, target_obj, _ = _resolve_target_reference(
+    actual_target_id, target_obj, target_name = _resolve_target_reference(
         target_id=target_query,
         entities=entities,
         environment_objects=environment_objects,
     )
 
     action_actor = str(intent_context.get("action_actor", "player") or "player").strip().lower()
+    approach_events: List[str] = []
+    if intent in {"SLEIGHT_OF_HAND", "ACTION", "ATHLETICS"} and isinstance(target_obj, dict):
+        approach_events = _auto_approach_actor_to_target(
+            entities=entities,
+            state=state,
+            actor_id=action_actor,
+            target=target_obj,
+            target_name=target_name,
+        )
 
     _entities_map = state.get("entities") or {}
     if not isinstance(_entities_map, dict):
@@ -948,7 +1333,7 @@ def execute_skill_check(state: Any) -> Dict[str, Any]:
         f"Skill Check | {actor_display} uses {intent} ({ability_name}) | DC {dc} | "
         f"Roll {rolls_str} + {modifier:+d} = {total} vs DC {dc} | "
         f"Result: {result_val}",
-    ]
+    ] + approach_events
     if DEBUG_ALWAYS_PASS_CHECKS:
         journal_lines.append("  [DEV MODE] 自动大成功")
     if stat_mod != 0:
@@ -958,6 +1343,7 @@ def execute_skill_check(state: Any) -> Dict[str, Any]:
 
     payload: Dict[str, Any] = {
         "journal_events": journal_lines,
+        "entities": entities,
         "raw_roll_data": {
             "intent": intent,
             "actor": action_actor,

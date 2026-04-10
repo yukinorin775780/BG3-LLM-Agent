@@ -659,6 +659,114 @@ textarea {
   margin-top: 12px;
 }
 
+.equipment-panel,
+.inventory-list {
+  display: flex;
+  flex-direction: column;
+  flex-wrap: nowrap;
+  gap: 8px;
+  min-width: 0;
+  margin-top: 12px;
+}
+
+.equipped-container {
+  padding: 6px;
+  margin-bottom: 10px;
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px dashed #5a4b3c;
+  border-radius: 4px;
+}
+
+.gear-section-label {
+  margin: 0;
+  color: var(--text-faint);
+  font-size: 0.66rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.equipped-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 4px 8px;
+  margin-bottom: 4px;
+  background: linear-gradient(135deg, #3a2c1e, #1a1510);
+  border: 1px solid #d4af37;
+  color: #f1e5ac;
+  border-radius: 4px;
+  font-size: 0.8rem;
+  box-shadow: inset 0 1px 0 rgba(255, 248, 228, 0.07), 0 0 14px rgba(208, 171, 103, 0.12);
+}
+
+.equipped-item .empty-slot {
+  color: #777;
+  border-color: #333;
+  font-style: italic;
+}
+
+.equipped-item--empty {
+  border-color: #333;
+  background: rgba(0, 0, 0, 0.18);
+  box-shadow: none;
+}
+
+.inventory-item-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.inventory-item-row .item-tag {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.item-actions {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 6px;
+}
+
+.item-action {
+  appearance: none;
+  cursor: pointer;
+  padding: 5px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(208, 171, 103, 0.24);
+  background: rgba(208, 171, 103, 0.08);
+  color: var(--text-soft);
+  font-size: 0.66rem;
+  transition: transform 140ms ease, border-color 140ms ease, color 140ms ease, background 140ms ease;
+}
+
+.btn-equip {
+  background: #27ae60;
+  color: white;
+}
+
+.btn-unequip {
+  background: #c0392b;
+  color: white;
+}
+
+.item-action:hover:not(:disabled) {
+  transform: translateY(-1px);
+  border-color: rgba(226, 211, 180, 0.55);
+  color: #fff7dc;
+  background: rgba(208, 171, 103, 0.16);
+}
+
+.item-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 .item-tag {
   display: inline-flex;
   align-items: center;
