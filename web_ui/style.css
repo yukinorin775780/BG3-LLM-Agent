@@ -35,9 +35,9 @@ body {
   font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
   color: var(--text-main);
   background:
-    radial-gradient(circle at 15% 15%, rgba(70, 88, 107, 0.18), transparent 26%),
-    radial-gradient(circle at 85% 18%, rgba(107, 77, 53, 0.14), transparent 24%),
-    radial-gradient(circle at 50% 0%, rgba(43, 78, 80, 0.11), transparent 32%),
+    radial-gradient(circle at center, #1e1a17 0%, #050404 100%),
+    radial-gradient(circle at 52% 48%, rgba(226, 138, 80, 0.18), transparent 28%),
+    radial-gradient(circle at 16% 18%, rgba(70, 88, 107, 0.2), transparent 26%),
     linear-gradient(180deg, #10131a 0%, #090b10 38%, #050608 100%);
   overflow: hidden;
 }
@@ -89,6 +89,142 @@ textarea {
   gap: 18px;
   height: 100vh;
   padding: 18px;
+}
+
+.map-stage {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background:
+    radial-gradient(circle at 50% 48%, rgba(235, 139, 74, 0.22), transparent 18%),
+    radial-gradient(circle at 50% 52%, rgba(115, 198, 195, 0.12), transparent 38%),
+    radial-gradient(circle at 20% 80%, rgba(208, 171, 103, 0.14), transparent 26%),
+    radial-gradient(circle at center, #1e1a17 0%, #050404 100%);
+}
+
+.map-stage::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at center, transparent 0 36%, rgba(0, 0, 0, 0.34) 58%, rgba(0, 0, 0, 0.82) 100%),
+    repeating-linear-gradient(45deg, rgba(255, 255, 255, 0.018) 0 1px, transparent 1px 20px),
+    repeating-radial-gradient(circle at center, rgba(255, 229, 160, 0.025) 0 1px, transparent 1px 5px);
+}
+
+.tactical-toggle-btn {
+  position: fixed;
+  top: 22px;
+  right: 24px;
+  z-index: 140;
+  appearance: none;
+  cursor: pointer;
+  padding: 12px 15px;
+  border-radius: 999px;
+  border: 1px solid rgba(226, 211, 180, 0.4);
+  background:
+    linear-gradient(135deg, rgba(208, 171, 103, 0.28), rgba(8, 12, 15, 0.86)),
+    rgba(0, 0, 0, 0.52);
+  color: #fff1cb;
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.42), inset 0 1px 0 rgba(255, 248, 228, 0.08);
+  backdrop-filter: blur(10px);
+  font-family: "SFMono-Regular", "Cascadia Code", "Fira Code", monospace;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.tactical-toggle-btn span {
+  display: block;
+  margin-top: 4px;
+  color: var(--accent-cyan);
+  font-size: 0.62rem;
+}
+
+.tactical-toggle-btn:hover {
+  border-color: rgba(115, 198, 195, 0.62);
+  transform: translateY(-1px);
+}
+
+.tactical-pause-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 100;
+  background:
+    radial-gradient(circle at center, rgba(15, 12, 10, 0.62) 0%, rgba(0, 0, 0, 0.92) 100%),
+    repeating-linear-gradient(115deg, rgba(255, 255, 255, 0.018) 0 1px, transparent 1px 10px);
+  backdrop-filter: blur(12px) saturate(0.72);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 18px;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 0.3s ease, visibility 0.3s ease;
+}
+
+.tactical-pause-overlay.is-hidden {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.tactical-pause-overlay.active {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+}
+
+.tactical-pause-overlay .app-shell {
+  width: 96vw !important;
+  max-width: none !important;
+  height: 94vh !important;
+  padding: 20px;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 24px;
+  transform: scale(0.96) translateY(10px);
+  opacity: 0.6;
+  transition:
+    transform 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275),
+    opacity 0.28s ease;
+}
+
+.tactical-pause-overlay.active .app-shell {
+  transform: scale(1) translateY(0);
+  opacity: 1;
+}
+
+.tactical-pause-overlay .battlefield-layout {
+  display: grid;
+  grid-template-columns: minmax(600px, 2fr) minmax(350px, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  gap: 24px;
+  height: 100%;
+  min-height: 0;
+}
+
+.tactical-pause-overlay .left-column,
+.tactical-pause-overlay .side-column,
+.tactical-pause-overlay .sidebar-container {
+  height: 100%;
+  min-height: 0;
+}
+
+.tactical-pause-overlay .world-panel,
+.tactical-pause-overlay .party-panel,
+.tactical-pause-overlay .state-panel {
+  min-height: 0;
 }
 
 .panel-frame {
@@ -345,6 +481,20 @@ textarea {
   box-shadow: inset 0 1px 0 rgba(255, 248, 228, 0.03);
 }
 
+.map-stage .tactical-viewport {
+  position: relative;
+  z-index: 1;
+  width: 100vw;
+  height: 100vh;
+  margin: 0;
+  padding: clamp(18px, 5vmin, 64px);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  align-items: center;
+  box-shadow: none;
+}
+
 .tactical-grid {
   display: grid;
   grid-template-columns: repeat(10, 1fr);
@@ -352,13 +502,29 @@ textarea {
   position: relative;
   width: 300px;
   height: 300px;
-  background-color: #2a2e33;
-  border: 2px solid #5a4b3c;
+  background:
+    radial-gradient(circle at 50% 50%, rgba(115, 198, 195, 0.16), transparent 46%),
+    linear-gradient(135deg, rgba(43, 50, 56, 0.96), rgba(19, 22, 27, 0.98));
+  border: 2px solid rgba(208, 171, 103, 0.72);
   gap: 1px;
 }
 
+.map-stage .tactical-grid {
+  width: min(84vmin, 860px);
+  height: min(84vmin, 860px);
+  border-width: 3px;
+  box-shadow:
+    0 34px 90px rgba(0, 0, 0, 0.62),
+    0 0 34px rgba(115, 198, 195, 0.16),
+    0 0 0 1px rgba(226, 211, 180, 0.22),
+    inset 0 0 34px rgba(0, 0, 0, 0.28),
+    inset 0 0 46px rgba(115, 198, 195, 0.08);
+}
+
 .grid-cell {
-  background-color: #1e2126;
+  background:
+    radial-gradient(circle at 50% 50%, rgba(115, 198, 195, 0.045), transparent 62%),
+    rgba(14, 17, 21, 0.88);
   position: relative;
   display: flex;
   align-items: center;
@@ -380,8 +546,12 @@ textarea {
   font-size: 0.7rem;
   font-weight: 700;
   color: #fff;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
-  transition: top 0.4s ease-in-out, left 0.4s ease-in-out;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  box-shadow:
+    0 4px 6px rgba(0, 0, 0, 0.6),
+    0 12px 18px rgba(0, 0, 0, 0.24),
+    inset 0 2px 4px rgba(255, 255, 255, 0.1);
+  transition: top 0.4s ease-in-out, left 0.4s ease-in-out, transform 0.18s ease;
   z-index: 10;
 }
 
@@ -394,7 +564,27 @@ textarea {
   background: linear-gradient(135deg, #4a90e2, #003366);
   border: 2px solid #8ab4f8;
   z-index: 100 !important;
-  box-shadow: 0 0 10px rgba(74, 144, 226, 0.8);
+  box-shadow:
+    0 4px 6px rgba(0, 0, 0, 0.6),
+    0 0 10px rgba(52, 152, 219, 0.3),
+    inset 0 2px 4px rgba(255, 255, 255, 0.16);
+  animation: playerPulse 3s infinite alternate;
+}
+
+@keyframes playerPulse {
+  0% {
+    box-shadow:
+      0 4px 6px rgba(0, 0, 0, 0.6),
+      0 0 10px rgba(52, 152, 219, 0.3),
+      inset 0 2px 4px rgba(255, 255, 255, 0.16);
+  }
+  100% {
+    box-shadow:
+      0 4px 6px rgba(0, 0, 0, 0.6),
+      0 0 22px rgba(52, 152, 219, 0.82),
+      0 0 38px rgba(115, 198, 195, 0.25),
+      inset 0 2px 4px rgba(255, 255, 255, 0.2);
+  }
 }
 
 .token-hostile {
@@ -1125,7 +1315,7 @@ textarea {
 .loot-modal {
   position: fixed;
   inset: 0;
-  z-index: 100;
+  z-index: 220;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1195,6 +1385,11 @@ textarea {
 
 @media (max-width: 1180px) {
   body {
+    overflow: hidden;
+  }
+
+  .tactical-pause-overlay {
+    align-items: stretch;
     overflow: auto;
   }
 

@@ -8,6 +8,17 @@
   <link rel="stylesheet" href="./style.css" />
 </head>
 <body>
+  <div id="map-stage" class="map-stage" aria-label="2.5D 战术地图">
+    <div class="tactical-viewport">
+      <div id="tactical-grid" class="tactical-grid"></div>
+    </div>
+  </div>
+
+  <button type="button" id="tactical-toggle-btn" class="tactical-toggle-btn" aria-controls="tactical-pause-overlay" aria-expanded="false">
+    战术菜单 <span>Space / Tab</span>
+  </button>
+
+  <div id="tactical-pause-overlay" class="tactical-pause-overlay is-hidden" aria-hidden="true">
   <div class="app-shell">
     <header class="topbar panel-frame">
       <div class="brand-block">
@@ -43,10 +54,6 @@
               <button type="button" class="panel-chip log-filter-btn is-active" data-filter="system" aria-pressed="true">系统事件</button>
               <button type="button" class="panel-chip log-filter-btn is-active" data-filter="narration" aria-pressed="true">掷骰旁白</button>
             </div>
-          </div>
-
-          <div class="tactical-viewport">
-            <div id="tactical-grid" class="tactical-grid"></div>
           </div>
 
           <div id="world-log" class="world-log" aria-live="polite" aria-label="主叙事日志"></div>
@@ -144,6 +151,7 @@
         <button type="button" id="loot-all-btn" class="loot-confirm">全部拾取</button>
       </div>
     </div>
+  </div>
   </div>
 
   <script src="./app.js" defer></script>

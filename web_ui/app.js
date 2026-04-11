@@ -51,6 +51,7 @@
     environmentObjects: {},
     playerInventory: {},
     activeLogFilters: new Set(["dialogue", "system", "narration"]),
+    tacticalOverlayOpen: false,
     hasSyncedInitialState: false,
     turnCount: 0,
     idleTimer: null,
@@ -63,6 +64,8 @@
     currentLocation: document.getElementById("current-location"),
     networkState: document.getElementById("network-state"),
     turnCounter: document.getElementById("turn-counter"),
+    tacticalOverlay: document.getElementById("tactical-pause-overlay"),
+    tacticalToggleBtn: document.getElementById("tactical-toggle-btn"),
     tacticalGrid: document.getElementById("tactical-grid"),
     worldLog: document.getElementById("world-log"),
     partyRoster: document.getElementById("party-roster"),
@@ -84,6 +87,28 @@
   function setNetworkState(text, mode) {
     els.networkState.textContent = text;
     els.networkState.dataset.state = mode;
+  }
+
+  function setTacticalOverlay(open) {
+    state.tacticalOverlayOpen = Boolean(open);
+    if (els.tacticalOverlay) {
+      els.tacticalOverlay.classList.toggle("is-hidden", !state.tacticalOverlayOpen);
+      els.tacticalOverlay.classList.toggle("active", state.tacticalOverlayOpen);
+      els.tacticalOverlay.setAttribute("aria-hidden", String(!state.tacticalOverlayOpen));
+    }
+    if (els.tacticalToggleBtn) {
+      els.tacticalToggleBtn.setAttribute("aria-expanded", String(state.tacticalOverlayOpen));
+    }
+  }
+
+  function toggleTacticalOverlay() {
+    setTacticalOverlay(!state.tacticalOverlayOpen);
+  }
+
+  function isEditableTarget(target) {
+    if (!target || !(target instanceof Element)) return false;
+    const tag = target.tagName.toLowerCase();
+    return tag === "input" || tag === "textarea" || tag === "select" || target.isContentEditable;
   }
 
   function safeObject(value) {
@@ -747,6 +772,7 @@
   }
 
   function showLootModal() {
+    setTacticalOverlay(true);
     els.lootModal.classList.remove("hidden");
     els.lootModal.setAttribute("aria-hidden", "false");
   }
@@ -965,6 +991,7 @@
   }
 
   function bindEvents() {
+    els.tacticalToggleBtn.addEventListener("click", toggleTacticalOverlay);
     els.sendBtn.addEventListener("click", submitInput);
     els.userInput.addEventListener("keydown", (event) => {
       if (event.key === "Enter" && !event.shiftKey) {
@@ -991,6 +1018,13 @@
       if (!targetId) return;
       state.seenLootTargets.add(targetId);
       sendMessage("我要搜刮 " + targetId, "ui_action_loot", "player");
+    });
+
+    document.addEventListener("keydown", (event) => {
+      const isToggleKey = event.key === "Tab" || event.code === "Space" || event.key === " ";
+      if (!isToggleKey || isEditableTarget(event.target)) return;
+      event.preventDefault();
+      toggleTacticalOverlay();
     });
 
     ["keydown", "pointerdown"].forEach((eventName) => {
@@ -1029,6 +1063,7 @@
 
   async function boot() {
     bindEvents();
+    setTacticalOverlay(false);
     renderChrome("幽暗地域营地");
     renderPartyRoster();
     renderEnvironmentObjects();

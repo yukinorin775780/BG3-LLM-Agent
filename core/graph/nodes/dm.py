@@ -15,6 +15,21 @@ from core.llm.dm import analyze_intent
 from core.utils.text_processor import format_history_message
 
 
+def _is_idle_banter_speaker(entity_id: str, entity: dict) -> bool:
+    normalized_id = str(entity_id or "").strip().lower()
+    if not normalized_id or normalized_id in {"player", "unknown"}:
+        return False
+    faction = str(entity.get("faction", "")).strip().lower()
+    if faction in {"hostile", "neutral"}:
+        return False
+    status = str(entity.get("status", "alive")).strip().lower()
+    if status in {"dead", "downed", "unconscious"}:
+        return False
+    if entity.get("is_alive") is False:
+        return False
+    return True
+
+
 async def dm_node(state: GameState) -> dict:
     """
     分析玩家输入的意图。
@@ -37,9 +52,14 @@ async def dm_node(state: GameState) -> dict:
             entities[k].setdefault("inventory", {})
             if not isinstance(entities[k].get("inventory"), dict):
                 entities[k]["inventory"] = {}
-        available_npcs = [k for k in entities.keys() if k and str(k).lower() != "unknown"]
+        available_npcs = [
+            entity_id
+            for entity_id, entity in entities.items()
+            if isinstance(entity, dict) and _is_idle_banter_speaker(str(entity_id), entity)
+        ]
         if not available_npcs:
-            available_npcs = [first_entity_id(entities)]
+            print("🎲 DM Node: Idle banter (AFK) — no valid NPC speakers; skipping.")
+            return {}
         current = random.choice(available_npcs)
         print("🎲 DM Node: Idle banter (AFK) — skipping intent LLM, speaker seed:", current)
         return {
