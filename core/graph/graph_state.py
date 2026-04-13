@@ -74,6 +74,10 @@ class GameState(TypedDict, total=False):
     entities: Dict[str, Dict[str, Any]]  # 多角色实体状态 {entity_id: {hp, active_buffs}, ...}
     current_location: str   # 当前所处的场景名称
     environment_objects: Dict[str, Dict[str, Any]]  # 环境中的可交互物体 (如宝箱、门)
+    combat_active: bool
+    initiative_order: List[str]
+    current_turn_index: int
+    turn_resources: Dict[str, Dict[str, Any]]
 
     # -------------------------------------------------------------------------
     # Journal Events [TRANSIENT within turn]

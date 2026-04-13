@@ -26,6 +26,7 @@ USE_ITEM_INTENTS = frozenset({"USE_ITEM", "CONSUME"})
 MOVE_INTENTS = frozenset({"MOVE", "APPROACH"})
 EQUIP_INTENTS = frozenset({"EQUIP", "UNEQUIP"})
 PLAYER_TARGET_ALIASES = frozenset({"我", "自己", "玩家", "me", "player"})
+PLAYER_SIDE_ENTITY_IDS = frozenset({"player", "astarion", "shadowheart", "laezel"})
 
 
 def calculate_ability_modifier(ability_score: int) -> int:
@@ -100,6 +101,8 @@ def _build_player_combatant() -> Dict[str, Any]:
         "id": "player",
         "name": "玩家",
         "faction": "player",
+        "ability_scores": {"STR": 10, "DEX": 10, "CON": 10, "INT": 10, "WIS": 10, "CHA": 10},
+        "speed": 30,
         "hp": 20,
         "max_hp": 20,
         "ac": 10,
@@ -124,6 +127,12 @@ def _ensure_actor_entity(
         existing = entities.get("player")
         if isinstance(existing, dict):
             existing.setdefault("name", "玩家")
+            existing.setdefault("faction", "player")
+            existing.setdefault(
+                "ability_scores",
+                {"STR": 10, "DEX": 10, "CON": 10, "INT": 10, "WIS": 10, "CHA": 10},
+            )
+            existing.setdefault("speed", 30)
             existing.setdefault("max_hp", existing.get("hp", 20))
             existing.setdefault("status", "alive")
             existing.setdefault("inventory", {})
@@ -143,6 +152,9 @@ def _ensure_actor_entity(
     if not isinstance(actor, dict):
         actor = {
             "name": actor_id.replace("_", " ").title(),
+            "faction": "party" if actor_id in PLAYER_SIDE_ENTITY_IDS else "neutral",
+            "ability_scores": {"STR": 10, "DEX": 10, "CON": 10, "INT": 10, "WIS": 10, "CHA": 10},
+            "speed": 30,
             "hp": 20,
             "max_hp": 20,
             "status": "alive",
@@ -151,6 +163,7 @@ def _ensure_actor_entity(
         }
         entities[actor_id] = actor
     actor.setdefault("max_hp", actor.get("hp", 20))
+    actor.setdefault("speed", 30)
     actor.setdefault("status", "alive")
     actor.setdefault("inventory", {})
     _get_equipment(actor)
@@ -289,6 +302,10 @@ def _chebyshev_distance(
     return max(abs(target_x - actor_x), abs(target_y - actor_y))
 
 
+def _sign(value: int) -> int:
+    return 1 if value > 0 else -1 if value < 0 else 0
+
+
 def _move_toward_target_with_range(
     *,
     actor_x: int,
@@ -306,9 +323,6 @@ def _move_toward_target_with_range(
     ) <= desired_range:
         return actor_x, actor_y
 
-    def _sign(value: int) -> int:
-        return 1 if value > 0 else -1 if value < 0 else 0
-
     dx = target_x - actor_x
     dy = target_y - actor_y
     new_x = actor_x
@@ -317,6 +331,45 @@ def _move_toward_target_with_range(
         new_x = target_x - (_sign(dx) * desired_range)
     if abs(dy) > desired_range:
         new_y = target_y - (_sign(dy) * desired_range)
+    return new_x, new_y
+
+
+def _movement_budget_from_speed(entity: Dict[str, Any]) -> int:
+    speed = _coerce_int(entity.get("speed"), 30)
+    # Character YAML follows 5e feet; the tactical grid consumes 5 feet per tile.
+    return max(1, speed // 5)
+
+
+def _move_toward_target_with_range_and_budget(
+    *,
+    actor_x: int,
+    actor_y: int,
+    target_x: int,
+    target_y: int,
+    desired_range: int,
+    max_steps: int,
+) -> tuple[int, int]:
+    desired_range = max(1, int(desired_range or 1))
+    max_steps = max(0, int(max_steps or 0))
+    new_x = actor_x
+    new_y = actor_y
+
+    for _ in range(max_steps):
+        if _chebyshev_distance(
+            actor_x=new_x,
+            actor_y=new_y,
+            target_x=target_x,
+            target_y=target_y,
+        ) <= desired_range:
+            break
+
+        dx = target_x - new_x
+        dy = target_y - new_y
+        if abs(dx) > desired_range:
+            new_x += _sign(dx)
+        if abs(dy) > desired_range:
+            new_y += _sign(dy)
+
     return new_x, new_y
 
 
@@ -419,7 +472,7 @@ def _get_weapon_profile(attacker: Dict[str, Any]) -> Dict[str, Any]:
     if not weapon_id:
         return {
             "id": "unarmed",
-            "name": "徒手",
+            "name": "徒手打击",
             "damage_dice": "1d4",
             "damage_bonus": 0,
             "range": 1,
@@ -441,6 +494,275 @@ def _is_consumable_item(item_id: str, item_data: Dict[str, Any]) -> bool:
     if item_data.get("is_consumable") is True:
         return True
     return str(item_data.get("type", "")).strip().lower() == "consumable"
+
+
+def _is_alive_entity(entity: Dict[str, Any]) -> bool:
+    if not isinstance(entity, dict):
+        return False
+    if str(entity.get("status", "alive")).strip().lower() in {"dead", "downed", "unconscious"}:
+        return False
+    return _coerce_int(entity.get("hp"), 1) > 0
+
+
+def _is_hostile_entity(entity: Dict[str, Any]) -> bool:
+    return str(entity.get("faction", "")).strip().lower() == "hostile"
+
+
+def _is_player_side_entity(entity_id: str, entity: Dict[str, Any]) -> bool:
+    normalized_id = _normalize_entity_id(entity_id)
+    if normalized_id in PLAYER_SIDE_ENTITY_IDS:
+        return True
+    faction = str(entity.get("faction", "")).strip().lower()
+    return bool(faction and faction not in {"hostile", "neutral"})
+
+
+def _combatant_ids(entities: Dict[str, Any]) -> List[str]:
+    combatants: List[str] = []
+    for entity_id, entity in entities.items():
+        if not isinstance(entity, dict) or not _is_alive_entity(entity):
+            continue
+        normalized_id = _normalize_entity_id(entity_id)
+        if _is_hostile_entity(entity) or _is_player_side_entity(normalized_id, entity):
+            combatants.append(normalized_id)
+    return combatants
+
+
+def _get_ability_score(entity: Dict[str, Any], ability_name: str, default: int = 10) -> int:
+    ability_scores = entity.get("ability_scores") or {}
+    if isinstance(ability_scores, dict):
+        for key, value in ability_scores.items():
+            if str(key).strip().upper() == ability_name.upper():
+                return _coerce_int(value, default)
+    return _coerce_int(entity.get(ability_name.lower()), default)
+
+
+def _roll_initiative(entities: Dict[str, Any]) -> tuple[List[str], List[Dict[str, Any]], str]:
+    entries: List[Dict[str, Any]] = []
+    for entity_id in _combatant_ids(entities):
+        entity = entities.get(entity_id) or {}
+        dex_mod = calculate_ability_modifier(_get_ability_score(entity, "DEX", 10))
+        raw_roll = random.randint(1, 20)
+        total = raw_roll + dex_mod
+        entries.append(
+            {
+                "id": entity_id,
+                "name": _display_entity_name(entity, entity_id),
+                "raw_roll": raw_roll,
+                "dex_modifier": dex_mod,
+                "total": total,
+            }
+        )
+
+    entries.sort(key=lambda item: item["total"], reverse=True)
+    order = [str(item["id"]) for item in entries]
+    order_text = ", ".join(f"{item['name']}({item['total']})" for item in entries)
+    return order, entries, f"⚔️ 战斗开始！先攻顺序：[{order_text}]"
+
+
+def _combat_has_live_hostiles(entities: Dict[str, Any]) -> bool:
+    return any(
+        isinstance(entity, dict) and _is_alive_entity(entity) and _is_hostile_entity(entity)
+        for entity in entities.values()
+    )
+
+
+def _combat_has_live_player_side(entities: Dict[str, Any]) -> bool:
+    return any(
+        isinstance(entity, dict)
+        and _is_alive_entity(entity)
+        and _is_player_side_entity(str(entity_id), entity)
+        for entity_id, entity in entities.items()
+    )
+
+
+def _prune_initiative_order(order: List[str], entities: Dict[str, Any]) -> List[str]:
+    pruned: List[str] = []
+    for entity_id in order:
+        normalized_id = _normalize_entity_id(entity_id)
+        entity = entities.get(normalized_id)
+        if isinstance(entity, dict) and _is_alive_entity(entity):
+            pruned.append(normalized_id)
+    return pruned
+
+
+def _combat_end_event(entities: Dict[str, Any]) -> str:
+    if not _combat_has_live_hostiles(entities):
+        return "🏁 [战斗结束] 敌对单位已经被肃清。"
+    if not _combat_has_live_player_side(entities):
+        return "💀 [战斗结束] 队伍已经失去战斗能力。"
+    return ""
+
+
+def _get_active_turn_id(state: Any) -> str:
+    initiative_order = state.get("initiative_order") or []
+    if not isinstance(initiative_order, list) or not initiative_order:
+        return ""
+    current_turn_index = _coerce_int(state.get("current_turn_index"), 0)
+    if current_turn_index < 0 or current_turn_index >= len(initiative_order):
+        current_turn_index = 0
+    return _normalize_entity_id(initiative_order[current_turn_index])
+
+
+def _turn_side_key(entity_id: str, entity: Dict[str, Any]) -> str:
+    if _is_hostile_entity(entity):
+        return "hostile"
+    if _is_player_side_entity(entity_id, entity):
+        return "party"
+    return "neutral"
+
+
+def _get_active_turn_block(
+    *,
+    state: Any,
+    entities: Dict[str, Any],
+    initiative_order: Optional[List[str]] = None,
+    current_turn_index: Optional[int] = None,
+) -> List[str]:
+    order = initiative_order if initiative_order is not None else list(state.get("initiative_order") or [])
+    if not isinstance(order, list) or not order:
+        return []
+    index = (
+        _coerce_int(current_turn_index, 0)
+        if current_turn_index is not None
+        else _coerce_int(state.get("current_turn_index"), 0)
+    )
+    if index < 0 or index >= len(order):
+        index = 0
+
+    first_id = _normalize_entity_id(order[index])
+    first_entity = entities.get(first_id)
+    if not isinstance(first_entity, dict) or not _is_alive_entity(first_entity):
+        return []
+    side_key = _turn_side_key(first_id, first_entity)
+    block = [first_id]
+    for offset in range(index + 1, len(order)):
+        candidate_id = _normalize_entity_id(order[offset])
+        candidate = entities.get(candidate_id)
+        if not isinstance(candidate, dict) or not _is_alive_entity(candidate):
+            break
+        if _turn_side_key(candidate_id, candidate) != side_key:
+            break
+        block.append(candidate_id)
+    return block
+
+
+def _active_block_side(
+    *,
+    state: Any,
+    entities: Dict[str, Any],
+    initiative_order: Optional[List[str]] = None,
+    current_turn_index: Optional[int] = None,
+) -> str:
+    block = _get_active_turn_block(
+        state=state,
+        entities=entities,
+        initiative_order=initiative_order,
+        current_turn_index=current_turn_index,
+    )
+    if not block:
+        return ""
+    entity = entities.get(block[0], {})
+    if not isinstance(entity, dict):
+        return ""
+    return _turn_side_key(block[0], entity)
+
+
+def _default_turn_resources(entity: Dict[str, Any]) -> Dict[str, int]:
+    return {
+        "action": 1,
+        "bonus_action": 1,
+        "movement": _movement_budget_from_speed(entity),
+    }
+
+
+def _ensure_turn_resources_for_block(
+    *,
+    state: Any,
+    entities: Dict[str, Any],
+    active_block: List[str],
+    force_reset: bool = False,
+) -> Dict[str, Dict[str, int]]:
+    existing = copy.deepcopy(state.get("turn_resources") or {})
+    if not isinstance(existing, dict):
+        existing = {}
+    for actor_id in active_block:
+        actor = entities.get(actor_id, {})
+        if (
+            force_reset
+            or actor_id not in existing
+            or not isinstance(existing.get(actor_id), dict)
+        ):
+            existing[actor_id] = _default_turn_resources(actor if isinstance(actor, dict) else {})
+    return existing
+
+
+def _build_turn_lock_result(
+    *,
+    state: Any,
+    intent: str,
+    actor_id: str,
+    target_id: str,
+    entities: Dict[str, Any],
+) -> Dict[str, Any]:
+    active_id = _get_active_turn_id(state)
+    state_entities = state.get("entities") or {}
+    active_entity = (
+        state_entities.get(active_id, {}) if isinstance(state_entities, dict) else {}
+    )
+    actor_entity = entities.get(actor_id, {}) if isinstance(entities, dict) else {}
+    active_name = _display_entity_name(active_entity, active_id or "unknown")
+    actor_name = _display_entity_name(actor_entity, actor_id or "unknown")
+    message = (
+        f"[系统驳回] 动作无效！当前是 {active_name} 的回合，"
+        f"你不能越权指挥 {actor_name} 行动。"
+    )
+    return {
+        "journal_events": [message],
+        "entities": entities,
+        "combat_active": bool(state.get("combat_active", False)),
+        "initiative_order": list(state.get("initiative_order") or []),
+        "current_turn_index": _coerce_int(state.get("current_turn_index"), 0),
+        "turn_resources": copy.deepcopy(state.get("turn_resources") or {}),
+        "raw_roll_data": _build_action_result(
+            intent=intent,
+            actor=actor_id,
+            target=target_id,
+            is_success=False,
+            result_type="TURN_LOCKED",
+        ),
+        "turn_locked": True,
+    }
+
+
+def _reject_if_not_active_turn(
+    *,
+    state: Any,
+    intent: str,
+    actor_id: str,
+    target_id: str,
+    entities: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    if not bool(state.get("combat_active", False)):
+        return None
+    initiative_order = list(state.get("initiative_order") or [])
+    if not initiative_order:
+        return None
+    active_block = _get_active_turn_block(
+        state=state,
+        entities=entities,
+        initiative_order=initiative_order,
+    )
+    if not active_block:
+        return None
+    if _normalize_entity_id(actor_id) in active_block:
+        return None
+    return _build_turn_lock_result(
+        state=state,
+        intent=intent,
+        actor_id=_normalize_entity_id(actor_id),
+        target_id=target_id,
+        entities=entities,
+    )
 
 
 def _build_action_result(
@@ -603,6 +925,339 @@ def execute_combat_attack(
     }
 
 
+def execute_enemy_turn(enemy_id: str, state: Any) -> Dict[str, Any]:
+    """
+    敌方启发式 AI：寻找最近的玩家侧单位，按速度预算逼近，并在射程内攻击。
+    """
+    entities = copy.deepcopy(state.get("entities") or {})
+    turn_resources = copy.deepcopy(state.get("turn_resources") or {})
+    if not isinstance(turn_resources, dict):
+        turn_resources = {}
+    enemy_id = _normalize_entity_id(enemy_id)
+    enemy = entities.get(enemy_id)
+    if not isinstance(enemy, dict) or not _is_alive_entity(enemy):
+        return {"entities": entities, "journal_events": []}
+
+    enemy_name = _display_entity_name(enemy, enemy_id)
+    enemy_x = _coerce_int(enemy.get("x"), 4)
+    enemy_y = _coerce_int(enemy.get("y"), 3)
+    weapon_profile = _get_weapon_profile(enemy)
+    weapon_range = max(1, _coerce_int(weapon_profile.get("range"), 1))
+    if enemy_id not in turn_resources or not isinstance(turn_resources.get(enemy_id), dict):
+        turn_resources[enemy_id] = _default_turn_resources(enemy)
+
+    target_id = ""
+    target_obj: Optional[Dict[str, Any]] = None
+    target_distance = 999
+    for candidate_id, candidate in entities.items():
+        normalized_candidate_id = _normalize_entity_id(candidate_id)
+        if normalized_candidate_id == enemy_id:
+            continue
+        if not isinstance(candidate, dict) or not _is_alive_entity(candidate):
+            continue
+        if not _is_player_side_entity(normalized_candidate_id, candidate):
+            continue
+        distance = _chebyshev_distance(
+            actor_x=enemy_x,
+            actor_y=enemy_y,
+            target_x=_coerce_int(candidate.get("x"), enemy_x),
+            target_y=_coerce_int(candidate.get("y"), enemy_y),
+        )
+        if distance < target_distance:
+            target_id = normalized_candidate_id
+            target_obj = candidate
+            target_distance = distance
+
+    if not target_id or not isinstance(target_obj, dict):
+        return {
+            "entities": entities,
+            "journal_events": [f"👹 [敌方回合] {enemy_name} 找不到可攻击目标。"],
+        }
+
+    target_name = _display_entity_name(target_obj, target_id)
+    journal_events = [f"[敌方AI] {enemy_name} 锁定了 {target_name}。"]
+    target_x = _coerce_int(target_obj.get("x"), enemy_x)
+    target_y = _coerce_int(target_obj.get("y"), enemy_y)
+
+    if target_distance > weapon_range:
+        new_x, new_y = _move_toward_target_with_range_and_budget(
+            actor_x=enemy_x,
+            actor_y=enemy_y,
+            target_x=target_x,
+            target_y=target_y,
+            desired_range=weapon_range,
+            max_steps=_movement_budget_from_speed(enemy),
+        )
+        if (new_x, new_y) != (enemy_x, enemy_y):
+            enemy["x"] = new_x
+            enemy["y"] = new_y
+            enemy["position"] = f"靠近 {target_name}"
+            journal_events.append(
+                f"[敌方AI] {enemy_name} 向 {target_name} 逼近至 ({new_x}, {new_y})。"
+            )
+            enemy_x, enemy_y = new_x, new_y
+
+    final_distance = _chebyshev_distance(
+        actor_x=enemy_x,
+        actor_y=enemy_y,
+        target_x=target_x,
+        target_y=target_y,
+    )
+    raw_roll_data = None
+    resource_pool = turn_resources.get(enemy_id, {}) if isinstance(turn_resources, dict) else {}
+    if final_distance <= weapon_range and int(resource_pool.get("action", 0) or 0) > 0:
+        enemy["id"] = enemy_id
+        target_obj["id"] = target_id
+        attack_result = execute_combat_attack(attacker=enemy, defender=target_obj)
+        journal_events.extend(attack_result.get("journal_events", []))
+        raw_roll_data = attack_result.get("raw_roll_data")
+        if isinstance(turn_resources, dict):
+            resource_pool = dict(resource_pool) if isinstance(resource_pool, dict) else {}
+            resource_pool["action"] = max(0, int(resource_pool.get("action", 0) or 0) - 1)
+            turn_resources[enemy_id] = resource_pool
+    elif final_distance <= weapon_range:
+        journal_events.append(
+            f"[敌方AI] {enemy_name} 动作点数不足，无法发动攻击。"
+        )
+    else:
+        journal_events.append(
+            f"[敌方AI] {enemy_name} 距离过远，原地待命。"
+        )
+
+    payload: Dict[str, Any] = {
+        "entities": entities,
+        "journal_events": journal_events,
+    }
+    if raw_roll_data:
+        payload["raw_roll_data"] = raw_roll_data
+    if isinstance(turn_resources, dict):
+        payload["turn_resources"] = turn_resources
+    return payload
+
+
+def advance_combat_after_action(state: Any, action_result: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    玩家/队友动作后推进回合：敌人自动行动，队友暂时待命，直到再次轮到 player。
+    """
+    if not isinstance(action_result, dict):
+        return action_result
+    if action_result.get("turn_locked"):
+        return action_result
+
+    combat_active = bool(action_result.get("combat_active", state.get("combat_active", False)))
+    initiative_order = list(action_result.get("initiative_order") or state.get("initiative_order") or [])
+    if not combat_active or not initiative_order:
+        return action_result
+
+    entities = copy.deepcopy(action_result.get("entities") or state.get("entities") or {})
+    if not isinstance(entities, dict) or not entities:
+        return action_result
+
+    journal_events = list(action_result.get("journal_events") or [])
+    turn_resources = copy.deepcopy(action_result.get("turn_resources") or state.get("turn_resources") or {})
+    if not isinstance(turn_resources, dict):
+        turn_resources = {}
+    initiative_order = _prune_initiative_order(initiative_order, entities)
+    end_event = _combat_end_event(entities)
+    if end_event:
+        return {
+            **action_result,
+            "entities": entities,
+            "journal_events": journal_events + [end_event],
+            "combat_active": False,
+            "initiative_order": [],
+            "current_turn_index": 0,
+        }
+    if not initiative_order:
+        return {
+            **action_result,
+            "entities": entities,
+            "journal_events": journal_events,
+            "combat_active": False,
+            "initiative_order": [],
+            "current_turn_index": 0,
+        }
+
+    current_turn_index = _coerce_int(
+        action_result.get("current_turn_index", state.get("current_turn_index", 0)),
+        0,
+    )
+    if action_result.get("skip_advance"):
+        current_turn_index %= len(initiative_order)
+    else:
+        current_turn_index %= len(initiative_order)
+
+    max_iterations = max(1, len(initiative_order) * 2)
+    for _ in range(max_iterations):
+        initiative_order = _prune_initiative_order(initiative_order, entities)
+        end_event = _combat_end_event(entities)
+        if end_event:
+            return {
+                **action_result,
+                "entities": entities,
+                "journal_events": journal_events + [end_event],
+                "combat_active": False,
+                "initiative_order": [],
+                "current_turn_index": 0,
+            }
+        if not initiative_order:
+            break
+
+        current_turn_index %= len(initiative_order)
+        active_block = _get_active_turn_block(
+            state=state,
+            entities=entities,
+            initiative_order=initiative_order,
+            current_turn_index=current_turn_index,
+        )
+        if not active_block:
+            current_turn_index = (current_turn_index + 1) % len(initiative_order)
+            continue
+
+        block_entities = [entities.get(actor_id, {}) for actor_id in active_block]
+        block_side = _turn_side_key(active_block[0], block_entities[0]) if block_entities else "neutral"
+
+        if block_side == "party":
+            turn_resources = _ensure_turn_resources_for_block(
+                state=action_result,
+                entities=entities,
+                active_block=active_block,
+                force_reset=False,
+            )
+            all_spent = True
+            for actor_id in active_block:
+                resources = turn_resources.get(actor_id, {})
+                if int(resources.get("action", 0) or 0) > 0 or int(resources.get("bonus_action", 0) or 0) > 0:
+                    all_spent = False
+                    break
+            if all_spent:
+                for actor_id in active_block:
+                    resources = turn_resources.get(actor_id, {})
+                    if isinstance(resources, dict):
+                        resources["action"] = 0
+                        resources["bonus_action"] = 0
+                        turn_resources[actor_id] = resources
+                current_turn_index = (current_turn_index + len(active_block)) % len(initiative_order)
+                action_result = {**action_result, "turn_resources": turn_resources}
+                continue
+            break
+
+        if block_side == "hostile":
+            turn_resources = _ensure_turn_resources_for_block(
+                state=action_result,
+                entities=entities,
+                active_block=active_block,
+                force_reset=True,
+            )
+            for enemy_id in active_block:
+                enemy_result = execute_enemy_turn(
+                    enemy_id,
+                    {
+                        **state,
+                        **action_result,
+                        "entities": entities,
+                        "turn_resources": turn_resources,
+                    },
+                )
+                entities = copy.deepcopy(enemy_result.get("entities") or entities)
+                journal_events.extend(enemy_result.get("journal_events", []))
+                if "turn_resources" in enemy_result:
+                    turn_resources = copy.deepcopy(enemy_result.get("turn_resources") or turn_resources)
+            current_turn_index = (current_turn_index + len(active_block)) % len(initiative_order)
+            action_result = {**action_result, "turn_resources": turn_resources}
+            continue
+
+        current_turn_index = (current_turn_index + len(active_block)) % len(initiative_order)
+
+    return {
+        **action_result,
+        "entities": entities,
+        "journal_events": journal_events,
+        "combat_active": True,
+        "initiative_order": initiative_order,
+        "current_turn_index": current_turn_index if initiative_order else 0,
+        "turn_resources": turn_resources,
+    }
+
+
+def execute_end_turn_action(state: Any) -> Dict[str, Any]:
+    """
+    放弃行动：结束当前行动者的回合。
+    """
+    entities = copy.deepcopy(state.get("entities") or {})
+    turn_resources = copy.deepcopy(state.get("turn_resources") or {})
+    if not isinstance(turn_resources, dict):
+        turn_resources = {}
+    intent_context = state.get("intent_context") or {}
+    active_id = _get_active_turn_id(state)
+    if not bool(state.get("combat_active", False)) or not active_id:
+        return {
+            "journal_events": ["[系统提示] 当前不在战斗中，无法结束回合。"],
+            "entities": entities,
+        }
+
+    requested_actor = _normalize_entity_id(intent_context.get("action_actor", active_id) or active_id)
+    action_target = str(intent_context.get("action_target") or "").strip().lower()
+    if requested_actor and requested_actor != active_id and action_target not in {"party", "group", "all"}:
+        return _build_turn_lock_result(
+            state=state,
+            intent="END_TURN",
+            actor_id=requested_actor,
+            target_id="",
+            entities=entities,
+        )
+
+    active_block = _get_active_turn_block(state=state, entities=entities)
+    active_entity = entities.get(active_id, {})
+    active_name = _display_entity_name(active_entity, active_id)
+    if action_target in {"party", "group", "all"} and active_block:
+        for actor_id in active_block:
+            resources = turn_resources.get(actor_id, {})
+            if isinstance(resources, dict):
+                resources["action"] = 0
+                resources["bonus_action"] = 0
+                turn_resources[actor_id] = resources
+        current_turn_index = (state.get("current_turn_index", 0) or 0) + len(active_block)
+        return {
+            "journal_events": [f"⏭️ [回合] {active_name} 宣布我方结束回合。"],
+            "entities": entities,
+            "combat_active": True,
+            "initiative_order": list(state.get("initiative_order") or []),
+            "current_turn_index": int(current_turn_index),
+            "turn_resources": turn_resources,
+            "skip_advance": True,
+            "raw_roll_data": _build_action_result(
+                intent="END_TURN",
+                actor=active_id,
+                target="party",
+                is_success=True,
+                result_type="PASS_GROUP",
+            ),
+        }
+
+    if active_block and requested_actor in active_block:
+        resources = turn_resources.get(requested_actor, {})
+        if isinstance(resources, dict):
+            resources["action"] = 0
+            resources["bonus_action"] = 0
+            turn_resources[requested_actor] = resources
+    return {
+        "journal_events": [f"⏭️ [回合] {active_name} 选择了待命。"],
+        "entities": entities,
+        "combat_active": True,
+        "initiative_order": list(state.get("initiative_order") or []),
+        "current_turn_index": _coerce_int(state.get("current_turn_index"), 0),
+        "turn_resources": turn_resources,
+        "raw_roll_data": _build_action_result(
+            intent="END_TURN",
+            actor=active_id,
+            target="",
+            is_success=True,
+            result_type="PASS",
+        ),
+    }
+
+
 def execute_attack_action(state: Any) -> Dict[str, Any]:
     """
     从 Graph state 中解析 ATTACK 行为，执行攻击结算并返回新的 entities / journal / latest_roll 数据。
@@ -612,6 +1267,15 @@ def execute_attack_action(state: Any) -> Dict[str, Any]:
     intent_context = state.get("intent_context") or {}
     attacker_id = _normalize_entity_id(intent_context.get("action_actor", "player")) or "player"
     target_query = str(intent_context.get("action_target", "") or "").strip()
+    turn_lock = _reject_if_not_active_turn(
+        state=state,
+        intent="ATTACK",
+        actor_id=attacker_id,
+        target_id=target_query,
+        entities=entities,
+    )
+    if turn_lock:
+        return turn_lock
     target_id, target_obj, target_name = _resolve_target_reference(
         target_id=target_query,
         entities=entities,
@@ -643,7 +1307,60 @@ def execute_attack_action(state: Any) -> Dict[str, Any]:
             "entities": entities,
         }
 
+    combat_events: List[str] = []
+    combat_fields: Dict[str, Any] = {}
+    target_is_hostile = _is_hostile_entity(defender)
+    if target_is_hostile and not bool(state.get("combat_active", False)):
+        initiative_order, initiative_rolls, initiative_log = _roll_initiative(entities)
+        if initiative_order:
+            current_turn_index = initiative_order.index(attacker_id) if attacker_id in initiative_order else 0
+            combat_fields = {
+                "combat_active": True,
+                "initiative_order": initiative_order,
+                "current_turn_index": current_turn_index,
+                "initiative_rolls": initiative_rolls,
+            }
+            combat_events.append(initiative_log)
+
+    turn_resources = _ensure_turn_resources_for_block(
+        state={**state, **combat_fields},
+        entities=entities,
+        active_block=_get_active_turn_block(
+            state={**state, **combat_fields},
+            entities=entities,
+        ),
+        force_reset=False,
+    )
+    actor_resources = turn_resources.get(attacker_id, {})
+    if int(actor_resources.get("action", 0) or 0) <= 0:
+        return {
+            "journal_events": [f"[系统驳回] 动作资源不足！{_display_entity_name(raw_attacker, attacker_id)} 本回合没有可用动作。"],
+            "entities": entities,
+            "combat_active": bool(state.get("combat_active", False)) or combat_fields.get("combat_active", False),
+            "initiative_order": list(combat_fields.get("initiative_order") or state.get("initiative_order") or []),
+            "current_turn_index": _coerce_int(
+                combat_fields.get("current_turn_index", state.get("current_turn_index", 0)), 0
+            ),
+            "turn_resources": turn_resources,
+            "raw_roll_data": _build_action_result(
+                intent="ATTACK",
+                actor=attacker_id,
+                target=target_id,
+                is_success=False,
+                result_type="NO_ACTION",
+            ),
+            "turn_locked": True,
+        }
+
     weapon_profile = _get_weapon_profile(raw_attacker)
+    weapon_move_template = (
+        "🚶 [战术走位] {actor_name} 调整步伐，逼近了 {target_name}。"
+        if str(weapon_profile.get("id") or "") == "unarmed"
+        else (
+            f"🚶 [战术走位] {{actor_name}} 拔出 {weapon_profile.get('name', '武器')}，"
+            "{target_name} 进入了射程。"
+        )
+    )
     approach_events = _auto_approach_actor_to_target(
         entities=entities,
         state=state,
@@ -651,20 +1368,23 @@ def execute_attack_action(state: Any) -> Dict[str, Any]:
         target=target_obj or defender,
         target_name=target_name or _display_entity_name(defender, target_id),
         desired_range=int(weapon_profile.get("range", 1)),
-        journal_template=(
-            f"🚶 [战术走位] {{actor_name}} 拔出 {weapon_profile.get('name', '武器')}，"
-            "{target_name} 进入了射程。"
-        ),
+        journal_template=weapon_move_template,
     )
     attacker = dict(raw_attacker)
     attacker["id"] = attacker_id
     defender["id"] = target_id
+    actor_resources = dict(actor_resources) if isinstance(actor_resources, dict) else {}
+    actor_resources["action"] = max(0, int(actor_resources.get("action", 0) or 0) - 1)
+    turn_resources[attacker_id] = actor_resources
+
     result = {
         **execute_combat_attack(attacker=attacker, defender=defender),
         "entities": entities,
+        "turn_resources": turn_resources,
+        **combat_fields,
     }
     attack_events = result.get("journal_events", [])
-    result["journal_events"] = attack_events[:1] + approach_events + attack_events[1:]
+    result["journal_events"] = attack_events[:1] + approach_events + attack_events[1:] + combat_events
     return result
 
 
@@ -680,6 +1400,15 @@ def execute_loot_action(state: Any) -> Dict[str, Any]:
 
     actor_id = _normalize_entity_id(intent_context.get("action_actor", "player")) or "player"
     target_query = str(intent_context.get("action_target", "") or "").strip()
+    turn_lock = _reject_if_not_active_turn(
+        state=state,
+        intent="LOOT",
+        actor_id=actor_id,
+        target_id=target_query,
+        entities=entities,
+    )
+    if turn_lock:
+        return turn_lock
     target_id, target_obj, target_name = _resolve_target_reference(
         target_id=target_query,
         entities=entities,
@@ -800,6 +1529,15 @@ def execute_use_item(state: Any) -> Dict[str, Any]:
 
     actor_id = _normalize_entity_id(intent_context.get("action_actor", "player")) or "player"
     item_id = str(intent_context.get("item_id") or intent_context.get("target_item") or "").strip()
+    turn_lock = _reject_if_not_active_turn(
+        state=state,
+        intent=intent,
+        actor_id=actor_id,
+        target_id=item_id,
+        entities=entities,
+    )
+    if turn_lock:
+        return turn_lock
     if not item_id:
         return {
             "journal_events": ["❌ [物品使用] 使用失败：未指定物品。"],
@@ -893,6 +1631,15 @@ def execute_equip_action(state: Any) -> Dict[str, Any]:
     intent_context = state.get("intent_context") or {}
     actor_id = _normalize_entity_id(intent_context.get("action_actor", "player")) or "player"
     item_id = _resolve_item_id_from_context(intent_context)
+    turn_lock = _reject_if_not_active_turn(
+        state=state,
+        intent="EQUIP",
+        actor_id=actor_id,
+        target_id=item_id,
+        entities=entities,
+    )
+    if turn_lock:
+        return turn_lock
 
     actor = _ensure_actor_entity(actor_id=actor_id, entities=entities, state=state)
     actor_inventory, actor_name = _resolve_inventory_for_actor(
@@ -981,6 +1728,15 @@ def execute_unequip_action(state: Any) -> Dict[str, Any]:
     intent_context = state.get("intent_context") or {}
     actor_id = _normalize_entity_id(intent_context.get("action_actor", "player")) or "player"
     requested_item_id = _resolve_item_id_from_context(intent_context)
+    turn_lock = _reject_if_not_active_turn(
+        state=state,
+        intent="UNEQUIP",
+        actor_id=actor_id,
+        target_id=requested_item_id,
+        entities=entities,
+    )
+    if turn_lock:
+        return turn_lock
 
     actor = _ensure_actor_entity(actor_id=actor_id, entities=entities, state=state)
     actor_inventory, actor_name = _resolve_inventory_for_actor(
@@ -1049,6 +1805,15 @@ def execute_move_action(state: Any) -> Dict[str, Any]:
 
     actor_id = _normalize_entity_id(intent_context.get("action_actor", "player")) or "player"
     target_query = str(intent_context.get("action_target", "") or "").strip()
+    turn_lock = _reject_if_not_active_turn(
+        state=state,
+        intent=intent,
+        actor_id=actor_id,
+        target_id=target_query,
+        entities=entities,
+    )
+    if turn_lock:
+        return turn_lock
     target_id, target, target_name = _resolve_target_reference(
         target_id=target_query,
         entities=entities,
@@ -1277,6 +2042,15 @@ def execute_skill_check(state: Any) -> Dict[str, Any]:
     )
 
     action_actor = str(intent_context.get("action_actor", "player") or "player").strip().lower()
+    turn_lock = _reject_if_not_active_turn(
+        state=state,
+        intent=intent,
+        actor_id=action_actor,
+        target_id=target_query,
+        entities=entities,
+    )
+    if turn_lock:
+        return turn_lock
     approach_events: List[str] = []
     if intent in {"SLEIGHT_OF_HAND", "ACTION", "ATHLETICS"} and isinstance(target_obj, dict):
         approach_events = _auto_approach_actor_to_target(

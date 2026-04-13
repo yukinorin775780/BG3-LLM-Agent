@@ -50,6 +50,7 @@
     partyStatus: {},
     environmentObjects: {},
     playerInventory: {},
+    combatState: {},
     activeLogFilters: new Set(["dialogue", "system", "narration"]),
     tacticalOverlayOpen: false,
     hasSyncedInitialState: false,
@@ -66,7 +67,9 @@
     turnCounter: document.getElementById("turn-counter"),
     tacticalOverlay: document.getElementById("tactical-pause-overlay"),
     tacticalToggleBtn: document.getElementById("tactical-toggle-btn"),
-    tacticalGrid: document.getElementById("tactical-grid"),
+    initiativeTracker: document.getElementById("initiative-tracker"),
+    initiativeList: document.getElementById("initiative-list"),
+    mapContainer: document.getElementById("map-container"),
     worldLog: document.getElementById("world-log"),
     partyRoster: document.getElementById("party-roster"),
     partyCount: document.getElementById("party-count"),
@@ -115,6 +118,10 @@
     return value && typeof value === "object" ? value : {};
   }
 
+  function safeArray(value) {
+    return Array.isArray(value) ? value : [];
+  }
+
   function padTurn(num) {
     return String(num).padStart(2, "0");
   }
@@ -153,6 +160,23 @@
     return clean.slice(0, 2).toUpperCase();
   }
 
+  function getCombatantLabel(id) {
+    const key = normalizeId(id);
+    const party = safeObject(state.partyStatus);
+    const env = safeObject(state.environmentObjects);
+    const data = safeObject(party[key] || env[key]);
+    return data.name || getDisplayName(key) || prettifyId(key);
+  }
+
+  function getCombatantSigil(id) {
+    const key = normalizeId(id);
+    const env = safeObject(state.environmentObjects);
+    const party = safeObject(state.partyStatus);
+    if (key === "player") return "P";
+    if (safeObject(env[key]).faction === "hostile") return "!";
+    return getInitials(key || safeObject(party[key]).name);
+  }
+
   function formatLocation(raw) {
     const key = normalizeId(raw);
     return LOCATION_LABELS[key] || raw || "未知地标";
@@ -179,38 +203,6 @@
 
   function clamp(value, min, max) {
     return Math.max(min, Math.min(max, value));
-  }
-
-  function normalizeGridCoord(value) {
-    const num = Number(value);
-    if (!Number.isFinite(num)) return null;
-    return clamp(Math.round(num), 0, 9);
-  }
-
-  function readGridPosition(data) {
-    const entity = safeObject(data);
-    const x = normalizeGridCoord(entity.x);
-    const y = normalizeGridCoord(entity.y);
-    if (x === null || y === null) return null;
-    return { x, y };
-  }
-
-  function tokenLabel(id, data) {
-    const name = String(safeObject(data).name || id || "").trim();
-    if (!name) return "?";
-    const cjkMatch = name.match(/[\u4e00-\u9fff]/);
-    if (cjkMatch) return cjkMatch[0];
-    const alnumMatch = name.match(/[A-Za-z0-9]/);
-    return alnumMatch ? alnumMatch[0].toUpperCase() : name.slice(0, 1).toUpperCase();
-  }
-
-  function tokenClass(id, data, source) {
-    const entity = safeObject(data);
-    if (normalizeId(id) === "player") return "token-player";
-    if (source === "environment") {
-      return normalizeId(entity.faction) === "hostile" ? "token-hostile" : "token-object";
-    }
-    return normalizeId(entity.faction) === "hostile" ? "token-hostile" : "token-neutral";
   }
 
   function objectEntries(obj) {
@@ -445,71 +437,130 @@
     return panel;
   }
 
+  function createTurnResourceIcon(label, value, type) {
+    const available = Number(value) > 0;
+    const icon = document.createElement("span");
+    icon.className = "turn-resource-icon turn-resource-icon--" + type + (available ? " is-available" : " is-spent");
+    icon.title = label + ": " + (available ? "可用" : "已消耗");
+    icon.setAttribute("aria-label", icon.title);
+    icon.textContent = type === "bonus" ? "▲" : "●";
+    return icon;
+  }
+
+  function createTurnResourcesPanel(id, data) {
+    const entity = safeObject(data);
+    if (normalizeId(entity.faction) === "hostile") return null;
+
+    const resources = safeObject(safeObject(state.combatState.turn_resources)[normalizeId(id)]);
+    const hasResources = Object.prototype.hasOwnProperty.call(resources, "action")
+      || Object.prototype.hasOwnProperty.call(resources, "bonus_action")
+      || Object.prototype.hasOwnProperty.call(resources, "movement");
+    if (!hasResources) return null;
+
+    const panel = document.createElement("div");
+    panel.className = "turn-resources";
+
+    const label = document.createElement("span");
+    label.className = "turn-resources-label";
+    label.textContent = "本回合";
+
+    const icons = document.createElement("div");
+    icons.className = "turn-resource-icons";
+    icons.appendChild(createTurnResourceIcon("主动作", resources.action, "action"));
+    icons.appendChild(createTurnResourceIcon("附赠动作", resources.bonus_action, "bonus"));
+
+    const movement = Number(resources.movement);
+    const move = document.createElement("div");
+    move.className = "turn-resource-move";
+
+    const moveText = document.createElement("span");
+    moveText.textContent = "🥾 " + (Number.isFinite(movement) ? movement : 0) + "ft";
+
+    const moveTrack = document.createElement("span");
+    moveTrack.className = "turn-resource-move-track";
+
+    const moveFill = document.createElement("span");
+    moveFill.className = "turn-resource-move-fill";
+    moveFill.style.width = clamp(Number.isFinite(movement) ? movement : 0, 0, 30) / 30 * 100 + "%";
+
+    moveTrack.appendChild(moveFill);
+    move.appendChild(moveText);
+    move.appendChild(moveTrack);
+
+    panel.appendChild(label);
+    panel.appendChild(icons);
+    panel.appendChild(move);
+    return panel;
+  }
+
   function renderTacticalGrid(partyStatus, environmentObjects) {
-    const host = els.tacticalGrid;
-    if (!host) return;
+    if (window.BG3TacticalMap && typeof window.BG3TacticalMap.update === "function") {
+      window.BG3TacticalMap.update(partyStatus, environmentObjects);
+    }
+  }
 
-    const occupants = [];
-    const registerOccupant = (id, rawData, source) => {
-      const position = readGridPosition(rawData);
-      if (!position) return;
-      occupants.push({ id, data: safeObject(rawData), source, x: position.x, y: position.y });
-    };
+  function renderInitiativeTracker(combatState, wasCombatActive) {
+    const combat = safeObject(combatState);
+    const isCombatActive = combat.combat_active === true;
+    const order = safeArray(combat.initiative_order).map(normalizeId).filter(Boolean);
+    const currentIndex = Number(combat.current_turn_index);
+    const activeIndex = Number.isFinite(currentIndex) ? currentIndex : -1;
 
-    objectEntries(partyStatus).forEach(([id, data]) => {
-      registerOccupant(id, data, "party");
-    });
+    if (!els.initiativeTracker || !els.initiativeList) return;
 
-    objectEntries(environmentObjects).forEach(([id, data]) => {
-      registerOccupant(id, data, "environment");
-    });
+    els.initiativeTracker.classList.toggle("is-hidden", !isCombatActive);
+    els.initiativeTracker.classList.toggle("is-active", isCombatActive);
+    els.initiativeTracker.setAttribute("aria-hidden", String(!isCombatActive));
+    els.initiativeList.innerHTML = "";
 
-    host.querySelectorAll(".grid-cell").forEach((cell) => cell.remove());
-    const cellFragment = document.createDocumentFragment();
-
-    for (let y = 0; y < 10; y += 1) {
-      for (let x = 0; x < 10; x += 1) {
-        const cell = document.createElement("div");
-        cell.className = "grid-cell";
-        cell.dataset.x = String(x);
-        cell.dataset.y = String(y);
-        cellFragment.appendChild(cell);
+    if (!isCombatActive) {
+      if (wasCombatActive) {
+        appendLogEntry("system", "战斗结束", "战斗态势解除，先攻顺位条已收起。", {
+          color: "#73c6c3",
+          sigil: "◇",
+          logType: "system",
+        });
       }
+      return;
     }
 
-    host.appendChild(cellFragment);
+    if (!wasCombatActive) {
+      appendLogEntry("combat", "战斗开始", "⚔ 战斗开始！先攻顺位已锁定。", {
+        color: "#ff8a7a",
+        sigil: "⚔",
+        logType: "system",
+      });
+    }
 
-    const activeTokenIds = new Set();
-    occupants.forEach(({ id, data, source, x, y }) => {
-      const tokenId = "token-" + normalizeId(id);
-      let token = document.getElementById(tokenId);
+    if (order.length === 0) {
+      const empty = document.createElement("span");
+      empty.className = "initiative-empty";
+      empty.textContent = "等待先攻数据...";
+      els.initiativeList.appendChild(empty);
+      return;
+    }
 
-      if (!token) {
-        token = document.createElement("div");
-        token.id = tokenId;
-        token.dataset.entityId = normalizeId(id);
-        token.className = "token " + tokenClass(id, data, source);
-        token.textContent = tokenLabel(id, data);
-        token.title = safeObject(data).name || prettifyId(id);
-        token.style.left = x * 10 + "%";
-        token.style.top = y * 10 + "%";
-        host.appendChild(token);
-      }
+    const fragment = document.createDocumentFragment();
+    order.forEach((id, index) => {
+      const chip = document.createElement("div");
+      chip.className = "initiative-chip";
+      chip.classList.toggle("active-turn", index === activeIndex);
+      chip.dataset.combatantId = id;
 
-      token.className = "token " + tokenClass(id, data, source);
-      token.textContent = tokenLabel(id, data);
-      token.title = safeObject(data).name || prettifyId(id);
-      token.style.left = x * 10 + "%";
-      token.style.top = y * 10 + "%";
+      const avatar = document.createElement("span");
+      avatar.className = "initiative-avatar";
+      avatar.textContent = getCombatantSigil(id);
 
-      activeTokenIds.add(normalizeId(id));
+      const label = document.createElement("span");
+      label.className = "initiative-name";
+      label.textContent = getCombatantLabel(id);
+
+      chip.appendChild(avatar);
+      chip.appendChild(label);
+      fragment.appendChild(chip);
     });
 
-    host.querySelectorAll(".token[data-entity-id]").forEach((token) => {
-      if (!activeTokenIds.has(token.dataset.entityId || "")) {
-        token.remove();
-      }
-    });
+    els.initiativeList.appendChild(fragment);
   }
 
   function createPartyCard(id, rawData) {
@@ -570,6 +621,10 @@
 
     content.appendChild(head);
     content.appendChild(bars);
+    const resourcesPanel = createTurnResourcesPanel(normalizeId(id), data);
+    if (resourcesPanel) {
+      content.appendChild(resourcesPanel);
+    }
     content.appendChild(createEquipmentPanel(normalizeId(id), data.equipment));
     content.appendChild(createInventoryPanel(normalizeId(id), data.inventory));
 
@@ -902,9 +957,11 @@
       if (opts.incrementTurn !== false) {
         state.turnCount += 1;
       }
+      const wasCombatActive = safeObject(state.combatState).combat_active === true;
       state.partyStatus = safeObject(data.party_status);
       state.environmentObjects = safeObject(data.environment_objects);
       state.playerInventory = safeObject(data.player_inventory);
+      state.combatState = safeObject(data.combat_state);
 
       if (data.current_location) {
         renderChrome(data.current_location);
@@ -915,6 +972,7 @@
       renderPartyRoster();
       renderEnvironmentObjects();
       renderTacticalGrid(state.partyStatus, state.environmentObjects);
+      renderInitiativeTracker(state.combatState, wasCombatActive);
       if (!opts.skipLogUpdate) {
         updateWorldLog(data, userLine || null);
       }
@@ -1068,6 +1126,7 @@
     renderPartyRoster();
     renderEnvironmentObjects();
     renderTacticalGrid(state.partyStatus, state.environmentObjects);
+    renderInitiativeTracker(state.combatState, false);
     appendLogEntry("system", "终端接入", "战术桌已连入 `/api/chat`。发出第一条指令后，主叙事区会开始记录世界变化。", {
       color: "#d0ab67",
       sigil: "◎",

@@ -29,6 +29,7 @@ ACTION_INTENTS: tuple[str, ...] = (
     "UNEQUIP",
     "MOVE",
     "APPROACH",
+    "END_TURN",
     "STEAL",
     "PERSUASION",
     "DECEPTION",
@@ -138,7 +139,18 @@ def route_after_mechanics(state: GameState) -> MECHANICS_ROUTE:
         return "narration"
 
     # 战斗等 → DM 旁白
-    if intent in ("attack", "cast_spell", "loot", "use_item", "consume", "equip", "unequip", "move", "approach"):
+    if intent in (
+        "attack",
+        "cast_spell",
+        "loot",
+        "use_item",
+        "consume",
+        "equip",
+        "unequip",
+        "move",
+        "approach",
+        "end_turn",
+    ):
         return "narration"
 
     # 默认兜底交还给 NPC

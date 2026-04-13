@@ -9,8 +9,13 @@
 </head>
 <body>
   <div id="map-stage" class="map-stage" aria-label="2.5D 战术地图">
-    <div class="tactical-viewport">
-      <div id="tactical-grid" class="tactical-grid"></div>
+    <div id="map-container" class="map-container"></div>
+  </div>
+
+  <div id="initiative-tracker" class="initiative-tracker is-hidden" aria-live="polite" aria-label="先攻顺位条">
+    <div class="initiative-frame">
+      <span class="initiative-title">Initiative</span>
+      <div id="initiative-list" class="initiative-list"></div>
     </div>
   </div>
 
@@ -154,6 +159,8 @@
   </div>
   </div>
 
+  <script src="https://cdn.jsdelivr.net/npm/phaser@3.60.0/dist/phaser.min.js" defer></script>
+  <script src="./game.js" defer></script>
   <script src="./app.js" defer></script>
 </body>
 </html>

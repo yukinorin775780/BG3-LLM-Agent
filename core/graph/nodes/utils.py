@@ -71,6 +71,8 @@ def _entity_snapshot(v: Dict[str, Any]) -> Dict[str, Any]:
     out: Dict[str, Any] = {
         "name": v.get("name", ""),
         "faction": v.get("faction", "neutral"),
+        "ability_scores": dict(v.get("ability_scores", {})),
+        "speed": v.get("speed", 30),
         "hp": v.get("hp", 20),
         "max_hp": v.get("max_hp", v.get("hp", 20)),
         "ac": v.get("ac", 10),
@@ -173,6 +175,8 @@ def load_default_entities() -> Dict[str, Dict[str, Any]]:
             entity_data: Dict[str, Any] = {
                 "name": data.get("name", entity_id.replace("_", " ").title()),
                 "faction": base.get("faction", "neutral"),
+                "ability_scores": data.get("ability_scores", {}),
+                "speed": base.get("speed", combat.get("speed", 30)),
                 "hp": base.get("hp", max_hp),
                 "max_hp": max_hp,
                 "ac": base.get("ac", combat.get("armor_class", 10)),
@@ -194,6 +198,8 @@ def load_default_entities() -> Dict[str, Dict[str, Any]]:
             entities[entity_id] = {
                 "name": entity_id.replace("_", " ").title(),
                 "faction": "neutral",
+                "ability_scores": {},
+                "speed": 30,
                 "hp": 20,
                 "max_hp": 20,
                 "ac": 10,
@@ -234,6 +240,8 @@ def merge_entities_with_defaults(raw_entities: Optional[Dict[str, Any]]) -> Dict
         defaults = default_entities.get(npc_id, {})
         ent.setdefault("name", defaults.get("name", npc_id.replace("_", " ").title()))
         ent.setdefault("faction", defaults.get("faction", "neutral"))
+        ent.setdefault("ability_scores", defaults.get("ability_scores", {}))
+        ent.setdefault("speed", defaults.get("speed", 30))
         ent.setdefault("max_hp", defaults.get("max_hp", ent.get("hp", 20)))
         ent.setdefault("ac", defaults.get("ac", 10))
         ent.setdefault("status", defaults.get("status", "alive"))
@@ -275,6 +283,10 @@ FACTORY_DEFAULT = {
     "turn_count": 0,
     "time_of_day": "晨曦 (Morning)",
     "flags": {},
+    "combat_active": False,
+    "initiative_order": [],
+    "current_turn_index": 0,
+    "turn_resources": {},
 }
 
 

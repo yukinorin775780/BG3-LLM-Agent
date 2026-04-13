@@ -78,6 +78,7 @@ class ChatResponse(BaseModel):
     environment_objects: Dict[str, Any]  # 场景里的可交互物品 (如箱子、门)
     party_status: Dict[str, Any]  # 队友的血量、好感度等状态
     player_inventory: Dict[str, Any]  # 玩家背包
+    combat_state: Optional[Dict[str, Any]] = None  # 回合制战斗状态
 
 
 @app.get("/", include_in_schema=False)

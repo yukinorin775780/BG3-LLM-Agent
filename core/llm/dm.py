@@ -52,6 +52,8 @@ LOOT_KEYWORDS = ("搜刮", "舔包", "搜尸", "摸尸", "摸", "拾取", "loot"
 UNLOCK_KEYWORDS = ("撬开", "解锁", "开锁", "打开", "撬锁", "unlock", "open")
 EQUIP_KEYWORDS = ("装备", "拿上", "拿起", "穿上", "佩戴", "equip", "wear")
 UNEQUIP_KEYWORDS = ("卸下", "脱下", "取下", "unequip", "remove")
+END_TURN_KEYWORDS = ("待命", "结束回合", "结束行动", "结束轮次", "跳过回合", "跳过行动", "pass", "end turn")
+END_TURN_GROUP_KEYWORDS = ("我方回合", "全员回合", "结束我方", "结束全员", "全员结束", "结束队伍")
 ENTITY_ALIAS_MAP = {
     "shadowheart": ("shadowheart", "影心"),
     "astarion": ("astarion", "阿斯代伦", "阿斯"),
@@ -636,6 +638,45 @@ def _detect_move_intent(
     }
 
 
+def _detect_end_turn_intent(
+    user_input: str,
+    available_npcs: List[str],
+) -> Optional[Dict[str, Any]]:
+    text = str(user_input or "").strip()
+    if not text:
+        return None
+
+    lowered = text.lower()
+    if not any(keyword in lowered or keyword in text for keyword in END_TURN_KEYWORDS):
+        return None
+
+    normalized_npcs = [str(npc).strip().lower() for npc in available_npcs if str(npc).strip()]
+    explicit_actor = _extract_command_actor(text, normalized_npcs)
+    actor_id = explicit_actor or "player"
+    if explicit_actor:
+        action_target = ""
+    else:
+        action_target = (
+            "party"
+            if any(keyword in lowered or keyword in text for keyword in END_TURN_GROUP_KEYWORDS)
+            or any(keyword in lowered or keyword in text for keyword in END_TURN_KEYWORDS)
+            else ""
+        )
+    return {
+        "action_type": "END_TURN",
+        "difficulty_class": 0,
+        "reason": "A character is skipping their turn.",
+        "is_probing_secret": False,
+        "responders": _build_responders(actor_id, available_npcs),
+        "affection_changes": {},
+        "flags_changed": {},
+        "item_transfers": [],
+        "hp_changes": [],
+        "action_actor": actor_id,
+        "action_target": action_target,
+    }
+
+
 def analyze_intent(
     user_input: str,
     flags: Optional[Dict[str, Any]] = None,
@@ -679,6 +720,9 @@ def analyze_intent(
     unlock_result = _detect_unlock_intent(user_input, available_npcs, available_targets)
     if unlock_result is not None:
         return unlock_result
+    end_turn_result = _detect_end_turn_intent(user_input, available_npcs)
+    if end_turn_result is not None:
+        return end_turn_result
     move_result = _detect_move_intent(user_input, available_npcs, available_targets)
     if move_result is not None:
         return move_result

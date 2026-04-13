@@ -32,8 +32,35 @@ def mechanics_node(state: GameState) -> dict:
         result = mechanics.execute_unequip_action(state)
     elif normalized_intent in ("MOVE", "APPROACH"):
         result = mechanics.execute_move_action(state)
+    elif normalized_intent in ("END_TURN", "PASS_TURN", "WAIT_TURN"):
+        result = mechanics.execute_end_turn_action(state)
     else:
         result = mechanics.execute_skill_check(state)
+
+    advanced_result = mechanics.advance_combat_after_action(state, result)
+    if isinstance(advanced_result, dict):
+        result = advanced_result
+
+    # Ensure enemy blocks fully resolve before returning to the frontend.
+    while True:
+        entities = result.get("entities") if isinstance(result.get("entities"), dict) else state.get("entities") or {}
+        combat_active = bool(result.get("combat_active", state.get("combat_active", False)))
+        initiative_order = list(result.get("initiative_order") or state.get("initiative_order") or [])
+        current_turn_index = result.get("current_turn_index", state.get("current_turn_index", 0))
+        if not combat_active or not initiative_order:
+            break
+        side = mechanics._active_block_side(
+            state={**state, **result},
+            entities=entities,
+            initiative_order=initiative_order,
+            current_turn_index=current_turn_index,
+        )
+        if side != "hostile":
+            break
+        advanced_result = mechanics.advance_combat_after_action(state, result)
+        if not isinstance(advanced_result, dict) or advanced_result == result:
+            break
+        result = advanced_result
 
     out: dict = {"journal_events": result.get("journal_events", [])}
     if "raw_roll_data" in result:
@@ -44,4 +71,12 @@ def mechanics_node(state: GameState) -> dict:
         out["player_inventory"] = result["player_inventory"]
     if "environment_objects" in result:
         out["environment_objects"] = result["environment_objects"]
+    if "combat_active" in result:
+        out["combat_active"] = result["combat_active"]
+    if "initiative_order" in result:
+        out["initiative_order"] = result["initiative_order"]
+    if "current_turn_index" in result:
+        out["current_turn_index"] = result["current_turn_index"]
+    if "turn_resources" in result:
+        out["turn_resources"] = result["turn_resources"]
     return out

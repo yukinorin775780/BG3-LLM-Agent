@@ -27,6 +27,7 @@ class ChatTurnResult(TypedDict):
     environment_objects: Dict[str, Any]
     party_status: Dict[str, Any]
     player_inventory: Dict[str, Any]
+    combat_state: Dict[str, Any]
 
 
 class GraphProtocol(Protocol):
@@ -285,6 +286,7 @@ class GameService:
             "environment_objects": environment_objects,
             "party_status": self._build_party_status_payload(state),
             "player_inventory": player_inventory if isinstance(player_inventory, dict) else {},
+            "combat_state": self._build_combat_state_payload(state),
         }
 
     @staticmethod
@@ -331,6 +333,15 @@ class GameService:
             }
 
         return payload
+
+    @staticmethod
+    def _build_combat_state_payload(state: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "combat_active": bool(state.get("combat_active", False)),
+            "initiative_order": list(state.get("initiative_order") or []),
+            "current_turn_index": int(state.get("current_turn_index") or 0),
+            "turn_resources": copy.deepcopy(state.get("turn_resources") or {}),
+        }
 
     @staticmethod
     def _build_party_status_payload(state: Dict[str, Any]) -> Dict[str, Any]:

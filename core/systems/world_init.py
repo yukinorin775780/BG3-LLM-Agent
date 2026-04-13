@@ -20,6 +20,8 @@ def _build_initial_entities() -> Dict[str, Any]:
         {
             "name": "玩家",
             "faction": "player",
+            "ability_scores": {"STR": 10, "DEX": 10, "CON": 10, "INT": 10, "WIS": 10, "CHA": 10},
+            "speed": 30,
             "hp": 20,
             "max_hp": 20,
             "ac": 10,
@@ -38,6 +40,8 @@ def _build_initial_entities() -> Dict[str, Any]:
         {
             "name": "地精巡逻兵",
             "faction": "hostile",
+            "ability_scores": {"STR": 8, "DEX": 14, "CON": 10, "INT": 10, "WIS": 8, "CHA": 8},
+            "speed": 30,
             "hp": 7,
             "max_hp": 7,
             "ac": 15,
@@ -79,6 +83,10 @@ def get_initial_world_state() -> Dict[str, Any]:
         "entities": _build_initial_entities(),
         "player_inventory": init_player_inv,
         "turn_count": 0,
+        "combat_active": False,
+        "initiative_order": [],
+        "current_turn_index": 0,
+        "turn_resources": {},
         "time_of_day": "晨曦 (Morning)",
         "flags": {},
         "messages": [],
