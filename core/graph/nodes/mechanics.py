@@ -24,6 +24,8 @@ def mechanics_node(state: GameState) -> dict:
         result = mechanics.execute_attack_action(state)
     elif normalized_intent == "LOOT":
         result = mechanics.execute_loot_action(state)
+    elif normalized_intent == "CAST_SPELL":
+        result = mechanics.execute_cast_spell_action(state)
     elif normalized_intent in ("USE_ITEM", "CONSUME"):
         result = mechanics.execute_use_item(state)
     elif normalized_intent == "EQUIP":
@@ -62,7 +64,15 @@ def mechanics_node(state: GameState) -> dict:
             break
         result = advanced_result
 
-    out: dict = {"journal_events": result.get("journal_events", [])}
+    journal_events = list(result.get("journal_events", []))
+    if journal_events:
+        deduped: list[str] = []
+        for line in journal_events:
+            if not deduped or deduped[-1] != line:
+                deduped.append(line)
+        journal_events = deduped
+
+    out: dict = {"journal_events": journal_events}
     if "raw_roll_data" in result:
         out["latest_roll"] = result["raw_roll_data"]
     if "entities" in result:

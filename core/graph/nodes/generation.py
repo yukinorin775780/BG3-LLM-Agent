@@ -49,6 +49,9 @@ from core.utils.text_processor import clean_npc_dialogue, format_history_message
 DEBUG_AI_PAYLOAD = False
 
 
+_CONSUME_ACTION_INTENTS = {"use_item", "consume"}
+
+
 def _player_message_suggests_item_offer(text: str) -> bool:
     """玩家是否在口头赠送/递物品（DM 常仍标为 CHAT，但必须走带工具的 Agent）。"""
     if not text or not str(text).strip():
@@ -69,12 +72,40 @@ def _latest_roll_is_meaningful(latest_roll: Any) -> bool:
     return bool(latest_roll.get("result")) or bool(latest_roll.get("intent"))
 
 
+def _llm_consume_action_allowed(intent: str, user_input: str) -> bool:
+    """
+    NPC dialogue JSON is allowed to consume items only when the player explicitly
+    requested item use. Combat/spell/move turns are already resolved by mechanics.
+    """
+    normalized_intent = str(intent or "").strip().lower()
+    if normalized_intent in _CONSUME_ACTION_INTENTS:
+        return True
+
+    text = str(user_input or "").strip().lower()
+    explicit_use_markers = (
+        "喝",
+        "喝下",
+        "服用",
+        "使用治疗药水",
+        "用治疗药水",
+        "治疗药水",
+        "药水",
+        "drink",
+        "potion",
+        "use healing",
+    )
+    return any(marker in text for marker in explicit_use_markers)
+
+
 def _execute_json_action(
     physical_action: dict,
     speaker: str,
     current_entities: dict,
     player_inv_for_physics: dict,
     current_env_objs: dict,
+    *,
+    intent: str = "",
+    user_input: str = "",
 ) -> List[Any]:
     """解析并执行 JSON 中的内联物理动作"""
     tool_physics_events: List[Any] = []
@@ -116,6 +147,12 @@ def _execute_json_action(
         loot_log = execute_loot(current_entities, current_env_objs, str(char_id), str(obj_id))
         tool_physics_events.append(loot_log)
     elif action_type in ("consume", "use_item", "use", "drink"):
+        if not _llm_consume_action_allowed(intent, user_input):
+            print(
+                "⚠️ [安全拦截] 忽略 LLM 旁白越权物品消耗: "
+                f"speaker={speaker}, intent={intent}, action={physical_action}"
+            )
+            return tool_physics_events
         item_id = (physical_action.get("item_id") or "").strip()
         if item_id:
             count = int(physical_action.get("amount", 1) or 1)
@@ -822,6 +859,8 @@ def _parse_and_apply_actions(
     current_entities: Dict[str, Any],
     player_inv_for_physics: Dict[str, Any],
     current_env_objs: Dict[str, Any],
+    intent: str = "",
+    user_input: str = "",
 ) -> Dict[str, Any]:
     json_parsed = parse_llm_json(raw_output)
     if DEBUG_AI_PAYLOAD:
@@ -862,6 +901,8 @@ def _parse_and_apply_actions(
                     current_entities,
                     player_inv_for_physics,
                     current_env_objs,
+                    intent=intent,
+                    user_input=user_input,
                 )
             )
         clean_text = clean_npc_dialogue(speaker, raw_text)
@@ -1005,6 +1046,8 @@ def create_generation_node() -> Callable[[GameState], Coroutine[Any, Any, dict]]
             current_entities=context["current_entities"],
             player_inv_for_physics=context["player_inv_for_physics"],
             current_env_objs=context["current_env_objs"],
+            intent=context.get("intent", ""),
+            user_input=context.get("user_input", ""),
         )
         return _assemble_generation_output(state, context, parsed_result)
 

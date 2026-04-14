@@ -1,5 +1,10 @@
 (() => {
-  const GRID_SIZE = 10;
+  const DEFAULT_MAP_DATA = {
+    width: 10,
+    height: 10,
+    obstacles: [],
+  };
+
   const FALLBACK_STATE = {
     partyStatus: {
       player: { name: "玩家", faction: "player", x: 4, y: 5 },
@@ -7,19 +12,30 @@
     environmentObjects: {
       goblin_1: { name: "地精", faction: "hostile", status: "alive", x: 6, y: 5 },
     },
+    mapData: DEFAULT_MAP_DATA,
   };
 
   const controller = {
+    game: null,
     scene: null,
     latestState: FALLBACK_STATE,
-    update(partyStatus, environmentObjects) {
+    update(partyStatus, environmentObjects, mapData) {
       this.latestState = {
         partyStatus: safeObject(partyStatus),
         environmentObjects: safeObject(environmentObjects),
+        mapData: normalizeMapData(mapData),
       };
       if (this.scene) {
-        this.scene.syncState(this.latestState.partyStatus, this.latestState.environmentObjects);
+        this.scene.syncState(this.latestState);
       }
+    },
+    playProjectile(start, target, color) {
+      if (!this.scene) return;
+      this.scene.playProjectileBetweenCells(start, target, color);
+    },
+    playAoE(center) {
+      if (!this.scene) return;
+      this.scene.playAoEAtCell(center);
     },
   };
 
@@ -33,10 +49,18 @@
     return String(id || "").trim().toLowerCase();
   }
 
-  function gridCoord(value, fallback) {
+  function normalizeMapData(rawMapData) {
+    const data = safeObject(rawMapData);
+    const width = Math.max(1, Math.round(Number(data.width) || DEFAULT_MAP_DATA.width));
+    const height = Math.max(1, Math.round(Number(data.height) || DEFAULT_MAP_DATA.height));
+    const obstacles = Array.isArray(data.obstacles) ? data.obstacles : [];
+    return { width, height, obstacles };
+  }
+
+  function gridCoord(value, fallback, max) {
     const num = Number(value);
     if (!Number.isFinite(num)) return fallback;
-    return Math.max(0, Math.min(GRID_SIZE - 1, Math.round(num)));
+    return Math.max(0, Math.min(max - 1, Math.round(num)));
   }
 
   function firstGlyph(id, data) {
@@ -55,8 +79,9 @@
     return "neutral";
   }
 
-  function collectEntities(partyStatus, environmentObjects) {
+  function collectEntities(partyStatus, environmentObjects, mapData) {
     const entities = [];
+    const map = normalizeMapData(mapData);
 
     Object.entries(safeObject(partyStatus)).forEach(([id, data]) => {
       const entity = safeObject(data);
@@ -66,8 +91,8 @@
         data: entity,
         source: "party",
         kind: tokenKind(id, entity, "party"),
-        x: gridCoord(entity.x, 0),
-        y: gridCoord(entity.y, 0),
+        x: gridCoord(entity.x, 0, map.width),
+        y: gridCoord(entity.y, 0, map.height),
       });
     });
 
@@ -79,13 +104,24 @@
         data: entity,
         source: "environment",
         kind: tokenKind(id, entity, "environment"),
-        x: gridCoord(entity.x, 0),
-        y: gridCoord(entity.y, 0),
+        x: gridCoord(entity.x, 0, map.width),
+        y: gridCoord(entity.y, 0, map.height),
       });
     });
 
     if (entities.length > 0) return entities;
-    return collectEntities(FALLBACK_STATE.partyStatus, FALLBACK_STATE.environmentObjects);
+    return collectEntities(FALLBACK_STATE.partyStatus, FALLBACK_STATE.environmentObjects, map);
+  }
+
+  function obstacleCoordinates(obstacle, mapData) {
+    const map = normalizeMapData(mapData);
+    const coords = Array.isArray(obstacle.coordinates) ? obstacle.coordinates : [];
+    return coords
+      .filter((coord) => Array.isArray(coord) && coord.length >= 2)
+      .map(([x, y]) => ({ x: Math.round(Number(x)), y: Math.round(Number(y)) }))
+      .filter(({ x, y }) => {
+        return Number.isFinite(x) && Number.isFinite(y) && x >= 0 && y >= 0 && x < map.width && y < map.height;
+      });
   }
 
   if (!window.Phaser) {
@@ -97,60 +133,31 @@
     constructor() {
       super("MainScene");
       this.gridGraphics = null;
-      this.board = { x: 0, y: 0, size: 640, cell: 64 };
+      this.obstacleGraphics = null;
+      this.obstacleLabels = [];
+      this.mapData = DEFAULT_MAP_DATA;
+      this.board = { x: 0, y: 0, width: 640, height: 640, cell: 64 };
       this.tokens = new Map();
     }
 
     preload() {
-      // Placeholder-only scene: geometry is drawn in create/update, no external assets needed.
+      // Geometry-only prototype scene. No external assets are required yet.
     }
 
     create() {
-      this.gridGraphics = this.add.graphics();
+      this.gridGraphics = this.add.graphics().setDepth(1);
+      this.obstacleGraphics = this.add.graphics().setDepth(5);
       this.scale.on("resize", this.handleResize, this);
-      this.handleResize({ width: this.scale.width, height: this.scale.height });
       controller.scene = this;
-      this.syncState(controller.latestState.partyStatus, controller.latestState.environmentObjects);
+      this.syncState(controller.latestState);
     }
 
-    handleResize(gameSize) {
-      const width = gameSize.width || this.scale.width;
-      const height = gameSize.height || this.scale.height;
-      const size = Math.min(width, height) * 0.84;
-      this.board = {
-        x: (width - size) / 2,
-        y: (height - size) / 2,
-        size,
-        cell: size / GRID_SIZE,
-      };
-      this.drawGrid();
-      this.positionAllTokens(false);
-    }
+    syncState(nextState) {
+      const state = safeObject(nextState);
+      this.mapData = normalizeMapData(state.mapData);
+      this.handleResize({ width: this.scale.width, height: this.scale.height });
 
-    drawGrid() {
-      const { x, y, size, cell } = this.board;
-      this.gridGraphics.clear();
-      this.gridGraphics.fillStyle(0x12161b, 0.82);
-      this.gridGraphics.fillRoundedRect(x, y, size, size, 14);
-      this.gridGraphics.lineStyle(2, 0xd0ab67, 0.72);
-      this.gridGraphics.strokeRoundedRect(x, y, size, size, 14);
-
-      for (let i = 0; i <= GRID_SIZE; i += 1) {
-        const pos = Math.round(i * cell);
-        const alpha = i === 0 || i === GRID_SIZE ? 0.72 : 0.28;
-        this.gridGraphics.lineStyle(1, 0x73c6c3, alpha);
-        this.gridGraphics.lineBetween(x + pos, y, x + pos, y + size);
-        this.gridGraphics.lineBetween(x, y + pos, x + size, y + pos);
-      }
-
-      this.gridGraphics.lineStyle(1, 0xffd28a, 0.12);
-      for (let i = 0; i < GRID_SIZE; i += 1) {
-        this.gridGraphics.strokeRect(x + i * cell + 4, y + i * cell + 4, cell - 8, cell - 8);
-      }
-    }
-
-    syncState(partyStatus, environmentObjects) {
-      const entities = collectEntities(partyStatus, environmentObjects);
+      const entities = collectEntities(state.partyStatus, state.environmentObjects, this.mapData);
       const active = new Set();
 
       entities.forEach((entity) => {
@@ -164,6 +171,177 @@
           this.tokens.delete(id);
         }
       });
+    }
+
+    handleResize(gameSize) {
+      const width = gameSize.width || this.scale.width;
+      const height = gameSize.height || this.scale.height;
+      const map = normalizeMapData(this.mapData);
+      const cell = Math.min(width * 0.86 / map.width, height * 0.86 / map.height);
+      const boardWidth = cell * map.width;
+      const boardHeight = cell * map.height;
+
+      this.board = {
+        x: (width - boardWidth) / 2,
+        y: (height - boardHeight) / 2,
+        width: boardWidth,
+        height: boardHeight,
+        cell,
+      };
+
+      this.drawGrid();
+      this.drawObstacles();
+      this.positionAllTokens(false);
+    }
+
+    drawGrid() {
+      const { x, y, width, height, cell } = this.board;
+      const map = normalizeMapData(this.mapData);
+
+      this.gridGraphics.clear();
+
+      // The canvas outside this rounded board remains the dark "unreachable void".
+      this.gridGraphics.fillStyle(0x08090c, 0.76);
+      this.gridGraphics.fillRect(0, 0, this.scale.width, this.scale.height);
+
+      this.gridGraphics.fillStyle(0x12161b, 0.86);
+      this.gridGraphics.fillRoundedRect(x, y, width, height, 14);
+      this.gridGraphics.lineStyle(2, 0xd0ab67, 0.72);
+      this.gridGraphics.strokeRoundedRect(x, y, width, height, 14);
+
+      for (let col = 0; col <= map.width; col += 1) {
+        const px = x + col * cell;
+        const alpha = col === 0 || col === map.width ? 0.78 : 0.28;
+        this.gridGraphics.lineStyle(1, 0x73c6c3, alpha);
+        this.gridGraphics.lineBetween(px, y, px, y + height);
+      }
+
+      for (let row = 0; row <= map.height; row += 1) {
+        const py = y + row * cell;
+        const alpha = row === 0 || row === map.height ? 0.78 : 0.28;
+        this.gridGraphics.lineStyle(1, 0x73c6c3, alpha);
+        this.gridGraphics.lineBetween(x, py, x + width, py);
+      }
+    }
+
+    drawObstacles() {
+      this.obstacleGraphics.clear();
+      this.obstacleLabels.forEach((label) => label.destroy());
+      this.obstacleLabels = [];
+
+      const obstacles = Array.isArray(this.mapData.obstacles) ? this.mapData.obstacles : [];
+      obstacles.forEach((rawObstacle) => {
+        const obstacle = safeObject(rawObstacle);
+        const blocksMovement = obstacle.blocks_movement === true;
+        const blocksLos = obstacle.blocks_los === true;
+        const kind = normalizeId(obstacle.type);
+
+        obstacleCoordinates(obstacle, this.mapData).forEach(({ x, y }) => {
+          const rect = this.gridRect(x, y, 0.16);
+
+          if (blocksMovement && blocksLos) {
+            this.obstacleGraphics.fillStyle(0x34373d, 0.96);
+            this.obstacleGraphics.lineStyle(2, 0x6c7078, 0.9);
+          } else if (blocksMovement) {
+            this.obstacleGraphics.fillStyle(0xd66a22, 0.9);
+            this.obstacleGraphics.lineStyle(2, 0xffb15e, 0.94);
+          } else {
+            this.obstacleGraphics.fillStyle(0x44606a, 0.62);
+            this.obstacleGraphics.lineStyle(1, 0x73c6c3, 0.5);
+          }
+
+          this.obstacleGraphics.fillRoundedRect(rect.x, rect.y, rect.size, rect.size, 6);
+          this.obstacleGraphics.strokeRoundedRect(rect.x, rect.y, rect.size, rect.size, 6);
+
+          if (kind === "campfire" || (blocksMovement && !blocksLos)) {
+            const label = this.add.text(rect.x + rect.size / 2, rect.y + rect.size / 2, "火", {
+              fontFamily: "Georgia, serif",
+              fontSize: Math.max(12, rect.size * 0.42) + "px",
+              fontStyle: "bold",
+              color: "#fff1c2",
+            }).setOrigin(0.5).setDepth(6);
+            this.obstacleLabels.push(label);
+          }
+        });
+      });
+    }
+
+    playProjectileAnimation(startX, startY, targetX, targetY, color = 0x00ffff) {
+      const radius = Math.max(5, this.board.cell * 0.09);
+      const projectile = this.add.graphics().setDepth(180);
+
+      projectile.fillStyle(color, 0.95);
+      projectile.fillCircle(0, 0, radius);
+      projectile.lineStyle(2, 0xffffff, 0.72);
+      projectile.strokeCircle(0, 0, radius * 1.35);
+      projectile.setPosition(startX, startY);
+
+      this.tweens.add({
+        targets: projectile,
+        x: targetX,
+        y: targetY,
+        duration: 300,
+        ease: "Quad.easeOut",
+        onComplete: () => projectile.destroy(),
+      });
+    }
+
+    playAoEAnimation(centerX, centerY) {
+      const size = this.board.cell * 3;
+      // 两次闪烁，总时长约 400ms：4 个半程 * 100ms（上升/回落 + repeat）
+      const flashHalfStepMs = 100;
+      const blast = this.add.graphics().setDepth(150);
+
+      blast.fillStyle(0xff0000, 0.4);
+      blast.fillRect(-size / 2, -size / 2, size, size);
+      blast.lineStyle(2, 0xffb3a7, 0.78);
+      blast.strokeRect(-size / 2, -size / 2, size, size);
+
+      for (let i = -1; i <= 1; i += 1) {
+        const offset = i * this.board.cell;
+        blast.lineStyle(1, 0xffd2cc, 0.38);
+        blast.lineBetween(offset, -size / 2, offset, size / 2);
+        blast.lineBetween(-size / 2, offset, size / 2, offset);
+      }
+
+      blast.setPosition(centerX, centerY);
+      blast.setAlpha(0.4);
+      this.cameras.main.shake(120, 0.004);
+
+      this.tweens.add({
+        targets: blast,
+        alpha: 0.8,
+        duration: flashHalfStepMs,
+        ease: "Sine.easeInOut",
+        yoyo: true,
+        repeat: 1,
+        onComplete: () => blast.destroy(),
+      });
+    }
+
+    playProjectileBetweenCells(start, target, color) {
+      const map = normalizeMapData(this.mapData);
+      const startCell = safeObject(start);
+      const targetCell = safeObject(target);
+      const startWorld = this.gridToWorld(
+        gridCoord(startCell.x, 0, map.width),
+        gridCoord(startCell.y, 0, map.height),
+      );
+      const targetWorld = this.gridToWorld(
+        gridCoord(targetCell.x, 0, map.width),
+        gridCoord(targetCell.y, 0, map.height),
+      );
+      this.playProjectileAnimation(startWorld.x, startWorld.y, targetWorld.x, targetWorld.y, color || 0x00ffff);
+    }
+
+    playAoEAtCell(center) {
+      const map = normalizeMapData(this.mapData);
+      const centerCell = safeObject(center);
+      const centerWorld = this.gridToWorld(
+        gridCoord(centerCell.x, 0, map.width),
+        gridCoord(centerCell.y, 0, map.height),
+      );
+      this.playAoEAnimation(centerWorld.x, centerWorld.y);
     }
 
     upsertToken(entity) {
@@ -182,13 +360,14 @@
 
     createToken(entity) {
       const container = this.add.container(0, 0);
-      const shadow = this.add.circle(0, 5, 20, 0x000000, 0.32);
+      const radius = Math.max(12, Math.min(22, this.board.cell * 0.31));
+      const shadow = this.add.circle(0, radius * 0.25, radius, 0x000000, 0.32);
       const shape = entity.kind === "object"
-        ? this.add.rectangle(0, 0, 34, 34, 0xe67e22, 1)
-        : this.add.circle(0, 0, 20, 0x4a90e2, 1);
+        ? this.add.rectangle(0, 0, radius * 1.7, radius * 1.7, 0xe67e22, 1)
+        : this.add.circle(0, 0, radius, 0x4a90e2, 1);
       const label = this.add.text(0, 0, firstGlyph(entity.id, entity.data), {
         fontFamily: "Georgia, serif",
-        fontSize: "18px",
+        fontSize: Math.max(12, radius * 0.88) + "px",
         fontStyle: "bold",
         color: "#ffffff",
       }).setOrigin(0.5);
@@ -249,6 +428,15 @@
       this.tokens.forEach((token) => {
         this.moveToken(token, token.entity.x, token.entity.y, animate);
       });
+    }
+
+    gridRect(gridX, gridY, insetRatio) {
+      const inset = this.board.cell * insetRatio;
+      return {
+        x: this.board.x + gridX * this.board.cell + inset,
+        y: this.board.y + gridY * this.board.cell + inset,
+        size: this.board.cell - inset * 2,
+      };
     }
 
     gridToWorld(gridX, gridY) {

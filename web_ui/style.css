@@ -238,6 +238,13 @@ textarea {
   transition: border-color 180ms ease, color 180ms ease, transform 180ms ease, box-shadow 180ms ease;
 }
 
+.initiative-avatar-stack {
+  display: grid;
+  justify-items: center;
+  gap: 3px;
+  flex: 0 0 auto;
+}
+
 .initiative-avatar {
   display: inline-flex;
   align-items: center;
@@ -250,6 +257,51 @@ textarea {
   font-family: "SFMono-Regular", "Cascadia Code", monospace;
   font-size: 0.7rem;
   font-weight: 800;
+}
+
+.initiative-resources {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-height: 10px;
+}
+
+.initiative-resource-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  transition: background 140ms ease, border-color 140ms ease, box-shadow 140ms ease, transform 140ms ease;
+}
+
+.initiative-resource-dot--action.is-available {
+  border: 1px solid rgba(198, 255, 218, 0.72);
+  background: #4caf50;
+  box-shadow: 0 0 8px rgba(76, 175, 80, 0.75);
+}
+
+.initiative-resource-dot--action.is-spent {
+  border: 1px solid rgba(122, 126, 120, 0.72);
+  background: transparent;
+  box-shadow: none;
+}
+
+.initiative-resource-triangle {
+  display: inline-block;
+  width: 0;
+  height: 0;
+  border-left: 6px solid transparent;
+  border-right: 6px solid transparent;
+  border-bottom: 11px solid #ff8a2d;
+  filter: drop-shadow(0 0 7px rgba(255, 138, 45, 0.72));
+  transition: border-bottom-color 140ms ease, filter 140ms ease, opacity 140ms ease;
+}
+
+.initiative-resource-triangle--bonus.is-spent {
+  border-bottom-color: #6f6f6f;
+  filter: none;
+  opacity: 0.6;
 }
 
 .initiative-name {

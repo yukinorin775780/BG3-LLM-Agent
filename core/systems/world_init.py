@@ -8,6 +8,7 @@ import os
 from typing import Any, Dict
 
 from core.graph.nodes.utils import default_entities
+from core.systems.maps import get_map_data
 
 
 def _build_initial_entities() -> Dict[str, Any]:
@@ -58,6 +59,15 @@ def _build_initial_entities() -> Dict[str, Any]:
             "affection": 0,
         },
     )
+    astarion = entities.get("astarion")
+    if isinstance(astarion, dict):
+        equipment = astarion.setdefault("equipment", {})
+        if isinstance(equipment, dict):
+            if not equipment.get("main_hand"):
+                equipment["main_hand"] = "rusty_dagger"
+            if not equipment.get("ranged"):
+                equipment["ranged"] = "shortbow"
+            equipment.setdefault("armor", None)
     return entities
 
 
@@ -79,8 +89,10 @@ def get_initial_world_state() -> Dict[str, Any]:
             print(f"⚠️ 无法读取 player.json，使用默认背包: {e}")
 
     # 构建并返回完整的初始状态字典
+    map_data = get_map_data("goblin_camp")
     return {
         "entities": _build_initial_entities(),
+        "map_data": map_data,
         "player_inventory": init_player_inv,
         "turn_count": 0,
         "combat_active": False,

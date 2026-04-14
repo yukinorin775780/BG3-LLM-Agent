@@ -51,6 +51,7 @@
     environmentObjects: {},
     playerInventory: {},
     combatState: {},
+    mapData: {},
     activeLogFilters: new Set(["dialogue", "system", "narration"]),
     tacticalOverlayOpen: false,
     hasSyncedInitialState: false,
@@ -60,6 +61,24 @@
     currentLootTargetId: "",
     seenLootTargets: new Set(),
   };
+
+  function extractEventLines(data) {
+    const lines = [];
+    safeArray(data && data.journal_events).forEach((entry) => {
+      lines.push(String(entry || ""));
+    });
+    safeArray(data && data.logs).forEach((entry) => {
+      if (typeof entry === "string") {
+        lines.push(entry);
+        return;
+      }
+      const record = safeObject(entry);
+      if (record.text != null) {
+        lines.push(String(record.text));
+      }
+    });
+    return lines;
+  }
 
   const els = {
     currentLocation: document.getElementById("current-location"),
@@ -493,10 +512,193 @@
     return panel;
   }
 
-  function renderTacticalGrid(partyStatus, environmentObjects) {
+  function turnResourcesFor(id) {
+    return safeObject(safeObject(state.combatState.turn_resources)[normalizeId(id)]);
+  }
+
+  function hasTurnResourcesFor(id) {
+    const resources = turnResourcesFor(id);
+    return Object.prototype.hasOwnProperty.call(resources, "action")
+      || Object.prototype.hasOwnProperty.call(resources, "bonus_action")
+      || Object.prototype.hasOwnProperty.call(resources, "movement");
+  }
+
+  function isHostileCombatant(id) {
+    const key = normalizeId(id);
+    const entity = safeObject(safeObject(state.partyStatus)[key] || safeObject(state.environmentObjects)[key]);
+    return normalizeId(entity.faction) === "hostile";
+  }
+
+  function createInitiativeResourceDots(id) {
+    const resources = turnResourcesFor(id);
+    const wrap = document.createElement("span");
+    wrap.className = "initiative-resources";
+
+    const action = document.createElement("span");
+    action.className = "initiative-resource-dot initiative-resource-dot--action" + (Number(resources.action) > 0 ? " is-available" : " is-spent");
+    action.title = "主动作: " + (Number(resources.action) > 0 ? "可用" : "已耗尽");
+
+    const bonus = document.createElement("span");
+    bonus.className = "initiative-resource-triangle initiative-resource-triangle--bonus" + (Number(resources.bonus_action) > 0 ? " is-available" : " is-spent");
+    bonus.title = "附赠动作: " + (Number(resources.bonus_action) > 0 ? "可用" : "已耗尽");
+
+    wrap.appendChild(action);
+    wrap.appendChild(bonus);
+    return wrap;
+  }
+
+  function renderTacticalGrid(partyStatus, environmentObjects, mapData) {
     if (window.BG3TacticalMap && typeof window.BG3TacticalMap.update === "function") {
-      window.BG3TacticalMap.update(partyStatus, environmentObjects);
+      window.BG3TacticalMap.update(partyStatus, environmentObjects, mapData);
     }
+  }
+
+  function getTacticalEntities() {
+    const records = [];
+    const addRecord = (id, data, source) => {
+      const entity = safeObject(data);
+      const x = Number(entity.x);
+      const y = Number(entity.y);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+      records.push({
+        id: normalizeId(id),
+        data: entity,
+        source,
+        name: entity.name || getDisplayName(id),
+        x,
+        y,
+      });
+    };
+
+    Object.entries(safeObject(state.partyStatus)).forEach(([id, data]) => addRecord(id, data, "party"));
+    Object.entries(safeObject(state.environmentObjects)).forEach(([id, data]) => addRecord(id, data, "environment"));
+    return records;
+  }
+
+  function entityAliases(record) {
+    const id = normalizeId(record.id);
+    const aliases = [
+      id,
+      safeObject(record.data).id,
+      record.name,
+      safeObject(record.data).name,
+      prettifyId(id),
+      getDisplayName(id),
+    ];
+    if (id === "player") {
+      aliases.push("玩家", "你", "我");
+    }
+    return Array.from(new Set(aliases.map((alias) => String(alias || "").trim()).filter(Boolean)));
+  }
+
+  function entityMentionIndex(text, record) {
+    const haystack = String(text || "").toLowerCase();
+    return entityAliases(record).reduce((best, alias) => {
+      const index = haystack.indexOf(alias.toLowerCase());
+      return index >= 0 ? Math.min(best, index) : best;
+    }, Number.POSITIVE_INFINITY);
+  }
+
+  function mentionedEntities(text, records) {
+    return records
+      .map((record) => ({ record, index: entityMentionIndex(text, record) }))
+      .filter((item) => Number.isFinite(item.index))
+      .sort((a, b) => a.index - b.index);
+  }
+
+  function activeCombatantRecord(records) {
+    const combat = safeObject(state.combatState);
+    const order = safeArray(combat.initiative_order).map(normalizeId);
+    const index = Number(combat.current_turn_index);
+    const id = order[Number.isFinite(index) ? index : 0];
+    return records.find((record) => record.id === id) || null;
+  }
+
+  function isHostileRecord(record) {
+    return normalizeId(safeObject(record && record.data).faction) === "hostile";
+  }
+
+  function fallbackSourceRecord(records, blockedId) {
+    const active = activeCombatantRecord(records);
+    if (active && active.id !== blockedId) return active;
+    return records.find((record) => record.id === "player" && record.id !== blockedId)
+      || records.find((record) => !isHostileRecord(record) && record.id !== blockedId)
+      || null;
+  }
+
+  function fallbackTargetRecord(source, records) {
+    const sourceHostile = isHostileRecord(source);
+    return records.find((record) => record.id !== source.id && isHostileRecord(record) !== sourceHostile)
+      || records.find((record) => record.id !== source.id)
+      || null;
+  }
+
+  function inferVisualEntities(text, mode) {
+    const records = getTacticalEntities();
+    if (!records.length) return { source: null, target: null };
+
+    const mentions = mentionedEntities(text, records);
+    if (mode === "spell" && mentions.length === 1) {
+      const target = mentions[0].record;
+      const source = fallbackSourceRecord(records, target.id);
+      return { source, target };
+    }
+
+    let source = mentions[0] ? mentions[0].record : fallbackSourceRecord(records, "");
+    let target = mentions.find((item) => !source || item.record.id !== source.id)?.record || null;
+
+    if (!source && target) {
+      source = fallbackSourceRecord(records, target.id);
+    }
+    if (source && (!target || target.id === source.id)) {
+      target = fallbackTargetRecord(source, records);
+    }
+
+    return { source, target };
+  }
+
+  function triggerCombatVisualEffects(data, userLine) {
+    if (!window.BG3TacticalMap) return;
+
+    const dedupe = new Set();
+    const events = extractEventLines(data).filter((line) => {
+      const key = String(line || "").trim();
+      if (!key || dedupe.has(key)) return false;
+      dedupe.add(key);
+      return true;
+    });
+    let playedSpellEffect = false;
+
+    events.forEach((line) => {
+      const combinedText = [line, userLine].filter(Boolean).join(" ");
+      if (/失败|找不到|未指定|无需再次|动作资源不足/.test(line)) return;
+
+      if (!playedSpellEffect && /施放了|施展|吟唱|雷鸣波|圣火术|范围轰炸|aoe/i.test(line)) {
+        const { source, target } = inferVisualEntities(combinedText, "spell");
+        const center = target || source;
+        if (center && typeof window.BG3TacticalMap.playAoE === "function") {
+          window.setTimeout(() => {
+            window.BG3TacticalMap.playAoE({ x: center.x, y: center.y });
+          }, 80);
+          playedSpellEffect = true;
+        }
+        return;
+      }
+
+      if (/发起攻击/.test(line)) {
+        const { source, target } = inferVisualEntities(combinedText, "attack");
+        if (source && target && typeof window.BG3TacticalMap.playProjectile === "function") {
+          const color = isHostileRecord(source) ? 0xff4a4a : 0x00ffff;
+          window.setTimeout(() => {
+            window.BG3TacticalMap.playProjectile(
+              { x: source.x, y: source.y },
+              { x: target.x, y: target.y },
+              color,
+            );
+          }, 80);
+        }
+      }
+    });
   }
 
   function renderInitiativeTracker(combatState, wasCombatActive) {
@@ -541,21 +743,32 @@
     }
 
     const fragment = document.createDocumentFragment();
+    const activeCombatantId = order[activeIndex] || "";
+    const shouldShowResources = hasTurnResourcesFor(activeCombatantId) && !isHostileCombatant(activeCombatantId);
+
     order.forEach((id, index) => {
       const chip = document.createElement("div");
       chip.className = "initiative-chip";
       chip.classList.toggle("active-turn", index === activeIndex);
       chip.dataset.combatantId = id;
 
+      const avatarStack = document.createElement("span");
+      avatarStack.className = "initiative-avatar-stack";
+
       const avatar = document.createElement("span");
       avatar.className = "initiative-avatar";
       avatar.textContent = getCombatantSigil(id);
+      avatarStack.appendChild(avatar);
+
+      if (shouldShowResources && hasTurnResourcesFor(id) && !isHostileCombatant(id)) {
+        avatarStack.appendChild(createInitiativeResourceDots(id));
+      }
 
       const label = document.createElement("span");
       label.className = "initiative-name";
       label.textContent = getCombatantLabel(id);
 
-      chip.appendChild(avatar);
+      chip.appendChild(avatarStack);
       chip.appendChild(label);
       fragment.appendChild(chip);
     });
@@ -962,6 +1175,10 @@
       state.environmentObjects = safeObject(data.environment_objects);
       state.playerInventory = safeObject(data.player_inventory);
       state.combatState = safeObject(data.combat_state);
+      const responseMapData = safeObject(data.map_data);
+      state.mapData = Object.keys(responseMapData).length
+        ? responseMapData
+        : safeObject(state.combatState.map_data);
 
       if (data.current_location) {
         renderChrome(data.current_location);
@@ -971,10 +1188,11 @@
 
       renderPartyRoster();
       renderEnvironmentObjects();
-      renderTacticalGrid(state.partyStatus, state.environmentObjects);
+      renderTacticalGrid(state.partyStatus, state.environmentObjects, state.mapData);
       renderInitiativeTracker(state.combatState, wasCombatActive);
       if (!opts.skipLogUpdate) {
         updateWorldLog(data, userLine || null);
+        triggerCombatVisualEffects(data, userLine || "");
       }
       maybeShowLootModal(data.environment_objects);
       setNetworkState("链路在线", "ok");
@@ -1125,7 +1343,7 @@
     renderChrome("幽暗地域营地");
     renderPartyRoster();
     renderEnvironmentObjects();
-    renderTacticalGrid(state.partyStatus, state.environmentObjects);
+    renderTacticalGrid(state.partyStatus, state.environmentObjects, state.mapData);
     renderInitiativeTracker(state.combatState, false);
     appendLogEntry("system", "终端接入", "战术桌已连入 `/api/chat`。发出第一条指令后，主叙事区会开始记录世界变化。", {
       color: "#d0ab67",

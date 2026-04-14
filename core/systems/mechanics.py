@@ -8,11 +8,13 @@ import copy
 import logging
 import random
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from core.engine.physics import DEBUG_ALWAYS_PASS_CHECKS
 from core.systems.dice import roll_d20
 from core.systems.inventory import get_registry
+from core.systems.pathfinding import a_star_path, check_line_of_sight
+from core.systems.spells import get_spell_data, resolve_spell_id
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +29,30 @@ MOVE_INTENTS = frozenset({"MOVE", "APPROACH"})
 EQUIP_INTENTS = frozenset({"EQUIP", "UNEQUIP"})
 PLAYER_TARGET_ALIASES = frozenset({"我", "自己", "玩家", "me", "player"})
 PLAYER_SIDE_ENTITY_IDS = frozenset({"player", "astarion", "shadowheart", "laezel"})
+RANGED_ATTACK_HINTS = (
+    "射击",
+    "射箭",
+    "开弓",
+    "拉弓",
+    "远程",
+    "短弓",
+    "弩",
+    "bow",
+    "crossbow",
+    "shoot",
+    "shot",
+)
+SPELLCASTER_DEFAULT_SLOTS = {
+    "shadowheart": {"level_1": 2},
+}
+DEFAULT_SPELL_SAVE_DC = 13
+COORDINATE_TARGET_PATTERN = re.compile(r"^\s*(-?\d+)\s*[,，]\s*(-?\d+)\s*$")
+OBSTACLE_TYPE_DISPLAY = {
+    "rock": "岩石",
+    "campfire": "篝火",
+    "wall": "墙体",
+    "tree": "树木",
+}
 
 
 def calculate_ability_modifier(ability_score: int) -> int:
@@ -272,6 +298,13 @@ def _resolve_move_target(
     return target, target_name
 
 
+def _parse_coordinate_target(target_query: str) -> Optional[Tuple[int, int]]:
+    matched = COORDINATE_TARGET_PATTERN.match(str(target_query or "").strip())
+    if not matched:
+        return None
+    return int(matched.group(1)), int(matched.group(2))
+
+
 def _move_toward_target(
     *,
     actor_x: int,
@@ -300,6 +333,74 @@ def _chebyshev_distance(
     target_y: int,
 ) -> int:
     return max(abs(target_x - actor_x), abs(target_y - actor_y))
+
+
+def _collect_blocked_movement_tiles(map_data: Dict[str, Any]) -> set[Tuple[int, int]]:
+    blocked: set[Tuple[int, int]] = set()
+    for raw_tile in map_data.get("blocked_movement_tiles", []) or []:
+        if isinstance(raw_tile, (list, tuple)) and len(raw_tile) == 2:
+            blocked.add((_coerce_int(raw_tile[0], -9999), _coerce_int(raw_tile[1], -9999)))
+    for obstacle in map_data.get("obstacles", []) or []:
+        if not isinstance(obstacle, dict):
+            continue
+        if not bool(obstacle.get("blocks_movement", False)):
+            continue
+        for raw_coord in obstacle.get("coordinates", []) or []:
+            if isinstance(raw_coord, (list, tuple)) and len(raw_coord) == 2:
+                blocked.add((_coerce_int(raw_coord[0], -9999), _coerce_int(raw_coord[1], -9999)))
+    return blocked
+
+
+def _find_blocking_obstacle_name(map_data: Dict[str, Any], x: int, y: int) -> str:
+    for obstacle in map_data.get("obstacles", []) or []:
+        if not isinstance(obstacle, dict):
+            continue
+        if not bool(obstacle.get("blocks_movement", False)):
+            continue
+        obstacle_type = str(obstacle.get("type", "obstacle")).strip().lower()
+        for raw_coord in obstacle.get("coordinates", []) or []:
+            if not isinstance(raw_coord, (list, tuple)) or len(raw_coord) != 2:
+                continue
+            ox = _coerce_int(raw_coord[0], -9999)
+            oy = _coerce_int(raw_coord[1], -9999)
+            if ox == x and oy == y:
+                return OBSTACLE_TYPE_DISPLAY.get(obstacle_type, "障碍物")
+    return "障碍物"
+
+
+def _validate_move_destination(
+    *,
+    state: Any,
+    entities: Dict[str, Any],
+    actor_id: str,
+    destination_x: int,
+    destination_y: int,
+) -> Optional[str]:
+    map_data = state.get("map_data") or {}
+    if isinstance(map_data, dict) and map_data:
+        width = _coerce_int(map_data.get("width"), 0)
+        height = _coerce_int(map_data.get("height"), 0)
+        if width > 0 and height > 0:
+            if destination_x < 0 or destination_x >= width or destination_y < 0 or destination_y >= height:
+                return "移动失败：超出地图边界。"
+
+        blocked_tiles = _collect_blocked_movement_tiles(map_data)
+        if (destination_x, destination_y) in blocked_tiles:
+            obstacle_name = _find_blocking_obstacle_name(map_data, destination_x, destination_y)
+            return f"移动失败：目标位置被{obstacle_name}阻挡。"
+
+    for entity_id, entity in entities.items():
+        normalized_entity_id = _normalize_entity_id(entity_id)
+        if normalized_entity_id == actor_id:
+            continue
+        if not isinstance(entity, dict) or not _is_alive_entity(entity):
+            continue
+        entity_x = _coerce_int(entity.get("x"), 4)
+        entity_y = _coerce_int(entity.get("y"), 8)
+        if entity_x == destination_x and entity_y == destination_y:
+            entity_name = _display_entity_name(entity, normalized_entity_id)
+            return f"移动失败：目标位置已被 {entity_name} 占据。"
+    return None
 
 
 def _sign(value: int) -> int:
@@ -466,9 +567,21 @@ def _equipment_slot_for_item(item_data: Dict[str, Any]) -> str:
     return ""
 
 
-def _get_weapon_profile(attacker: Dict[str, Any]) -> Dict[str, Any]:
+def _get_weapon_profile(attacker: Dict[str, Any], preferred_slot: str = "") -> Dict[str, Any]:
     equipment = _get_equipment(attacker)
-    weapon_id = str(equipment.get("main_hand") or "").strip().lower()
+    slot_order = ["main_hand", "ranged"]
+    normalized_preferred_slot = str(preferred_slot or "").strip().lower()
+    if normalized_preferred_slot in {"main_hand", "ranged"}:
+        slot_order = [normalized_preferred_slot] + [slot for slot in slot_order if slot != normalized_preferred_slot]
+
+    weapon_slot = "main_hand"
+    weapon_id = ""
+    for slot in slot_order:
+        candidate_id = str(equipment.get(slot) or "").strip().lower()
+        if candidate_id:
+            weapon_slot = slot
+            weapon_id = candidate_id
+            break
     if not weapon_id:
         return {
             "id": "unarmed",
@@ -476,16 +589,131 @@ def _get_weapon_profile(attacker: Dict[str, Any]) -> Dict[str, Any]:
             "damage_dice": "1d4",
             "damage_bonus": 0,
             "range": 1,
+            "slot": "unarmed",
+            "weapon_type": "melee",
+            "damage_type": "bludgeoning",
+            "ability": "STR",
         }
 
     item_data = get_registry().get(weapon_id)
+    weapon_range = _coerce_int(item_data.get("range"), 1)
+    weapon_type = str(item_data.get("weapon_type") or "").strip().lower()
+    if weapon_type not in {"melee", "ranged"}:
+        weapon_type = "ranged" if weapon_slot == "ranged" or weapon_range > 1 else "melee"
+    ability_name = "DEX" if weapon_type == "ranged" else "STR"
     return {
         "id": weapon_id,
         "name": get_registry().get_name(weapon_id),
         "damage_dice": str(item_data.get("damage_dice") or item_data.get("damage") or "1d4"),
         "damage_bonus": _coerce_int(item_data.get("damage_bonus"), 0),
-        "range": _coerce_int(item_data.get("range"), 1),
+        "range": weapon_range,
+        "slot": weapon_slot,
+        "weapon_type": weapon_type,
+        "damage_type": str(item_data.get("damage_type") or "").strip().lower(),
+        "ability": ability_name,
     }
+
+
+def _wants_ranged_attack(user_input: str, intent_context: Dict[str, Any]) -> bool:
+    raw_text = f"{user_input or ''} {intent_context.get('reason', '')}"
+    lowered = str(raw_text).lower()
+    if any(keyword in lowered for keyword in RANGED_ATTACK_HINTS):
+        return True
+
+    attack_mode = str(intent_context.get("attack_mode") or intent_context.get("weapon_type") or "").strip().lower()
+    return attack_mode == "ranged"
+
+
+def _select_attack_weapon_profile(
+    *,
+    attacker: Dict[str, Any],
+    defender: Dict[str, Any],
+    prefer_ranged: bool = False,
+) -> Dict[str, Any]:
+    equipment = _get_equipment(attacker)
+    has_main_hand = bool(str(equipment.get("main_hand") or "").strip())
+    has_ranged = bool(str(equipment.get("ranged") or "").strip())
+
+    attacker_x = _coerce_int(attacker.get("x"), 4)
+    attacker_y = _coerce_int(attacker.get("y"), 9)
+    defender_x = _coerce_int(defender.get("x"), attacker_x)
+    defender_y = _coerce_int(defender.get("y"), attacker_y)
+    distance = _chebyshev_distance(
+        actor_x=attacker_x,
+        actor_y=attacker_y,
+        target_x=defender_x,
+        target_y=defender_y,
+    )
+
+    if prefer_ranged and has_ranged:
+        return _get_weapon_profile(attacker, preferred_slot="ranged")
+    if distance > 1 and has_ranged:
+        return _get_weapon_profile(attacker, preferred_slot="ranged")
+    if has_main_hand:
+        return _get_weapon_profile(attacker, preferred_slot="main_hand")
+    if has_ranged:
+        return _get_weapon_profile(attacker, preferred_slot="ranged")
+    return _get_weapon_profile(attacker)
+
+
+def _get_spell_profile(intent_context: Dict[str, Any]) -> Dict[str, Any]:
+    spell_ref = (
+        intent_context.get("spell_id")
+        or intent_context.get("item_id")
+        or intent_context.get("action_spell")
+        or intent_context.get("action_target")
+        or ""
+    )
+    spell_id = resolve_spell_id(spell_ref)
+    spell_data = get_spell_data(spell_id)
+    if not spell_data:
+        return {}
+    level = max(0, _coerce_int(spell_data.get("level"), _coerce_int(spell_data.get("slot_level_cost"), 0)))
+    return {
+        "id": spell_id,
+        "name": str(spell_data.get("name") or spell_id),
+        "level": level,
+        "target_type": str(spell_data.get("target") or spell_data.get("target_type") or "single").strip().lower(),
+        "range": max(1, _coerce_int(spell_data.get("range"), 1)),
+        "damage_dice": str(spell_data.get("damage") or spell_data.get("damage_dice") or "1d4"),
+        "damage_type": str(spell_data.get("damage_type") or "force").strip().lower(),
+        "save_ability": str(spell_data.get("saving_throw") or spell_data.get("save_ability") or "DEX").strip().upper(),
+        "slot_level_cost": level,
+        "aoe": str(spell_data.get("aoe_shape") or spell_data.get("aoe") or ""),
+    }
+
+
+def _ability_display_name(ability_name: str) -> str:
+    return {
+        "STR": "力量",
+        "DEX": "敏捷",
+        "CON": "体质",
+        "INT": "智力",
+        "WIS": "感知",
+        "CHA": "魅力",
+    }.get(str(ability_name or "").upper(), str(ability_name or "属性"))
+
+
+def _damage_type_display_name(damage_type: str) -> str:
+    return {
+        "thunder": "雷鸣",
+        "radiant": "光耀",
+        "fire": "火焰",
+        "cold": "寒冷",
+        "force": "力场",
+    }.get(str(damage_type or "").strip().lower(), "魔法")
+
+
+def _normalize_spell_slots(value: Any) -> Dict[str, int]:
+    if not isinstance(value, dict):
+        return {}
+    normalized: Dict[str, int] = {}
+    for key, slot_value in value.items():
+        slot_key = str(key or "").strip().lower()
+        if not slot_key:
+            continue
+        normalized[slot_key] = max(0, _coerce_int(slot_value, 0))
+    return normalized
 
 
 def _is_consumable_item(item_id: str, item_data: Dict[str, Any]) -> bool:
@@ -667,12 +895,32 @@ def _active_block_side(
     return _turn_side_key(block[0], entity)
 
 
-def _default_turn_resources(entity: Dict[str, Any]) -> Dict[str, int]:
-    return {
+def _default_spell_slots(actor_id: str, entity: Dict[str, Any]) -> Dict[str, int]:
+    existing = entity.get("spell_slots")
+    if isinstance(existing, dict):
+        normalized: Dict[str, int] = {}
+        for key, value in existing.items():
+            slot_key = str(key or "").strip().lower()
+            if not slot_key:
+                continue
+            normalized[slot_key] = max(0, _coerce_int(value, 0))
+        if normalized:
+            return normalized
+
+    fallback = SPELLCASTER_DEFAULT_SLOTS.get(_normalize_entity_id(actor_id), {})
+    return {slot: int(value) for slot, value in fallback.items()}
+
+
+def _default_turn_resources(actor_id: str, entity: Dict[str, Any]) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {
         "action": 1,
         "bonus_action": 1,
         "movement": _movement_budget_from_speed(entity),
     }
+    spell_slots = _default_spell_slots(actor_id, entity)
+    if spell_slots:
+        payload["spell_slots"] = spell_slots
+    return payload
 
 
 def _ensure_turn_resources_for_block(
@@ -681,7 +929,7 @@ def _ensure_turn_resources_for_block(
     entities: Dict[str, Any],
     active_block: List[str],
     force_reset: bool = False,
-) -> Dict[str, Dict[str, int]]:
+) -> Dict[str, Dict[str, Any]]:
     existing = copy.deepcopy(state.get("turn_resources") or {})
     if not isinstance(existing, dict):
         existing = {}
@@ -692,7 +940,10 @@ def _ensure_turn_resources_for_block(
             or actor_id not in existing
             or not isinstance(existing.get(actor_id), dict)
         ):
-            existing[actor_id] = _default_turn_resources(actor if isinstance(actor, dict) else {})
+            existing[actor_id] = _default_turn_resources(
+                actor_id,
+                actor if isinstance(actor, dict) else {},
+            )
     return existing
 
 
@@ -847,6 +1098,8 @@ def _is_unlockable_skill_success(
 def execute_combat_attack(
     attacker: Dict[str, Any],
     defender: Dict[str, Any],
+    map_data: Optional[Dict[str, Any]] = None,
+    weapon_profile: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     执行一次最小化 D20 攻击检定。
@@ -857,22 +1110,76 @@ def execute_combat_attack(
     attacker_name = _display_entity_name(attacker, attacker_id)
     defender_name = _display_entity_name(defender, defender_id)
     defender_ac = int(defender.get("ac", 10))
-    weapon_profile = _get_weapon_profile(attacker)
+    weapon_profile = dict(weapon_profile or _get_weapon_profile(attacker))
     weapon_name = str(weapon_profile.get("name") or "徒手打击")
     if str(weapon_profile.get("id") or "") == "unarmed":
         weapon_name = "徒手打击"
+    weapon_type = str(weapon_profile.get("weapon_type") or "").strip().lower()
+    if weapon_type not in {"melee", "ranged"}:
+        weapon_type = "ranged" if _coerce_int(weapon_profile.get("range"), 1) > 1 else "melee"
+    ability_name = "DEX" if weapon_type == "ranged" else "STR"
+    ability_display = _ability_display_name(ability_name)
+    ability_modifier = calculate_ability_modifier(_get_ability_score(attacker, ability_name, 10))
+    attack_modifier = DEFAULT_ATTACK_BONUS + ability_modifier
+    weapon_range = max(1, _coerce_int(weapon_profile.get("range"), 1))
     damage_dice = str(weapon_profile.get("damage_dice", "1d4"))
-    damage_bonus = _coerce_int(weapon_profile.get("damage_bonus"), 0)
+    weapon_damage_bonus = _coerce_int(weapon_profile.get("damage_bonus"), 0)
+    ability_damage_bonus = max(0, ability_modifier)
+    damage_bonus = weapon_damage_bonus + ability_damage_bonus
+    attacker_x = _coerce_int(attacker.get("x"), 4)
+    attacker_y = _coerce_int(attacker.get("y"), 9)
+    defender_x = _coerce_int(defender.get("x"), attacker_x)
+    defender_y = _coerce_int(defender.get("y"), attacker_y)
+
+    if weapon_range > 1 and not check_line_of_sight(
+        (attacker_x, attacker_y),
+        (defender_x, defender_y),
+        map_data or {},
+    ):
+        attack_text = (
+            f"❌ [战斗检定] {attacker_name} 使用 {weapon_name} 对 {defender_name} 发起攻击失败："
+            "目标不在视线范围内（被障碍物遮挡）。"
+        )
+        return {
+            "journal_events": [attack_text],
+            "raw_roll_data": {
+                "intent": "ATTACK",
+                "actor": attacker_id,
+                "target": defender_id,
+                "weapon": str(weapon_profile.get("id") or "unarmed"),
+                "weapon_name": weapon_name,
+                "weapon_type": weapon_type,
+                "range": weapon_range,
+                "dc": defender_ac,
+                "modifier": attack_modifier,
+                "ability": ability_name,
+                "ability_modifier": ability_modifier,
+                "damage": {
+                    "rolls": [],
+                    "formula": damage_dice,
+                    "modifier": damage_bonus,
+                    "total": 0,
+                },
+                "result": {
+                    "total": 0,
+                    "raw_roll": 0,
+                    "rolls": [],
+                    "is_success": False,
+                    "result_type": "NO_LOS",
+                    "target_ac": defender_ac,
+                },
+            },
+        }
 
     attack_roll = random.randint(1, 20)
-    attack_total = attack_roll + DEFAULT_ATTACK_BONUS
+    attack_total = attack_roll + attack_modifier
     is_hit = attack_total >= defender_ac
     dice_roll_result = 0
     damage_total = 0
 
     if is_hit:
         dice_roll_result = parse_dice_string(damage_dice)
-        damage_total = dice_roll_result + damage_bonus
+        damage_total = max(1, dice_roll_result + damage_bonus)
         current_hp = int(defender.get("hp", 0))
         max_hp = int(defender.get("max_hp", current_hp))
         new_hp = max(0, current_hp - damage_total)
@@ -880,17 +1187,21 @@ def execute_combat_attack(
         defender["max_hp"] = max_hp
         defender["status"] = "dead" if new_hp <= 0 else "alive"
 
+    prefix = "🏹" if weapon_type == "ranged" else "🎲"
+    attack_mode = "远程攻击" if weapon_type == "ranged" else "攻击"
     attack_text = (
-        f"🎲 [战斗检定] {attacker_name} 使用 {weapon_name} 对 {defender_name} 发起攻击。"
-        f"命中检定: {attack_roll}(+{DEFAULT_ATTACK_BONUS}) = {attack_total} vs AC {defender_ac}，"
+        f"{prefix} [战斗检定] {attacker_name} 使用 {weapon_name} 对 {defender_name} 发起{attack_mode}。"
+        f"命中检定: {attack_roll}(+{attack_modifier}) = {attack_total} vs AC {defender_ac}，"
     )
     if is_hit:
         attack_text += (
             f"命中！造成 {damage_total} 点伤害 "
-            f"(伤害骰: {damage_dice}[掷出 {dice_roll_result}] + 加成 {damage_bonus})。"
+            f"(伤害骰: {damage_dice}[掷出 {dice_roll_result}] + 加成 {weapon_damage_bonus}"
+            f"；{ability_display}加成 {ability_damage_bonus})。"
         )
     else:
         attack_text += "未命中！"
+    attack_text += f" [加成来源: {ability_display} {ability_modifier:+d}]"
 
     journal_events = [attack_text]
     if is_hit and defender.get("status") == "dead":
@@ -904,9 +1215,12 @@ def execute_combat_attack(
             "target": defender_id,
             "weapon": str(weapon_profile.get("id") or "unarmed"),
             "weapon_name": weapon_name,
-            "range": int(weapon_profile.get("range", 1)),
+            "weapon_type": weapon_type,
+            "range": weapon_range,
             "dc": defender_ac,
-            "modifier": DEFAULT_ATTACK_BONUS,
+            "modifier": attack_modifier,
+            "ability": ability_name,
+            "ability_modifier": ability_modifier,
             "damage": {
                 "rolls": [dice_roll_result] if dice_roll_result else [],
                 "formula": damage_dice,
@@ -941,10 +1255,8 @@ def execute_enemy_turn(enemy_id: str, state: Any) -> Dict[str, Any]:
     enemy_name = _display_entity_name(enemy, enemy_id)
     enemy_x = _coerce_int(enemy.get("x"), 4)
     enemy_y = _coerce_int(enemy.get("y"), 3)
-    weapon_profile = _get_weapon_profile(enemy)
-    weapon_range = max(1, _coerce_int(weapon_profile.get("range"), 1))
     if enemy_id not in turn_resources or not isinstance(turn_resources.get(enemy_id), dict):
-        turn_resources[enemy_id] = _default_turn_resources(enemy)
+        turn_resources[enemy_id] = _default_turn_resources(enemy_id, enemy)
 
     target_id = ""
     target_obj: Optional[Dict[str, Any]] = None
@@ -978,24 +1290,70 @@ def execute_enemy_turn(enemy_id: str, state: Any) -> Dict[str, Any]:
     journal_events = [f"[敌方AI] {enemy_name} 锁定了 {target_name}。"]
     target_x = _coerce_int(target_obj.get("x"), enemy_x)
     target_y = _coerce_int(target_obj.get("y"), enemy_y)
+    weapon_profile = _select_attack_weapon_profile(
+        attacker=enemy,
+        defender=target_obj,
+        prefer_ranged=False,
+    )
+    weapon_range = max(1, _coerce_int(weapon_profile.get("range"), 1))
+    map_data = state.get("map_data") or {}
+
+    resource_pool = turn_resources.get(enemy_id, {}) if isinstance(turn_resources, dict) else {}
+    resource_pool = dict(resource_pool) if isinstance(resource_pool, dict) else {}
+    if "movement" not in resource_pool:
+        resource_pool["movement"] = _movement_budget_from_speed(enemy)
+    movement_points = max(0, _coerce_int(resource_pool.get("movement"), 0))
 
     if target_distance > weapon_range:
-        new_x, new_y = _move_toward_target_with_range_and_budget(
-            actor_x=enemy_x,
-            actor_y=enemy_y,
-            target_x=target_x,
-            target_y=target_y,
-            desired_range=weapon_range,
-            max_steps=_movement_budget_from_speed(enemy),
-        )
-        if (new_x, new_y) != (enemy_x, enemy_y):
-            enemy["x"] = new_x
-            enemy["y"] = new_y
-            enemy["position"] = f"靠近 {target_name}"
-            journal_events.append(
-                f"[敌方AI] {enemy_name} 向 {target_name} 逼近至 ({new_x}, {new_y})。"
+        occupied_positions: List[Tuple[int, int]] = []
+        for entity_id, entity in entities.items():
+            normalized_entity_id = _normalize_entity_id(entity_id)
+            if normalized_entity_id == enemy_id:
+                continue
+            if not isinstance(entity, dict) or not _is_alive_entity(entity):
+                continue
+            occupied_positions.append(
+                (
+                    _coerce_int(entity.get("x"), 4),
+                    _coerce_int(entity.get("y"), 8),
+                )
             )
-            enemy_x, enemy_y = new_x, new_y
+
+        path = a_star_path(
+            (enemy_x, enemy_y),
+            (target_x, target_y),
+            map_data if isinstance(map_data, dict) else {},
+            occupied_positions,
+        )
+
+        if movement_points <= 0:
+            journal_events.append(f"[敌方AI] {enemy_name} 移动力不足，无法逼近目标。")
+        elif not path or len(path) <= 1:
+            journal_events.append(f"[敌方AI] {enemy_name} 被地形与站位卡住，无法找到可行路径。")
+        else:
+            max_steps = min(movement_points, len(path) - 1)
+            steps_taken = 0
+            for idx in range(1, max_steps + 1):
+                px, py = path[idx]
+                steps_taken = idx
+                if _chebyshev_distance(
+                    actor_x=px,
+                    actor_y=py,
+                    target_x=target_x,
+                    target_y=target_y,
+                ) <= weapon_range:
+                    break
+
+            if steps_taken > 0:
+                new_x, new_y = path[steps_taken]
+                enemy["x"] = new_x
+                enemy["y"] = new_y
+                enemy["position"] = f"靠近 {target_name}"
+                enemy_x, enemy_y = new_x, new_y
+                resource_pool["movement"] = max(0, movement_points - steps_taken)
+                journal_events.append(
+                    f"[敌方AI] {enemy_name} 绕过了障碍，移动到了 ({new_x}, {new_y})。"
+                )
 
     final_distance = _chebyshev_distance(
         actor_x=enemy_x,
@@ -1004,17 +1362,22 @@ def execute_enemy_turn(enemy_id: str, state: Any) -> Dict[str, Any]:
         target_y=target_y,
     )
     raw_roll_data = None
-    resource_pool = turn_resources.get(enemy_id, {}) if isinstance(turn_resources, dict) else {}
     if final_distance <= weapon_range and int(resource_pool.get("action", 0) or 0) > 0:
         enemy["id"] = enemy_id
         target_obj["id"] = target_id
-        attack_result = execute_combat_attack(attacker=enemy, defender=target_obj)
+        attack_result = execute_combat_attack(
+            attacker=enemy,
+            defender=target_obj,
+            map_data=map_data if isinstance(map_data, dict) else {},
+            weapon_profile=weapon_profile,
+        )
         journal_events.extend(attack_result.get("journal_events", []))
         raw_roll_data = attack_result.get("raw_roll_data")
-        if isinstance(turn_resources, dict):
-            resource_pool = dict(resource_pool) if isinstance(resource_pool, dict) else {}
+        attack_result_type = (
+            str(((raw_roll_data or {}).get("result") or {}).get("result_type") or "").upper()
+        )
+        if attack_result_type != "NO_LOS":
             resource_pool["action"] = max(0, int(resource_pool.get("action", 0) or 0) - 1)
-            turn_resources[enemy_id] = resource_pool
     elif final_distance <= weapon_range:
         journal_events.append(
             f"[敌方AI] {enemy_name} 动作点数不足，无法发动攻击。"
@@ -1023,6 +1386,9 @@ def execute_enemy_turn(enemy_id: str, state: Any) -> Dict[str, Any]:
         journal_events.append(
             f"[敌方AI] {enemy_name} 距离过远，原地待命。"
         )
+
+    if isinstance(turn_resources, dict):
+        turn_resources[enemy_id] = resource_pool
 
     payload: Dict[str, Any] = {
         "entities": entities,
@@ -1313,12 +1679,24 @@ def execute_attack_action(state: Any) -> Dict[str, Any]:
     if target_is_hostile and not bool(state.get("combat_active", False)):
         initiative_order, initiative_rolls, initiative_log = _roll_initiative(entities)
         if initiative_order:
-            current_turn_index = initiative_order.index(attacker_id) if attacker_id in initiative_order else 0
+            current_turn_index = 0
+            first_block = _get_active_turn_block(
+                state=state,
+                entities=entities,
+                initiative_order=initiative_order,
+                current_turn_index=current_turn_index,
+            )
+            auto_enemy_turn = False
+            if first_block:
+                first_entity = entities.get(first_block[0], {})
+                if isinstance(first_entity, dict) and _turn_side_key(first_block[0], first_entity) == "hostile":
+                    auto_enemy_turn = True
             combat_fields = {
                 "combat_active": True,
                 "initiative_order": initiative_order,
                 "current_turn_index": current_turn_index,
                 "initiative_rolls": initiative_rolls,
+                "auto_enemy_turn": auto_enemy_turn,
             }
             combat_events.append(initiative_log)
 
@@ -1331,6 +1709,8 @@ def execute_attack_action(state: Any) -> Dict[str, Any]:
         ),
         force_reset=False,
     )
+    if attacker_id not in turn_resources or not isinstance(turn_resources.get(attacker_id), dict):
+        turn_resources[attacker_id] = _default_turn_resources(attacker_id, raw_attacker)
     actor_resources = turn_resources.get(attacker_id, {})
     if int(actor_resources.get("action", 0) or 0) <= 0:
         return {
@@ -1352,13 +1732,23 @@ def execute_attack_action(state: Any) -> Dict[str, Any]:
             "turn_locked": True,
         }
 
-    weapon_profile = _get_weapon_profile(raw_attacker)
+    prefer_ranged = _wants_ranged_attack(str(state.get("user_input", "") or ""), intent_context)
+    weapon_profile = _select_attack_weapon_profile(
+        attacker=raw_attacker,
+        defender=defender,
+        prefer_ranged=prefer_ranged,
+    )
+    weapon_type = str(weapon_profile.get("weapon_type") or "").strip().lower()
     weapon_move_template = (
         "🚶 [战术走位] {actor_name} 调整步伐，逼近了 {target_name}。"
         if str(weapon_profile.get("id") or "") == "unarmed"
         else (
+            "🚶 [战术走位] {actor_name} 调整站位，{target_name} 进入了射程。"
+            if weapon_type == "ranged"
+            else (
             f"🚶 [战术走位] {{actor_name}} 拔出 {weapon_profile.get('name', '武器')}，"
             "{target_name} 进入了射程。"
+            )
         )
     )
     approach_events = _auto_approach_actor_to_target(
@@ -1373,18 +1763,432 @@ def execute_attack_action(state: Any) -> Dict[str, Any]:
     attacker = dict(raw_attacker)
     attacker["id"] = attacker_id
     defender["id"] = target_id
+
+    attack_result = execute_combat_attack(
+        attacker=attacker,
+        defender=defender,
+        map_data=state.get("map_data") if isinstance(state.get("map_data"), dict) else {},
+        weapon_profile=weapon_profile,
+    )
+    attack_result_type = (
+        str(((attack_result.get("raw_roll_data") or {}).get("result") or {}).get("result_type") or "").upper()
+    )
     actor_resources = dict(actor_resources) if isinstance(actor_resources, dict) else {}
-    actor_resources["action"] = max(0, int(actor_resources.get("action", 0) or 0) - 1)
+    if attack_result_type != "NO_LOS":
+        actor_resources["action"] = max(0, int(actor_resources.get("action", 0) or 0) - 1)
     turn_resources[attacker_id] = actor_resources
 
     result = {
-        **execute_combat_attack(attacker=attacker, defender=defender),
+        **attack_result,
         "entities": entities,
         "turn_resources": turn_resources,
         **combat_fields,
     }
     attack_events = result.get("journal_events", [])
     result["journal_events"] = attack_events[:1] + approach_events + attack_events[1:] + combat_events
+    return result
+
+
+def execute_cast_spell_action(state: Any) -> Dict[str, Any]:
+    """
+    执行施法动作：支持单体法术与以施法者为中心的 3x3 范围法术（切比雪夫距离 <= 1）。
+    """
+    entities = copy.deepcopy(state.get("entities") or {})
+    environment_objects = copy.deepcopy(state.get("environment_objects") or {})
+    map_data = state.get("map_data") or {}
+    intent_context = state.get("intent_context") or {}
+
+    caster_id = _normalize_entity_id(intent_context.get("action_actor", "player")) or "player"
+    target_query = str(intent_context.get("action_target", "") or "").strip()
+    spell_profile = _get_spell_profile(intent_context)
+    spell_id = str(spell_profile.get("id") or "")
+
+    turn_lock = _reject_if_not_active_turn(
+        state=state,
+        intent="CAST_SPELL",
+        actor_id=caster_id,
+        target_id=target_query or spell_id,
+        entities=entities,
+    )
+    if turn_lock:
+        return turn_lock
+
+    if not spell_profile:
+        return {
+            "journal_events": ["❌ [法术] 施法失败：未识别到有效法术。"],
+            "entities": entities,
+            "raw_roll_data": _build_action_result(
+                intent="CAST_SPELL",
+                actor=caster_id,
+                target=target_query,
+                is_success=False,
+                result_type="INVALID_SPELL",
+            ),
+        }
+
+    caster = _ensure_actor_entity(actor_id=caster_id, entities=entities, state=state)
+    if not _is_alive_entity(caster):
+        caster_name = _display_entity_name(caster, caster_id)
+        return {
+            "journal_events": [f"❌ [法术] {caster_name} 已无法行动，无法施法。"],
+            "entities": entities,
+            "raw_roll_data": _build_action_result(
+                intent="CAST_SPELL",
+                actor=caster_id,
+                target=target_query,
+                is_success=False,
+                result_type="CASTER_DOWN",
+            ),
+        }
+
+    target_id, target_obj, target_name = _resolve_target_reference(
+        target_id=target_query,
+        entities=entities,
+        environment_objects=environment_objects,
+    )
+    target_type = str(spell_profile.get("target_type") or "single")
+    spell_name = str(spell_profile.get("name") or spell_id)
+    spell_range = max(1, _coerce_int(spell_profile.get("range"), 1))
+    save_ability = str(spell_profile.get("save_ability") or "DEX").upper()
+    damage_dice = str(spell_profile.get("damage_dice") or "1d4")
+    damage_type_name = _damage_type_display_name(spell_profile.get("damage_type"))
+    slot_level_cost = max(0, _coerce_int(spell_profile.get("slot_level_cost"), 0))
+
+    target_is_hostile = False
+    if target_id and target_id in entities and isinstance(target_obj, dict):
+        target_is_hostile = _is_hostile_entity(target_obj)
+    elif target_type == "aoe":
+        target_is_hostile = any(
+            isinstance(entity, dict) and _is_alive_entity(entity) and _is_hostile_entity(entity)
+            for entity in entities.values()
+        )
+
+    combat_events: List[str] = []
+    combat_fields: Dict[str, Any] = {}
+    if target_is_hostile and not bool(state.get("combat_active", False)):
+        initiative_order, initiative_rolls, initiative_log = _roll_initiative(entities)
+        if initiative_order:
+            current_turn_index = 0
+            first_block = _get_active_turn_block(
+                state=state,
+                entities=entities,
+                initiative_order=initiative_order,
+                current_turn_index=current_turn_index,
+            )
+            auto_enemy_turn = False
+            if first_block:
+                first_entity = entities.get(first_block[0], {})
+                if isinstance(first_entity, dict) and _turn_side_key(first_block[0], first_entity) == "hostile":
+                    auto_enemy_turn = True
+            combat_fields = {
+                "combat_active": True,
+                "initiative_order": initiative_order,
+                "current_turn_index": current_turn_index,
+                "initiative_rolls": initiative_rolls,
+                "auto_enemy_turn": auto_enemy_turn,
+            }
+            combat_events.append(initiative_log)
+
+    turn_resources = _ensure_turn_resources_for_block(
+        state={**state, **combat_fields},
+        entities=entities,
+        active_block=_get_active_turn_block(
+            state={**state, **combat_fields},
+            entities=entities,
+        ),
+        force_reset=False,
+    )
+    if caster_id not in turn_resources or not isinstance(turn_resources.get(caster_id), dict):
+        turn_resources[caster_id] = _default_turn_resources(caster_id, caster)
+    actor_resources = dict(turn_resources.get(caster_id, {}))
+
+    if int(actor_resources.get("action", 0) or 0) <= 0:
+        return {
+            "journal_events": [f"[系统驳回] 动作资源不足！{_display_entity_name(caster, caster_id)} 本回合没有可用动作。"],
+            "entities": entities,
+            "combat_active": bool(state.get("combat_active", False)) or combat_fields.get("combat_active", False),
+            "initiative_order": list(combat_fields.get("initiative_order") or state.get("initiative_order") or []),
+            "current_turn_index": _coerce_int(
+                combat_fields.get("current_turn_index", state.get("current_turn_index", 0)), 0
+            ),
+            "turn_resources": turn_resources,
+            "raw_roll_data": _build_action_result(
+                intent="CAST_SPELL",
+                actor=caster_id,
+                target=target_id,
+                is_success=False,
+                result_type="NO_ACTION",
+            ),
+            "turn_locked": True,
+        }
+
+    spell_slots = _normalize_spell_slots(actor_resources.get("spell_slots"))
+    if not spell_slots:
+        spell_slots = _default_spell_slots(caster_id, caster)
+    if slot_level_cost > 0 and int(spell_slots.get("level_1", 0) or 0) < slot_level_cost:
+        return {
+            "journal_events": [f"❌ [法术] {spell_name} 施放失败：{_display_entity_name(caster, caster_id)} 的 1 环法术位不足。"],
+            "entities": entities,
+            "combat_active": bool(state.get("combat_active", False)) or combat_fields.get("combat_active", False),
+            "initiative_order": list(combat_fields.get("initiative_order") or state.get("initiative_order") or []),
+            "current_turn_index": _coerce_int(
+                combat_fields.get("current_turn_index", state.get("current_turn_index", 0)), 0
+            ),
+            "turn_resources": turn_resources,
+            "raw_roll_data": _build_action_result(
+                intent="CAST_SPELL",
+                actor=caster_id,
+                target=target_id,
+                is_success=False,
+                result_type="NO_SPELL_SLOT",
+            ),
+            "turn_locked": True,
+        }
+
+    approach_events: List[str] = []
+    anchor_target_id = target_id
+    anchor_target_obj = target_obj if isinstance(target_obj, dict) else None
+    anchor_target_name = target_name
+    if target_type == "single":
+        if not anchor_target_id or anchor_target_id not in entities or not isinstance(anchor_target_obj, dict):
+            return {
+                "journal_events": [f"❌ [法术] 施法失败：找不到目标 {target_query or target_id}。"],
+                "entities": entities,
+                "raw_roll_data": _build_action_result(
+                    intent="CAST_SPELL",
+                    actor=caster_id,
+                    target=target_id,
+                    is_success=False,
+                    result_type="NOT_FOUND",
+                ),
+            }
+        if not _is_alive_entity(anchor_target_obj):
+            return {
+                "journal_events": [f"❌ [法术] {anchor_target_name} 已经倒下，无法作为施法目标。"],
+                "entities": entities,
+                "raw_roll_data": _build_action_result(
+                    intent="CAST_SPELL",
+                    actor=caster_id,
+                    target=anchor_target_id,
+                    is_success=False,
+                    result_type="INVALID_TARGET",
+                ),
+            }
+    else:
+        if not isinstance(anchor_target_obj, dict):
+            nearest_hostile: Optional[Tuple[str, Dict[str, Any], int]] = None
+            caster_x = _coerce_int(caster.get("x"), 4)
+            caster_y = _coerce_int(caster.get("y"), 9)
+            for candidate_id, candidate in entities.items():
+                normalized_candidate_id = _normalize_entity_id(candidate_id)
+                if normalized_candidate_id == caster_id:
+                    continue
+                if not isinstance(candidate, dict) or not _is_alive_entity(candidate) or not _is_hostile_entity(candidate):
+                    continue
+                distance = _chebyshev_distance(
+                    actor_x=caster_x,
+                    actor_y=caster_y,
+                    target_x=_coerce_int(candidate.get("x"), caster_x),
+                    target_y=_coerce_int(candidate.get("y"), caster_y),
+                )
+                if nearest_hostile is None or distance < nearest_hostile[2]:
+                    nearest_hostile = (normalized_candidate_id, candidate, distance)
+            if nearest_hostile is not None:
+                anchor_target_id, anchor_target_obj, _ = nearest_hostile
+                anchor_target_name = _display_entity_name(anchor_target_obj, anchor_target_id)
+
+    if isinstance(anchor_target_obj, dict):
+        approach_events = _auto_approach_actor_to_target(
+            entities=entities,
+            state=state,
+            actor_id=caster_id,
+            target=anchor_target_obj,
+            target_name=anchor_target_name,
+            desired_range=spell_range,
+            journal_template=f"✨ [战术走位] {{actor_name}} 调整站位，{anchor_target_name} 进入了 {spell_name} 的施法范围。",
+        )
+
+    caster = entities.get(caster_id, caster)
+    caster_name = _display_entity_name(caster, caster_id)
+    caster_x = _coerce_int(caster.get("x"), 4)
+    caster_y = _coerce_int(caster.get("y"), 9)
+
+    if target_type == "single" and isinstance(anchor_target_obj, dict):
+        target_x = _coerce_int(anchor_target_obj.get("x"), caster_x)
+        target_y = _coerce_int(anchor_target_obj.get("y"), caster_y)
+        if not check_line_of_sight(
+            (caster_x, caster_y),
+            (target_x, target_y),
+            map_data if isinstance(map_data, dict) else {},
+        ):
+            return {
+                "journal_events": [
+                    f"❌ [法术] 施放失败：目标不在视线范围内（被障碍物遮挡）。"
+                ] + approach_events,
+                "entities": entities,
+                "turn_resources": turn_resources,
+                **combat_fields,
+                "raw_roll_data": _build_action_result(
+                    intent="CAST_SPELL",
+                    actor=caster_id,
+                    target=anchor_target_id,
+                    is_success=False,
+                    result_type="NO_LOS",
+                ),
+                "turn_locked": True,
+            }
+
+    if target_type != "single":
+        center_x = caster_x
+        center_y = caster_y
+        aoe_shape = str(spell_profile.get("aoe") or "").strip().lower()
+        if "centered" not in aoe_shape and isinstance(anchor_target_obj, dict):
+            center_x = _coerce_int(anchor_target_obj.get("x"), caster_x)
+            center_y = _coerce_int(anchor_target_obj.get("y"), caster_y)
+        if not check_line_of_sight(
+            (caster_x, caster_y),
+            (center_x, center_y),
+            map_data if isinstance(map_data, dict) else {},
+        ):
+            return {
+                "journal_events": [
+                    f"❌ [法术] 施放失败：目标区域不在视线范围内（被障碍物遮挡）。"
+                ] + approach_events,
+                "entities": entities,
+                "turn_resources": turn_resources,
+                **combat_fields,
+                "raw_roll_data": _build_action_result(
+                    intent="CAST_SPELL",
+                    actor=caster_id,
+                    target=anchor_target_id,
+                    is_success=False,
+                    result_type="NO_LOS",
+                ),
+                "turn_locked": True,
+            }
+
+    affected_targets: List[Tuple[str, Dict[str, Any], str]] = []
+    if target_type == "single":
+        if isinstance(anchor_target_obj, dict) and _is_alive_entity(anchor_target_obj):
+            target_x = _coerce_int(anchor_target_obj.get("x"), caster_x)
+            target_y = _coerce_int(anchor_target_obj.get("y"), caster_y)
+            if _chebyshev_distance(
+                actor_x=caster_x,
+                actor_y=caster_y,
+                target_x=target_x,
+                target_y=target_y,
+            ) > spell_range:
+                return {
+                    "journal_events": [f"❌ [法术] 施法失败：{anchor_target_name} 超出 {spell_name} 的射程。"] + approach_events,
+                    "entities": entities,
+                    "turn_resources": turn_resources,
+                    **combat_fields,
+                    "raw_roll_data": _build_action_result(
+                        intent="CAST_SPELL",
+                        actor=caster_id,
+                        target=anchor_target_id,
+                        is_success=False,
+                        result_type="OUT_OF_RANGE",
+                    ),
+                }
+            affected_targets.append((anchor_target_id, anchor_target_obj, anchor_target_name))
+    else:
+        for candidate_id, candidate in entities.items():
+            normalized_candidate_id = _normalize_entity_id(candidate_id)
+            if normalized_candidate_id == caster_id:
+                continue
+            if not isinstance(candidate, dict) or not _is_alive_entity(candidate):
+                continue
+            distance = _chebyshev_distance(
+                actor_x=caster_x,
+                actor_y=caster_y,
+                target_x=_coerce_int(candidate.get("x"), caster_x),
+                target_y=_coerce_int(candidate.get("y"), caster_y),
+            )
+            if distance <= 1:
+                affected_targets.append(
+                    (normalized_candidate_id, candidate, _display_entity_name(candidate, normalized_candidate_id))
+                )
+
+    actor_resources["action"] = max(0, int(actor_resources.get("action", 0) or 0) - 1)
+    if slot_level_cost > 0:
+        spell_slots["level_1"] = max(0, int(spell_slots.get("level_1", 0) or 0) - slot_level_cost)
+    if spell_slots:
+        actor_resources["spell_slots"] = spell_slots
+    turn_resources[caster_id] = actor_resources
+
+    damage_roll = parse_dice_string(damage_dice)
+    journal_events: List[str] = []
+    cast_phrase = (
+        f"{caster_name} 消耗{slot_level_cost}环法术位，施放了 {spell_name}"
+        if slot_level_cost > 0
+        else f"{caster_name} 施放了 {spell_name}"
+    )
+    if not affected_targets:
+        journal_events.append(f"💥 [法术] {cast_phrase}，但范围内没有目标。")
+    save_results: List[Dict[str, Any]] = []
+    for victim_id, victim, victim_name in affected_targets:
+        save_roll = random.randint(1, 20)
+        save_mod = calculate_ability_modifier(_get_ability_score(victim, save_ability, 10))
+        save_total = save_roll + save_mod
+        save_success = save_total >= DEFAULT_SPELL_SAVE_DC
+        applied_damage = damage_roll // 2 if save_success else damage_roll
+        victim_hp = _coerce_int(victim.get("hp"), 0)
+        victim_max_hp = _coerce_int(victim.get("max_hp"), victim_hp)
+        victim_new_hp = max(0, victim_hp - applied_damage)
+        victim["hp"] = victim_new_hp
+        victim["max_hp"] = victim_max_hp
+        victim["status"] = "dead" if victim_new_hp <= 0 else "alive"
+
+        outcome_text = "成功" if save_success else "失败"
+        journal_events.append(
+            f"💥 [法术] {cast_phrase}！"
+            f"{victim_name} 进行了 {_ability_display_name(save_ability)}豁免 "
+            f"(1d20{save_mod:+d}={save_total} vs DC {DEFAULT_SPELL_SAVE_DC})，{outcome_text}！"
+            f"受到了 {applied_damage} 点{damage_type_name}伤害。"
+        )
+        if victim_new_hp <= 0:
+            journal_events.append(f"☠️ [战斗结果] {victim_name} 倒下了。")
+        save_results.append(
+            {
+                "target": victim_id,
+                "ability": save_ability,
+                "dc": DEFAULT_SPELL_SAVE_DC,
+                "raw_roll": save_roll,
+                "modifier": save_mod,
+                "total": save_total,
+                "is_success": save_success,
+                "damage": applied_damage,
+            }
+        )
+
+    result = {
+        "journal_events": journal_events + approach_events + combat_events,
+        "entities": entities,
+        "turn_resources": turn_resources,
+        **combat_fields,
+        "raw_roll_data": {
+            "intent": "CAST_SPELL",
+            "actor": caster_id,
+            "target": anchor_target_id,
+            "spell_id": spell_id,
+            "spell_name": spell_name,
+            "save_dc": DEFAULT_SPELL_SAVE_DC,
+            "save_ability": save_ability,
+            "damage": {
+                "formula": damage_dice,
+                "total": damage_roll,
+                "type": damage_type_name,
+            },
+            "result": {
+                "is_success": bool(affected_targets),
+                "result_type": "SUCCESS" if affected_targets else "NO_TARGETS",
+                "targets": [target_id for target_id, _, _ in affected_targets],
+                "save_results": save_results,
+            },
+            "spell_slots_after_cast": spell_slots,
+        },
+    }
     return result
 
 
@@ -1819,6 +2623,12 @@ def execute_move_action(state: Any) -> Dict[str, Any]:
         entities=entities,
         environment_objects=environment_objects,
     )
+    if not isinstance(target, dict):
+        coordinate_target = _parse_coordinate_target(target_query)
+        if coordinate_target is not None:
+            target = {"x": coordinate_target[0], "y": coordinate_target[1], "name": f"坐标({coordinate_target[0]},{coordinate_target[1]})"}
+            target_id = f"{coordinate_target[0]},{coordinate_target[1]}"
+            target_name = str(target.get("name"))
     if not target_id:
         return {
             "journal_events": ["❌ [空间移动] 移动失败：未指定目标。"],
@@ -1856,6 +2666,26 @@ def execute_move_action(state: Any) -> Dict[str, Any]:
         target_x=target_x,
         target_y=target_y,
     )
+    collision_error = _validate_move_destination(
+        state=state,
+        entities=entities,
+        actor_id=actor_id,
+        destination_x=new_x,
+        destination_y=new_y,
+    )
+    if collision_error:
+        return {
+            "journal_events": [f"❌ [空间移动] {collision_error}"],
+            "entities": entities,
+            "raw_roll_data": _build_action_result(
+                intent=intent,
+                actor=actor_id,
+                target=target_id,
+                is_success=False,
+                result_type="COLLISION_BLOCKED",
+                extra={"destination": {"x": new_x, "y": new_y}, "reason": collision_error},
+            ),
+        }
     actor["x"] = new_x
     actor["y"] = new_y
     actor["position"] = f"靠近 {target_name}"
@@ -1890,6 +2720,7 @@ SKILL_CHECK_TYPES = (
     "INTIMIDATION",
     "INSIGHT",
     "ATTACK",
+    "CAST_SPELL",
     "LOOT",
     "STEAL",
     "ACTION",
@@ -1922,6 +2753,7 @@ def get_ability_for_action(action_type: str) -> str:
         "SLEIGHT_OF_HAND": "DEX",
         "ATHLETICS": "STR",
         "ATTACK": "STR",
+        "CAST_SPELL": "WIS",
         "LOOT": "DEX",
         "STEAL": "DEX",
         "USE_ITEM": "DEX",

@@ -8,7 +8,7 @@ from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 
 from core.graph.graph_state import GameState
-from core.graph.nodes.utils import FACTORY_DEFAULT, _entity_snapshot, default_entities, first_entity_id
+from core.graph.nodes.utils import _entity_snapshot, default_entities, first_entity_id
 from core.systems import mechanics
 from core.systems.inventory import get_registry
 
@@ -110,7 +110,11 @@ def input_node(state: GameState) -> dict:
 
     # --- /RESET (开发者指令：世界重置) ---
     if command == "/reset":
-        fresh_entities = copy.deepcopy(default_entities)
+        # Reset must rebuild the exact same full state shape as a fresh save.
+        # Partial resets leave combat resources and player entities stale in checkpoints.
+        from core.systems.world_init import get_initial_world_state
+
+        fresh_state = get_initial_world_state()
         current_messages = state.get("messages", [])
         delete_msgs = []
         for m in current_messages:
@@ -122,15 +126,13 @@ def input_node(state: GameState) -> dict:
         else:
             messages_update = delete_msgs
         return {
-            "entities": fresh_entities,
-            "player_inventory": dict(FACTORY_DEFAULT["player_inventory"]),
-            "turn_count": 0,
-            "time_of_day": "晨曦 (Morning)",
-            "flags": dict(FACTORY_DEFAULT["flags"]),
-            "combat_active": False,
-            "initiative_order": [],
-            "current_turn_index": 0,
+            **fresh_state,
             "messages": messages_update,
+            "speaker_queue": [],
+            "current_speaker": "",
+            "speaker_responses": [],
+            "intent_context": {},
+            "latest_roll": {},
             "intent": "dev_command",
             "final_response": "[SYSTEM] 🌍 世界线已重置 (World Reset)。实体状态与历史记忆已全部归零。",
             "is_probing_secret": False,

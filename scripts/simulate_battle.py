@@ -32,14 +32,14 @@ def _post_chat(user_input: str, intent: Optional[str] = None) -> Dict[str, Any]:
     return resp.json()
 
 
-def _extract_logs(response: Dict[str, Any]) -> List[str]:
+def _extract_logs(response: Dict[str, Any]) -> Tuple[List[str], bool]:
     logs = response.get("logs")
     if isinstance(logs, list):
-        return [str(line) for line in logs]
+        return [str(line) for line in logs], True
     journal = response.get("journal_events")
     if isinstance(journal, list):
-        return [str(line) for line in journal]
-    return []
+        return [str(line) for line in journal], False
+    return [], False
 
 
 def _get_active_block(order: List[str], current_turn_index: int, party_ids: set[str], entities: Dict[str, Any]) -> List[str]:
@@ -80,9 +80,6 @@ def _extract_damage_line(journal_events: List[str]) -> Optional[str]:
 
 
 def _summarize_turn(step: int, actor: str, journal_events: List[str]) -> str:
-    damage_line = _extract_damage_line(journal_events)
-    if damage_line:
-        return f"第 {step} 步：{actor} 行动。{damage_line}"
     for line in reversed(journal_events):
         if "动作无效" in line or "动作资源不足" in line:
             return f"第 {step} 步：{actor} 行动被拒绝。{line}"
@@ -93,6 +90,19 @@ def _is_goblin_dead(entities: Dict[str, Any]) -> bool:
     goblin = entities.get("goblin_1", {})
     status = str(goblin.get("status", "")).strip().lower()
     return status == "dead" or int(goblin.get("hp", 1) or 1) <= 0
+
+
+def _is_party_defeated(entities: Dict[str, Any]) -> bool:
+    party_ids = ("player", "astarion", "shadowheart", "laezel")
+    for actor_id in party_ids:
+        actor = entities.get(actor_id, {})
+        if not isinstance(actor, dict):
+            continue
+        status = str(actor.get("status", "")).strip().lower()
+        hp = int(actor.get("hp", 0) or 0)
+        if status != "dead" and hp > 0:
+            return False
+    return True
 
 
 def main() -> None:
@@ -118,15 +128,21 @@ def main() -> None:
         all_entities.update(entities if isinstance(entities, dict) else {})
         all_entities.update(result.get("entities") or {})
 
-        logs = _extract_logs(result)
+        logs, is_cumulative = _extract_logs(result)
+        if not is_cumulative:
+            last_log_index = 0
+        if len(logs) < last_log_index:
+            last_log_index = 0
         new_logs = logs[last_log_index:]
         for line in new_logs:
             print(line)
         last_log_index = len(logs)
 
-        if not combat_active:
+        if not combat_active or any("地精巡逻兵" in line and "倒下" in line for line in logs):
             if _is_goblin_dead(all_entities):
                 print("✅ 自动化战斗模拟成功：地精已被击杀！")
+            elif _is_party_defeated(all_entities):
+                print("❌ 自动化战斗模拟结束：我方全灭。")
             else:
                 print("⚠️ 战斗结束，但未检测到地精死亡。")
             return
@@ -178,7 +194,6 @@ def main() -> None:
         else:
             result = _post_chat("结束回合")
             print(f"第 {steps} 步：结束我方连携回合。")
-            result = _post_chat("", intent="init_sync")
 
         if _is_goblin_dead(all_entities):
             print("✅ 自动化战斗模拟成功：地精已被击杀！")

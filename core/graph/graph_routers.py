@@ -22,6 +22,7 @@ MECHANICS_REQUIRED_INTENTS: tuple[str, ...] = ("PERSUASION", "DECEPTION", "STEAL
 # 需要掷骰子的动作意图（DM 分析结果），必须包含 MECHANICS_REQUIRED_INTENTS
 ACTION_INTENTS: tuple[str, ...] = (
     "ATTACK",
+    "CAST_SPELL",
     "LOOT",
     "USE_ITEM",
     "CONSUME",

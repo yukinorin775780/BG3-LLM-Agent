@@ -16,6 +16,7 @@ from openai import OpenAI
 from characters.loader import load_character
 from config import settings
 from core.systems.inventory import get_registry
+from core.systems.spells import resolve_spell_id
 from core.utils.text_processor import parse_llm_json
 
 logger = logging.getLogger(__name__)
@@ -47,7 +48,24 @@ RETURN_TO_PLAYER_KEYWORDS = (
     "comehere",
     "cometome",
 )
-ATTACK_KEYWORDS = ("攻击", "砍", "砍死", "打", "杀", "干掉", "宰了", "attack", "hit", "strike")
+ATTACK_KEYWORDS = (
+    "攻击",
+    "砍",
+    "砍死",
+    "打",
+    "杀",
+    "干掉",
+    "宰了",
+    "射击",
+    "射箭",
+    "开弓",
+    "拉弓",
+    "attack",
+    "hit",
+    "strike",
+    "shoot",
+)
+CAST_SPELL_KEYWORDS = ("施法", "施放", "释放", "吟唱", "cast", "咏唱", "使用")
 LOOT_KEYWORDS = ("搜刮", "舔包", "搜尸", "摸尸", "摸", "拾取", "loot")
 UNLOCK_KEYWORDS = ("撬开", "解锁", "开锁", "打开", "撬锁", "unlock", "open")
 EQUIP_KEYWORDS = ("装备", "拿上", "拿起", "穿上", "佩戴", "equip", "wear")
@@ -66,8 +84,13 @@ ITEM_ALIAS_MAP = {
     "scimitar": ("scimitar", "弯刀"),
     "rusty_dagger": ("rusty_dagger", "生锈匕首", "匕首"),
     "shortbow": ("shortbow", "短弓", "弓"),
+    "crossbow": ("crossbow", "轻弩", "弩"),
     "mace": ("mace", "钉头锤", "锤"),
     "healing_potion": ("healing_potion", "治疗药水", "药水"),
+}
+SPELL_ALIAS_MAP = {
+    "sacred_flame": ("sacred_flame", "sacred flame", "圣火", "圣火术"),
+    "thunderwave": ("thunderwave", "thunder wave", "雷鸣波", "雷鸣术"),
 }
 
 
@@ -423,6 +446,67 @@ def _resolve_item_id_from_text(user_input: str) -> str:
     return ""
 
 
+def _resolve_spell_id_from_text(user_input: str) -> str:
+    normalized_text = _normalize_reference_text(user_input)
+    if not normalized_text:
+        return ""
+
+    for spell_id, aliases in SPELL_ALIAS_MAP.items():
+        if any(_normalize_reference_text(alias) in normalized_text for alias in aliases):
+            return spell_id
+
+    return resolve_spell_id(user_input)
+
+
+def _select_default_hostile_target(available_targets: List[str], actor_id: str) -> str:
+    normalized_targets = [str(target).strip().lower() for target in available_targets if str(target).strip()]
+    for candidate in normalized_targets:
+        if candidate == actor_id:
+            continue
+        if candidate.startswith("goblin") or candidate.startswith("enemy"):
+            return candidate
+    return ""
+
+
+def _detect_cast_spell_intent(
+    user_input: str,
+    available_npcs: List[str],
+    available_targets: List[str],
+) -> Optional[Dict[str, Any]]:
+    text = str(user_input or "").strip()
+    if not text:
+        return None
+
+    spell_id = _resolve_spell_id_from_text(text)
+    if not spell_id:
+        return None
+    normalized_npcs = [str(npc).strip().lower() for npc in available_npcs if str(npc).strip()]
+    actor_id = _extract_command_actor(text, normalized_npcs) or "player"
+    target_id = _resolve_action_target_id(
+        user_input=text,
+        available_targets=available_targets,
+        actor_id=actor_id,
+        keywords=CAST_SPELL_KEYWORDS + ATTACK_KEYWORDS,
+    )
+    if not target_id:
+        target_id = _select_default_hostile_target(available_targets, actor_id)
+
+    return {
+        "action_type": "CAST_SPELL",
+        "difficulty_class": 0,
+        "reason": "A character is casting a spell.",
+        "is_probing_secret": False,
+        "responders": _build_responders(actor_id, available_npcs),
+        "affection_changes": {},
+        "flags_changed": {},
+        "item_transfers": [],
+        "hp_changes": [],
+        "action_actor": actor_id,
+        "action_target": target_id,
+        "spell_id": spell_id,
+    }
+
+
 def _detect_loot_intent(
     user_input: str,
     available_npcs: List[str],
@@ -714,6 +798,9 @@ def analyze_intent(
     shortcut_result = _detect_loot_intent(user_input, available_npcs, available_targets)
     if shortcut_result is not None:
         return shortcut_result
+    cast_spell_result = _detect_cast_spell_intent(user_input, available_npcs, available_targets)
+    if cast_spell_result is not None:
+        return cast_spell_result
     attack_result = _detect_attack_intent(user_input, available_npcs, available_targets)
     if attack_result is not None:
         return attack_result
@@ -801,6 +888,10 @@ def analyze_intent(
         intent_data["action_target"] = str(intent_data.get("action_target", "")).strip().lower()
         if intent_data["action_type"] in {"EQUIP", "UNEQUIP"} and not intent_data.get("item_id"):
             intent_data["item_id"] = _resolve_item_id_from_text(user_input)
+        if intent_data["action_type"] == "CAST_SPELL" and not intent_data.get("spell_id"):
+            intent_data["spell_id"] = (
+                _resolve_spell_id_from_text(user_input) or resolve_spell_id(intent_data.get("action_target"))
+            )
         heuristic_actor = _extract_command_actor(user_input, available_npcs)
         if heuristic_actor and intent_data["action_type"] != "CHAT" and intent_data["action_actor"] == "player":
             intent_data["action_actor"] = heuristic_actor

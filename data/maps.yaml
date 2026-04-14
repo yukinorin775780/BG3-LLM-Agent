@@ -1,0 +1,13 @@
+goblin_camp:
+  name: "地精营地边缘"
+  width: 15
+  height: 15
+  obstacles:
+    - type: "rock"
+      coordinates: [[5, 5], [5, 6], [5, 7]]
+      blocks_movement: true
+      blocks_los: true
+    - type: "campfire"
+      coordinates: [[8, 8]]
+      blocks_movement: true
+      blocks_los: false

@@ -16,6 +16,8 @@ weapons:
     damage_dice: "1d4"
     damage_bonus: 0
     range: 1
+    damage_type: "piercing"
+    weapon_type: "melee"
 
   scimitar:
     name: "弯刀"
@@ -29,6 +31,8 @@ weapons:
     damage_dice: "1d6"
     damage_bonus: 0
     range: 1
+    damage_type: "slashing"
+    weapon_type: "melee"
 
   mace:
     name: "钉头锤"
@@ -42,6 +46,8 @@ weapons:
     damage_dice: "1d6"
     damage_bonus: 0
     range: 1
+    damage_type: "bludgeoning"
+    weapon_type: "melee"
 
   shortbow:
     name: "短弓"
@@ -54,4 +60,24 @@ weapons:
     equip_slot: "ranged"
     damage_dice: "1d6"
     damage_bonus: 0
-    range: 4
+    range: 15
+    damage_type: "piercing"
+    weapon_type: "ranged"
+
+  crossbow:
+    name: "轻弩"
+    description: "装填缓慢但威力稳定的轻弩。"
+    aliases:
+      - "Crossbow"
+      - "Light Crossbow"
+      - "轻弩"
+      - "弩"
+    type: "weapon"
+    stackable: false
+    weight: 5.0
+    equip_slot: "ranged"
+    damage_dice: "1d8"
+    damage_bonus: 0
+    range: 16
+    damage_type: "piercing"
+    weapon_type: "ranged"

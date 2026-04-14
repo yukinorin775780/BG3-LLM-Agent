@@ -144,6 +144,8 @@ async def dm_node(state: GameState) -> dict:
             "action_actor": analysis.get("action_actor", "player"),
             "action_target": analysis.get("action_target", ""),
             "item_id": analysis.get("item_id", ""),
+            "spell_id": analysis.get("spell_id", ""),
+            "action_spell": analysis.get("spell_id", ""),
         },
         "is_probing_secret": analysis.get("is_probing_secret", False),
     }
