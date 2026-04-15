@@ -22,18 +22,24 @@ def mechanics_node(state: GameState) -> dict:
     normalized_intent = str(intent).strip().upper()
     if normalized_intent == "ATTACK":
         result = mechanics.execute_attack_action(state)
+    elif normalized_intent == "SHOVE":
+        result = mechanics.execute_shove_action(state)
     elif normalized_intent == "LOOT":
         result = mechanics.execute_loot_action(state)
     elif normalized_intent == "CAST_SPELL":
         result = mechanics.execute_cast_spell_action(state)
     elif normalized_intent in ("USE_ITEM", "CONSUME"):
         result = mechanics.execute_use_item(state)
+    elif normalized_intent == "STEALTH":
+        result = mechanics.execute_stealth_action(state)
     elif normalized_intent == "EQUIP":
         result = mechanics.execute_equip_action(state)
     elif normalized_intent == "UNEQUIP":
         result = mechanics.execute_unequip_action(state)
     elif normalized_intent in ("MOVE", "APPROACH"):
         result = mechanics.execute_move_action(state)
+    elif normalized_intent == "INTERACT":
+        result = mechanics.execute_interact_action(state)
     elif normalized_intent in ("END_TURN", "PASS_TURN", "WAIT_TURN"):
         result = mechanics.execute_end_turn_action(state)
     else:
@@ -83,10 +89,16 @@ def mechanics_node(state: GameState) -> dict:
         out["environment_objects"] = result["environment_objects"]
     if "combat_active" in result:
         out["combat_active"] = result["combat_active"]
+    if "combat_phase" in result:
+        out["combat_phase"] = result["combat_phase"]
     if "initiative_order" in result:
         out["initiative_order"] = result["initiative_order"]
     if "current_turn_index" in result:
         out["current_turn_index"] = result["current_turn_index"]
     if "turn_resources" in result:
         out["turn_resources"] = result["turn_resources"]
+    if "recent_barks" in result:
+        out["recent_barks"] = result["recent_barks"]
+    if "map_data" in result:
+        out["map_data"] = result["map_data"]
     return out

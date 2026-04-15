@@ -33,7 +33,7 @@ Return a JSON object with the following fields:
 
 CRITICAL RULE FOR ACTION_TYPE:
 Spoken dialogue is often an action!
-- Heuristic priority: classify concrete actions before movement. If a sentence contains equipment words (装备/拿上/穿上/卸下/脱下), use `EQUIP` or `UNEQUIP`; if it contains spellcasting words (施法/施放/释放/cast) or explicit spell names (圣火术/雷鸣波), use `CAST_SPELL`; if it contains loot words (搜刮/舔包/摸), use `LOOT`; if it contains attack words (攻击/砍/打/杀), use `ATTACK`; if it contains unlock/open words (撬开/解锁/打开), use `SLEIGHT_OF_HAND` or `ACTION`. Only use `MOVE` when no higher-priority concrete action is present.
+- Heuristic priority: classify concrete actions before movement. If a sentence contains equipment words (装备/拿上/穿上/卸下/脱下), use `EQUIP` or `UNEQUIP`; if it contains spellcasting words (施法/施放/释放/cast) or explicit spell names (圣火术/雷鸣波), use `CAST_SPELL`; if it contains loot words (搜刮/舔包/摸), use `LOOT`; if it contains attack words (攻击/砍/打/杀), use `ATTACK`; if it is explicitly about opening/closing a door (开门/关门/推门/拉门), use `INTERACT`; if it contains unlock/open words for locks/containers (撬开/解锁/开锁/打开箱子), use `SLEIGHT_OF_HAND` or `ACTION`. Only use `MOVE` when no higher-priority concrete action is present.
 - If the user threatens, demands, or uses violence in dialogue -> MUST output "INTIMIDATION".
 - If the user lies or manipulates -> MUST output "DECEPTION".
 - If the user asks for an item or favor -> MUST output "PERSUASION".
@@ -51,7 +51,7 @@ Spoken dialogue is often an action!
   - ONLY use "hp_changes" for environmental damage (traps, falling) or ambient healing.
   - DO NOT EVER use these arrays for Social Interactions (e.g., player giving a gift to an NPC, or an NPC hitting the player). The NPCs will manage their own inventories and combat actions! If the player gives an item to an ally, output EMPTY arrays for item_transfers and hp_changes, and let the NPC handle the transaction.
 
-1.  `action_type`: Choose one of [PERSUASION, DECEPTION, STEALTH, INTIMIDATION, INSIGHT, ATTACK, CAST_SPELL, MOVE, APPROACH, LOOT, EQUIP, UNEQUIP, PERCEPTION, INVESTIGATION, SLEIGHT_OF_HAND, ATHLETICS, CHAT].
+1.  `action_type`: Choose one of [PERSUASION, DECEPTION, STEALTH, INTIMIDATION, INSIGHT, ATTACK, CAST_SPELL, MOVE, APPROACH, INTERACT, LOOT, EQUIP, UNEQUIP, PERCEPTION, INVESTIGATION, SLEIGHT_OF_HAND, ATHLETICS, CHAT].
     -   `PERSUASION`: Reasoning, bargaining, honest convincing.
     -   `DECEPTION`: Lying, misleading, hiding truth.
     -   `STEALTH`: Hiding or moving silently.
@@ -64,6 +64,7 @@ Spoken dialogue is often an action!
     -   `ATTACK`: Physical aggression or casting hostile spells.
     -   `CAST_SPELL`: Explicit spellcasting action (e.g., Sacred Flame, Thunderwave).
     -   `MOVE` / `APPROACH`: Moving toward a target object or creature.
+    -   `INTERACT`: Toggling nearby interactable objects such as doors (open/close).
     -   `LOOT`: Looting a dead creature or an opened container/object.
     -   `EQUIP`: Equipping a weapon or armor from inventory.
     -   `UNEQUIP`: Removing currently equipped weapon or armor.

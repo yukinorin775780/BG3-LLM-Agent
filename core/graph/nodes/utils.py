@@ -18,6 +18,8 @@ DEFAULT_ENTITY_COORDS: Dict[str, Dict[str, int]] = {
     "astarion": {"x": 5, "y": 8},
     "laezel": {"x": 6, "y": 8},
     "goblin_1": {"x": 4, "y": 3},
+    "goblin_archer": {"x": 9, "y": 3},
+    "goblin_shaman": {"x": 8, "y": 4},
 }
 
 
@@ -78,6 +80,7 @@ def _entity_snapshot(v: Dict[str, Any]) -> Dict[str, Any]:
         "ac": v.get("ac", 10),
         "status": v.get("status", "alive"),
         "active_buffs": list(v.get("active_buffs", [])),
+        "status_effects": list(v.get("status_effects", [])),
         "affection": v.get("affection", 0),
         "inventory": dict(v.get("inventory", {})),
         "equipment": equipment,
@@ -89,6 +92,16 @@ def _entity_snapshot(v: Dict[str, Any]) -> Dict[str, Any]:
         out["shar_faith"] = v["shar_faith"]
     if "memory_awakening" in v:
         out["memory_awakening"] = v["memory_awakening"]
+    if "spell_slots" in v and isinstance(v.get("spell_slots"), dict):
+        out["spell_slots"] = dict(v.get("spell_slots") or {})
+    if "spells" in v:
+        raw_spells = v.get("spells")
+        if isinstance(raw_spells, list):
+            out["spells"] = list(raw_spells)
+        elif isinstance(raw_spells, dict):
+            out["spells"] = copy.deepcopy(raw_spells)
+    if "enemy_type" in v:
+        out["enemy_type"] = v.get("enemy_type")
     return out
 
 
@@ -182,6 +195,7 @@ def load_default_entities() -> Dict[str, Dict[str, Any]]:
                 "ac": base.get("ac", combat.get("armor_class", 10)),
                 "status": base.get("status", "alive"),
                 "active_buffs": [],
+                "status_effects": list(base.get("status_effects", [])),
                 "affection": base.get("affection", 0),
                 "inventory": inv_dict,
                 "equipment": equipment,
@@ -189,6 +203,21 @@ def load_default_entities() -> Dict[str, Dict[str, Any]]:
                 "x": base.get("x", coord_defaults.get("x", 4)),
                 "y": base.get("y", coord_defaults.get("y", 8)),
             }
+            raw_spell_slots = base.get("spell_slots", data.get("spell_slots"))
+            if isinstance(raw_spell_slots, dict):
+                normalized_slots: Dict[str, int] = {}
+                for slot_key, slot_value in raw_spell_slots.items():
+                    try:
+                        normalized_slots[str(slot_key)] = max(0, int(slot_value))
+                    except (TypeError, ValueError):
+                        normalized_slots[str(slot_key)] = 0
+                entity_data["spell_slots"] = normalized_slots
+            raw_spells = data.get("spells")
+            if isinstance(raw_spells, (list, dict)):
+                entity_data["spells"] = copy.deepcopy(raw_spells)
+            enemy_type = base.get("enemy_type", data.get("enemy_type"))
+            if enemy_type:
+                entity_data["enemy_type"] = str(enemy_type)
             if "shar_faith" in base:
                 entity_data["shar_faith"] = base["shar_faith"]
             if "memory_awakening" in base:
@@ -205,6 +234,7 @@ def load_default_entities() -> Dict[str, Dict[str, Any]]:
                 "ac": 10,
                 "status": "alive",
                 "active_buffs": [],
+                "status_effects": [],
                 "affection": 0,
                 "inventory": {},
                 "equipment": dict(DEFAULT_EQUIPMENT),
@@ -249,6 +279,13 @@ def merge_entities_with_defaults(raw_entities: Optional[Dict[str, Any]]) -> Dict
         ent.setdefault("x", defaults.get("x", DEFAULT_ENTITY_COORDS.get(npc_id, {}).get("x", 4)))
         ent.setdefault("y", defaults.get("y", DEFAULT_ENTITY_COORDS.get(npc_id, {}).get("y", 8)))
         ent.setdefault("active_buffs", [])
+        ent.setdefault("status_effects", [])
+        if isinstance(defaults.get("spell_slots"), dict):
+            ent.setdefault("spell_slots", copy.deepcopy(defaults.get("spell_slots")))
+        if "spells" in defaults:
+            ent.setdefault("spells", copy.deepcopy(defaults.get("spells")))
+        if "enemy_type" in defaults:
+            ent.setdefault("enemy_type", defaults.get("enemy_type"))
         ent.setdefault("inventory", {})
         equipment = ent.setdefault("equipment", dict(DEFAULT_EQUIPMENT))
         if not isinstance(equipment, dict):
@@ -283,10 +320,12 @@ FACTORY_DEFAULT = {
     "turn_count": 0,
     "time_of_day": "晨曦 (Morning)",
     "flags": {},
+    "combat_phase": "OUT_OF_COMBAT",
     "combat_active": False,
     "initiative_order": [],
     "current_turn_index": 0,
     "turn_resources": {},
+    "recent_barks": [],
 }
 
 

@@ -20,8 +20,29 @@
   </div>
 
   <button type="button" id="tactical-toggle-btn" class="tactical-toggle-btn" aria-controls="tactical-pause-overlay" aria-expanded="false">
-    战术菜单 <span>Space / Tab</span>
+    战术菜单 <span>Space</span>
   </button>
+
+  <div id="party-view-modal" class="party-view-modal is-hidden" aria-hidden="true" role="dialog" aria-labelledby="party-view-title">
+    <div class="party-view-panel panel-frame">
+      <div class="party-view-head">
+        <div>
+          <p class="panel-eyebrow">Party Management / TAB · I</p>
+          <h2 id="party-view-title">小队管理界面</h2>
+        </div>
+        <button type="button" id="close-party-view-btn" class="loot-close" aria-label="关闭小队管理界面">关闭</button>
+      </div>
+
+      <nav id="party-view-tabs" class="party-view-tabs" aria-label="小队管理页签">
+        <button type="button" class="party-view-tab is-active" data-party-tab="inventory">物品装备 Inventory</button>
+        <button type="button" class="party-view-tab" data-party-tab="sheet">属性面板 Character Sheet</button>
+        <button type="button" class="party-view-tab" data-party-tab="spells">法术与动作 Spells & Actions</button>
+        <button type="button" class="party-view-tab" data-party-tab="journal">日志与好感 Journal</button>
+      </nav>
+
+      <div id="party-view-content" class="party-view-content"></div>
+    </div>
+  </div>
 
   <div id="tactical-pause-overlay" class="tactical-pause-overlay is-hidden" aria-hidden="true">
   <div class="app-shell">

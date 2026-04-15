@@ -277,6 +277,10 @@ class GameService:
             if len(current_journal) > previous_journal_len
             else []
         )
+        recent_barks = self._extract_recent_barks_for_turn(
+            state=state,
+            new_journal=new_journal,
+        )
         environment_objects = self._build_environment_objects_payload(state)
         player_inventory = state.get("player_inventory")
         return {
@@ -286,12 +290,26 @@ class GameService:
             "environment_objects": environment_objects,
             "party_status": self._build_party_status_payload(state),
             "player_inventory": player_inventory if isinstance(player_inventory, dict) else {},
-            "combat_state": self._build_combat_state_payload(state),
+            "combat_state": self._build_combat_state_payload(state, recent_barks=recent_barks),
         }
 
     @staticmethod
     def _normalize_state(state: Any) -> Dict[str, Any]:
         return state if isinstance(state, dict) else {}
+
+    @staticmethod
+    def _extract_recent_barks_for_turn(
+        *,
+        state: Dict[str, Any],
+        new_journal: List[str],
+    ) -> List[Dict[str, Any]]:
+        if not any("💬 [台词]" in str(line) for line in (new_journal or [])):
+            return []
+        raw_barks = state.get("recent_barks") or []
+        if not isinstance(raw_barks, list):
+            return []
+        sanitized = [copy.deepcopy(item) for item in raw_barks if isinstance(item, dict)]
+        return sanitized
 
     @staticmethod
     def _build_environment_objects_payload(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -311,15 +329,28 @@ class GameService:
             if not isinstance(entity, dict):
                 continue
             faction = str(entity.get("faction", "")).strip().lower()
-            if faction != "hostile":
+            entity_type = str(entity.get("entity_type", "")).strip().lower()
+            if faction != "hostile" and entity_type not in {"powder_barrel", "loot_drop", "door"}:
                 continue
-            payload[str(entity_id)] = {
+            entity_payload = {
                 "id": str(entity_id),
                 "type": "entity",
                 "name": entity.get("name", str(entity_id)),
                 "description": (
-                    f"敌对单位 · HP {entity.get('hp', '—')}/{entity.get('max_hp', entity.get('hp', '—'))}"
-                    f" · AC {entity.get('ac', '—')} · 位置 {entity.get('position', 'unknown')}"
+                    (
+                        f"可破坏地形 · HP {entity.get('hp', '—')}/{entity.get('max_hp', entity.get('hp', '—'))}"
+                        if entity_type == "powder_barrel"
+                        else (
+                            f"战利品堆 · 状态 {entity.get('status', 'open')}"
+                            if entity_type == "loot_drop"
+                            else (
+                                f"门体 · 状态 {'开启' if bool(entity.get('is_open', False)) else '关闭'}"
+                                if entity_type == "door"
+                                else f"敌对单位 · HP {entity.get('hp', '—')}/{entity.get('max_hp', entity.get('hp', '—'))}"
+                            )
+                        )
+                    )
+                    + f" · AC {entity.get('ac', '—')} · 位置 {entity.get('position', 'unknown')}"
                 ),
                 "hp": entity.get("hp"),
                 "max_hp": entity.get("max_hp"),
@@ -331,16 +362,28 @@ class GameService:
                 "y": entity.get("y"),
                 "inventory": copy.deepcopy(entity.get("inventory") or {}),
             }
+            if entity_type in {"powder_barrel", "loot_drop", "door"}:
+                entity_payload["entity_type"] = entity_type
+            if entity_type == "door":
+                entity_payload["is_open"] = bool(entity.get("is_open", False))
+            if entity_type == "loot_drop":
+                entity_payload["source_name"] = entity.get("source_name")
+            payload[str(entity_id)] = entity_payload
 
         return payload
 
     @staticmethod
-    def _build_combat_state_payload(state: Dict[str, Any]) -> Dict[str, Any]:
+    def _build_combat_state_payload(
+        state: Dict[str, Any],
+        *,
+        recent_barks: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
         return {
             "combat_active": bool(state.get("combat_active", False)),
             "initiative_order": list(state.get("initiative_order") or []),
             "current_turn_index": int(state.get("current_turn_index") or 0),
             "turn_resources": copy.deepcopy(state.get("turn_resources") or {}),
+            "recent_barks": copy.deepcopy(recent_barks or []),
         }
 
     @staticmethod

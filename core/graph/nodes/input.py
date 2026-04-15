@@ -37,6 +37,7 @@ def input_node(state: GameState) -> dict:
         "current_speaker": "",
         "speaker_responses": [],
         "is_probing_secret": False,
+        "recent_barks": [],
         "turn_count": state.get("turn_count", 0),
         "time_of_day": state.get("time_of_day", "晨曦 (Morning)"),
         "entities": entities,

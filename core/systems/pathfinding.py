@@ -35,6 +35,20 @@ def _chebyshev(a: GridPos, b: GridPos) -> int:
     return max(abs(a[0] - b[0]), abs(a[1] - b[1]))
 
 
+def _obstacle_blocks_movement(obstacle: Dict[str, Any]) -> bool:
+    obstacle_type = str(obstacle.get("type", "")).strip().lower()
+    if obstacle_type == "door":
+        return not bool(obstacle.get("is_open", False))
+    return bool(obstacle.get("blocks_movement", False))
+
+
+def _obstacle_blocks_los(obstacle: Dict[str, Any]) -> bool:
+    obstacle_type = str(obstacle.get("type", "")).strip().lower()
+    if obstacle_type == "door":
+        return not bool(obstacle.get("is_open", False))
+    return bool(obstacle.get("blocks_los", False))
+
+
 def _collect_blocked_tiles(map_data: Dict[str, Any]) -> set[GridPos]:
     blocked: set[GridPos] = set()
     for raw_tile in map_data.get("blocked_movement_tiles", []) or []:
@@ -45,7 +59,7 @@ def _collect_blocked_tiles(map_data: Dict[str, Any]) -> set[GridPos]:
     for obstacle in map_data.get("obstacles", []) or []:
         if not isinstance(obstacle, dict):
             continue
-        if not bool(obstacle.get("blocks_movement", False)):
+        if not _obstacle_blocks_movement(obstacle):
             continue
         for raw_coord in obstacle.get("coordinates", []) or []:
             pos = _to_pos(raw_coord)
@@ -59,7 +73,7 @@ def _collect_los_blocked_tiles(map_data: Dict[str, Any]) -> set[GridPos]:
     for obstacle in map_data.get("obstacles", []) or []:
         if not isinstance(obstacle, dict):
             continue
-        if not bool(obstacle.get("blocks_los", False)):
+        if not _obstacle_blocks_los(obstacle):
             continue
         for raw_coord in obstacle.get("coordinates", []) or []:
             pos = _to_pos(raw_coord)

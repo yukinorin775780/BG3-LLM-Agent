@@ -23,3 +23,15 @@ thunderwave:
   aliases:
     - "雷鸣术"
     - "thunder wave"
+
+healing_word:
+  name: "治愈真言"
+  level: 1
+  target: "single"
+  range: 6
+  effect: "heal"
+  heal: "1d4"
+  healing_ability: "WIS"
+  aliases:
+    - "healing word"
+    - "治疗真言"

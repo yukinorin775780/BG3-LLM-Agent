@@ -4,6 +4,7 @@ Static tactical map loader (YAML-driven).
 
 from __future__ import annotations
 
+import copy
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -38,7 +39,7 @@ def _build_blocked_tiles(obstacles: List[Dict[str, Any]]) -> List[List[int]]:
     for obstacle in obstacles:
         if not isinstance(obstacle, dict):
             continue
-        if not bool(obstacle.get("blocks_movement", False)):
+        if not _obstacle_blocks_movement(obstacle):
             continue
         for raw_coord in obstacle.get("coordinates", []) or []:
             coord = _normalize_coord(raw_coord)
@@ -46,6 +47,13 @@ def _build_blocked_tiles(obstacles: List[Dict[str, Any]]) -> List[List[int]]:
                 continue
             blocked.add(coord)
     return [[x, y] for x, y in sorted(blocked)]
+
+
+def _obstacle_blocks_movement(obstacle: Dict[str, Any]) -> bool:
+    obstacle_type = str(obstacle.get("type", "")).strip().lower()
+    if obstacle_type == "door":
+        return not bool(obstacle.get("is_open", False))
+    return bool(obstacle.get("blocks_movement", False))
 
 
 def load_maps(filepath: Optional[str] = None, *, force_reload: bool = False) -> Dict[str, Dict[str, Any]]:
@@ -77,6 +85,29 @@ def load_maps(filepath: Optional[str] = None, *, force_reload: bool = False) -> 
                     "blocks_movement": bool(raw_obstacle.get("blocks_movement", False)),
                     "blocks_los": bool(raw_obstacle.get("blocks_los", False)),
                 }
+                if "name" in raw_obstacle:
+                    normalized_obstacle["name"] = str(raw_obstacle.get("name") or "").strip()
+                if "entity_id" in raw_obstacle:
+                    normalized_obstacle["entity_id"] = str(raw_obstacle.get("entity_id") or "").strip().lower()
+                if "is_open" in raw_obstacle:
+                    normalized_obstacle["is_open"] = bool(raw_obstacle.get("is_open"))
+                if "target_map" in raw_obstacle:
+                    normalized_obstacle["target_map"] = _normalize_map_id(raw_obstacle.get("target_map"))
+                if "spawn_x" in raw_obstacle:
+                    try:
+                        normalized_obstacle["spawn_x"] = int(raw_obstacle.get("spawn_x"))
+                    except (TypeError, ValueError):
+                        normalized_obstacle["spawn_x"] = 0
+                if "spawn_y" in raw_obstacle:
+                    try:
+                        normalized_obstacle["spawn_y"] = int(raw_obstacle.get("spawn_y"))
+                    except (TypeError, ValueError):
+                        normalized_obstacle["spawn_y"] = 0
+                if "hp" in raw_obstacle:
+                    try:
+                        normalized_obstacle["hp"] = max(1, int(raw_obstacle.get("hp")))
+                    except (TypeError, ValueError):
+                        normalized_obstacle["hp"] = 10
                 for raw_coord in raw_obstacle.get("coordinates", []) or []:
                     coord = _normalize_coord(raw_coord)
                     if coord is None:
@@ -93,6 +124,7 @@ def load_maps(filepath: Optional[str] = None, *, force_reload: bool = False) -> 
                 "height": max(1, height),
                 "obstacles": obstacles,
                 "blocked_movement_tiles": _build_blocked_tiles(obstacles),
+                "environment_objects": copy.deepcopy(raw_map_data.get("environment_objects") or {}),
             }
 
     _LOADED = True
@@ -104,5 +136,4 @@ def get_map_data(map_id: str) -> Dict[str, Any]:
     resolved_id = _normalize_map_id(map_id)
     if not resolved_id:
         return {}
-    return dict(MAP_DB.get(resolved_id, {}))
-
+    return copy.deepcopy(MAP_DB.get(resolved_id, {}))

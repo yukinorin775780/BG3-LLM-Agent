@@ -54,6 +54,8 @@
     mapData: {},
     activeLogFilters: new Set(["dialogue", "system", "narration"]),
     tacticalOverlayOpen: false,
+    partyViewOpen: false,
+    activePartyViewTab: "inventory",
     hasSyncedInitialState: false,
     turnCount: 0,
     idleTimer: null,
@@ -80,12 +82,22 @@
     return lines;
   }
 
+  function safeArrayOrObjectValues(value) {
+    if (Array.isArray(value)) return value;
+    if (value && typeof value === "object") return Object.values(value);
+    return [];
+  }
+
   const els = {
     currentLocation: document.getElementById("current-location"),
     networkState: document.getElementById("network-state"),
     turnCounter: document.getElementById("turn-counter"),
     tacticalOverlay: document.getElementById("tactical-pause-overlay"),
     tacticalToggleBtn: document.getElementById("tactical-toggle-btn"),
+    partyViewModal: document.getElementById("party-view-modal"),
+    closePartyViewBtn: document.getElementById("close-party-view-btn"),
+    partyViewTabs: document.getElementById("party-view-tabs"),
+    partyViewContent: document.getElementById("party-view-content"),
     initiativeTracker: document.getElementById("initiative-tracker"),
     initiativeList: document.getElementById("initiative-list"),
     mapContainer: document.getElementById("map-container"),
@@ -125,6 +137,21 @@
 
   function toggleTacticalOverlay() {
     setTacticalOverlay(!state.tacticalOverlayOpen);
+  }
+
+  function setPartyView(open) {
+    state.partyViewOpen = Boolean(open);
+    if (!els.partyViewModal) return;
+    els.partyViewModal.classList.toggle("is-hidden", !state.partyViewOpen);
+    els.partyViewModal.classList.toggle("active", state.partyViewOpen);
+    els.partyViewModal.setAttribute("aria-hidden", String(!state.partyViewOpen));
+    if (state.partyViewOpen) {
+      renderPartyView();
+    }
+  }
+
+  function togglePartyView() {
+    setPartyView(!state.partyViewOpen);
   }
 
   function isEditableTarget(target) {
@@ -230,6 +257,32 @@
 
   function inventoryEntries(inv) {
     return Object.entries(safeObject(inv)).filter(([, count]) => Number(count) > 0);
+  }
+
+  function playerViewData() {
+    const party = safeObject(state.partyStatus);
+    return {
+      ...safeObject(party.player),
+      hp: safeObject(party.player).hp ?? 20,
+      max_hp: safeObject(party.player).max_hp ?? safeObject(party.player).hp ?? 20,
+      affection: safeObject(party.player).affection ?? 100,
+      position: safeObject(party.player).position || "camp_center",
+      inventory: state.playerInventory,
+    };
+  }
+
+  function partyViewEntries() {
+    const party = safeObject(state.partyStatus);
+    const entries = [["player", playerViewData()]];
+    objectEntries(party)
+      .filter(([id, data]) => {
+        const key = normalizeId(id);
+        const status = normalizeId(safeObject(data).status || "alive");
+        return key !== "player" && status !== "dead";
+      })
+      .sort(([leftId], [rightId]) => leftId.localeCompare(rightId))
+      .forEach(([id, data]) => entries.push([id, safeObject(data)]));
+    return entries.slice(0, 4);
   }
 
   function canLootTarget(target) {
@@ -456,6 +509,155 @@
     return panel;
   }
 
+  function createPartyViewEquipment(ownerId, equipment) {
+    const wrap = document.createElement("div");
+    wrap.className = "party-view-equipment";
+
+    const title = document.createElement("h4");
+    title.textContent = "装备槽位";
+    wrap.appendChild(title);
+
+    const gear = safeObject(equipment);
+    ["main_hand", "offhand", "ranged", "armor"].forEach((slot) => {
+      const itemId = normalizeId(gear[slot]);
+      const row = document.createElement("div");
+      row.className = "party-view-slot" + (itemId ? "" : " party-view-slot--empty");
+
+      const label = document.createElement("span");
+      label.textContent = equipmentSlotIcon(slot) + " " + equipmentSlotLabel(slot);
+
+      const value = document.createElement("strong");
+      value.textContent = itemId ? itemMeta(itemId).label : "空";
+
+      row.appendChild(label);
+      row.appendChild(value);
+      if (itemId) {
+        row.appendChild(createItemAction("卸下", "unequip", itemId, ownerId));
+      }
+      wrap.appendChild(row);
+    });
+
+    return wrap;
+  }
+
+  function createPartyViewInventory(ownerId, inventory) {
+    const wrap = document.createElement("div");
+    wrap.className = "party-view-inventory";
+
+    const title = document.createElement("h4");
+    title.textContent = "背包格";
+    wrap.appendChild(title);
+
+    const grid = document.createElement("div");
+    grid.className = "party-view-inventory-grid";
+
+    const items = inventoryEntries(inventory);
+    const slotCount = Math.max(12, Math.ceil(items.length / 4) * 4);
+    for (let index = 0; index < slotCount; index += 1) {
+      const slot = document.createElement("div");
+      slot.className = "party-view-inventory-slot";
+
+      const entry = items[index];
+      if (!entry) {
+        slot.classList.add("party-view-inventory-slot--empty");
+        grid.appendChild(slot);
+        continue;
+      }
+
+      const [itemId, count] = entry;
+      const normalizedItemId = normalizeId(itemId);
+      const meta = itemMeta(normalizedItemId);
+      slot.dataset.partyAction = "use";
+      slot.dataset.itemId = normalizedItemId;
+      slot.dataset.ownerId = ownerId;
+      const icon = document.createElement("span");
+      icon.className = "party-view-item-icon";
+      icon.textContent = meta.icon;
+
+      const name = document.createElement("strong");
+      name.textContent = meta.label;
+
+      const qty = document.createElement("small");
+      qty.textContent = "x" + count;
+
+      const actions = document.createElement("div");
+      actions.className = "party-view-item-actions";
+      actions.appendChild(createItemAction("使用", "use", normalizedItemId, ownerId));
+      actions.appendChild(createItemAction("装备", "equip", normalizedItemId, ownerId));
+
+      slot.appendChild(icon);
+      slot.appendChild(name);
+      slot.appendChild(qty);
+      slot.appendChild(actions);
+      grid.appendChild(slot);
+    }
+
+    wrap.appendChild(grid);
+    return wrap;
+  }
+
+  function createPartyViewColumn(id, rawData) {
+    const data = safeObject(rawData);
+    const card = document.createElement("article");
+    card.className = "party-view-character";
+
+    const meta = getSpeakerMeta(id);
+    const head = document.createElement("div");
+    head.className = "party-view-character-head";
+
+    const portrait = document.createElement("div");
+    portrait.className = "party-view-portrait";
+    portrait.textContent = getInitials(id);
+    portrait.style.background = "radial-gradient(circle at 30% 30%, " + meta.color + ", #101319 72%)";
+
+    const text = document.createElement("div");
+    const name = document.createElement("h3");
+    name.textContent = getDisplayName(id);
+    name.style.color = meta.color;
+    const role = document.createElement("p");
+    role.textContent = "HP " + (data.hp ?? "—") + " / " + (data.max_hp ?? data.hp ?? "—") + " · " + formatLocation(data.position || "camp_center");
+
+    text.appendChild(name);
+    text.appendChild(role);
+    head.appendChild(portrait);
+    head.appendChild(text);
+
+    card.appendChild(head);
+    card.appendChild(createPartyViewEquipment(normalizeId(id), data.equipment));
+    card.appendChild(createPartyViewInventory(normalizeId(id), data.inventory));
+    return card;
+  }
+
+  function renderPartyViewTabs() {
+    if (!els.partyViewTabs) return;
+    els.partyViewTabs.querySelectorAll(".party-view-tab").forEach((button) => {
+      const active = normalizeId(button.dataset.partyTab) === state.activePartyViewTab;
+      button.classList.toggle("is-active", active);
+      button.setAttribute("aria-pressed", String(active));
+    });
+  }
+
+  function renderPartyView() {
+    if (!els.partyViewContent) return;
+    renderPartyViewTabs();
+    els.partyViewContent.innerHTML = "";
+
+    if (state.activePartyViewTab !== "inventory") {
+      const wip = document.createElement("div");
+      wip.className = "party-view-wip";
+      wip.textContent = "建设中 WIP";
+      els.partyViewContent.appendChild(wip);
+      return;
+    }
+
+    const grid = document.createElement("div");
+    grid.className = "party-view-grid";
+    partyViewEntries().forEach(([id, data]) => {
+      grid.appendChild(createPartyViewColumn(id, data));
+    });
+    els.partyViewContent.appendChild(grid);
+  }
+
   function createTurnResourceIcon(label, value, type) {
     const available = Number(value) > 0;
     const icon = document.createElement("span");
@@ -638,7 +840,7 @@
     if (!records.length) return { source: null, target: null };
 
     const mentions = mentionedEntities(text, records);
-    if (mode === "spell" && mentions.length === 1) {
+    if ((mode === "spell" || mode === "knockback") && mentions.length === 1) {
       const target = mentions[0].record;
       const source = fallbackSourceRecord(records, target.id);
       return { source, target };
@@ -657,6 +859,164 @@
     return { source, target };
   }
 
+  function parseGridPointFromText(text) {
+    const value = String(text || "");
+    const patterns = [
+      /(?:坐标|位置|落点|推到|推至|击退到|撞到)[^\d-]*\(?\s*(-?\d+)\s*[,，]\s*(-?\d+)\s*\)?/i,
+      /\(\s*(-?\d+)\s*[,，]\s*(-?\d+)\s*\)/,
+    ];
+
+    for (const pattern of patterns) {
+      const match = value.match(pattern);
+      if (!match) continue;
+      const x = Number(match[1]);
+      const y = Number(match[2]);
+      if (Number.isFinite(x) && Number.isFinite(y)) {
+        return { x, y };
+      }
+    }
+    return null;
+  }
+
+  function inferKnockbackTarget(text) {
+    const records = getTacticalEntities();
+    if (!records.length) return null;
+
+    const value = String(text || "");
+    const mentions = mentionedEntities(value, records);
+    if (mentions.length === 0) return null;
+    if (mentions.length === 1) return mentions[0].record;
+
+    const passiveTarget = mentions.find(({ index }) => {
+      const windowText = value.slice(index, index + 48);
+      return /被|遭|受到|挨|推开|击退|推入|推到|推至/.test(windowText);
+    });
+    if (passiveTarget) return passiveTarget.record;
+
+    const verbIndex = value.search(/推击|力量对抗|强制位移|击退|推开|推入|推到|推至/);
+    if (verbIndex >= 0) {
+      const afterVerb = mentions.find(({ index }) => index > verbIndex);
+      if (afterVerb) return afterVerb.record;
+    }
+
+    const { target } = inferVisualEntities(value, "knockback");
+    return target || mentions[1].record || mentions[0].record;
+  }
+
+  function hasTerrainDamageCue(text) {
+    return /火焰伤害|篝火|营火|火堆|campfire|fire/i.test(String(text || ""));
+  }
+
+  function inferSingleVisualEntity(text) {
+    const records = getTacticalEntities();
+    if (!records.length) return null;
+
+    const mentions = mentionedEntities(text, records);
+    if (mentions.length > 0) {
+      return mentions[0].record;
+    }
+    return activeCombatantRecord(records) || records.find((record) => record.id === "player") || records[0];
+  }
+
+  function parseDamageAmount(text) {
+    const value = String(text || "");
+    const match = value.match(/(?:受到|扣除|损失|造成)?\s*(\d+)\s*点(?:中毒|毒素|毒性|伤害)?/);
+    return match ? Number(match[1]) : null;
+  }
+
+  function resolveSpeechSpeaker(rawSpeaker, text) {
+    const speaker = normalizeId(rawSpeaker);
+    if (speaker) {
+      const direct = getTacticalEntities().find((record) => {
+        return record.id === speaker || entityAliases(record).some((alias) => normalizeId(alias) === speaker);
+      });
+      if (direct) return direct.id;
+    }
+
+    const mentioned = mentionedEntities(text || "", getTacticalEntities());
+    return mentioned[0] ? mentioned[0].record.id : "";
+  }
+
+  function parseBarkString(line) {
+    const value = String(line || "").trim();
+    const tagged = value.match(/\[台词\]\s*([^:：]+)?[:：]\s*(.+)$/);
+    if (tagged) {
+      return { speaker: tagged[1] || "", text: tagged[2] || "" };
+    }
+
+    const plain = value.match(/^([^:：]{1,32})[:：]\s*(.+)$/);
+    if (plain) {
+      return { speaker: plain[1] || "", text: plain[2] || "" };
+    }
+
+    return { speaker: "", text: value.replace(/\[台词\]\s*/, "") };
+  }
+
+  function extractSpeechBarks(data) {
+    const barks = [];
+    const pushBark = (speaker, text) => {
+      const content = String(text || "").trim();
+      if (!content) return;
+      const speakerId = resolveSpeechSpeaker(speaker, content);
+      if (!speakerId) return;
+      barks.push({ speaker: speakerId, text: content });
+    };
+
+    safeArrayOrObjectValues(data && data.recent_barks).forEach((entry) => {
+      if (typeof entry === "string") {
+        const parsed = parseBarkString(entry);
+        pushBark(parsed.speaker, parsed.text);
+        return;
+      }
+      const record = safeObject(entry);
+      pushBark(
+        record.speaker || record.entity_id || record.actor || record.character || record.id,
+        record.text || record.line || record.content || record.message,
+      );
+    });
+
+    safeArray(data && data.responses).forEach((response) => {
+      const record = safeObject(response);
+      const speaker = normalizeId(record.speaker || "");
+      if (!speaker || speaker === "dm" || speaker === "npc") return;
+      pushBark(speaker, record.text);
+    });
+
+    extractEventLines(data).forEach((line) => {
+      if (!/\[台词\]/.test(line)) return;
+      const parsed = parseBarkString(line);
+      pushBark(parsed.speaker, parsed.text);
+    });
+
+    const dedupe = new Set();
+    return barks.filter((bark) => {
+      const key = bark.speaker + "::" + bark.text;
+      if (dedupe.has(key)) return false;
+      dedupe.add(key);
+      return true;
+    });
+  }
+
+  function triggerSpeechBubbles(data) {
+    if (!window.BG3TacticalMap || typeof window.BG3TacticalMap.playSpeechBubble !== "function") return;
+    extractSpeechBarks(data).slice(0, 4).forEach((bark, index) => {
+      window.setTimeout(() => {
+        window.BG3TacticalMap.playSpeechBubble(bark.speaker, bark.text);
+      }, 120 + index * 180);
+    });
+  }
+
+  function triggerMapTransitionEffects(data) {
+    if (!window.BG3TacticalMap || typeof window.BG3TacticalMap.playMapTransition !== "function") return;
+    const hasMapCue = extractEventLines(data).some((line) => {
+      return /\[地图探索\]|地图探索|地图切换|进入新地图|加载地图|场景切换/.test(String(line || ""));
+    });
+    if (!hasMapCue) return;
+    window.setTimeout(() => {
+      window.BG3TacticalMap.playMapTransition();
+    }, 40);
+  }
+
   function triggerCombatVisualEffects(data, userLine) {
     if (!window.BG3TacticalMap) return;
 
@@ -668,10 +1028,48 @@
       return true;
     });
     let playedSpellEffect = false;
+    const responseHasTerrainDamage = events.some(hasTerrainDamageCue);
 
     events.forEach((line) => {
       const combinedText = [line, userLine].filter(Boolean).join(" ");
       if (/失败|找不到|未指定|无需再次|动作资源不足/.test(line)) return;
+
+      if (/\[状态结算\]|状态结算/.test(line) && /中毒|poison/i.test(line)) {
+        const target = inferSingleVisualEntity(combinedText);
+        const damage = parseDamageAmount(line);
+        if (target && typeof window.BG3TacticalMap.playStatusDamage === "function") {
+          window.setTimeout(() => {
+            window.BG3TacticalMap.playStatusDamage(target.id, damage ? "-" + damage : "中毒");
+          }, 80);
+        }
+      }
+
+      if (/获得优势|advantage/i.test(line)) {
+        const actor = inferSingleVisualEntity(combinedText);
+        if (actor && typeof window.BG3TacticalMap.playAdvantage === "function") {
+          window.setTimeout(() => {
+            window.BG3TacticalMap.playAdvantage(actor.id);
+          }, 80);
+        }
+      }
+
+      if (/推击|力量对抗|强制位移|击退|推开|推入|推到|推至/.test(line)) {
+        const target = inferKnockbackTarget(combinedText);
+        const destination = parseGridPointFromText(combinedText) || target;
+        if (target && destination && typeof window.BG3TacticalMap.playKnockback === "function") {
+          window.setTimeout(() => {
+            window.BG3TacticalMap.playKnockback(
+              target.id,
+              { x: destination.x, y: destination.y },
+              {
+                terrainDamage: responseHasTerrainDamage || hasTerrainDamageCue(line),
+                label: "火焰伤害",
+              },
+            );
+          }, 80);
+        }
+        return;
+      }
 
       if (!playedSpellEffect && /施放了|施展|吟唱|雷鸣波|圣火术|范围轰炸|aoe/i.test(line)) {
         const { source, target } = inferVisualEntities(combinedText, "spell");
@@ -701,9 +1099,16 @@
     });
   }
 
+  function isCombatStateActive(combatState) {
+    const combat = safeObject(combatState);
+    const phase = normalizeId(combat.combat_phase || combat.phase || "");
+    const isOutOfCombatPhase = ["out_of_combat", "outofcombat", "exploration", "free_roam", "victory"].includes(phase);
+    return combat.combat_active === true && !isOutOfCombatPhase;
+  }
+
   function renderInitiativeTracker(combatState, wasCombatActive) {
     const combat = safeObject(combatState);
-    const isCombatActive = combat.combat_active === true;
+    const isCombatActive = isCombatStateActive(combat);
     const order = safeArray(combat.initiative_order).map(normalizeId).filter(Boolean);
     const currentIndex = Number(combat.current_turn_index);
     const activeIndex = Number.isFinite(currentIndex) ? currentIndex : -1;
@@ -722,6 +1127,9 @@
           sigil: "◇",
           logType: "system",
         });
+        if (window.BG3TacticalMap && typeof window.BG3TacticalMap.playVictoryBanner === "function") {
+          window.BG3TacticalMap.playVictoryBanner();
+        }
       }
       return;
     }
@@ -839,7 +1247,6 @@
       content.appendChild(resourcesPanel);
     }
     content.appendChild(createEquipmentPanel(normalizeId(id), data.equipment));
-    content.appendChild(createInventoryPanel(normalizeId(id), data.inventory));
 
     card.appendChild(avatar);
     card.appendChild(content);
@@ -856,15 +1263,7 @@
     els.partyRoster.innerHTML = "";
 
     const fragment = document.createDocumentFragment();
-    const playerData = {
-      ...safeObject(party.player),
-      hp: safeObject(party.player).hp ?? 20,
-      max_hp: safeObject(party.player).max_hp ?? safeObject(party.player).hp ?? 20,
-      affection: safeObject(party.player).affection ?? 100,
-      position: safeObject(party.player).position || "camp_center",
-      inventory: state.playerInventory,
-    };
-    fragment.appendChild(createPartyCard("player", playerData));
+    fragment.appendChild(createPartyCard("player", playerViewData()));
 
     if (companionEntries.length === 0) {
       els.partyRoster.appendChild(fragment);
@@ -1170,7 +1569,7 @@
       if (opts.incrementTurn !== false) {
         state.turnCount += 1;
       }
-      const wasCombatActive = safeObject(state.combatState).combat_active === true;
+      const wasCombatActive = isCombatStateActive(state.combatState);
       state.partyStatus = safeObject(data.party_status);
       state.environmentObjects = safeObject(data.environment_objects);
       state.playerInventory = safeObject(data.player_inventory);
@@ -1188,11 +1587,16 @@
 
       renderPartyRoster();
       renderEnvironmentObjects();
+      if (state.partyViewOpen) {
+        renderPartyView();
+      }
       renderTacticalGrid(state.partyStatus, state.environmentObjects, state.mapData);
       renderInitiativeTracker(state.combatState, wasCombatActive);
       if (!opts.skipLogUpdate) {
         updateWorldLog(data, userLine || null);
+        triggerMapTransitionEffects(data);
         triggerCombatVisualEffects(data, userLine || "");
+        triggerSpeechBubbles(data);
       }
       maybeShowLootModal(data.environment_objects);
       setNetworkState("链路在线", "ok");
@@ -1242,11 +1646,16 @@
 
   function handlePartyAction(event) {
     const button = event.target.closest(".item-action");
-    if (!button || state.isLoading) return;
+    const inventorySlot = event.target.closest(".party-view-inventory-slot[data-item-id]");
+    const target = button || inventorySlot;
+    if (!target || state.isLoading) return;
+    if (inventorySlot && button) {
+      event.stopPropagation();
+    }
 
-    const itemId = normalizeId(button.dataset.itemId);
-    const action = normalizeId(button.dataset.partyAction);
-    const characterId = normalizeId(button.dataset.ownerId) || "player";
+    const itemId = normalizeId(target.dataset.itemId);
+    const action = normalizeId(target.dataset.partyAction);
+    const characterId = normalizeId(target.dataset.ownerId) || "player";
     if (!itemId || !action) return;
 
     if (action === "inspect") {
@@ -1256,6 +1665,12 @@
 
     if (action === "equip") {
       const command = characterId === "player" ? "我要装备 " + itemId : "让 " + characterId + " 装备 " + itemId;
+      sendMessage(command);
+      return;
+    }
+
+    if (action === "use") {
+      const command = characterId === "player" ? "我要使用 " + itemId : "让 " + characterId + " 使用 " + itemId;
       sendMessage(command);
       return;
     }
@@ -1279,7 +1694,21 @@
     document.querySelector(".shortcut-bar").addEventListener("click", handleShortcutClick);
     els.logFilterBar.addEventListener("click", handleLogFilterClick);
     els.partyRoster.addEventListener("click", handlePartyAction);
+    els.partyViewContent.addEventListener("click", handlePartyAction);
     els.environmentList.addEventListener("click", handleEnvironmentAction);
+
+    els.closePartyViewBtn.addEventListener("click", () => setPartyView(false));
+    els.partyViewModal.addEventListener("click", (event) => {
+      if (event.target === els.partyViewModal) {
+        setPartyView(false);
+      }
+    });
+    els.partyViewTabs.addEventListener("click", (event) => {
+      const button = event.target.closest(".party-view-tab");
+      if (!button) return;
+      state.activePartyViewTab = normalizeId(button.dataset.partyTab || "inventory");
+      renderPartyView();
+    });
 
     els.closeLootBtn.addEventListener("click", hideLootModal);
     els.lootModal.addEventListener("click", (event) => {
@@ -1297,10 +1726,21 @@
     });
 
     document.addEventListener("keydown", (event) => {
-      const isToggleKey = event.key === "Tab" || event.code === "Space" || event.key === " ";
-      if (!isToggleKey || isEditableTarget(event.target)) return;
-      event.preventDefault();
-      toggleTacticalOverlay();
+      if (isEditableTarget(event.target)) return;
+      if (event.key === "Escape" && state.partyViewOpen) {
+        event.preventDefault();
+        setPartyView(false);
+        return;
+      }
+      if (event.key === "Tab" || event.key.toLowerCase() === "i") {
+        event.preventDefault();
+        togglePartyView();
+        return;
+      }
+      if (event.code === "Space" || event.key === " ") {
+        event.preventDefault();
+        toggleTacticalOverlay();
+      }
     });
 
     ["keydown", "pointerdown"].forEach((eventName) => {

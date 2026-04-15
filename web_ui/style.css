@@ -1474,6 +1474,262 @@ textarea {
   transform: none;
 }
 
+.party-view-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 230;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 28px;
+  background:
+    radial-gradient(circle at center, rgba(12, 10, 8, 0.62), rgba(0, 0, 0, 0.88)),
+    rgba(0, 0, 0, 0.72);
+  backdrop-filter: blur(10px) saturate(0.78);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 180ms ease, visibility 180ms ease;
+}
+
+.party-view-modal.active {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+}
+
+.party-view-modal.is-hidden {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.party-view-panel {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  width: min(1560px, 94vw);
+  height: min(880px, 90vh);
+  padding: 22px;
+  transform: translateY(12px) scale(0.98);
+  transition: transform 220ms cubic-bezier(0.2, 0.9, 0.22, 1.18);
+}
+
+.party-view-modal.active .party-view-panel {
+  transform: translateY(0) scale(1);
+}
+
+.party-view-head {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 18px;
+}
+
+.party-view-tabs {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 18px 0;
+}
+
+.party-view-tab {
+  cursor: pointer;
+  padding: 9px 13px;
+  border: 1px solid rgba(208, 171, 103, 0.24);
+  border-radius: 999px;
+  background: rgba(255, 248, 230, 0.045);
+  color: var(--text-soft);
+  font-size: 0.78rem;
+}
+
+.party-view-tab.is-active {
+  border-color: rgba(255, 216, 107, 0.68);
+  color: #ffe1a0;
+  background: linear-gradient(135deg, rgba(208, 171, 103, 0.24), rgba(58, 35, 18, 0.42));
+  box-shadow: 0 0 18px rgba(208, 171, 103, 0.16);
+}
+
+.party-view-content {
+  position: relative;
+  z-index: 1;
+  min-height: 0;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.party-view-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(230px, 1fr));
+  gap: 16px;
+  min-height: 0;
+}
+
+.party-view-character {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  min-height: 0;
+  padding: 16px;
+  border: 1px solid rgba(208, 171, 103, 0.22);
+  border-radius: 18px;
+  background:
+    linear-gradient(180deg, rgba(255, 248, 230, 0.065), transparent 34%),
+    rgba(5, 7, 10, 0.7);
+  box-shadow: inset 0 1px 0 rgba(255, 248, 228, 0.06);
+}
+
+.party-view-character-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid rgba(208, 171, 103, 0.16);
+}
+
+.party-view-portrait {
+  display: grid;
+  place-items: center;
+  width: 58px;
+  height: 58px;
+  border: 1px solid rgba(255, 231, 172, 0.28);
+  border-radius: 18px;
+  color: #fff5da;
+  font-family: "SFMono-Regular", "Cascadia Code", monospace;
+  font-weight: 800;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.36);
+}
+
+.party-view-character h3,
+.party-view-character h4,
+.party-view-character p {
+  margin: 0;
+}
+
+.party-view-character h3 {
+  font-size: 1.05rem;
+}
+
+.party-view-character p {
+  margin-top: 5px;
+  color: var(--text-faint);
+  font-size: 0.72rem;
+}
+
+.party-view-equipment,
+.party-view-inventory {
+  margin-top: 14px;
+}
+
+.party-view-equipment h4,
+.party-view-inventory h4 {
+  margin-bottom: 9px;
+  color: #f3d89e;
+  font-size: 0.76rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.party-view-slot {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  min-height: 34px;
+  margin-bottom: 6px;
+  padding: 7px 8px;
+  border: 1px solid rgba(212, 175, 55, 0.36);
+  border-radius: 10px;
+  background: linear-gradient(135deg, rgba(58, 44, 30, 0.82), rgba(15, 12, 9, 0.86));
+}
+
+.party-view-slot--empty {
+  border-style: dashed;
+  border-color: rgba(255, 255, 255, 0.12);
+  color: var(--text-faint);
+}
+
+.party-view-slot span {
+  color: var(--text-faint);
+  font-size: 0.68rem;
+}
+
+.party-view-slot strong {
+  overflow: hidden;
+  color: #f1e5ac;
+  font-size: 0.76rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.party-view-inventory-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.party-view-inventory-slot {
+  position: relative;
+  min-height: 112px;
+  padding: 9px;
+  border: 1px solid rgba(115, 198, 195, 0.14);
+  border-radius: 12px;
+  background:
+    radial-gradient(circle at 30% 20%, rgba(208, 171, 103, 0.12), transparent 45%),
+    rgba(255, 248, 230, 0.035);
+  cursor: pointer;
+}
+
+.party-view-inventory-slot--empty {
+  cursor: default;
+  background: rgba(0, 0, 0, 0.2);
+}
+
+.party-view-inventory-slot:not(.party-view-inventory-slot--empty):hover {
+  border-color: rgba(255, 216, 107, 0.48);
+  transform: translateY(-1px);
+}
+
+.party-view-item-icon {
+  display: block;
+  font-size: 1.35rem;
+}
+
+.party-view-inventory-slot strong {
+  display: block;
+  margin-top: 6px;
+  color: var(--text-main);
+  font-size: 0.72rem;
+}
+
+.party-view-inventory-slot small {
+  color: var(--accent-gold);
+  font-family: "SFMono-Regular", "Cascadia Code", monospace;
+  font-size: 0.68rem;
+}
+
+.party-view-item-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 8px;
+}
+
+.party-view-wip {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  min-height: 320px;
+  border: 1px dashed rgba(208, 171, 103, 0.24);
+  border-radius: 18px;
+  color: var(--text-faint);
+  font-size: 1rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
 .loot-modal {
   position: fixed;
   inset: 0;
@@ -1571,6 +1827,10 @@ textarea {
   .sidebar-container {
     height: auto;
   }
+
+  .party-view-grid {
+    grid-template-columns: repeat(2, minmax(240px, 1fr));
+  }
 }
 
 @media (max-width: 860px) {
@@ -1600,6 +1860,24 @@ textarea {
   .send-btn {
     width: 100%;
   }
+
+  .party-view-modal {
+    padding: 14px;
+  }
+
+  .party-view-panel {
+    width: 96vw;
+    height: 92vh;
+    padding: 16px;
+  }
+
+  .party-view-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .party-view-inventory-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 640px) {
@@ -1626,5 +1904,9 @@ textarea {
 
   .party-card {
     grid-template-columns: 1fr;
+  }
+
+  .party-view-inventory-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }

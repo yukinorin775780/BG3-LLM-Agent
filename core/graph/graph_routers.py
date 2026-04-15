@@ -30,6 +30,7 @@ ACTION_INTENTS: tuple[str, ...] = (
     "UNEQUIP",
     "MOVE",
     "APPROACH",
+    "INTERACT",
     "END_TURN",
     "STEAL",
     "PERSUASION",
@@ -150,6 +151,7 @@ def route_after_mechanics(state: GameState) -> MECHANICS_ROUTE:
         "unequip",
         "move",
         "approach",
+        "interact",
         "end_turn",
     ):
         return "narration"

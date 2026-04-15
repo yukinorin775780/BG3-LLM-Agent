@@ -65,20 +65,36 @@ ATTACK_KEYWORDS = (
     "strike",
     "shoot",
 )
+SHOVE_KEYWORDS = (
+    "推开",
+    "推倒",
+    "撞开",
+    "撞倒",
+    "猛推",
+    "shove",
+    "push",
+    "推",
+)
 CAST_SPELL_KEYWORDS = ("施法", "施放", "释放", "吟唱", "cast", "咏唱", "使用")
-LOOT_KEYWORDS = ("搜刮", "舔包", "搜尸", "摸尸", "摸", "拾取", "loot")
+LOOT_KEYWORDS = ("搜刮", "舔包", "搜尸", "摸尸", "摸尸体", "摸", "拾取", "捡起", "loot")
 UNLOCK_KEYWORDS = ("撬开", "解锁", "开锁", "打开", "撬锁", "unlock", "open")
+INTERACT_KEYWORDS = ("交互", "互动", "开门", "关门", "推门", "拉门", "interact")
+DOOR_HINT_KEYWORDS = ("门", "door", "开门", "关门", "推门", "拉门")
 EQUIP_KEYWORDS = ("装备", "拿上", "拿起", "穿上", "佩戴", "equip", "wear")
 UNEQUIP_KEYWORDS = ("卸下", "脱下", "取下", "unequip", "remove")
+USE_ITEM_KEYWORDS = ("喝下", "喝", "服用", "使用", "use", "drink", "consume")
+STEALTH_KEYWORDS = ("潜行", "隐匿", "隐藏", "蹲下", "stealth", "sneak", "hide")
 END_TURN_KEYWORDS = ("待命", "结束回合", "结束行动", "结束轮次", "跳过回合", "跳过行动", "pass", "end turn")
 END_TURN_GROUP_KEYWORDS = ("我方回合", "全员回合", "结束我方", "结束全员", "全员结束", "结束队伍")
 ENTITY_ALIAS_MAP = {
     "shadowheart": ("shadowheart", "影心"),
     "astarion": ("astarion", "阿斯代伦", "阿斯"),
     "laezel": ("laezel", "莱埃泽尔", "莱泽尔", "莱埃", "莱泽"),
+    "goblin_1": ("goblin_1", "goblin", "地精", "哥布林", "地精巡逻兵"),
     "player": tuple(PLAYER_TARGET_ALIASES),
     "camp_fire": ("camp_fire", "campfire", "篝火", "营火", "火堆", "fire"),
     "iron_chest": ("iron_chest", "铁箱子", "箱子", "宝箱", "chest"),
+    "door_oak_1": ("door_oak_1", "door", "门", "木门", "橡木门", "沉重的橡木门"),
 }
 ITEM_ALIAS_MAP = {
     "scimitar": ("scimitar", "弯刀"),
@@ -373,6 +389,11 @@ def _resolve_target_id_from_segment(
         if "camp_fire" in normalized_targets and actor_id != "camp_fire":
             return "camp_fire"
 
+    if any(alias in normalized_segment for alias in ("门", "door", "木门", "橡木门")):
+        for candidate in normalized_targets:
+            if candidate != actor_id and "door" in candidate:
+                return candidate
+
     return ""
 
 
@@ -388,6 +409,17 @@ def _resolve_move_target_id(
         available_targets=available_targets,
         actor_id=actor_id,
         normalized_segment=normalized_segment,
+    )
+
+
+def _is_door_target_id(target_id: str) -> bool:
+    normalized = str(target_id or "").strip().lower()
+    if not normalized:
+        return False
+    return (
+        normalized.startswith("door")
+        or "_door" in normalized
+        or normalized.endswith("_door")
     )
 
 
@@ -602,6 +634,45 @@ def _detect_attack_intent(
     }
 
 
+def _detect_shove_intent(
+    user_input: str,
+    available_npcs: List[str],
+    available_targets: List[str],
+) -> Optional[Dict[str, Any]]:
+    text = str(user_input or "").strip()
+    if not text:
+        return None
+
+    lowered = text.lower()
+    if not any(keyword in lowered or keyword in text for keyword in SHOVE_KEYWORDS):
+        return None
+
+    normalized_npcs = [str(npc).strip().lower() for npc in available_npcs if str(npc).strip()]
+    actor_id = _extract_command_actor(text, normalized_npcs) or "player"
+    target_id = _resolve_action_target_id(
+        user_input=text,
+        available_targets=available_targets,
+        actor_id=actor_id,
+        keywords=SHOVE_KEYWORDS,
+    )
+    if not target_id:
+        return None
+
+    return {
+        "action_type": "SHOVE",
+        "difficulty_class": 0,
+        "reason": "A character is attempting to shove a nearby target.",
+        "is_probing_secret": False,
+        "responders": _build_responders(actor_id, available_npcs),
+        "affection_changes": {},
+        "flags_changed": {},
+        "item_transfers": [],
+        "hp_changes": [],
+        "action_actor": actor_id,
+        "action_target": target_id,
+    }
+
+
 def _detect_equipment_intent(
     user_input: str,
     available_npcs: List[str],
@@ -640,6 +711,81 @@ def _detect_equipment_intent(
     }
 
 
+def _detect_use_item_intent(
+    user_input: str,
+    available_npcs: List[str],
+) -> Optional[Dict[str, Any]]:
+    text = str(user_input or "").strip()
+    if not text:
+        return None
+
+    lowered = text.lower()
+    if not any(keyword in lowered or keyword in text for keyword in USE_ITEM_KEYWORDS):
+        return None
+
+    item_id = _resolve_item_id_from_text(text)
+    if not item_id:
+        return None
+
+    try:
+        item_data = get_registry().get_item_data(item_id)
+    except Exception:
+        item_data = {}
+    is_consumable = (
+        bool(item_data.get("is_consumable") is True)
+        or bool(item_data.get("consumable") is True)
+        or str(item_data.get("type", "")).strip().lower() == "consumable"
+    )
+    if not is_consumable:
+        return None
+
+    normalized_npcs = [str(npc).strip().lower() for npc in available_npcs if str(npc).strip()]
+    actor_id = _extract_command_actor(text, normalized_npcs) or "player"
+    return {
+        "action_type": "USE_ITEM",
+        "difficulty_class": 0,
+        "reason": "A character is using a consumable item.",
+        "is_probing_secret": False,
+        "responders": _build_responders(actor_id, available_npcs),
+        "affection_changes": {},
+        "flags_changed": {},
+        "item_transfers": [],
+        "hp_changes": [],
+        "action_actor": actor_id,
+        "action_target": item_id,
+        "item_id": item_id,
+    }
+
+
+def _detect_stealth_intent(
+    user_input: str,
+    available_npcs: List[str],
+) -> Optional[Dict[str, Any]]:
+    text = str(user_input or "").strip()
+    if not text:
+        return None
+
+    lowered = text.lower()
+    if not any(keyword in lowered or keyword in text for keyword in STEALTH_KEYWORDS):
+        return None
+
+    normalized_npcs = [str(npc).strip().lower() for npc in available_npcs if str(npc).strip()]
+    actor_id = _extract_command_actor(text, normalized_npcs) or "player"
+    return {
+        "action_type": "STEALTH",
+        "difficulty_class": 0,
+        "reason": "A character is attempting to enter stealth.",
+        "is_probing_secret": False,
+        "responders": _build_responders(actor_id, available_npcs),
+        "affection_changes": {},
+        "flags_changed": {},
+        "item_transfers": [],
+        "hp_changes": [],
+        "action_actor": actor_id,
+        "action_target": "",
+    }
+
+
 def _detect_unlock_intent(
     user_input: str,
     available_npcs: List[str],
@@ -668,6 +814,57 @@ def _detect_unlock_intent(
         "action_type": "SLEIGHT_OF_HAND",
         "difficulty_class": 15,
         "reason": "A character is attempting to unlock or open a target.",
+        "is_probing_secret": False,
+        "responders": _build_responders(actor_id, available_npcs),
+        "affection_changes": {},
+        "flags_changed": {},
+        "item_transfers": [],
+        "hp_changes": [],
+        "action_actor": actor_id,
+        "action_target": target_id,
+    }
+
+
+def _detect_interact_intent(
+    user_input: str,
+    available_npcs: List[str],
+    available_targets: List[str],
+) -> Optional[Dict[str, Any]]:
+    text = str(user_input or "").strip()
+    if not text:
+        return None
+
+    lowered = text.lower()
+    has_interact_keyword = any(keyword in lowered or keyword in text for keyword in INTERACT_KEYWORDS)
+    has_door_hint = any(keyword in lowered or keyword in text for keyword in DOOR_HINT_KEYWORDS)
+    if not has_interact_keyword and not has_door_hint:
+        return None
+
+    normalized_npcs = [str(npc).strip().lower() for npc in available_npcs if str(npc).strip()]
+    actor_id = _extract_command_actor(text, normalized_npcs) or "player"
+    target_id = _resolve_action_target_id(
+        user_input=text,
+        available_targets=available_targets,
+        actor_id=actor_id,
+        keywords=INTERACT_KEYWORDS + UNLOCK_KEYWORDS + MOVE_KEYWORDS,
+    )
+    if not target_id:
+        normalized_targets = [
+            str(target).strip().lower()
+            for target in available_targets
+            if str(target).strip()
+        ]
+        door_candidates = [target for target in normalized_targets if _is_door_target_id(target)]
+        if door_candidates:
+            target_id = door_candidates[0]
+
+    if not _is_door_target_id(target_id):
+        return None
+
+    return {
+        "action_type": "INTERACT",
+        "difficulty_class": 0,
+        "reason": "A character is interacting with a nearby door.",
         "is_probing_secret": False,
         "responders": _build_responders(actor_id, available_npcs),
         "affection_changes": {},
@@ -795,15 +992,27 @@ def analyze_intent(
     equip_result = _detect_equipment_intent(user_input, available_npcs, is_unequip=False)
     if equip_result is not None:
         return equip_result
+    use_item_result = _detect_use_item_intent(user_input, available_npcs)
+    if use_item_result is not None:
+        return use_item_result
+    stealth_result = _detect_stealth_intent(user_input, available_npcs)
+    if stealth_result is not None:
+        return stealth_result
     shortcut_result = _detect_loot_intent(user_input, available_npcs, available_targets)
     if shortcut_result is not None:
         return shortcut_result
     cast_spell_result = _detect_cast_spell_intent(user_input, available_npcs, available_targets)
     if cast_spell_result is not None:
         return cast_spell_result
+    shove_result = _detect_shove_intent(user_input, available_npcs, available_targets)
+    if shove_result is not None:
+        return shove_result
     attack_result = _detect_attack_intent(user_input, available_npcs, available_targets)
     if attack_result is not None:
         return attack_result
+    interact_result = _detect_interact_intent(user_input, available_npcs, available_targets)
+    if interact_result is not None:
+        return interact_result
     unlock_result = _detect_unlock_intent(user_input, available_npcs, available_targets)
     if unlock_result is not None:
         return unlock_result
@@ -887,6 +1096,8 @@ def analyze_intent(
         intent_data["action_actor"] = str(intent_data.get("action_actor", "player")).strip().lower() or "player"
         intent_data["action_target"] = str(intent_data.get("action_target", "")).strip().lower()
         if intent_data["action_type"] in {"EQUIP", "UNEQUIP"} and not intent_data.get("item_id"):
+            intent_data["item_id"] = _resolve_item_id_from_text(user_input)
+        if intent_data["action_type"] in {"USE_ITEM", "CONSUME"} and not intent_data.get("item_id"):
             intent_data["item_id"] = _resolve_item_id_from_text(user_input)
         if intent_data["action_type"] == "CAST_SPELL" and not intent_data.get("spell_id"):
             intent_data["spell_id"] = (
