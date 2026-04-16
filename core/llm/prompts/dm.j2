@@ -33,13 +33,13 @@ Return a JSON object with the following fields:
 
 CRITICAL RULE FOR ACTION_TYPE:
 Spoken dialogue is often an action!
-- Heuristic priority: classify concrete actions before movement. If a sentence contains equipment words (装备/拿上/穿上/卸下/脱下), use `EQUIP` or `UNEQUIP`; if it contains spellcasting words (施法/施放/释放/cast) or explicit spell names (圣火术/雷鸣波), use `CAST_SPELL`; if it contains loot words (搜刮/舔包/摸), use `LOOT`; if it contains attack words (攻击/砍/打/杀), use `ATTACK`; if it is explicitly about opening/closing a door (开门/关门/推门/拉门), use `INTERACT`; if it contains unlock/open words for locks/containers (撬开/解锁/开锁/打开箱子), use `SLEIGHT_OF_HAND` or `ACTION`. Only use `MOVE` when no higher-priority concrete action is present.
+- Heuristic priority: classify concrete actions before movement. If a sentence contains equipment words (装备/拿上/穿上/卸下/脱下), use `EQUIP` or `UNEQUIP`; if it contains spellcasting words (施法/施放/释放/cast) or explicit spell names (圣火术/雷鸣波), use `CAST_SPELL`; if it contains trap-disarm words (解除陷阱/拆陷阱/disarm), use `DISARM`; if it contains loot words (搜刮/舔包/摸), use `LOOT`; if it contains attack words (攻击/砍/打/杀), use `ATTACK`; if it is explicitly about opening/closing a door (开门/关门/推门/拉门), use `INTERACT`; if it contains unlock/open words for locks/containers (撬开/解锁/开锁/打开箱子), use `UNLOCK`. Only use `MOVE` when no higher-priority concrete action is present.
 - If the user threatens, demands, or uses violence in dialogue -> MUST output "INTIMIDATION".
 - If the user lies or manipulates -> MUST output "DECEPTION".
 - If the user asks for an item or favor -> MUST output "PERSUASION".
 - "CHAT" is strictly for harmless, casual small talk ONLY. DO NOT use CHAT for threats or demands.
 
-- CRITICAL RULE FOR COMMANDS: If the player commands an NPC to perform a physical task (e.g., "Astarion, open that chest", "Laezel, smash the door"), DO NOT use PERSUASION. You MUST use the actual physical skill (e.g., SLEIGHT_OF_HAND, ATHLETICS) and set the 'action_actor' to that NPC's ID.
+- CRITICAL RULE FOR COMMANDS: If the player commands an NPC to perform a physical task (e.g., "Astarion, open that chest", "Laezel, smash the door"), DO NOT use PERSUASION. You MUST use the actual physical action intent (e.g., UNLOCK, DISARM, ATHLETICS) and set the 'action_actor' to that NPC's ID.
 - CRITICAL RULE FOR TACTICAL ORDERS: If the player issues an imperative command to a companion or NPC (e.g. "Shadowheart, come here", "Astarion, attack that goblin", "Let Laezel loot the chest"), this is a delegated ACTION, not small talk. You MUST NOT classify it as `CHAT`. Use the real action_type (`MOVE`, `ATTACK`, `LOOT`, etc.) and set `action_actor` to the commanded NPC's ID.
 
 - CRITICAL RULE FOR INTENT: If the player describes an ACTION like looking around, LISTENING carefully, searching, hiding, attacking, moving toward a target, or looting a corpse/container, you MUST output the appropriate action_type (e.g., PERCEPTION for listening/looking, INVESTIGATION for searching, STEALTH for hiding, ATTACK for attacking, MOVE for approaching a target, LOOT for looting). Do NOT treat physical environment sensing as "CHAT".
@@ -51,13 +51,15 @@ Spoken dialogue is often an action!
   - ONLY use "hp_changes" for environmental damage (traps, falling) or ambient healing.
   - DO NOT EVER use these arrays for Social Interactions (e.g., player giving a gift to an NPC, or an NPC hitting the player). The NPCs will manage their own inventories and combat actions! If the player gives an item to an ally, output EMPTY arrays for item_transfers and hp_changes, and let the NPC handle the transaction.
 
-1.  `action_type`: Choose one of [PERSUASION, DECEPTION, STEALTH, INTIMIDATION, INSIGHT, ATTACK, CAST_SPELL, MOVE, APPROACH, INTERACT, LOOT, EQUIP, UNEQUIP, PERCEPTION, INVESTIGATION, SLEIGHT_OF_HAND, ATHLETICS, CHAT].
+1.  `action_type`: Choose one of [PERSUASION, DECEPTION, STEALTH, INTIMIDATION, INSIGHT, ATTACK, CAST_SPELL, MOVE, APPROACH, INTERACT, LOOT, EQUIP, UNEQUIP, PERCEPTION, INVESTIGATION, SLEIGHT_OF_HAND, DISARM, UNLOCK, ATHLETICS, CHAT].
     -   `PERSUASION`: Reasoning, bargaining, honest convincing.
     -   `DECEPTION`: Lying, misleading, hiding truth.
     -   `STEALTH`: Hiding or moving silently.
     -   `PERCEPTION`: Listening, looking around, or sensing the environment.
     -   `INVESTIGATION`: Actively searching a specific object or deducing clues.
-    -   `SLEIGHT_OF_HAND`: Picking locks, disarming traps, pickpocketing, or careful manipulation.
+    -   `SLEIGHT_OF_HAND`: Generic fine manipulation checks (legacy-compatible fallback).
+    -   `DISARM`: Disarming a revealed trap.
+    -   `UNLOCK`: Unlocking a locked chest/container.
     -   `ATHLETICS`: Smashing, pushing, lifting heavy objects, physical brute force.
     -   `INTIMIDATION`: Threatening, aggressive posturing.
     -   `INSIGHT`: Trying to read emotions or detect lies.

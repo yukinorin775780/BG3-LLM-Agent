@@ -1,7 +1,9 @@
 (() => {
   const API_URL = "/api/chat";
+  const STATE_URL = "/api/state";
   const SESSION_ID = "test_consume_003";
   const IDLE_MS = 30000;
+  const DIALOGUE_POLL_MS = 1800;
 
   const SPEAKER_META = {
     player: { name: "玩家", color: "#6eb5ff", sigil: "⌘" },
@@ -59,9 +61,12 @@
     hasSyncedInitialState: false,
     turnCount: 0,
     idleTimer: null,
+    dialoguePollTimer: null,
     isLoading: false,
     currentLootTargetId: "",
     seenLootTargets: new Set(),
+    activeDialogueTarget: "",
+    dialogueText: "",
   };
 
   function extractEventLines(data) {
@@ -94,6 +99,15 @@
     turnCounter: document.getElementById("turn-counter"),
     tacticalOverlay: document.getElementById("tactical-pause-overlay"),
     tacticalToggleBtn: document.getElementById("tactical-toggle-btn"),
+    restControls: document.getElementById("rest-controls"),
+    shortRestBtn: document.getElementById("short-rest-btn"),
+    longRestBtn: document.getElementById("long-rest-btn"),
+    dialogueOverlay: document.getElementById("dialogue-overlay"),
+    dialogueNpcName: document.getElementById("dialogue-npc-name"),
+    dialogueText: document.getElementById("dialogue-text"),
+    dialogueInput: document.getElementById("dialogue-input"),
+    dialogueSendBtn: document.getElementById("dialogue-send-btn"),
+    dialogueAttackBtn: document.getElementById("dialogue-attack-btn"),
     partyViewModal: document.getElementById("party-view-modal"),
     closePartyViewBtn: document.getElementById("close-party-view-btn"),
     partyViewTabs: document.getElementById("party-view-tabs"),
@@ -198,6 +212,14 @@
 
   function getDisplayName(id) {
     return getSpeakerMeta(id).name || prettifyId(id);
+  }
+
+  function getEntityDisplayName(id) {
+    const key = normalizeId(id);
+    const party = safeObject(state.partyStatus);
+    const env = safeObject(state.environmentObjects);
+    const record = safeObject(party[key] || env[key]);
+    return String(record.name || getDisplayName(key) || prettifyId(key));
   }
 
   function getInitials(id) {
@@ -1017,6 +1039,107 @@
     }, 40);
   }
 
+  function triggerRestVisualEffects(data, fallbackIntent) {
+    if (!window.BG3TacticalMap) return;
+    const responseText = safeArray(data && data.responses)
+      .map((response) => String(safeObject(response).text || ""))
+      .join("\n");
+    const events = [extractEventLines(data).join("\n"), responseText].join("\n");
+    const intent = normalizeId(fallbackIntent);
+    const shortRest = /短休|short\s*rest|short_rest/i.test(events) || intent === "short_rest";
+    const longRest = /长休|long\s*rest|long_rest|一夜过去|the next day/i.test(events) || intent === "long_rest";
+
+    if (longRest && typeof window.BG3TacticalMap.playLongRest === "function") {
+      window.setTimeout(() => window.BG3TacticalMap.playLongRest(), 80);
+      return;
+    }
+
+    if (shortRest && typeof window.BG3TacticalMap.playShortRest === "function") {
+      window.setTimeout(() => window.BG3TacticalMap.playShortRest(), 80);
+    }
+  }
+
+  function extractActiveDialogueTarget(data) {
+    const payload = safeObject(data);
+    const gameState = safeObject(payload.game_state || payload.gameState);
+    const combat = safeObject(payload.combat_state);
+    return normalizeId(
+      payload.active_dialogue_target
+      || gameState.active_dialogue_target
+      || combat.active_dialogue_target
+      || "",
+    );
+  }
+
+  function dialogueTargetAliases(targetId) {
+    const target = normalizeId(targetId);
+    const name = normalizeId(getEntityDisplayName(target));
+    return new Set([target, name].filter(Boolean));
+  }
+
+  function parseDialogueJournalLine(line) {
+    const text = String(line || "").trim();
+    const match = text.match(/\[([^\]]+)\]\s*[:：]\s*[“"]?([\s\S]*?)[”"]?\s*$/);
+    if (!match) return null;
+    return {
+      speaker: normalizeId(match[1]),
+      text: String(match[2] || "").trim(),
+    };
+  }
+
+  function extractDialogueTextForTarget(data, targetId) {
+    const aliases = dialogueTargetAliases(targetId);
+    const responses = safeArray(data && data.responses).slice().reverse();
+    for (const response of responses) {
+      const record = safeObject(response);
+      const speaker = normalizeId(record.speaker);
+      const text = String(record.text || "").trim();
+      if (text && aliases.has(speaker)) {
+        return text;
+      }
+    }
+
+    const events = extractEventLines(data).slice().reverse();
+    for (const line of events) {
+      const parsed = parseDialogueJournalLine(line);
+      if (parsed && parsed.text && aliases.has(parsed.speaker)) {
+        return parsed.text;
+      }
+    }
+
+    return "";
+  }
+
+  function updateDialogueOverlay(data) {
+    if (!els.dialogueOverlay) return;
+    const target = extractActiveDialogueTarget(data);
+    state.activeDialogueTarget = target;
+    window.BG3DialogueActive = Boolean(target);
+
+    if (!target) {
+      state.dialogueText = "";
+      els.dialogueOverlay.classList.add("hidden");
+      els.dialogueOverlay.setAttribute("aria-hidden", "true");
+      return;
+    }
+
+    const wasHidden = els.dialogueOverlay.classList.contains("hidden");
+    const npcName = getEntityDisplayName(target);
+    const dialogueText = extractDialogueTextForTarget(data, target) || state.dialogueText || "……";
+    state.dialogueText = dialogueText;
+
+    els.dialogueNpcName.textContent = npcName;
+    els.dialogueText.textContent = dialogueText;
+    els.dialogueOverlay.classList.remove("hidden");
+    els.dialogueOverlay.setAttribute("aria-hidden", "false");
+
+    if (wasHidden && els.dialogueInput) {
+      window.requestAnimationFrame(() => {
+        els.dialogueInput.focus();
+      });
+    }
+  }
+
   function triggerCombatVisualEffects(data, userLine) {
     if (!window.BG3TacticalMap) return;
 
@@ -1104,6 +1227,13 @@
     const phase = normalizeId(combat.combat_phase || combat.phase || "");
     const isOutOfCombatPhase = ["out_of_combat", "outofcombat", "exploration", "free_roam", "victory"].includes(phase);
     return combat.combat_active === true && !isOutOfCombatPhase;
+  }
+
+  function updateRestControls(combatState) {
+    if (!els.restControls) return;
+    const isExploration = !isCombatStateActive(combatState);
+    els.restControls.classList.toggle("is-hidden", !isExploration);
+    els.restControls.setAttribute("aria-hidden", String(!isExploration));
   }
 
   function renderInitiativeTracker(combatState, wasCombatActive) {
@@ -1501,6 +1631,11 @@
     els.userInput.disabled = loading;
     els.sendBtn.disabled = loading;
     els.sendBtn.textContent = loading ? "命运演算中…" : "执行指令";
+    if (els.shortRestBtn) els.shortRestBtn.disabled = loading;
+    if (els.longRestBtn) els.longRestBtn.disabled = loading;
+    if (els.dialogueInput) els.dialogueInput.disabled = loading;
+    if (els.dialogueSendBtn) els.dialogueSendBtn.disabled = loading;
+    if (els.dialogueAttackBtn) els.dialogueAttackBtn.disabled = loading;
     els.shortcutButtons.forEach((button) => {
       button.disabled = loading;
     });
@@ -1578,6 +1713,7 @@
       state.mapData = Object.keys(responseMapData).length
         ? responseMapData
         : safeObject(state.combatState.map_data);
+      updateDialogueOverlay(data);
 
       if (data.current_location) {
         renderChrome(data.current_location);
@@ -1592,9 +1728,11 @@
       }
       renderTacticalGrid(state.partyStatus, state.environmentObjects, state.mapData);
       renderInitiativeTracker(state.combatState, wasCombatActive);
+      updateRestControls(state.combatState);
       if (!opts.skipLogUpdate) {
         updateWorldLog(data, userLine || null);
         triggerMapTransitionEffects(data);
+        triggerRestVisualEffects(data, intentValue);
         triggerCombatVisualEffects(data, userLine || "");
         triggerSpeechBubbles(data);
       }
@@ -1632,6 +1770,34 @@
     const button = event.target.closest(".shortcut-btn");
     if (!button) return;
     queueCommand(button.dataset.command || "");
+  }
+
+  function handleRestClick(event) {
+    const button = event.target.closest(".rest-btn");
+    if (!button || state.isLoading || isCombatStateActive(state.combatState)) return;
+
+    const restType = normalizeId(button.dataset.restType);
+    if (restType === "short") {
+      sendMessage("", "SHORT_REST");
+      return;
+    }
+    if (restType === "long") {
+      sendMessage("", "LONG_REST");
+    }
+  }
+
+  function submitDialogueInput() {
+    if (state.isLoading || !state.activeDialogueTarget) return;
+    const text = String(els.dialogueInput.value || "").trim();
+    if (!text) return;
+    els.dialogueInput.value = "";
+    sendMessage(text, null);
+  }
+
+  function interruptDialogueWithAttack() {
+    if (state.isLoading || !state.activeDialogueTarget) return;
+    els.dialogueInput.value = "";
+    sendMessage("我直接拔出武器攻击！", null);
   }
 
   function handleEnvironmentAction(event) {
@@ -1692,6 +1858,15 @@
     });
 
     document.querySelector(".shortcut-bar").addEventListener("click", handleShortcutClick);
+    els.restControls.addEventListener("click", handleRestClick);
+    els.dialogueSendBtn.addEventListener("click", submitDialogueInput);
+    els.dialogueAttackBtn.addEventListener("click", interruptDialogueWithAttack);
+    els.dialogueInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        submitDialogueInput();
+      }
+    });
     els.logFilterBar.addEventListener("click", handleLogFilterClick);
     els.partyRoster.addEventListener("click", handlePartyAction);
     els.partyViewContent.addEventListener("click", handlePartyAction);
@@ -1777,6 +1952,32 @@
     });
   }
 
+  async function pollDialogueState() {
+    if (state.isLoading) return;
+    try {
+      const response = await fetch(STATE_URL + "?session_id=" + encodeURIComponent(SESSION_ID));
+      if (!response.ok) return;
+      const data = await response.json();
+      const partyStatus = safeObject(data.party_status);
+      const environmentObjects = safeObject(data.environment_objects);
+      const combatState = safeObject(data.combat_state);
+      if (Object.keys(partyStatus).length) state.partyStatus = partyStatus;
+      if (Object.keys(environmentObjects).length) state.environmentObjects = environmentObjects;
+      state.combatState = combatState;
+      updateDialogueOverlay(data);
+      updateRestControls(state.combatState);
+    } catch (_error) {
+      // Dialogue polling is an enhancement; chat responses remain the source of truth.
+    }
+  }
+
+  function startDialoguePolling() {
+    window.clearInterval(state.dialoguePollTimer);
+    state.dialoguePollTimer = window.setInterval(() => {
+      void pollDialogueState();
+    }, DIALOGUE_POLL_MS);
+  }
+
   async function boot() {
     bindEvents();
     setTacticalOverlay(false);
@@ -1785,12 +1986,14 @@
     renderEnvironmentObjects();
     renderTacticalGrid(state.partyStatus, state.environmentObjects, state.mapData);
     renderInitiativeTracker(state.combatState, false);
+    updateRestControls(state.combatState);
     appendLogEntry("system", "终端接入", "战术桌已连入 `/api/chat`。发出第一条指令后，主叙事区会开始记录世界变化。", {
       color: "#d0ab67",
       sigil: "◎",
       logType: "system",
     });
     await syncInitialState();
+    startDialoguePolling();
   }
 
   document.addEventListener("DOMContentLoaded", () => {

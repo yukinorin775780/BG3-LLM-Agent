@@ -8,7 +8,7 @@ Uses operator and Annotated reducers for enhanced state merge semantics:
 """
 
 import operator
-from typing import TypedDict, Annotated, List, Dict, Any, Tuple
+from typing import TypedDict, Annotated, List, Dict, Any, Tuple, Optional
 from langgraph.graph.message import add_messages
 
 
@@ -51,6 +51,7 @@ class GameState(TypedDict, total=False):
     intent: str             # DM-analyzed 机制动作 (e.g. "ATTACK", "PERSUASION", "CHAT")
     intent_context: Dict[str, Any]  # DM 输出的 difficulty_class、reason 等
     is_probing_secret: bool  # 话题标签：是否在刺探莎尔信仰/神器等核心隐私（意图 How 与话题 What 分离）
+    active_dialogue_target: Optional[str]  # 当前会话锁定的交涉目标 entity_id
 
     # -------------------------------------------------------------------------
     # RPG State [PERSISTENT]

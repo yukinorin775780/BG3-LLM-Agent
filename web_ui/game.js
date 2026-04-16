@@ -76,6 +76,14 @@
       if (!this.scene) return;
       this.scene.playMapTransition();
     },
+    playShortRest() {
+      if (!this.scene) return;
+      this.scene.playShortRestTransition();
+    },
+    playLongRest() {
+      if (!this.scene) return;
+      this.scene.playLongRestTransition();
+    },
   };
 
   window.BG3TacticalMap = controller;
@@ -86,6 +94,12 @@
 
   function normalizeId(id) {
     return String(id || "").trim().toLowerCase();
+  }
+
+  function isDialogueOverlayActive() {
+    if (window.BG3DialogueActive === true) return true;
+    const overlay = document.getElementById("dialogue-overlay");
+    return Boolean(overlay && !overlay.classList.contains("hidden"));
   }
 
   function normalizeMapData(rawMapData) {
@@ -113,12 +127,31 @@
 
   function tokenKind(id, data, source) {
     const entity = safeObject(data);
+    if (isTrap(id, entity)) return "trap";
     if (isLootDrop(id, entity)) return "loot";
     if (isDoor(id, entity)) return "door";
+    if (isChest(id, entity)) return "chest";
     if (normalizeId(id) === "player") return "player";
     if (normalizeId(entity.faction) === "hostile") return "hostile";
     if (source === "environment") return "object";
     return "neutral";
+  }
+
+  function isTrap(id, data) {
+    const entity = safeObject(data);
+    const key = normalizeId(id);
+    const type = normalizeId(entity.type || entity.kind || entity.object_type || entity.category);
+    return type === "trap" || key.includes("trap");
+  }
+
+  function isEntityHidden(data) {
+    const entity = safeObject(data);
+    const hidden = entity.is_hidden ?? entity.hidden;
+    if (typeof hidden === "boolean") return hidden;
+    if (typeof hidden === "string") {
+      return ["true", "yes", "hidden", "concealed"].includes(normalizeId(hidden));
+    }
+    return false;
   }
 
   function isDoor(id, data) {
@@ -146,6 +179,31 @@
     if (["open", "opened"].includes(status)) return true;
     if (["closed", "locked", "sealed"].includes(status)) return false;
     return false;
+  }
+
+  function isChest(id, data) {
+    const entity = safeObject(data);
+    const key = normalizeId(id);
+    const type = normalizeId(entity.type || entity.kind || entity.object_type || entity.category);
+    return key.includes("chest") || type === "chest" || type === "locked_chest";
+  }
+
+  function isLocked(data) {
+    const entity = safeObject(data);
+    const explicit = entity.is_locked ?? entity.locked;
+    if (typeof explicit === "boolean") return explicit;
+    if (typeof explicit === "string") {
+      const value = normalizeId(explicit);
+      if (["true", "yes", "locked"].includes(value)) return true;
+      if (["false", "no", "unlocked", "open", "opened"].includes(value)) return false;
+    }
+
+    const status = normalizeId(entity.status);
+    if (["unlocked", "open", "opened"].includes(status)) return false;
+    if (["locked", "sealed"].includes(status)) return true;
+
+    const type = normalizeId(entity.type || entity.kind || entity.object_type || entity.category);
+    return type === "locked_chest";
   }
 
   function isLootDrop(id, data) {
@@ -195,6 +253,7 @@
     Object.entries(safeObject(environmentObjects)).forEach(([id, data]) => {
       const entity = safeObject(data);
       if (entity.x === undefined || entity.y === undefined) return;
+      if (isTrap(id, entity) && isEntityHidden(entity)) return;
       entities.push({
         id,
         data: entity,
@@ -249,6 +308,12 @@
         .setOrigin(0, 0)
         .setDepth(500)
         .setVisible(false);
+      this.input.on("pointerdown", (pointer) => {
+        if (!isDialogueOverlayActive()) return;
+        if (pointer && pointer.event && typeof pointer.event.stopPropagation === "function") {
+          pointer.event.stopPropagation();
+        }
+      });
       this.scale.on("resize", this.handleResize, this);
       controller.scene = this;
       this.syncState(controller.latestState);
@@ -641,6 +706,117 @@
       });
     }
 
+    playShortRestTransition() {
+      const width = this.scale.width;
+      const height = this.scale.height;
+      const cx = width / 2;
+      const cy = height * 0.34;
+      const overlay = this.add.rectangle(0, 0, width, height, 0x07182f, 0)
+        .setOrigin(0, 0)
+        .setDepth(520);
+      const clock = this.add.text(cx, cy - 28, "◷", {
+        fontFamily: "Georgia, serif",
+        fontSize: "54px",
+        fontStyle: "bold",
+        color: "#bfe7ff",
+        stroke: "#07111f",
+        strokeThickness: 5,
+      }).setOrigin(0.5).setDepth(521).setAlpha(0);
+      const label = this.add.text(cx, cy + 22, "1 Hour Later...", {
+        fontFamily: "Georgia, serif",
+        fontSize: "24px",
+        fontStyle: "bold",
+        color: "#d8ecff",
+        stroke: "#07111f",
+        strokeThickness: 4,
+      }).setOrigin(0.5).setDepth(521).setAlpha(0);
+
+      this.tweens.add({
+        targets: overlay,
+        alpha: 0.42,
+        duration: 160,
+        ease: "Quad.easeOut",
+      });
+      this.tweens.add({
+        targets: clock,
+        alpha: 1,
+        angle: 720,
+        duration: 800,
+        ease: "Cubic.easeInOut",
+      });
+      this.tweens.add({
+        targets: label,
+        alpha: 1,
+        y: label.y - 8,
+        duration: 220,
+        ease: "Quad.easeOut",
+      });
+      this.tweens.add({
+        targets: [overlay, clock, label],
+        alpha: 0,
+        delay: 620,
+        duration: 180,
+        ease: "Quad.easeIn",
+        onComplete: () => {
+          overlay.destroy();
+          clock.destroy();
+          label.destroy();
+        },
+      });
+    }
+
+    playLongRestTransition() {
+      const width = this.scale.width;
+      const height = this.scale.height;
+      const cx = width / 2;
+      const cy = height * 0.36;
+      const overlay = this.add.rectangle(0, 0, width, height, 0x000000, 0)
+        .setOrigin(0, 0)
+        .setDepth(530);
+      const title = this.add.text(cx, cy - 10, "一夜过去", {
+        fontFamily: "Georgia, serif",
+        fontSize: "48px",
+        fontStyle: "bold",
+        color: "#f4e0a2",
+        stroke: "#120c05",
+        strokeThickness: 7,
+      }).setOrigin(0.5).setDepth(531).setAlpha(0);
+      const subtitle = this.add.text(cx, cy + 42, "The Next Day", {
+        fontFamily: "Georgia, serif",
+        fontSize: "22px",
+        fontStyle: "bold",
+        color: "#d0ab67",
+        stroke: "#120c05",
+        strokeThickness: 4,
+      }).setOrigin(0.5).setDepth(531).setAlpha(0);
+
+      this.tweens.add({
+        targets: overlay,
+        alpha: 1,
+        duration: 360,
+        ease: "Quad.easeIn",
+      });
+      this.tweens.add({
+        targets: [title, subtitle],
+        alpha: 1,
+        delay: 260,
+        duration: 240,
+        ease: "Quad.easeOut",
+      });
+      this.tweens.add({
+        targets: [overlay, title, subtitle],
+        alpha: 0,
+        delay: 1120,
+        duration: 380,
+        ease: "Quad.easeOut",
+        onComplete: () => {
+          overlay.destroy();
+          title.destroy();
+          subtitle.destroy();
+        },
+      });
+    }
+
     playSpeechBubble(entityId, text) {
       const token = this.tokens.get(normalizeId(entityId));
       const line = String(text || "").trim();
@@ -722,8 +898,9 @@
       }
 
       token.entity = entity;
-      token.label.setText(entity.kind === "loot" ? "✦" : entity.kind === "door" ? "门" : firstGlyph(entity.id, entity.data));
+      token.label.setText(this.tokenGlyph(entity));
       this.applyTokenStyle(token, entity.kind);
+      if (token.lockBadge) token.lockBadge.setVisible(false);
       if (entity.kind === "loot") {
         if (token.poisonIcon) token.poisonIcon.setVisible(false);
         token.shape.setScale(1, 1);
@@ -732,10 +909,24 @@
       } else if (entity.kind === "door") {
         if (token.poisonIcon) token.poisonIcon.setVisible(false);
         this.applyDoorVisual(token, entity.data);
+      } else if (entity.kind === "trap") {
+        if (token.poisonIcon) token.poisonIcon.setVisible(false);
+        this.applyTrapVisual(token);
+      } else if (entity.kind === "chest") {
+        if (token.poisonIcon) token.poisonIcon.setVisible(false);
+        this.applyChestVisual(token, entity.data);
       } else {
         this.applyStatusEffects(token, entity.data);
       }
       this.moveToken(token, entity.x, entity.y, true);
+    }
+
+    tokenGlyph(entity) {
+      if (entity.kind === "loot") return "✦";
+      if (entity.kind === "door") return "门";
+      if (entity.kind === "trap") return "⚠";
+      if (entity.kind === "chest") return "箱";
+      return firstGlyph(entity.id, entity.data);
     }
 
     createToken(entity) {
@@ -745,7 +936,9 @@
       let shape;
       if (entity.kind === "door") {
         shape = this.add.rectangle(0, 0, this.board.cell * 0.86, this.board.cell * 0.82, 0x5b341e, 1);
-      } else if (entity.kind === "object" || entity.kind === "loot") {
+      } else if (entity.kind === "trap") {
+        shape = this.add.rectangle(0, 0, this.board.cell * 0.78, this.board.cell * 0.78, 0x380909, 0.34);
+      } else if (entity.kind === "object" || entity.kind === "loot" || entity.kind === "chest") {
         shape = this.add.rectangle(0, 0, radius * 1.7, radius * 1.7, 0xe67e22, 1);
       } else {
         shape = this.add.circle(0, 0, radius, 0x4a90e2, 1);
@@ -759,8 +952,17 @@
       const poisonIcon = this.add.circle(radius * 0.62, -radius * 0.78, Math.max(4, radius * 0.22), 0x88ff88, 0.92);
       poisonIcon.setStrokeStyle(2, 0x163f1c, 0.86);
       poisonIcon.setVisible(false);
+      const lockBadge = this.add.text(radius * 0.68, -radius * 0.78, "🔒", {
+        fontFamily: "Georgia, serif",
+        fontSize: Math.max(12, radius * 0.68) + "px",
+        fontStyle: "bold",
+        color: "#ffd86b",
+        stroke: "#2a1600",
+        strokeThickness: 3,
+      }).setOrigin(0.5);
+      lockBadge.setVisible(false);
 
-      container.add([shadow, shape, label, poisonIcon]);
+      container.add([shadow, shape, label, poisonIcon, lockBadge]);
       container.setDepth(entity.kind === "player" ? 100 : 20);
       return {
         container,
@@ -772,8 +974,10 @@
         pulseTween: null,
         moveTween: null,
         lootTween: null,
+        trapTween: null,
         doorTween: null,
         doorOpenState: null,
+        lockBadge,
         speechBubble: null,
         speechBubbleTimer: null,
       };
@@ -787,10 +991,13 @@
         object: { fill: 0x9a5a1f, stroke: 0xf39c12, depth: 25 },
         loot: { fill: 0xffd700, stroke: 0xfff0a8, depth: 45 },
         door: { fill: 0x5b341e, stroke: 0xc7904c, depth: 42 },
+        trap: { fill: 0x380909, stroke: 0xff3b3b, depth: 44 },
+        chest: { fill: 0x8a5524, stroke: 0xffcf70, depth: 35 },
       };
       const style = colors[kind] || colors.neutral;
       token.shape.setFillStyle(style.fill, 1);
       token.shape.setStrokeStyle(3, style.stroke, 1);
+      token.label.setColor("#ffffff");
       token.container.setDepth(style.depth);
 
       if (kind === "player" && !token.pulseTween) {
@@ -827,6 +1034,55 @@
         token.lootTween = null;
         token.shape.setAlpha(1);
         token.label.setAlpha(1);
+      }
+
+      if (kind === "trap" && !token.trapTween) {
+        token.trapTween = this.tweens.add({
+          targets: [token.shape, token.label],
+          alpha: 0.48,
+          duration: 760,
+          ease: "Sine.easeInOut",
+          yoyo: true,
+          repeat: -1,
+        });
+      }
+
+      if (kind !== "trap" && token.trapTween) {
+        token.trapTween.stop();
+        token.trapTween = null;
+        token.shape.setAlpha(1);
+        token.label.setAlpha(1);
+      }
+    }
+
+    applyTrapVisual(token) {
+      if (typeof token.shape.setSize === "function") {
+        token.shape.setSize(this.board.cell * 0.78, this.board.cell * 0.78);
+      }
+      token.shape.setScale(1, 1);
+      token.shape.setAngle(0);
+      token.shape.setFillStyle(0x380909, 0.34);
+      token.shape.setStrokeStyle(4, 0xff3b3b, 1);
+      token.label.setColor("#ffb3a7");
+      token.label.setAlpha(1);
+      token.shadow.setScale(1.08, 0.82);
+    }
+
+    applyChestVisual(token, data) {
+      if (typeof token.shape.setSize === "function") {
+        token.shape.setSize(this.board.cell * 0.58, this.board.cell * 0.48);
+      }
+      token.shape.setScale(1, 1);
+      token.shape.setAngle(0);
+      token.shape.setAlpha(1);
+      token.shape.setFillStyle(0x8a5524, 1);
+      token.shape.setStrokeStyle(3, 0xffcf70, 0.95);
+      token.label.setColor("#fff1c2");
+      token.label.setAlpha(1);
+      token.shadow.setScale(1, 0.72);
+      if (token.lockBadge) {
+        token.lockBadge.setVisible(isLocked(data));
+        token.lockBadge.setPosition(this.board.cell * 0.22, -this.board.cell * 0.22);
       }
     }
 
@@ -940,6 +1196,7 @@
       if (token.moveTween) token.moveTween.stop();
       if (token.pulseTween) token.pulseTween.stop();
       if (token.lootTween) token.lootTween.stop();
+      if (token.trapTween) token.trapTween.stop();
       if (token.doorTween) token.doorTween.stop();
       this.clearSpeechBubble(token);
       token.container.destroy();

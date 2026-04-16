@@ -23,6 +23,41 @@ DEFAULT_ENTITY_COORDS: Dict[str, Dict[str, int]] = {
 }
 
 
+def _normalize_dynamic_states(raw_states: Any) -> Dict[str, Dict[str, Any]]:
+    """
+    规范化角色动态状态字段（如 patience/fear），统一为：
+    {
+      "patience": {"current_value": 15},
+      "fear": {"current_value": 5}
+    }
+    """
+    if not isinstance(raw_states, dict):
+        return {}
+    normalized: Dict[str, Dict[str, Any]] = {}
+    for state_key, state_payload in raw_states.items():
+        sid = str(state_key or "").strip().lower()
+        if not sid:
+            continue
+        if isinstance(state_payload, dict):
+            current_value = state_payload.get("current_value", state_payload.get("value", 0))
+            try:
+                current = int(current_value)
+            except (TypeError, ValueError):
+                current = 0
+            normalized[sid] = {
+                "current_value": current,
+                **{k: v for k, v in state_payload.items() if k != "current_value"},
+            }
+            normalized[sid]["current_value"] = current
+            continue
+        try:
+            current = int(state_payload)
+        except (TypeError, ValueError):
+            current = 0
+        normalized[sid] = {"current_value": current}
+    return normalized
+
+
 def _build_item_lore(state: Any) -> str:
     """收集场上所有物品并生成 LLM 可用的物品知识库文本"""
     registry = get_registry()
@@ -102,6 +137,8 @@ def _entity_snapshot(v: Dict[str, Any]) -> Dict[str, Any]:
             out["spells"] = copy.deepcopy(raw_spells)
     if "enemy_type" in v:
         out["enemy_type"] = v.get("enemy_type")
+    if isinstance(v.get("dynamic_states"), dict):
+        out["dynamic_states"] = copy.deepcopy(v.get("dynamic_states") or {})
     return out
 
 
@@ -179,18 +216,48 @@ def load_default_entities() -> Dict[str, Dict[str, Any]]:
                 data = yaml.safe_load(f)
             data = data or {}
             base = data.get("base_stats") or {}
+            attrs = data.get("attributes") or {}
             combat = data.get("combat") or {}
-            inv_raw = data.get("inventory") or []
-            inv_dict = _parse_inventory(inv_raw)
-            equipment = _normalize_equipment(base.get("equipment", data.get("equipment")))
-            max_hp = base.get("max_hp", base.get("hp", combat.get("hit_points", 20)))
+            # 无 base_stats 且未显式声明 spawn_in_world=true 的角色卡，
+            # 统一视为对话资产或 prefab，不默认注入战场实体。
+            if not base and not bool(data.get("spawn_in_world", False)):
+                continue
+            inv_raw = data.get("inventory") or attrs.get("inventory") or []
+            if isinstance(inv_raw, dict):
+                inv_dict = {}
+                for item_id, count in inv_raw.items():
+                    key = str(item_id).strip()
+                    if not key:
+                        continue
+                    try:
+                        qty = int(count)
+                    except (TypeError, ValueError):
+                        qty = 0
+                    if qty <= 0:
+                        continue
+                    inv_dict[key] = qty
+            else:
+                inv_dict = _parse_inventory(inv_raw)
+            equipment = _normalize_equipment(
+                base.get("equipment", data.get("equipment", attrs.get("equipment")))
+            )
+            max_hp = (
+                data.get("max_hp")
+                if data.get("max_hp") is not None
+                else base.get("max_hp", base.get("hp", combat.get("hit_points", 20)))
+            )
+            hp = data.get("hp") if data.get("hp") is not None else base.get("hp", max_hp)
             coord_defaults = DEFAULT_ENTITY_COORDS.get(entity_id, {})
             entity_data: Dict[str, Any] = {
                 "name": data.get("name", entity_id.replace("_", " ").title()),
-                "faction": base.get("faction", "neutral"),
-                "ability_scores": data.get("ability_scores", {}),
+                "faction": data.get("faction", base.get("faction", "neutral")),
+                "ability_scores": (
+                    data.get("ability_scores")
+                    or attrs.get("ability_scores")
+                    or {}
+                ),
                 "speed": base.get("speed", combat.get("speed", 30)),
-                "hp": base.get("hp", max_hp),
+                "hp": hp,
                 "max_hp": max_hp,
                 "ac": base.get("ac", combat.get("armor_class", 10)),
                 "status": base.get("status", "alive"),
@@ -203,6 +270,11 @@ def load_default_entities() -> Dict[str, Dict[str, Any]]:
                 "x": base.get("x", coord_defaults.get("x", 4)),
                 "y": base.get("y", coord_defaults.get("y", 8)),
             }
+            dynamic_states = _normalize_dynamic_states(
+                data.get("dynamic_states") or attrs.get("dynamic_states") or {}
+            )
+            if dynamic_states:
+                entity_data["dynamic_states"] = dynamic_states
             raw_spell_slots = base.get("spell_slots", data.get("spell_slots"))
             if isinstance(raw_spell_slots, dict):
                 normalized_slots: Dict[str, int] = {}
@@ -286,6 +358,8 @@ def merge_entities_with_defaults(raw_entities: Optional[Dict[str, Any]]) -> Dict
             ent.setdefault("spells", copy.deepcopy(defaults.get("spells")))
         if "enemy_type" in defaults:
             ent.setdefault("enemy_type", defaults.get("enemy_type"))
+        if isinstance(defaults.get("dynamic_states"), dict):
+            ent.setdefault("dynamic_states", copy.deepcopy(defaults.get("dynamic_states")))
         ent.setdefault("inventory", {})
         equipment = ent.setdefault("equipment", dict(DEFAULT_EQUIPMENT))
         if not isinstance(equipment, dict):
@@ -326,6 +400,7 @@ FACTORY_DEFAULT = {
     "current_turn_index": 0,
     "turn_resources": {},
     "recent_barks": [],
+    "active_dialogue_target": None,
 }
 
 

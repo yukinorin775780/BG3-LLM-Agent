@@ -30,6 +30,10 @@ def mechanics_node(state: GameState) -> dict:
         result = mechanics.execute_cast_spell_action(state)
     elif normalized_intent in ("USE_ITEM", "CONSUME"):
         result = mechanics.execute_use_item(state)
+    elif normalized_intent == "SHORT_REST":
+        result = mechanics.execute_short_rest_action(state)
+    elif normalized_intent == "LONG_REST":
+        result = mechanics.execute_long_rest_action(state)
     elif normalized_intent == "STEALTH":
         result = mechanics.execute_stealth_action(state)
     elif normalized_intent == "EQUIP":
@@ -40,6 +44,10 @@ def mechanics_node(state: GameState) -> dict:
         result = mechanics.execute_move_action(state)
     elif normalized_intent == "INTERACT":
         result = mechanics.execute_interact_action(state)
+    elif normalized_intent == "DISARM":
+        result = mechanics.execute_disarm_action(state)
+    elif normalized_intent == "UNLOCK":
+        result = mechanics.execute_unlock_action(state)
     elif normalized_intent in ("END_TURN", "PASS_TURN", "WAIT_TURN"):
         result = mechanics.execute_end_turn_action(state)
     else:

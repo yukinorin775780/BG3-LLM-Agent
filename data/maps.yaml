@@ -25,6 +25,17 @@ goblin_camp:
         burnt_map: 1
       x: 6
       y: 2
+    locked_chest:
+      name: "上锁的旅行箱"
+      status: "locked"
+      is_locked: true
+      unlock_dc: 14
+      description: "带有精巧锁芯的旅行箱，需要巧手开锁。"
+      inventory:
+        gold_coin: 12
+        healing_potion: 1
+      x: 11
+      y: 7
   obstacles:
     - type: "rock"
       coordinates: [[5, 5], [5, 6], [5, 7]]
@@ -46,6 +57,19 @@ goblin_camp:
       is_open: false
       blocks_movement: true
       blocks_los: true
+    - type: "trap"
+      entity_id: "trap_tripwire_1"
+      name: "绊线陷阱"
+      coordinates: [[11, 9]]
+      is_hidden: true
+      detect_dc: 13
+      disarm_dc: 15
+      damage: "2d6"
+      damage_type: "poison"
+      save_dc: 13
+      trigger_radius: 0
+      blocks_movement: false
+      blocks_los: false
     - type: "transition_zone"
       name: "营地边缘裂隙"
       coordinates: [[14, 14]]

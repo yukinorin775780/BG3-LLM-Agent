@@ -79,6 +79,7 @@ class ChatResponse(BaseModel):
     party_status: Dict[str, Any]  # 队友的血量、好感度等状态
     player_inventory: Dict[str, Any]  # 玩家背包
     combat_state: Optional[Dict[str, Any]] = None  # 回合制战斗状态
+    active_dialogue_target: Optional[str] = None  # 当前锁定的电影级对话目标
 
 
 @app.get("/", include_in_schema=False)
@@ -96,6 +97,12 @@ async def chat_endpoint(req: ChatRequest) -> ChatResponse:
         session_id=req.session_id,
         character=req.character,
     )
+    return ChatResponse(**result)
+
+
+@app.get("/api/state", response_model=ChatResponse)
+async def state_endpoint(session_id: str = "test_consume_003") -> ChatResponse:
+    result = await game_service.get_state_snapshot(session_id=session_id)
     return ChatResponse(**result)
 
 

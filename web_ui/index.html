@@ -23,6 +23,30 @@
     战术菜单 <span>Space</span>
   </button>
 
+  <div id="rest-controls" class="rest-controls" aria-label="探索休整入口">
+    <button type="button" id="short-rest-btn" class="rest-btn" data-rest-type="short">
+      <span>⛺</span> 短休 <small>Short Rest</small>
+    </button>
+    <button type="button" id="long-rest-btn" class="rest-btn rest-btn--long" data-rest-type="long">
+      <span>🏕</span> 长休 <small>Long Rest</small>
+    </button>
+  </div>
+
+  <div id="dialogue-overlay" class="dialogue-overlay hidden" aria-hidden="true" role="dialog" aria-labelledby="dialogue-npc-name">
+    <div class="dialogue-box">
+      <div class="dialogue-speaker-row">
+        <span class="dialogue-sigil">◆</span>
+        <h2 id="dialogue-npc-name">NPC Name</h2>
+      </div>
+      <div id="dialogue-text" class="dialogue-text">...</div>
+      <div class="dialogue-input-area">
+        <input type="text" id="dialogue-input" placeholder="输入你的回答..." autocomplete="off" />
+        <button type="button" id="dialogue-send-btn">说话</button>
+        <button type="button" id="dialogue-attack-btn" class="danger-btn">拔出武器 (中断交涉)</button>
+      </div>
+    </div>
+  </div>
+
   <div id="party-view-modal" class="party-view-modal is-hidden" aria-hidden="true" role="dialog" aria-labelledby="party-view-title">
     <div class="party-view-panel panel-frame">
       <div class="party-view-head">

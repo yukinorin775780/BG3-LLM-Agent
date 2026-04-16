@@ -75,6 +75,17 @@ SHOVE_KEYWORDS = (
     "push",
     "推",
 )
+DISARM_KEYWORDS = (
+    "解除陷阱",
+    "解除绊线陷阱",
+    "解除绊线",
+    "拆陷阱",
+    "拆除陷阱",
+    "拆除绊线陷阱",
+    "拆雷",
+    "排雷",
+    "disarm",
+)
 CAST_SPELL_KEYWORDS = ("施法", "施放", "释放", "吟唱", "cast", "咏唱", "使用")
 LOOT_KEYWORDS = ("搜刮", "舔包", "搜尸", "摸尸", "摸尸体", "摸", "拾取", "捡起", "loot")
 UNLOCK_KEYWORDS = ("撬开", "解锁", "开锁", "打开", "撬锁", "unlock", "open")
@@ -84,8 +95,61 @@ EQUIP_KEYWORDS = ("装备", "拿上", "拿起", "穿上", "佩戴", "equip", "we
 UNEQUIP_KEYWORDS = ("卸下", "脱下", "取下", "unequip", "remove")
 USE_ITEM_KEYWORDS = ("喝下", "喝", "服用", "使用", "use", "drink", "consume")
 STEALTH_KEYWORDS = ("潜行", "隐匿", "隐藏", "蹲下", "stealth", "sneak", "hide")
+DIALOGUE_START_KEYWORDS = ("交谈", "说话", "沟通", "谈判", "聊聊", "搭话", "谈谈", "talk", "negotiate")
+SHORT_REST_KEYWORDS = ("短休", "稍微休息一下", "小憩", "短暂休息", "short rest")
+LONG_REST_KEYWORDS = ("长休", "扎营", "睡一觉", "过夜休息", "long rest")
+READ_KEYWORDS = ("阅读", "查看", "翻阅", "read", "inspect", "examine")
 END_TURN_KEYWORDS = ("待命", "结束回合", "结束行动", "结束轮次", "跳过回合", "跳过行动", "pass", "end turn")
 END_TURN_GROUP_KEYWORDS = ("我方回合", "全员回合", "结束我方", "结束全员", "全员结束", "结束队伍")
+PHYSICAL_ACTION_KEYWORDS = (
+    "攻击",
+    "砍",
+    "打",
+    "杀",
+    "射击",
+    "attack",
+    "hit",
+    "strike",
+    "shoot",
+    "移动",
+    "走向",
+    "走到",
+    "靠近",
+    "move",
+    "approach",
+    "推开",
+    "推倒",
+    "shove",
+    "push",
+    "施法",
+    "施放",
+    "cast",
+    "搜刮",
+    "loot",
+    "撬开",
+    "解锁",
+    "开锁",
+    "拆陷阱",
+    "解除陷阱",
+    "开门",
+    "关门",
+    "阅读",
+    "查看",
+    "翻阅",
+    "read",
+    "inspect",
+    "examine",
+    "装备",
+    "卸下",
+    "喝下",
+    "使用药水",
+    "结束回合",
+    "待命",
+    "拔剑",
+    "跑开",
+    "撤退",
+    "离开",
+)
 ENTITY_ALIAS_MAP = {
     "shadowheart": ("shadowheart", "影心"),
     "astarion": ("astarion", "阿斯代伦", "阿斯"),
@@ -94,7 +158,11 @@ ENTITY_ALIAS_MAP = {
     "player": tuple(PLAYER_TARGET_ALIASES),
     "camp_fire": ("camp_fire", "campfire", "篝火", "营火", "火堆", "fire"),
     "iron_chest": ("iron_chest", "铁箱子", "箱子", "宝箱", "chest"),
+    "locked_chest": ("locked_chest", "上锁宝箱", "上锁箱子", "锁住的箱子", "旅行箱"),
     "door_oak_1": ("door_oak_1", "door", "门", "木门", "橡木门", "沉重的橡木门"),
+    "trap_tripwire_1": ("trap_tripwire_1", "陷阱", "绊线陷阱", "绊线", "trap"),
+    "journal_1": ("journal_1", "日志", "实验日志", "残破的实验日志", "笔记", "journal", "note"),
+    "gribbo": ("gribbo", "格里波", "变异地精萨满", "地精萨满", "gribbo the mutated"),
 }
 ITEM_ALIAS_MAP = {
     "scimitar": ("scimitar", "弯刀"),
@@ -451,6 +519,22 @@ def _build_responders(actor_id: str, available_npcs: List[str]) -> List[str]:
     return responders[:1]
 
 
+def _build_dialogue_responders(target_id: str, available_npcs: List[str]) -> List[str]:
+    normalized_target = str(target_id or "").strip().lower()
+    normalized_npcs = [str(npc).strip().lower() for npc in available_npcs if str(npc).strip()]
+    if normalized_target and normalized_target in normalized_npcs:
+        return [normalized_target]
+    return normalized_npcs[:1] or [DEFAULT_TARGET_NPC]
+
+
+def _is_physical_action_input(user_input: str) -> bool:
+    text = str(user_input or "").strip()
+    if not text:
+        return False
+    lowered = text.lower()
+    return any(keyword in lowered or keyword in text for keyword in PHYSICAL_ACTION_KEYWORDS)
+
+
 def _resolve_item_id_from_text(user_input: str) -> str:
     normalized_text = _normalize_reference_text(user_input)
     if not normalized_text:
@@ -786,6 +870,121 @@ def _detect_stealth_intent(
     }
 
 
+def _detect_start_dialogue_intent(
+    user_input: str,
+    available_npcs: List[str],
+    available_targets: List[str],
+) -> Optional[Dict[str, Any]]:
+    text = str(user_input or "").strip()
+    if not text:
+        return None
+
+    lowered = text.lower()
+    if not any(keyword in lowered or keyword in text for keyword in DIALOGUE_START_KEYWORDS):
+        return None
+
+    actor_id = "player"
+    target_id = _resolve_action_target_id(
+        user_input=text,
+        available_targets=available_targets,
+        actor_id=actor_id,
+        keywords=DIALOGUE_START_KEYWORDS,
+    )
+    if not target_id or target_id == "player":
+        return None
+
+    return {
+        "action_type": "START_DIALOGUE",
+        "difficulty_class": 0,
+        "reason": "The player initiates a direct negotiation or conversation.",
+        "is_probing_secret": False,
+        "responders": _build_dialogue_responders(target_id, available_npcs),
+        "affection_changes": {},
+        "flags_changed": {},
+        "item_transfers": [],
+        "hp_changes": [],
+        "action_actor": actor_id,
+        "action_target": target_id,
+    }
+
+
+def _detect_rest_intent(
+    user_input: str,
+    available_npcs: List[str],
+    *,
+    is_long_rest: bool,
+) -> Optional[Dict[str, Any]]:
+    text = str(user_input or "").strip()
+    if not text:
+        return None
+
+    lowered = text.lower()
+    keywords = LONG_REST_KEYWORDS if is_long_rest else SHORT_REST_KEYWORDS
+    if not any(keyword in lowered or keyword in text for keyword in keywords):
+        return None
+
+    normalized_npcs = [str(npc).strip().lower() for npc in available_npcs if str(npc).strip()]
+    actor_id = _extract_command_actor(text, normalized_npcs) or "player"
+    action_type = "LONG_REST" if is_long_rest else "SHORT_REST"
+    reason = (
+        "A character is requesting a long rest to fully recover."
+        if is_long_rest
+        else "A character is requesting a short rest to recover partially."
+    )
+    return {
+        "action_type": action_type,
+        "difficulty_class": 0,
+        "reason": reason,
+        "is_probing_secret": False,
+        "responders": _build_responders(actor_id, available_npcs),
+        "affection_changes": {},
+        "flags_changed": {},
+        "item_transfers": [],
+        "hp_changes": [],
+        "action_actor": actor_id,
+        "action_target": "",
+    }
+
+
+def _detect_read_intent(
+    user_input: str,
+    available_npcs: List[str],
+    available_targets: List[str],
+) -> Optional[Dict[str, Any]]:
+    text = str(user_input or "").strip()
+    if not text:
+        return None
+
+    lowered = text.lower()
+    if not any(keyword in lowered or keyword in text for keyword in READ_KEYWORDS):
+        return None
+
+    normalized_npcs = [str(npc).strip().lower() for npc in available_npcs if str(npc).strip()]
+    actor_id = _extract_command_actor(text, normalized_npcs) or "player"
+    target_id = _resolve_action_target_id(
+        user_input=text,
+        available_targets=available_targets,
+        actor_id=actor_id,
+        keywords=READ_KEYWORDS,
+    )
+    if not target_id:
+        return None
+
+    return {
+        "action_type": "READ",
+        "difficulty_class": 0,
+        "reason": "A character is attempting to read a lore document.",
+        "is_probing_secret": False,
+        "responders": _build_responders(actor_id, available_npcs),
+        "affection_changes": {},
+        "flags_changed": {},
+        "item_transfers": [],
+        "hp_changes": [],
+        "action_actor": actor_id,
+        "action_target": target_id,
+    }
+
+
 def _detect_unlock_intent(
     user_input: str,
     available_npcs: List[str],
@@ -811,9 +1010,48 @@ def _detect_unlock_intent(
         return None
 
     return {
-        "action_type": "SLEIGHT_OF_HAND",
+        "action_type": "UNLOCK",
+        "difficulty_class": 14,
+        "reason": "A character is attempting to unlock a locked object.",
+        "is_probing_secret": False,
+        "responders": _build_responders(actor_id, available_npcs),
+        "affection_changes": {},
+        "flags_changed": {},
+        "item_transfers": [],
+        "hp_changes": [],
+        "action_actor": actor_id,
+        "action_target": target_id,
+    }
+
+
+def _detect_disarm_intent(
+    user_input: str,
+    available_npcs: List[str],
+    available_targets: List[str],
+) -> Optional[Dict[str, Any]]:
+    text = str(user_input or "").strip()
+    if not text:
+        return None
+
+    lowered = text.lower()
+    if not any(keyword in lowered or keyword in text for keyword in DISARM_KEYWORDS):
+        return None
+
+    normalized_npcs = [str(npc).strip().lower() for npc in available_npcs if str(npc).strip()]
+    actor_id = _extract_command_actor(text, normalized_npcs) or "player"
+    target_id = _resolve_action_target_id(
+        user_input=text,
+        available_targets=available_targets,
+        actor_id=actor_id,
+        keywords=DISARM_KEYWORDS,
+    )
+    if not target_id:
+        return None
+
+    return {
+        "action_type": "DISARM",
         "difficulty_class": 15,
-        "reason": "A character is attempting to unlock or open a target.",
+        "reason": "A character is attempting to disarm a detected trap.",
         "is_probing_secret": False,
         "responders": _build_responders(actor_id, available_npcs),
         "affection_changes": {},
@@ -966,6 +1204,7 @@ def analyze_intent(
     available_npcs: Optional[List[str]] = None,
     available_targets: Optional[List[str]] = None,
     item_lore: Optional[str] = None,
+    active_dialogue_target: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Analyze player intent and determine game mechanics.
@@ -986,42 +1225,138 @@ def analyze_intent(
     """
     available_npcs = available_npcs or list(DEFAULT_AVAILABLE_NPCS)
     available_targets = available_targets or list(available_npcs)
-    unequip_result = _detect_equipment_intent(user_input, available_npcs, is_unequip=True)
+    normalized_active_dialogue_target = str(active_dialogue_target or "").strip().lower()
+
+    def _finalize_heuristic_result(result: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        if result is None:
+            return None
+        if not normalized_active_dialogue_target:
+            return result
+        action_type = str(result.get("action_type", "")).strip().upper()
+        if action_type in {"CHAT", "START_DIALOGUE", "DIALOGUE_REPLY"}:
+            return result
+        result["clear_active_dialogue_target"] = True
+        if not str(result.get("action_target", "") or "").strip() and action_type in {
+            "ATTACK",
+            "MOVE",
+            "APPROACH",
+            "CAST_SPELL",
+            "SHOVE",
+        }:
+            result["action_target"] = normalized_active_dialogue_target
+        return result
+
+    # 对话会话锁：除非玩家明确下达物理动作，否则所有输入都视为当前对话回复。
+    if normalized_active_dialogue_target and not _is_physical_action_input(user_input):
+        return {
+            "action_type": "DIALOGUE_REPLY",
+            "difficulty_class": 0,
+            "reason": "Dialogue session is active; route input to dialogue reply.",
+            "is_probing_secret": False,
+            "responders": _build_dialogue_responders(normalized_active_dialogue_target, available_npcs),
+            "affection_changes": {},
+            "flags_changed": {},
+            "item_transfers": [],
+            "hp_changes": [],
+            "action_actor": "player",
+            "action_target": normalized_active_dialogue_target,
+        }
+
+    start_dialogue_result = _detect_start_dialogue_intent(user_input, available_npcs, available_targets)
+    if start_dialogue_result is not None:
+        return start_dialogue_result
+
+    unequip_result = _finalize_heuristic_result(
+        _detect_equipment_intent(user_input, available_npcs, is_unequip=True)
+    )
     if unequip_result is not None:
         return unequip_result
-    equip_result = _detect_equipment_intent(user_input, available_npcs, is_unequip=False)
+    equip_result = _finalize_heuristic_result(
+        _detect_equipment_intent(user_input, available_npcs, is_unequip=False)
+    )
     if equip_result is not None:
         return equip_result
-    use_item_result = _detect_use_item_intent(user_input, available_npcs)
+    use_item_result = _finalize_heuristic_result(_detect_use_item_intent(user_input, available_npcs))
     if use_item_result is not None:
         return use_item_result
-    stealth_result = _detect_stealth_intent(user_input, available_npcs)
+    stealth_result = _finalize_heuristic_result(_detect_stealth_intent(user_input, available_npcs))
     if stealth_result is not None:
         return stealth_result
-    shortcut_result = _detect_loot_intent(user_input, available_npcs, available_targets)
+    long_rest_result = _finalize_heuristic_result(
+        _detect_rest_intent(user_input, available_npcs, is_long_rest=True)
+    )
+    if long_rest_result is not None:
+        return long_rest_result
+    short_rest_result = _finalize_heuristic_result(
+        _detect_rest_intent(user_input, available_npcs, is_long_rest=False)
+    )
+    if short_rest_result is not None:
+        return short_rest_result
+    read_result = _finalize_heuristic_result(
+        _detect_read_intent(user_input, available_npcs, available_targets)
+    )
+    if read_result is not None:
+        return read_result
+    shortcut_result = _finalize_heuristic_result(
+        _detect_loot_intent(user_input, available_npcs, available_targets)
+    )
     if shortcut_result is not None:
         return shortcut_result
-    cast_spell_result = _detect_cast_spell_intent(user_input, available_npcs, available_targets)
+    cast_spell_result = _finalize_heuristic_result(
+        _detect_cast_spell_intent(user_input, available_npcs, available_targets)
+    )
     if cast_spell_result is not None:
         return cast_spell_result
-    shove_result = _detect_shove_intent(user_input, available_npcs, available_targets)
+    shove_result = _finalize_heuristic_result(
+        _detect_shove_intent(user_input, available_npcs, available_targets)
+    )
     if shove_result is not None:
         return shove_result
-    attack_result = _detect_attack_intent(user_input, available_npcs, available_targets)
+    attack_result = _finalize_heuristic_result(
+        _detect_attack_intent(user_input, available_npcs, available_targets)
+    )
     if attack_result is not None:
         return attack_result
-    interact_result = _detect_interact_intent(user_input, available_npcs, available_targets)
+    interact_result = _finalize_heuristic_result(
+        _detect_interact_intent(user_input, available_npcs, available_targets)
+    )
     if interact_result is not None:
         return interact_result
-    unlock_result = _detect_unlock_intent(user_input, available_npcs, available_targets)
+    disarm_result = _finalize_heuristic_result(
+        _detect_disarm_intent(user_input, available_npcs, available_targets)
+    )
+    if disarm_result is not None:
+        return disarm_result
+    unlock_result = _finalize_heuristic_result(
+        _detect_unlock_intent(user_input, available_npcs, available_targets)
+    )
     if unlock_result is not None:
         return unlock_result
-    end_turn_result = _detect_end_turn_intent(user_input, available_npcs)
+    end_turn_result = _finalize_heuristic_result(_detect_end_turn_intent(user_input, available_npcs))
     if end_turn_result is not None:
         return end_turn_result
-    move_result = _detect_move_intent(user_input, available_npcs, available_targets)
+    move_result = _finalize_heuristic_result(
+        _detect_move_intent(user_input, available_npcs, available_targets)
+    )
     if move_result is not None:
         return move_result
+    if normalized_active_dialogue_target and _is_physical_action_input(user_input):
+        lowered = str(user_input or "").lower()
+        if any(keyword in lowered or keyword in user_input for keyword in ATTACK_KEYWORDS + ("拔剑",)):
+            return {
+                "action_type": "ATTACK",
+                "difficulty_class": 0,
+                "reason": "Dialogue interrupted by direct physical hostility.",
+                "is_probing_secret": False,
+                "responders": _build_dialogue_responders(normalized_active_dialogue_target, available_npcs),
+                "affection_changes": {},
+                "flags_changed": {},
+                "item_transfers": [],
+                "hp_changes": [],
+                "action_actor": "player",
+                "action_target": normalized_active_dialogue_target,
+                "clear_active_dialogue_target": True,
+            }
 
     # 濒死拦截：HP <= 0 时 NPC 已昏迷，跳过 LLM 判定
     if hp <= 0:
@@ -1095,6 +1430,16 @@ def analyze_intent(
         intent_data['action_type'] = str(intent_data['action_type']).upper()
         intent_data["action_actor"] = str(intent_data.get("action_actor", "player")).strip().lower() or "player"
         intent_data["action_target"] = str(intent_data.get("action_target", "")).strip().lower()
+        if normalized_active_dialogue_target and intent_data["action_type"] not in {"CHAT", "START_DIALOGUE", "DIALOGUE_REPLY"}:
+            intent_data["clear_active_dialogue_target"] = True
+            if not intent_data["action_target"] and intent_data["action_type"] in {
+                "ATTACK",
+                "MOVE",
+                "APPROACH",
+                "CAST_SPELL",
+                "SHOVE",
+            }:
+                intent_data["action_target"] = normalized_active_dialogue_target
         if intent_data["action_type"] in {"EQUIP", "UNEQUIP"} and not intent_data.get("item_id"):
             intent_data["item_id"] = _resolve_item_id_from_text(user_input)
         if intent_data["action_type"] in {"USE_ITEM", "CONSUME"} and not intent_data.get("item_id"):

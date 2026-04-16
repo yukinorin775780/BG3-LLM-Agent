@@ -28,6 +28,7 @@ class ChatTurnResult(TypedDict):
     party_status: Dict[str, Any]
     player_inventory: Dict[str, Any]
     combat_state: Dict[str, Any]
+    active_dialogue_target: Optional[str]
 
 
 class GraphProtocol(Protocol):
@@ -178,6 +179,23 @@ class GameService:
                 state = await self._initialize_world_state(graph, config)
             return state
 
+    async def get_state_snapshot(
+        self,
+        *,
+        session_id: str,
+        initialize_if_missing: bool = True,
+    ) -> ChatTurnResult:
+        state = await self.get_session_state(
+            session_id=session_id,
+            initialize_if_missing=initialize_if_missing,
+        )
+        journal_events = state.get("journal_events") or []
+        previous_journal_len = max(0, len(journal_events) - 8)
+        return self._build_chat_result(
+            state,
+            previous_journal_len=previous_journal_len,
+        )
+
     async def _load_checkpoint_state(
         self,
         graph: GraphProtocol,
@@ -291,6 +309,7 @@ class GameService:
             "party_status": self._build_party_status_payload(state),
             "player_inventory": player_inventory if isinstance(player_inventory, dict) else {},
             "combat_state": self._build_combat_state_payload(state, recent_barks=recent_barks),
+            "active_dialogue_target": state.get("active_dialogue_target"),
         }
 
     @staticmethod
@@ -330,7 +349,9 @@ class GameService:
                 continue
             faction = str(entity.get("faction", "")).strip().lower()
             entity_type = str(entity.get("entity_type", "")).strip().lower()
-            if faction != "hostile" and entity_type not in {"powder_barrel", "loot_drop", "door"}:
+            if faction != "hostile" and entity_type not in {"powder_barrel", "loot_drop", "door", "trap"}:
+                continue
+            if entity_type == "trap" and bool(entity.get("is_hidden", True)):
                 continue
             entity_payload = {
                 "id": str(entity_id),
@@ -346,7 +367,11 @@ class GameService:
                             else (
                                 f"门体 · 状态 {'开启' if bool(entity.get('is_open', False)) else '关闭'}"
                                 if entity_type == "door"
-                                else f"敌对单位 · HP {entity.get('hp', '—')}/{entity.get('max_hp', entity.get('hp', '—'))}"
+                                else (
+                                    f"陷阱 · 状态 {'隐藏' if bool(entity.get('is_hidden', True)) else '已暴露'}"
+                                    if entity_type == "trap"
+                                    else f"敌对单位 · HP {entity.get('hp', '—')}/{entity.get('max_hp', entity.get('hp', '—'))}"
+                                )
                             )
                         )
                     )
@@ -362,10 +387,14 @@ class GameService:
                 "y": entity.get("y"),
                 "inventory": copy.deepcopy(entity.get("inventory") or {}),
             }
-            if entity_type in {"powder_barrel", "loot_drop", "door"}:
+            if entity_type in {"powder_barrel", "loot_drop", "door", "trap"}:
                 entity_payload["entity_type"] = entity_type
             if entity_type == "door":
                 entity_payload["is_open"] = bool(entity.get("is_open", False))
+            if entity_type == "trap":
+                entity_payload["is_hidden"] = bool(entity.get("is_hidden", True))
+                entity_payload["detect_dc"] = entity.get("detect_dc")
+                entity_payload["disarm_dc"] = entity.get("disarm_dc")
             if entity_type == "loot_drop":
                 entity_payload["source_name"] = entity.get("source_name")
             payload[str(entity_id)] = entity_payload

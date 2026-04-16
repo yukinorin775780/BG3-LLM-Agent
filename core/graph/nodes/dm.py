@@ -107,7 +107,21 @@ async def dm_node(state: GameState) -> dict:
         available_npcs=available_npcs,
         available_targets=available_targets,
         item_lore=item_lore if item_lore else None,
+        active_dialogue_target=state.get("active_dialogue_target"),
     )
+
+    current_dialogue_target = str(state.get("active_dialogue_target") or "").strip().lower() or None
+    next_dialogue_target = current_dialogue_target
+    analyzed_action = str(analysis.get("action_type", "CHAT") or "CHAT").strip().upper()
+    analyzed_target = str(analysis.get("action_target", "") or "").strip().lower()
+    if analyzed_action == "START_DIALOGUE":
+        next_dialogue_target = analyzed_target or current_dialogue_target
+    elif analyzed_action == "DIALOGUE_REPLY":
+        next_dialogue_target = current_dialogue_target or analyzed_target
+        if not analysis.get("action_target") and next_dialogue_target:
+            analysis["action_target"] = next_dialogue_target
+    elif bool(analysis.get("clear_active_dialogue_target", False)):
+        next_dialogue_target = None
 
     affection_changes = analysis.get("affection_changes", {})
     from ui.renderer import GameRenderer
@@ -148,6 +162,7 @@ async def dm_node(state: GameState) -> dict:
             "action_spell": analysis.get("spell_id", ""),
         },
         "is_probing_secret": analysis.get("is_probing_secret", False),
+        "active_dialogue_target": next_dialogue_target,
     }
 
     current_flags = dict(state.get("flags", {}))

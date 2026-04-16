@@ -53,6 +53,7 @@ OBSTACLE_TYPE_DISPLAY = {
     "rock": "岩石",
     "campfire": "篝火",
     "door": "门",
+    "trap": "陷阱",
     "transition_zone": "传送区域",
     "wall": "墙体",
     "tree": "树木",
@@ -75,6 +76,7 @@ STATUS_EFFECT_LIBRARY: Dict[str, Dict[str, Any]] = {
         "description": "回合开始时受到 1d4 毒素伤害。",
     },
 }
+REST_CLEARABLE_NEGATIVE_EFFECTS = frozenset({"poisoned", "prone", "surprised"})
 BARK_TRIGGER_TYPES = frozenset(
     {
         "CRITICAL_HIT",
@@ -165,6 +167,31 @@ def _normalize_status_effects(value: Any) -> List[Dict[str, Any]]:
         duration = max(0, _coerce_int(raw_effect.get("duration"), 0))
         effects.append({"type": effect_type, "duration": duration})
     return effects
+
+
+def _normalize_dynamic_states(value: Any) -> Dict[str, Dict[str, Any]]:
+    if not isinstance(value, dict):
+        return {}
+    normalized: Dict[str, Dict[str, Any]] = {}
+    for state_key, payload in value.items():
+        sid = str(state_key or "").strip().lower()
+        if not sid:
+            continue
+        if isinstance(payload, dict):
+            current_value = payload.get("current_value", payload.get("value", 0))
+            normalized[sid] = {
+                **payload,
+                "current_value": _coerce_int(current_value, 0),
+            }
+            continue
+        normalized[sid] = {"current_value": _coerce_int(payload, 0)}
+    return normalized
+
+
+def _ensure_dynamic_states(entity: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    dynamic_states = _normalize_dynamic_states(entity.get("dynamic_states"))
+    entity["dynamic_states"] = dynamic_states
+    return dynamic_states
 
 
 def _ensure_status_effects(entity: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -330,6 +357,7 @@ def _build_player_combatant() -> Dict[str, Any]:
         "y": 9,
         "active_buffs": [],
         "status_effects": [],
+        "dynamic_states": {},
         "affection": 0,
     }
 
@@ -354,6 +382,7 @@ def _ensure_actor_entity(
             existing.setdefault("status", "alive")
             existing.setdefault("inventory", {})
             _ensure_status_effects(existing)
+            _ensure_dynamic_states(existing)
             _get_equipment(existing)
             return existing
 
@@ -385,6 +414,7 @@ def _ensure_actor_entity(
     actor.setdefault("status", "alive")
     actor.setdefault("inventory", {})
     _ensure_status_effects(actor)
+    _ensure_dynamic_states(actor)
     _get_equipment(actor)
     return actor
 
@@ -568,6 +598,18 @@ def _is_door_entity(entity_id: str, entity: Dict[str, Any]) -> bool:
     )
 
 
+def _is_trap_entity(entity_id: str, entity: Dict[str, Any]) -> bool:
+    normalized_id = _normalize_entity_id(entity_id)
+    entity_type = str(entity.get("entity_type", "")).strip().lower()
+    name = str(entity.get("name", "")).strip().lower()
+    return (
+        normalized_id.startswith("trap_")
+        or entity_type == "trap"
+        or "陷阱" in name
+        or "trap" in name
+    )
+
+
 def _sync_door_state_to_map(
     *,
     map_data: Dict[str, Any],
@@ -639,6 +681,7 @@ def _inject_map_entities_from_obstacles(
         return
     door_index = 1
     barrel_index = 1
+    trap_index = 1
     for obstacle in map_data.get("obstacles", []) or []:
         if not isinstance(obstacle, dict):
             continue
@@ -685,6 +728,36 @@ def _inject_map_entities_from_obstacles(
                     "max_hp": barrel_hp,
                     "ac": 10,
                     "status": "alive",
+                    "inventory": {},
+                    "equipment": {"main_hand": None, "ranged": None, "armor": None},
+                    "position": "camp_center",
+                    "x": x,
+                    "y": y,
+                    "active_buffs": [],
+                    "status_effects": [],
+                    "affection": 0,
+                }
+            elif obstacle_type == "trap":
+                entity_id = (
+                    str(obstacle.get("entity_id") or f"trap_{trap_index}").strip().lower()
+                    or f"trap_{trap_index}"
+                )
+                trap_index += 1
+                entities[entity_id] = {
+                    "name": str(obstacle.get("name") or "绊线陷阱"),
+                    "entity_type": "trap",
+                    "faction": "neutral",
+                    "hp": 1,
+                    "max_hp": 1,
+                    "ac": 10,
+                    "status": "armed",
+                    "is_hidden": bool(obstacle.get("is_hidden", True)),
+                    "detect_dc": _coerce_int(obstacle.get("detect_dc"), 13),
+                    "disarm_dc": _coerce_int(obstacle.get("disarm_dc"), 15),
+                    "save_dc": _coerce_int(obstacle.get("save_dc"), 13),
+                    "damage": str(obstacle.get("damage") or "2d6"),
+                    "damage_type": str(obstacle.get("damage_type") or "poison").strip().lower(),
+                    "trigger_radius": max(0, _coerce_int(obstacle.get("trigger_radius"), 0)),
                     "inventory": {},
                     "equipment": {"main_hand": None, "ranged": None, "armor": None},
                     "position": "camp_center",
@@ -921,6 +994,8 @@ def _validate_move_destination(
         if not isinstance(entity, dict) or not _is_alive_entity(entity):
             continue
         if _is_door_entity(normalized_entity_id, entity):
+            continue
+        if _is_trap_entity(normalized_entity_id, entity):
             continue
         entity_x = _coerce_int(entity.get("x"), 4)
         entity_y = _coerce_int(entity.get("y"), 8)
@@ -1265,6 +1340,65 @@ def _is_in_combat_state(state: Any) -> bool:
     if bool(state.get("combat_active", False)):
         return True
     return str(state.get("combat_phase", "")).strip().upper() == "IN_COMBAT"
+
+
+def _iter_living_player_side_entities(entities: Dict[str, Any]) -> List[Tuple[str, Dict[str, Any]]]:
+    members: List[Tuple[str, Dict[str, Any]]] = []
+    if not isinstance(entities, dict):
+        return members
+    for entity_id_raw, entity in entities.items():
+        entity_id = _normalize_entity_id(entity_id_raw)
+        if not isinstance(entity, dict):
+            continue
+        if not _is_alive_entity(entity):
+            continue
+        if not _is_player_side_entity(entity_id, entity):
+            continue
+        members.append((entity_id, entity))
+    return members
+
+
+def _max_spell_slots_for_entity(actor_id: str, entity: Dict[str, Any]) -> Dict[str, int]:
+    explicit_caps = (
+        entity.get("max_spell_slots")
+        or entity.get("spell_slots_max")
+        or entity.get("spell_slots_cap")
+    )
+    normalized_caps = _normalize_spell_slots(explicit_caps)
+    if normalized_caps:
+        return normalized_caps
+
+    # 实体上的 spell_slots 默认视为该角色的静态上限。
+    entity_slots = _normalize_spell_slots(entity.get("spell_slots"))
+    if entity_slots:
+        return entity_slots
+
+    return _default_spell_slots(actor_id, entity)
+
+
+def _build_rest_reject_in_combat(
+    *,
+    state: Any,
+    entities: Dict[str, Any],
+    intent: str,
+) -> Dict[str, Any]:
+    return {
+        "journal_events": ["❌ [休息] CANNOT_REST_IN_COMBAT：战斗中无法休息。"],
+        "entities": entities,
+        "combat_phase": str(state.get("combat_phase", "IN_COMBAT")),
+        "combat_active": bool(state.get("combat_active", False)),
+        "initiative_order": list(state.get("initiative_order") or []),
+        "current_turn_index": _coerce_int(state.get("current_turn_index"), 0),
+        "turn_resources": copy.deepcopy(state.get("turn_resources") or {}),
+        "raw_roll_data": _build_action_result(
+            intent=intent,
+            actor=_normalize_entity_id((state.get("intent_context") or {}).get("action_actor", "player")) or "player",
+            target="",
+            is_success=False,
+            result_type="CANNOT_REST_IN_COMBAT",
+        ),
+        "turn_locked": True,
+    }
 
 
 def _is_powder_barrel(entity_id: str, entity: Dict[str, Any]) -> bool:
@@ -1735,6 +1869,197 @@ def _evaluate_vision_alert_after_move(
     }
 
 
+def _remove_trap_obstacle_from_map(
+    *,
+    map_data: Dict[str, Any],
+    x: int,
+    y: int,
+) -> None:
+    if not isinstance(map_data, dict):
+        return
+    obstacles = map_data.get("obstacles")
+    if not isinstance(obstacles, list):
+        return
+
+    for obstacle in obstacles:
+        if not isinstance(obstacle, dict):
+            continue
+        if str(obstacle.get("type", "")).strip().lower() != "trap":
+            continue
+        coordinates = obstacle.get("coordinates")
+        if not isinstance(coordinates, list):
+            continue
+        obstacle["coordinates"] = [
+            coord
+            for coord in coordinates
+            if not (
+                isinstance(coord, (list, tuple))
+                and len(coord) == 2
+                and _coerce_int(coord[0], -9999) == x
+                and _coerce_int(coord[1], -9999) == y
+            )
+        ]
+    map_data["obstacles"] = [
+        obstacle
+        for obstacle in obstacles
+        if not (
+            isinstance(obstacle, dict)
+            and str(obstacle.get("type", "")).strip().lower() == "trap"
+            and not (obstacle.get("coordinates") or [])
+        )
+    ]
+    _rebuild_blocked_movement_tiles(map_data)
+
+
+def _trigger_trap_entity(
+    *,
+    trap_id: str,
+    trap: Dict[str, Any],
+    entities: Dict[str, Any],
+    map_data: Dict[str, Any],
+    trigger_actor_id: str,
+) -> List[str]:
+    trap_name = _display_entity_name(trap, trap_id)
+    trigger_actor = entities.get(trigger_actor_id, {})
+    trigger_actor_name = _display_entity_name(
+        trigger_actor if isinstance(trigger_actor, dict) else {},
+        trigger_actor_id,
+    )
+    trap_x = _coerce_int(trap.get("x"), 0)
+    trap_y = _coerce_int(trap.get("y"), 0)
+    radius = max(0, _coerce_int(trap.get("trigger_radius"), 0))
+    save_dc = _coerce_int(trap.get("save_dc"), 13)
+    damage_formula = str(trap.get("damage") or "2d6")
+    damage_type = str(trap.get("damage_type") or "poison").strip().lower()
+    damage_type_name = _damage_type_display_name(damage_type)
+
+    logs = [f"💥 [陷阱触发] {trigger_actor_name} 不慎踩中了 {trap_name}！"]
+    for entity_id, entity in entities.items():
+        normalized_id = _normalize_entity_id(entity_id)
+        if not isinstance(entity, dict) or not _is_alive_entity(entity):
+            continue
+        if normalized_id == trap_id:
+            continue
+        entity_x = _coerce_int(entity.get("x"), trap_x)
+        entity_y = _coerce_int(entity.get("y"), trap_y)
+        distance = _chebyshev_distance(
+            actor_x=trap_x,
+            actor_y=trap_y,
+            target_x=entity_x,
+            target_y=entity_y,
+        )
+        if distance > radius:
+            continue
+
+        dex_mod = calculate_ability_modifier(_get_ability_score(entity, "DEX", 10))
+        save_roll = random.randint(1, 20)
+        save_total = save_roll + dex_mod
+        damage_roll = parse_dice_string(damage_formula)
+        is_save_success = save_total >= save_dc
+        applied_damage = damage_roll // 2 if is_save_success else damage_roll
+        hp_change = _apply_damage_to_entity(
+            target_id=normalized_id,
+            target=entity,
+            damage=applied_damage,
+        )
+        outcome = "成功" if is_save_success else "失败"
+        entity_name = _display_entity_name(entity, normalized_id)
+        logs.append(
+            f"💥 [陷阱] {entity_name} 进行敏捷豁免 "
+            f"(1d20{dex_mod:+d}={save_total} vs DC {save_dc})，{outcome}！"
+            f"受到 {hp_change['damage']} 点{damage_type_name}伤害。"
+        )
+        if hp_change["new_hp"] <= 0:
+            logs.append(f"☠️ [战斗结果] {entity_name} 倒下了。")
+
+    trap["status"] = "triggered"
+    trap["hp"] = 0
+    trap["is_hidden"] = False
+    entities.pop(trap_id, None)
+    _remove_trap_obstacle_from_map(map_data=map_data, x=trap_x, y=trap_y)
+    return logs
+
+
+def _evaluate_traps_after_move(
+    *,
+    entities: Dict[str, Any],
+    map_data: Dict[str, Any],
+    actor_id: str,
+) -> List[str]:
+    if _normalize_entity_id(actor_id) != "player":
+        return []
+    actor = entities.get(actor_id)
+    if not isinstance(actor, dict) or not _is_alive_entity(actor):
+        return []
+
+    actor_x = _coerce_int(actor.get("x"), 4)
+    actor_y = _coerce_int(actor.get("y"), 9)
+    passive_perception = 10 + calculate_ability_modifier(_get_ability_score(actor, "WIS", 10))
+    actor_name = _display_entity_name(actor, actor_id)
+    logs: List[str] = []
+
+    trap_pairs: List[Tuple[str, Dict[str, Any]]] = []
+    for entity_id, entity in entities.items():
+        normalized_id = _normalize_entity_id(entity_id)
+        if not isinstance(entity, dict):
+            continue
+        if not _is_trap_entity(normalized_id, entity):
+            continue
+        status = str(entity.get("status", "armed")).strip().lower()
+        if status in {"dead", "disabled", "triggered"}:
+            continue
+        trap_pairs.append((normalized_id, entity))
+
+    # Step 1: 先判定是否踩中陷阱（trigger_radius=0 表示踩中即触发）。
+    for trap_id, trap in list(trap_pairs):
+        trap_x = _coerce_int(trap.get("x"), actor_x)
+        trap_y = _coerce_int(trap.get("y"), actor_y)
+        trigger_radius = max(0, _coerce_int(trap.get("trigger_radius"), 0))
+        distance = _chebyshev_distance(
+            actor_x=actor_x,
+            actor_y=actor_y,
+            target_x=trap_x,
+            target_y=trap_y,
+        )
+        if distance > trigger_radius:
+            continue
+        logs.extend(
+            _trigger_trap_entity(
+                trap_id=trap_id,
+                trap=trap,
+                entities=entities,
+                map_data=map_data,
+                trigger_actor_id=actor_id,
+            )
+        )
+
+    # Step 2: 再进行被动感知扫描（半径 3 格）。
+    for trap_id, trap in trap_pairs:
+        if trap_id not in entities:
+            continue
+        is_hidden = bool(trap.get("is_hidden", True))
+        if not is_hidden:
+            continue
+        trap_x = _coerce_int(trap.get("x"), actor_x)
+        trap_y = _coerce_int(trap.get("y"), actor_y)
+        distance = _chebyshev_distance(
+            actor_x=actor_x,
+            actor_y=actor_y,
+            target_x=trap_x,
+            target_y=trap_y,
+        )
+        if distance > 3:
+            continue
+        detect_dc = _coerce_int(trap.get("detect_dc"), 13)
+        if passive_perception >= detect_dc:
+            trap["is_hidden"] = False
+            trap["status"] = "revealed"
+            trap_name = _display_entity_name(trap, trap_id)
+            logs.append(f"👁️ [洞察] {actor_name} 察觉到了地上的 {trap_name}！")
+
+    return logs
+
+
 def _combat_has_live_hostiles(entities: Dict[str, Any]) -> bool:
     return any(
         isinstance(entity, dict) and _is_alive_entity(entity) and _is_hostile_entity(entity)
@@ -2143,11 +2468,12 @@ def _is_unlockable_skill_success(
         return False
 
     status = str(target_obj.get("status", "")).strip().lower()
-    if status != "locked":
+    is_locked = bool(target_obj.get("is_locked", False)) or status == "locked"
+    if not is_locked:
         return False
 
     normalized_intent = str(intent or "").strip().upper()
-    return normalized_intent in {"SLEIGHT_OF_HAND", "ACTION"}
+    return normalized_intent in {"SLEIGHT_OF_HAND", "ACTION", "UNLOCK"}
 
 
 def execute_combat_attack(
@@ -2384,6 +2710,8 @@ def _collect_alive_occupied_positions(
         if not isinstance(entity, dict) or not _is_alive_entity(entity):
             continue
         if _is_door_entity(normalized_id, entity):
+            continue
+        if _is_trap_entity(normalized_id, entity):
             continue
         occupied_positions.append(
             (
@@ -4997,6 +5325,113 @@ def execute_stealth_action(state: Any) -> Dict[str, Any]:
     }
 
 
+def execute_short_rest_action(state: Any) -> Dict[str, Any]:
+    entities = copy.deepcopy(state.get("entities") or {})
+    if _is_in_combat_state(state):
+        return _build_rest_reject_in_combat(
+            state=state,
+            entities=entities,
+            intent="SHORT_REST",
+        )
+
+    detail_logs: List[str] = []
+    for entity_id, entity in _iter_living_player_side_entities(entities):
+        current_hp = max(0, _coerce_int(entity.get("hp"), 0))
+        max_hp = max(1, _coerce_int(entity.get("max_hp"), current_hp or 1))
+        recover_amount = max(0, max_hp // 2)
+        new_hp = min(max_hp, current_hp + recover_amount)
+        actual_heal = max(0, new_hp - current_hp)
+        entity["hp"] = new_hp
+        entity["max_hp"] = max_hp
+        if actual_heal > 0:
+            detail_logs.append(
+                f"🩹 [短休] {_display_entity_name(entity, entity_id)} 恢复了 {actual_heal} 点生命值 ({new_hp}/{max_hp})。"
+            )
+
+    return {
+        "journal_events": ["⛺ [短休] 队伍原地小憩了片刻，包扎伤口，恢复了部分生命值。"] + detail_logs,
+        "entities": entities,
+        "combat_phase": "OUT_OF_COMBAT",
+        "combat_active": False,
+        "initiative_order": [],
+        "current_turn_index": 0,
+        "raw_roll_data": _build_action_result(
+            intent="SHORT_REST",
+            actor=_normalize_entity_id((state.get("intent_context") or {}).get("action_actor", "player")) or "player",
+            target="",
+            is_success=True,
+            result_type="SUCCESS",
+        ),
+    }
+
+
+def execute_long_rest_action(state: Any) -> Dict[str, Any]:
+    entities = copy.deepcopy(state.get("entities") or {})
+    if _is_in_combat_state(state):
+        return _build_rest_reject_in_combat(
+            state=state,
+            entities=entities,
+            intent="LONG_REST",
+        )
+
+    turn_resources: Dict[str, Dict[str, Any]] = {}
+    detail_logs: List[str] = []
+    for entity_id, entity in _iter_living_player_side_entities(entities):
+        max_hp = max(1, _coerce_int(entity.get("max_hp"), _coerce_int(entity.get("hp"), 1)))
+        entity["hp"] = max_hp
+        entity["max_hp"] = max_hp
+
+        effects = _ensure_status_effects(entity)
+        remaining_effects: List[Dict[str, Any]] = []
+        cleared_effect_names: List[str] = []
+        for effect in effects:
+            effect_type = str(effect.get("type", "")).strip().lower()
+            if not effect_type:
+                continue
+            is_permanent = bool(effect.get("permanent", False))
+            if effect_type in REST_CLEARABLE_NEGATIVE_EFFECTS and not is_permanent:
+                effect_name = str(
+                    (STATUS_EFFECT_LIBRARY.get(effect_type) or {}).get("name")
+                    or effect_type
+                )
+                cleared_effect_names.append(effect_name)
+                continue
+            remaining_effects.append(effect)
+        entity["status_effects"] = remaining_effects
+
+        max_spell_slots = _max_spell_slots_for_entity(entity_id, entity)
+        if max_spell_slots:
+            entity["spell_slots"] = copy.deepcopy(max_spell_slots)
+
+        fresh_resources = _default_turn_resources(entity_id, entity)
+        fresh_resources["_turn_started"] = False
+        if max_spell_slots:
+            fresh_resources["spell_slots"] = copy.deepcopy(max_spell_slots)
+        turn_resources[entity_id] = fresh_resources
+
+        if cleared_effect_names:
+            detail_logs.append(
+                f"🧹 [长休] {_display_entity_name(entity, entity_id)} 的异常状态已清理：{', '.join(cleared_effect_names)}。"
+            )
+
+    return {
+        "journal_events": ["🏕️ [长休] 队伍建立营地并休息了一整晚。生命值、法术位与精力已彻底恢复！"] + detail_logs,
+        "entities": entities,
+        "combat_phase": "OUT_OF_COMBAT",
+        "combat_active": False,
+        "initiative_order": [],
+        "current_turn_index": 0,
+        "turn_resources": turn_resources,
+        "raw_roll_data": _build_action_result(
+            intent="LONG_REST",
+            actor=_normalize_entity_id((state.get("intent_context") or {}).get("action_actor", "player")) or "player",
+            target="",
+            is_success=True,
+            result_type="SUCCESS",
+        ),
+    }
+
+
 def execute_move_action(state: Any) -> Dict[str, Any]:
     """
     极简移动：玩家/角色朝目标方向最多移动 3 格，并停在目标邻近格。
@@ -5108,7 +5543,15 @@ def execute_move_action(state: Any) -> Dict[str, Any]:
     actor_name = _display_entity_name(actor, actor_id)
 
     journal_events = [f"🚶 [空间移动] {actor_name}移动到了 {target_name} 附近。"]
-    if _is_player_side_entity(actor_id, actor):
+    trap_events = _evaluate_traps_after_move(
+        entities=entities,
+        map_data=map_data if isinstance(map_data, dict) else {},
+        actor_id=actor_id,
+    )
+    journal_events.extend(trap_events)
+    actor_after_traps = entities.get(actor_id) if isinstance(entities.get(actor_id), dict) else actor
+    actor_still_alive = _is_alive_entity(actor_after_traps if isinstance(actor_after_traps, dict) else {})
+    if _is_player_side_entity(actor_id, actor) and actor_still_alive:
         transition_zone = _find_transition_zone_at(
             map_data=map_data if isinstance(map_data, dict) else {},
             x=new_x,
@@ -5136,13 +5579,15 @@ def execute_move_action(state: Any) -> Dict[str, Any]:
                 )
                 return transition_payload
 
-    vision_result = _evaluate_vision_alert_after_move(
-        state=state,
-        entities=entities,
-        actor_id=actor_id,
-        map_data=map_data,
-    )
-    journal_events.extend(list(vision_result.get("journal_events") or []))
+    vision_result: Dict[str, Any] = {}
+    if actor_still_alive:
+        vision_result = _evaluate_vision_alert_after_move(
+            state=state,
+            entities=entities,
+            actor_id=actor_id,
+            map_data=map_data,
+        )
+        journal_events.extend(list(vision_result.get("journal_events") or []))
 
     payload: Dict[str, Any] = {
         "journal_events": journal_events,
@@ -5322,6 +5767,374 @@ def execute_interact_action(state: Any) -> Dict[str, Any]:
     return payload
 
 
+def execute_disarm_action(state: Any) -> Dict[str, Any]:
+    entities = copy.deepcopy(state.get("entities") or {})
+    map_data = (
+        copy.deepcopy(state.get("map_data"))
+        if isinstance(state.get("map_data"), dict)
+        else {}
+    )
+    _sync_door_state_to_map(map_data=map_data, entities=entities)
+    intent_context = state.get("intent_context") or {}
+
+    actor_id = _normalize_entity_id(intent_context.get("action_actor", "player")) or "player"
+    target_query = str(intent_context.get("action_target", "") or "").strip()
+    turn_lock = _reject_if_not_active_turn(
+        state=state,
+        intent="DISARM",
+        actor_id=actor_id,
+        target_id=target_query,
+        entities=entities,
+    )
+    if turn_lock:
+        return turn_lock
+
+    target_id, target_obj, target_name = _resolve_target_reference(
+        target_id=target_query,
+        entities=entities,
+        environment_objects={},
+    )
+    if not target_id:
+        return {
+            "journal_events": ["❌ [解除陷阱] 解除失败：未指定目标。"],
+            "entities": entities,
+            "map_data": map_data,
+            "raw_roll_data": _build_action_result(
+                intent="DISARM",
+                actor=actor_id,
+                target="",
+                is_success=False,
+                result_type="INVALID_TARGET",
+            ),
+        }
+    if target_id not in entities or not isinstance(entities.get(target_id), dict):
+        return {
+            "journal_events": [f"❌ [解除陷阱] 解除失败：找不到目标 {target_id}。"],
+            "entities": entities,
+            "map_data": map_data,
+            "raw_roll_data": _build_action_result(
+                intent="DISARM",
+                actor=actor_id,
+                target=target_id,
+                is_success=False,
+                result_type="NOT_FOUND",
+            ),
+        }
+
+    trap = entities[target_id]
+    if not _is_trap_entity(target_id, trap):
+        return {
+            "journal_events": [f"❌ [解除陷阱] {target_name} 不是可解除的陷阱。"],
+            "entities": entities,
+            "map_data": map_data,
+            "raw_roll_data": _build_action_result(
+                intent="DISARM",
+                actor=actor_id,
+                target=target_id,
+                is_success=False,
+                result_type="INVALID_OBJECT",
+            ),
+        }
+
+    if bool(trap.get("is_hidden", True)):
+        return {
+            "journal_events": [f"❌ [解除陷阱] {target_name} 仍处于隐藏状态，无法解除。"],
+            "entities": entities,
+            "map_data": map_data,
+            "raw_roll_data": _build_action_result(
+                intent="DISARM",
+                actor=actor_id,
+                target=target_id,
+                is_success=False,
+                result_type="HIDDEN_TRAP",
+            ),
+        }
+
+    actor = _ensure_actor_entity(actor_id=actor_id, entities=entities, state=state)
+    actor_name = _display_entity_name(actor, actor_id)
+    actor_x = _coerce_int(actor.get("x"), 4)
+    actor_y = _coerce_int(actor.get("y"), 9)
+    trap_x = _coerce_int(trap.get("x"), actor_x)
+    trap_y = _coerce_int(trap.get("y"), actor_y)
+    distance = _chebyshev_distance(
+        actor_x=actor_x,
+        actor_y=actor_y,
+        target_x=trap_x,
+        target_y=trap_y,
+    )
+    if distance > 1:
+        return {
+            "journal_events": [f"❌ [解除陷阱] {target_name} 距离过远，需相邻才能解除。"],
+            "entities": entities,
+            "map_data": map_data,
+            "raw_roll_data": _build_action_result(
+                intent="DISARM",
+                actor=actor_id,
+                target=target_id,
+                is_success=False,
+                result_type="OUT_OF_RANGE",
+                extra={"distance": distance},
+            ),
+        }
+
+    disarm_dc = max(1, _coerce_int(trap.get("disarm_dc"), 15))
+    dex_mod = calculate_ability_modifier(_get_ability_score(actor, "DEX", 10))
+    result = roll_d20(
+        dc=disarm_dc,
+        modifier=dex_mod,
+        roll_type="normal",
+    )
+    raw_roll = _coerce_int(result.get("raw_roll"), 0)
+    total = _coerce_int(result.get("total"), raw_roll + dex_mod)
+    is_success = bool(result.get("is_success", False))
+
+    if raw_roll == 1:
+        trigger_logs = _trigger_trap_entity(
+            trap_id=target_id,
+            trap=trap,
+            entities=entities,
+            map_data=map_data,
+            trigger_actor_id=actor_id,
+        )
+        return {
+            "journal_events": [
+                f"💥 [解除陷阱] 大失败！{actor_name} 在拆除 {target_name} 时手一抖，引爆了陷阱。"
+            ] + trigger_logs,
+            "entities": entities,
+            "map_data": map_data,
+            "raw_roll_data": _build_action_result(
+                intent="DISARM",
+                actor=actor_id,
+                target=target_id,
+                is_success=False,
+                result_type="CRITICAL_FAIL_TRIGGERED",
+                extra={
+                    "dc": disarm_dc,
+                    "raw_roll": raw_roll,
+                    "total": total,
+                    "modifier": dex_mod,
+                },
+            ),
+        }
+
+    if is_success:
+        trap_name = _display_entity_name(trap, target_id)
+        trap["status"] = "disabled"
+        trap["is_hidden"] = False
+        trap["hp"] = 0
+        entities.pop(target_id, None)
+        _remove_trap_obstacle_from_map(map_data=map_data, x=trap_x, y=trap_y)
+        return {
+            "journal_events": [
+                f"🔧 [检定成功] {actor_name} 成功解除了 {trap_name} (1d20: {total} vs DC {disarm_dc})。"
+            ],
+            "entities": entities,
+            "map_data": map_data,
+            "raw_roll_data": _build_action_result(
+                intent="DISARM",
+                actor=actor_id,
+                target=target_id,
+                is_success=True,
+                result_type="SUCCESS",
+                extra={
+                    "dc": disarm_dc,
+                    "raw_roll": raw_roll,
+                    "total": total,
+                    "modifier": dex_mod,
+                },
+            ),
+        }
+
+    return {
+        "journal_events": [
+            f"🧰 [解除陷阱] {actor_name} 未能拆除 {target_name} (1d20: {total} vs DC {disarm_dc})。"
+        ],
+        "entities": entities,
+        "map_data": map_data,
+        "raw_roll_data": _build_action_result(
+            intent="DISARM",
+            actor=actor_id,
+            target=target_id,
+            is_success=False,
+            result_type="FAIL",
+            extra={
+                "dc": disarm_dc,
+                "raw_roll": raw_roll,
+                "total": total,
+                "modifier": dex_mod,
+            },
+        ),
+    }
+
+
+def execute_unlock_action(state: Any) -> Dict[str, Any]:
+    entities = copy.deepcopy(state.get("entities") or {})
+    environment_objects = copy.deepcopy(state.get("environment_objects") or {})
+    map_data = (
+        copy.deepcopy(state.get("map_data"))
+        if isinstance(state.get("map_data"), dict)
+        else {}
+    )
+    intent_context = state.get("intent_context") or {}
+
+    actor_id = _normalize_entity_id(intent_context.get("action_actor", "player")) or "player"
+    target_query = str(intent_context.get("action_target", "") or "").strip()
+    turn_lock = _reject_if_not_active_turn(
+        state=state,
+        intent="UNLOCK",
+        actor_id=actor_id,
+        target_id=target_query,
+        entities=entities,
+    )
+    if turn_lock:
+        return turn_lock
+
+    target_id, target_obj, target_name = _resolve_target_reference(
+        target_id=target_query,
+        entities=entities,
+        environment_objects=environment_objects,
+    )
+    if not target_id:
+        return {
+            "journal_events": ["❌ [开锁] 开锁失败：未指定目标。"],
+            "entities": entities,
+            "environment_objects": environment_objects,
+            "map_data": map_data,
+            "raw_roll_data": _build_action_result(
+                intent="UNLOCK",
+                actor=actor_id,
+                target="",
+                is_success=False,
+                result_type="INVALID_TARGET",
+            ),
+        }
+    if not isinstance(target_obj, dict):
+        return {
+            "journal_events": [f"❌ [开锁] 开锁失败：找不到目标 {target_id}。"],
+            "entities": entities,
+            "environment_objects": environment_objects,
+            "map_data": map_data,
+            "raw_roll_data": _build_action_result(
+                intent="UNLOCK",
+                actor=actor_id,
+                target=target_id,
+                is_success=False,
+                result_type="NOT_FOUND",
+            ),
+        }
+
+    actor = _ensure_actor_entity(actor_id=actor_id, entities=entities, state=state)
+    actor_name = _display_entity_name(actor, actor_id)
+    actor_x = _coerce_int(actor.get("x"), 4)
+    actor_y = _coerce_int(actor.get("y"), 9)
+    target_x = _coerce_int(target_obj.get("x"), actor_x)
+    target_y = _coerce_int(target_obj.get("y"), actor_y)
+    distance = _chebyshev_distance(
+        actor_x=actor_x,
+        actor_y=actor_y,
+        target_x=target_x,
+        target_y=target_y,
+    )
+    if distance > 1:
+        return {
+            "journal_events": [f"❌ [开锁] {target_name} 距离过远，需相邻才能开锁。"],
+            "entities": entities,
+            "environment_objects": environment_objects,
+            "map_data": map_data,
+            "raw_roll_data": _build_action_result(
+                intent="UNLOCK",
+                actor=actor_id,
+                target=target_id,
+                is_success=False,
+                result_type="OUT_OF_RANGE",
+                extra={"distance": distance},
+            ),
+        }
+
+    is_locked = bool(target_obj.get("is_locked", False)) or str(target_obj.get("status", "")).strip().lower() == "locked"
+    if not is_locked:
+        return {
+            "journal_events": [f"🔓 [开锁] {target_name} 已经是开启状态。"],
+            "entities": entities,
+            "environment_objects": environment_objects,
+            "map_data": map_data,
+            "raw_roll_data": _build_action_result(
+                intent="UNLOCK",
+                actor=actor_id,
+                target=target_id,
+                is_success=True,
+                result_type="ALREADY_UNLOCKED",
+            ),
+        }
+
+    unlock_dc = max(
+        1,
+        _coerce_int(
+            target_obj.get("unlock_dc"),
+            _coerce_int(intent_context.get("difficulty_class"), 14),
+        ),
+    )
+    dex_mod = calculate_ability_modifier(_get_ability_score(actor, "DEX", 10))
+    result = roll_d20(
+        dc=unlock_dc,
+        modifier=dex_mod,
+        roll_type="normal",
+    )
+    raw_roll = _coerce_int(result.get("raw_roll"), 0)
+    total = _coerce_int(result.get("total"), raw_roll + dex_mod)
+    is_success = bool(result.get("is_success", False))
+
+    if is_success:
+        target_obj["is_locked"] = False
+        status = str(target_obj.get("status", "")).strip().lower()
+        if status == "locked":
+            target_obj["status"] = "opened"
+        payload = {
+            "journal_events": [
+                f"🔓 [检定成功] {actor_name} 成功打开了 {target_name} (1d20: {total} vs DC {unlock_dc})。"
+            ],
+            "entities": entities,
+            "environment_objects": environment_objects,
+            "map_data": map_data,
+            "raw_roll_data": _build_action_result(
+                intent="UNLOCK",
+                actor=actor_id,
+                target=target_id,
+                is_success=True,
+                result_type="SUCCESS",
+                extra={
+                    "dc": unlock_dc,
+                    "raw_roll": raw_roll,
+                    "total": total,
+                    "modifier": dex_mod,
+                },
+            ),
+        }
+        return payload
+
+    return {
+        "journal_events": [
+            f"🔒 [开锁失败] {actor_name} 未能打开 {target_name} (1d20: {total} vs DC {unlock_dc})。"
+        ],
+        "entities": entities,
+        "environment_objects": environment_objects,
+        "map_data": map_data,
+        "raw_roll_data": _build_action_result(
+            intent="UNLOCK",
+            actor=actor_id,
+            target=target_id,
+            is_success=False,
+            result_type="FAIL",
+            extra={
+                "dc": unlock_dc,
+                "raw_roll": raw_roll,
+                "total": total,
+                "modifier": dex_mod,
+            },
+        ),
+    }
+
+
 # -----------------------------------------------------------------------------
 # 技能检定类型与属性映射
 # -----------------------------------------------------------------------------
@@ -5344,6 +6157,8 @@ SKILL_CHECK_TYPES = (
     "PERCEPTION",
     "INVESTIGATION",
     "SLEIGHT_OF_HAND",
+    "DISARM",
+    "UNLOCK",
     "ATHLETICS",
     "USE_ITEM",
     "CONSUME",
@@ -5370,6 +6185,8 @@ def get_ability_for_action(action_type: str) -> str:
         "PERCEPTION": "WIS",
         "INVESTIGATION": "INT",
         "SLEIGHT_OF_HAND": "DEX",
+        "DISARM": "DEX",
+        "UNLOCK": "DEX",
         "ATHLETICS": "STR",
         "ATTACK": "STR",
         "CAST_SPELL": "WIS",
@@ -5505,7 +6322,7 @@ def execute_skill_check(state: Any) -> Dict[str, Any]:
     if turn_lock:
         return turn_lock
     approach_events: List[str] = []
-    if intent in {"SLEIGHT_OF_HAND", "ACTION", "ATHLETICS"} and isinstance(target_obj, dict):
+    if intent in {"SLEIGHT_OF_HAND", "ACTION", "ATHLETICS", "UNLOCK", "DISARM"} and isinstance(target_obj, dict):
         approach_events = _auto_approach_actor_to_target(
             entities=entities,
             state=state,
@@ -5587,11 +6404,20 @@ def execute_skill_check(state: Any) -> Dict[str, Any]:
         result=result,
     ):
         target_id = actual_target_id
-        target_obj = environment_objects[target_id]
-        target_obj["status"] = "opened"
-        target_name = str(target_obj.get("name") or target_id.replace("_", " ").title())
+        if target_id in environment_objects and isinstance(environment_objects.get(target_id), dict):
+            target_obj = environment_objects[target_id]
+            target_obj["status"] = "opened"
+            target_obj["is_locked"] = False
+            payload["environment_objects"] = environment_objects
+        elif target_id in entities and isinstance(entities.get(target_id), dict):
+            target_obj = entities[target_id]
+            target_obj["status"] = "opened"
+            target_obj["is_locked"] = False
+            payload["entities"] = entities
+        target_name = str(
+            target_obj.get("name") if isinstance(target_obj, dict) else target_id.replace("_", " ").title()
+        )
         journal_lines.append(f"🔓 [场景交互] 随着咔哒一声，{target_name} 被解锁了！")
-        payload["environment_objects"] = environment_objects
     return payload
 
 

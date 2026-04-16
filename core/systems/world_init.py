@@ -5,17 +5,29 @@
 import copy
 import json
 import os
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional
 
+import yaml
 from core.graph.nodes.utils import default_entities
+from core.systems.inventory import get_registry
 from core.systems.maps import get_map_data
 
 
-def _build_initial_entities() -> Dict[str, Any]:
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+PARTY_ENTITY_IDS = {"player", "shadowheart", "astarion", "laezel"}
+
+
+def _build_initial_entities(*, use_spawn_table: bool = False) -> Dict[str, Any]:
     """
     基于默认实体表构建初始场景实体，并确保战斗测试怪物存在。
     """
     entities = copy.deepcopy(default_entities)
+    if use_spawn_table:
+        entities = {
+            entity_id: entity_data
+            for entity_id, entity_data in entities.items()
+            if entity_id in PARTY_ENTITY_IDS
+        }
     entities.setdefault(
         "player",
         {
@@ -119,6 +131,224 @@ def _build_initial_entities() -> Dict[str, Any]:
     return entities
 
 
+def _normalize_inventory(raw_inventory: Any) -> Dict[str, int]:
+    if isinstance(raw_inventory, dict):
+        inventory: Dict[str, int] = {}
+        for item_id, count in raw_inventory.items():
+            key = str(item_id or "").strip()
+            if not key:
+                continue
+            try:
+                qty = int(count)
+            except (TypeError, ValueError):
+                qty = 0
+            if qty <= 0:
+                continue
+            inventory[key] = inventory.get(key, 0) + qty
+        return inventory
+
+    if not isinstance(raw_inventory, list):
+        return {}
+
+    registry = get_registry()
+    inventory = {}
+    for item in raw_inventory:
+        if isinstance(item, str):
+            item_id = registry.resolve_item_id(item) or str(item).strip().lower().replace(" ", "_")
+            if not item_id:
+                continue
+            inventory[item_id] = inventory.get(item_id, 0) + 1
+            continue
+        if not isinstance(item, dict):
+            continue
+        raw_item_id = item.get("id")
+        item_id = registry.resolve_item_id(raw_item_id) or str(raw_item_id or "").strip().lower().replace(" ", "_")
+        if not item_id:
+            continue
+        try:
+            qty = int(item.get("count", 1))
+        except (TypeError, ValueError):
+            qty = 1
+        if qty <= 0:
+            continue
+        inventory[item_id] = inventory.get(item_id, 0) + qty
+    return inventory
+
+
+def _normalize_equipment(raw_equipment: Any, inventory_data: Dict[str, int]) -> Dict[str, Any]:
+    equipment: Dict[str, Any] = {"main_hand": None, "ranged": None, "armor": None}
+    registry = get_registry()
+
+    if isinstance(raw_equipment, dict):
+        for raw_slot, raw_item in raw_equipment.items():
+            slot = str(raw_slot or "").strip().lower()
+            if slot == "weapon":
+                slot = "main_hand"
+            if slot not in equipment:
+                continue
+            item_id = registry.resolve_item_id(raw_item) or str(raw_item or "").strip().lower().replace(" ", "_")
+            if item_id:
+                equipment[slot] = item_id
+        return equipment
+
+    if isinstance(raw_equipment, list):
+        for raw_item in raw_equipment:
+            raw_item_id = raw_item.get("id") if isinstance(raw_item, dict) else raw_item
+            item_id = registry.resolve_item_id(raw_item_id) or str(raw_item_id or "").strip().lower().replace(" ", "_")
+            if not item_id:
+                continue
+            item_data = registry.get_item_data(item_id)
+            slot = str(item_data.get("equip_slot", "")).strip().lower()
+            if slot in equipment and equipment.get(slot) is None:
+                equipment[slot] = item_id
+
+    if equipment.get("main_hand") is None:
+        for item_id in inventory_data.keys():
+            item_data = registry.get_item_data(item_id)
+            slot = str(item_data.get("equip_slot", "")).strip().lower()
+            if slot == "main_hand":
+                equipment["main_hand"] = item_id
+                break
+    return equipment
+
+
+def _load_prefab_data(prefab_path: str) -> Dict[str, Any]:
+    relative_path = str(prefab_path or "").strip()
+    if not relative_path:
+        return {}
+    target_path = relative_path
+    if not os.path.isabs(target_path):
+        target_path = os.path.join(PROJECT_ROOT, relative_path)
+    if not os.path.exists(target_path):
+        return {}
+    try:
+        with open(target_path, "r", encoding="utf-8") as f:
+            loaded = yaml.safe_load(f) or {}
+    except (OSError, yaml.YAMLError):
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def _build_spawned_entity(spawn_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    prefab_path = str(spawn_data.get("prefab") or "").strip()
+    instance_id = str(spawn_data.get("instance_id") or "").strip()
+    if not prefab_path or not instance_id:
+        return None
+
+    prefab_data = copy.deepcopy(_load_prefab_data(prefab_path))
+    if not isinstance(prefab_data, dict):
+        return None
+
+    base_stats = prefab_data.get("base_stats") or {}
+    attributes = prefab_data.get("attributes") or {}
+    combat = prefab_data.get("combat") or {}
+    ability_scores = (
+        prefab_data.get("ability_scores")
+        or attributes.get("ability_scores")
+        or {}
+    )
+
+    raw_inventory = prefab_data.get("inventory")
+    if raw_inventory is None:
+        raw_inventory = attributes.get("inventory")
+    inventory = _normalize_inventory(raw_inventory)
+    raw_equipment = prefab_data.get("equipment")
+    if raw_equipment is None:
+        raw_equipment = base_stats.get("equipment")
+    equipment = _normalize_equipment(raw_equipment, inventory)
+
+    max_hp_raw = prefab_data.get("max_hp", base_stats.get("max_hp", prefab_data.get("hp", base_stats.get("hp", combat.get("hit_points", 10)))))
+    try:
+        max_hp = max(1, int(max_hp_raw))
+    except (TypeError, ValueError):
+        max_hp = 10
+    hp_raw = prefab_data.get("hp", base_stats.get("hp", max_hp))
+    try:
+        hp = max(0, min(max_hp, int(hp_raw)))
+    except (TypeError, ValueError):
+        hp = max_hp
+
+    ac_raw = prefab_data.get("ac", base_stats.get("ac", combat.get("armor_class", 10)))
+    speed_raw = prefab_data.get("speed", base_stats.get("speed", combat.get("speed", 30)))
+    try:
+        ac = int(ac_raw)
+    except (TypeError, ValueError):
+        ac = 10
+    try:
+        speed = int(speed_raw)
+    except (TypeError, ValueError):
+        speed = 30
+
+    position = spawn_data.get("position")
+    if not isinstance(position, (list, tuple)) or len(position) != 2:
+        return None
+    try:
+        spawn_x = int(position[0])
+        spawn_y = int(position[1])
+    except (TypeError, ValueError):
+        return None
+
+    entity_type = str(spawn_data.get("type") or prefab_data.get("type") or "entity").strip().lower()
+    faction = (
+        spawn_data.get("faction")
+        or prefab_data.get("faction")
+        or base_stats.get("faction")
+        or "neutral"
+    )
+
+    entity: Dict[str, Any] = {
+        "id": instance_id,
+        "type": entity_type,
+        "name": str(prefab_data.get("name") or instance_id.replace("_", " ").title()),
+        "faction": str(faction),
+        "ability_scores": ability_scores if isinstance(ability_scores, dict) else {},
+        "speed": speed,
+        "hp": hp,
+        "max_hp": max_hp,
+        "ac": ac,
+        "status": str(prefab_data.get("status") or base_stats.get("status") or "alive"),
+        "inventory": inventory,
+        "equipment": equipment,
+        "position": str(prefab_data.get("position") or base_stats.get("position") or "map_spawn"),
+        "x": spawn_x,
+        "y": spawn_y,
+        "active_buffs": list(prefab_data.get("active_buffs") or base_stats.get("active_buffs") or []),
+        "status_effects": list(prefab_data.get("status_effects") or base_stats.get("status_effects") or []),
+        "affection": int(prefab_data.get("affection", base_stats.get("affection", 0)) or 0),
+    }
+    if isinstance(prefab_data.get("dynamic_states"), dict):
+        entity["dynamic_states"] = copy.deepcopy(prefab_data.get("dynamic_states") or {})
+    if isinstance(prefab_data.get("spell_slots"), dict):
+        entity["spell_slots"] = copy.deepcopy(prefab_data.get("spell_slots") or {})
+    if isinstance(prefab_data.get("spells"), (dict, list)):
+        entity["spells"] = copy.deepcopy(prefab_data.get("spells"))
+    if prefab_data.get("enemy_type") is not None:
+        entity["enemy_type"] = prefab_data.get("enemy_type")
+    return entity
+
+
+def _inject_spawn_entities_into_entities(
+    *,
+    entities: Dict[str, Any],
+    map_data: Dict[str, Any],
+) -> None:
+    if not isinstance(entities, dict) or not isinstance(map_data, dict):
+        return
+    spawns = map_data.get("spawns")
+    if not isinstance(spawns, list):
+        return
+    for spawn in spawns:
+        if not isinstance(spawn, dict):
+            continue
+        built = _build_spawned_entity(spawn)
+        if not isinstance(built, dict):
+            continue
+        instance_id = str(spawn.get("instance_id") or built.get("id") or "").strip()
+        if not instance_id:
+            continue
+        entities[instance_id] = built
+
+
 def _inject_map_dynamic_entities_into_entities(
     *,
     entities: Dict[str, Any],
@@ -128,6 +358,7 @@ def _inject_map_dynamic_entities_into_entities(
         return
     barrel_index = 1
     door_index = 1
+    trap_index = 1
     for obstacle in map_data.get("obstacles", []) or []:
         if not isinstance(obstacle, dict):
             continue
@@ -186,6 +417,39 @@ def _inject_map_dynamic_entities_into_entities(
                         "affection": 0,
                     },
                 )
+            elif obstacle_type == "trap":
+                entity_id = (
+                    str(obstacle.get("entity_id") or f"trap_{trap_index}").strip().lower()
+                    or f"trap_{trap_index}"
+                )
+                trap_index += 1
+                entities.setdefault(
+                    entity_id,
+                    {
+                        "name": str(obstacle.get("name") or "绊线陷阱"),
+                        "entity_type": "trap",
+                        "faction": "neutral",
+                        "hp": 1,
+                        "max_hp": 1,
+                        "ac": 10,
+                        "status": "armed",
+                        "is_hidden": bool(obstacle.get("is_hidden", True)),
+                        "detect_dc": int(obstacle.get("detect_dc", 13) or 13),
+                        "disarm_dc": int(obstacle.get("disarm_dc", 15) or 15),
+                        "save_dc": int(obstacle.get("save_dc", 13) or 13),
+                        "damage": str(obstacle.get("damage") or "2d6"),
+                        "damage_type": str(obstacle.get("damage_type") or "poison").strip().lower(),
+                        "trigger_radius": max(0, int(obstacle.get("trigger_radius", 0) or 0)),
+                        "inventory": {},
+                        "equipment": {"main_hand": None, "ranged": None, "armor": None},
+                        "position": "camp_center",
+                        "x": x,
+                        "y": y,
+                        "active_buffs": [],
+                        "status_effects": [],
+                        "affection": 0,
+                    },
+                )
 
 
 def _build_environment_objects_from_map(map_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -221,7 +485,7 @@ def _build_environment_objects_from_map(map_data: Dict[str, Any]) -> Dict[str, A
     }
 
 
-def get_initial_world_state() -> Dict[str, Any]:
+def get_initial_world_state(map_id: str = "goblin_camp") -> Dict[str, Any]:
     """
     生成一个全新的、初始化的游戏世界状态（空存档创世）。
     """
@@ -239,8 +503,14 @@ def get_initial_world_state() -> Dict[str, Any]:
             print(f"⚠️ 无法读取 player.json，使用默认背包: {e}")
 
     # 构建并返回完整的初始状态字典
-    map_data = get_map_data("goblin_camp")
-    entities = _build_initial_entities()
+    map_data = get_map_data(map_id)
+    if not isinstance(map_data, dict) or not map_data:
+        map_data = get_map_data("goblin_camp")
+    has_spawn_table = isinstance(map_data.get("spawns"), list) and len(map_data.get("spawns", [])) > 0
+
+    entities = _build_initial_entities(use_spawn_table=has_spawn_table)
+    if has_spawn_table:
+        _inject_spawn_entities_into_entities(entities=entities, map_data=map_data)
     _inject_map_dynamic_entities_into_entities(entities=entities, map_data=map_data)
     environment_objects = _build_environment_objects_from_map(map_data)
     return {
@@ -254,6 +524,7 @@ def get_initial_world_state() -> Dict[str, Any]:
         "current_turn_index": 0,
         "turn_resources": {},
         "recent_barks": [],
+        "active_dialogue_target": None,
         "time_of_day": "晨曦 (Morning)",
         "flags": {},
         "messages": [],

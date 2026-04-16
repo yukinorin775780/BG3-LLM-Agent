@@ -11,10 +11,12 @@ from core.graph.graph_state import GameState
 
 # 路由目标：与 graph_builder 中节点名严格一致，返回字符串必须在此枚举内
 INPUT_ROUTE = Literal["dm_analysis", "__end__"]
-DM_ROUTE = Literal["mechanics_processing", "generation"]
+DM_ROUTE = Literal["mechanics_processing", "dialogue_processing", "lore_processing", "generation"]
 
 _VALID_INPUT_ROUTES: frozenset[str] = frozenset({"dm_analysis", "__end__"})
-_VALID_DM_ROUTES: frozenset[str] = frozenset({"mechanics_processing", "generation"})
+_VALID_DM_ROUTES: frozenset[str] = frozenset(
+    {"mechanics_processing", "dialogue_processing", "lore_processing", "generation"}
+)
 
 # PERSUASION/DECEPTION/STEALTH 必须在到达 generation 前经过 mechanics_processing 执行检定
 MECHANICS_REQUIRED_INTENTS: tuple[str, ...] = ("PERSUASION", "DECEPTION", "STEALTH")
@@ -26,11 +28,15 @@ ACTION_INTENTS: tuple[str, ...] = (
     "LOOT",
     "USE_ITEM",
     "CONSUME",
+    "SHORT_REST",
+    "LONG_REST",
     "EQUIP",
     "UNEQUIP",
     "MOVE",
     "APPROACH",
     "INTERACT",
+    "DISARM",
+    "UNLOCK",
     "END_TURN",
     "STEAL",
     "PERSUASION",
@@ -43,6 +49,7 @@ ACTION_INTENTS: tuple[str, ...] = (
     "SLEIGHT_OF_HAND",
     "ATHLETICS",
     "ACTION",
+    "READ",
 )
 assert set(MECHANICS_REQUIRED_INTENTS).issubset(set(ACTION_INTENTS)), (
     "MECHANICS_REQUIRED_INTENTS must be subset of ACTION_INTENTS"
@@ -95,6 +102,10 @@ def route_after_dm(state: GameState) -> DM_ROUTE:
     intent = str(intent_raw).strip().upper() if intent_raw else "CHAT"
     is_probing_secret = state.get("is_probing_secret", False)
 
+    if intent in {"START_DIALOGUE", "DIALOGUE_REPLY"}:
+        return _validate_dm_route("dialogue_processing")
+    if intent == "READ":
+        return _validate_dm_route("lore_processing")
     if is_probing_secret:
         return _validate_dm_route("mechanics_processing")
     if intent in ACTION_INTENTS:
@@ -152,6 +163,8 @@ def route_after_mechanics(state: GameState) -> MECHANICS_ROUTE:
         "move",
         "approach",
         "interact",
+        "disarm",
+        "unlock",
         "end_turn",
     ):
         return "narration"
