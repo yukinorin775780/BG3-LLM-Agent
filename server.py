@@ -79,7 +79,6 @@ class ChatResponse(BaseModel):
     party_status: Dict[str, Any]  # 队友的血量、好感度等状态
     player_inventory: Dict[str, Any]  # 玩家背包
     combat_state: Optional[Dict[str, Any]] = None  # 回合制战斗状态
-    active_dialogue_target: Optional[str] = None  # 当前锁定的电影级对话目标
 
 
 @app.get("/", include_in_schema=False)

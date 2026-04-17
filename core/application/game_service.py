@@ -28,7 +28,6 @@ class ChatTurnResult(TypedDict):
     party_status: Dict[str, Any]
     player_inventory: Dict[str, Any]
     combat_state: Dict[str, Any]
-    active_dialogue_target: Optional[str]
 
 
 class GraphProtocol(Protocol):
@@ -309,7 +308,6 @@ class GameService:
             "party_status": self._build_party_status_payload(state),
             "player_inventory": player_inventory if isinstance(player_inventory, dict) else {},
             "combat_state": self._build_combat_state_payload(state, recent_barks=recent_barks),
-            "active_dialogue_target": state.get("active_dialogue_target"),
         }
 
     @staticmethod

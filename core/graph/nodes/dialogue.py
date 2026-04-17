@@ -97,6 +97,78 @@ def _get_ability_score(entity: Dict[str, Any], ability: str, default: int = 10) 
     return default
 
 
+def _coerce_count(value: Any, default: int = 1) -> int:
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def _extract_transfer_item_action(parsed: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    physical_action = parsed.get("physical_action")
+    if isinstance(physical_action, list):
+        for action in physical_action:
+            if isinstance(action, dict) and str(action.get("action_type", "")).strip().lower() == "transfer_item":
+                return action
+    if isinstance(physical_action, dict) and str(physical_action.get("action_type", "")).strip().lower() == "transfer_item":
+        return physical_action
+    return None
+
+
+def _apply_transfer_item_action(
+    *,
+    action: Dict[str, Any],
+    entities: Dict[str, Dict[str, Any]],
+    player_inventory: Dict[str, int],
+) -> Tuple[List[str], Dict[str, int]]:
+    source_id = _normalize_entity_id(action.get("source_id"))
+    target_id = _normalize_entity_id(action.get("target_id"))
+    item_id = _normalize_entity_id(action.get("item_id"))
+    transfer_count = _coerce_count(action.get("count", action.get("amount", 1)), default=1)
+
+    if not source_id or not target_id or not item_id or transfer_count <= 0:
+        return [], player_inventory
+
+    source_entity = entities.get(source_id)
+    if not isinstance(source_entity, dict):
+        return [f"⚠️ [系统] 物品转移失败：找不到来源 {source_id}。"], player_inventory
+    source_inventory = source_entity.get("inventory")
+    if not isinstance(source_inventory, dict):
+        return [f"⚠️ [系统] 物品转移失败：{source_id} 没有可用背包。"], player_inventory
+    source_count = _coerce_count(source_inventory.get(item_id), default=0)
+    if source_count <= 0:
+        return [f"⚠️ [系统] 物品转移失败：{source_id} 没有 {item_id}。"], player_inventory
+
+    actual_count = min(source_count, transfer_count)
+    source_inventory[item_id] = source_count - actual_count
+    if source_inventory[item_id] <= 0:
+        source_inventory.pop(item_id, None)
+
+    if target_id == "player":
+        player_inventory[item_id] = _coerce_count(player_inventory.get(item_id), default=0) + actual_count
+        player_entity = entities.get("player")
+        if isinstance(player_entity, dict):
+            player_entity_inventory = player_entity.get("inventory")
+            if not isinstance(player_entity_inventory, dict):
+                player_entity_inventory = {}
+                player_entity["inventory"] = player_entity_inventory
+            player_entity_inventory[item_id] = _coerce_count(player_entity_inventory.get(item_id), default=0) + actual_count
+        return [f"🎒 [系统] 你获得了 {item_id} x{actual_count}。"], player_inventory
+
+    target_entity = entities.get(target_id)
+    if not isinstance(target_entity, dict):
+        # 回滚
+        source_inventory[item_id] = _coerce_count(source_inventory.get(item_id), default=0) + actual_count
+        return [f"⚠️ [系统] 物品转移失败：找不到目标 {target_id}。"], player_inventory
+    target_inventory = target_entity.get("inventory")
+    if not isinstance(target_inventory, dict):
+        target_inventory = {}
+        target_entity["inventory"] = target_inventory
+    target_inventory[item_id] = _coerce_count(target_inventory.get(item_id), default=0) + actual_count
+    target_name = _display_entity_name(target_id, target_entity)
+    return [f"🎒 [系统] {target_name} 获得了 {item_id} x{actual_count}。"], player_inventory
+
+
 def _build_initiative_for_dialogue_combat(
     *,
     entities: Dict[str, Dict[str, Any]],
@@ -211,6 +283,7 @@ def _build_dialogue_prompt(
 def dialogue_node(state: GameState) -> Dict[str, Any]:
     intent = str(state.get("intent", "CHAT") or "CHAT").strip().upper()
     entities = copy.deepcopy(state.get("entities") or {})
+    player_inventory = copy.deepcopy(state.get("player_inventory") or {})
     intent_context = state.get("intent_context") or {}
 
     if intent == "START_DIALOGUE":
@@ -281,6 +354,14 @@ def dialogue_node(state: GameState) -> Dict[str, Any]:
     reply = str(parsed.get("reply") or "").strip() or "……"
     internal_monologue = str(parsed.get("internal_monologue") or "").strip()
     trigger_combat = bool(parsed.get("trigger_combat", False))
+    transfer_action = _extract_transfer_item_action(parsed if isinstance(parsed, dict) else {})
+    transfer_events: List[str] = []
+    if transfer_action is not None:
+        transfer_events, player_inventory = _apply_transfer_item_action(
+            action=transfer_action,
+            entities=entities,
+            player_inventory=player_inventory if isinstance(player_inventory, dict) else {},
+        )
     state_changes = parsed.get("state_changes") if isinstance(parsed.get("state_changes"), dict) else {}
     patience_delta = int(state_changes.get("patience_delta", 0) or 0)
     fear_delta = int(state_changes.get("fear_delta", 0) or 0)
@@ -297,6 +378,7 @@ def dialogue_node(state: GameState) -> Dict[str, Any]:
     dialogue_events = [f'🗣️ [{npc_name}]: "{reply}"']
     if internal_monologue:
         dialogue_events.append(f"🧠 [内心活动] {npc_name}: {internal_monologue}")
+    dialogue_events.extend(transfer_events)
 
     should_break = trigger_combat or patience <= 0
     if should_break:
@@ -311,6 +393,7 @@ def dialogue_node(state: GameState) -> Dict[str, Any]:
         return {
             "journal_events": dialogue_events,
             "entities": entities,
+            "player_inventory": player_inventory if isinstance(player_inventory, dict) else {},
             "active_dialogue_target": None,
             "speaker_queue": [],
             "current_speaker": target_id,
@@ -326,6 +409,7 @@ def dialogue_node(state: GameState) -> Dict[str, Any]:
     return {
         "journal_events": dialogue_events,
         "entities": entities,
+        "player_inventory": player_inventory if isinstance(player_inventory, dict) else {},
         "active_dialogue_target": target_id,
         "speaker_queue": [],
         "current_speaker": target_id,

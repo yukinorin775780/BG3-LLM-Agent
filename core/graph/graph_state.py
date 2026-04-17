@@ -52,6 +52,7 @@ class GameState(TypedDict, total=False):
     intent_context: Dict[str, Any]  # DM 输出的 difficulty_class、reason 等
     is_probing_secret: bool  # 话题标签：是否在刺探莎尔信仰/神器等核心隐私（意图 How 与话题 What 分离）
     active_dialogue_target: Optional[str]  # 当前会话锁定的交涉目标 entity_id
+    demo_cleared: bool  # Demo 关卡是否已通关
 
     # -------------------------------------------------------------------------
     # RPG State [PERSISTENT]

@@ -401,6 +401,7 @@ FACTORY_DEFAULT = {
     "turn_resources": {},
     "recent_barks": [],
     "active_dialogue_target": None,
+    "demo_cleared": False,
 }
 
 

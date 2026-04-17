@@ -525,6 +525,7 @@ def get_initial_world_state(map_id: str = "goblin_camp") -> Dict[str, Any]:
         "turn_resources": {},
         "recent_barks": [],
         "active_dialogue_target": None,
+        "demo_cleared": False,
         "time_of_day": "晨曦 (Morning)",
         "flags": {},
         "messages": [],

@@ -1586,7 +1586,7 @@ def _process_post_damage_reaction(
 
 
 def _is_hostile_entity(entity: Dict[str, Any]) -> bool:
-    return str(entity.get("faction", "")).strip().lower() == "hostile"
+    return str(entity.get("faction", "")).strip().lower() in {"hostile", "enemy"}
 
 
 def _is_player_side_entity(entity_id: str, entity: Dict[str, Any]) -> bool:
@@ -1594,7 +1594,7 @@ def _is_player_side_entity(entity_id: str, entity: Dict[str, Any]) -> bool:
     if normalized_id in PLAYER_SIDE_ENTITY_IDS:
         return True
     faction = str(entity.get("faction", "")).strip().lower()
-    return bool(faction and faction not in {"hostile", "neutral"})
+    return bool(faction and faction not in {"hostile", "enemy", "neutral"})
 
 
 def _is_loot_drop_entity(entity_id: str, entity: Dict[str, Any]) -> bool:
@@ -3760,8 +3760,16 @@ def execute_attack_action(state: Any) -> Dict[str, Any]:
     ambush_events: List[str] = []
     combat_fields: Dict[str, Any] = {}
     ambush_advantage = False
-    target_is_hostile = _is_hostile_entity(defender)
-    if target_is_hostile and not bool(state.get("combat_active", False)):
+    defender_entity_type = str(defender.get("entity_type", "")).strip().lower()
+    is_environmental_target = defender_entity_type in {"door", "trap", "powder_barrel", "loot_drop"}
+    target_triggers_combat = (
+        not is_environmental_target
+        and _is_alive_entity(defender)
+        and not _is_player_side_entity(target_id, defender)
+    )
+    if target_triggers_combat and not bool(state.get("combat_active", False)):
+        if not _is_hostile_entity(defender):
+            defender["faction"] = "hostile"
         ambush_advantage, ambush_events = _apply_ambush_opening(
             entities=entities,
             attacker_id=attacker_id,
@@ -4669,6 +4677,35 @@ def execute_loot_action(state: Any) -> Dict[str, Any]:
                 result_type="NOT_FOUND",
             ),
         }
+
+    target_entity_type = str(target_obj.get("entity_type", "")).strip().lower()
+    target_is_character_like = target_id in entities and target_entity_type not in {
+        "loot_drop",
+        "door",
+        "trap",
+        "powder_barrel",
+    }
+    if target_is_character_like:
+        target_hp = _coerce_int(target_obj.get("hp"), 0)
+        target_status = str(target_obj.get("status", "")).strip().lower()
+        if target_hp > 0 and target_status not in {"dead", "open", "opened"}:
+            actor = _ensure_actor_entity(actor_id=actor_id, entities=entities, state=state)
+            actor_name = _display_entity_name(actor, actor_id)
+            return {
+                "journal_events": [
+                    f"❌ [搜刮] {actor_name} 想搜刮 {target_name}，但他还没死，你不能直接抢，当前还无法被搜刮。"
+                ],
+                "entities": entities,
+                "environment_objects": environment_objects,
+                "player_inventory": player_inventory,
+                "raw_roll_data": _build_action_result(
+                    intent="LOOT",
+                    actor=actor_id,
+                    target=target_id,
+                    is_success=False,
+                    result_type="TARGET_ALIVE",
+                ),
+            }
 
     # 若目标是已死亡并已掉落为 loot_drop 的敌人，自动重定向到其地面战利品。
     if (
@@ -5704,6 +5741,39 @@ def execute_interact_action(state: Any) -> Dict[str, Any]:
             ),
         }
 
+    normalized_target_id = _normalize_entity_id(target_id)
+    player_inventory = copy.deepcopy(state.get("player_inventory") or {})
+    actor_inventory = actor.get("inventory") if isinstance(actor.get("inventory"), dict) else {}
+    has_heavy_key = (
+        int(actor_inventory.get("heavy_iron_key", 0) or 0) > 0
+        or (actor_id == "player" and int(player_inventory.get("heavy_iron_key", 0) or 0) > 0)
+    )
+    if normalized_target_id == "heavy_oak_door_1" and not has_heavy_key:
+        payload: Dict[str, Any] = {
+            "journal_events": ["🚪 [系统] 门被锁死了，你需要一把沉重的铁钥匙。"],
+            "entities": entities,
+            "map_data": map_data,
+            "demo_cleared": bool(state.get("demo_cleared", False)),
+            "raw_roll_data": _build_action_result(
+                intent="INTERACT",
+                actor=actor_id,
+                target=target_id,
+                is_success=False,
+                result_type="MISSING_KEY",
+            ),
+        }
+        if bool(state.get("combat_active", False)):
+            payload.update(
+                {
+                    "combat_phase": str(state.get("combat_phase", "IN_COMBAT")),
+                    "combat_active": True,
+                    "initiative_order": list(state.get("initiative_order") or []),
+                    "current_turn_index": _coerce_int(state.get("current_turn_index"), 0),
+                    "turn_resources": copy.deepcopy(state.get("turn_resources") or {}),
+                }
+            )
+        return payload
+
     turn_resources = copy.deepcopy(state.get("turn_resources") or {})
     if not isinstance(turn_resources, dict):
         turn_resources = {}
@@ -5733,6 +5803,38 @@ def execute_interact_action(state: Any) -> Dict[str, Any]:
         actor_resources["bonus_action"] = max(0, int(actor_resources.get("bonus_action", 0) or 0) - 1)
         turn_resources[actor_id] = actor_resources
 
+    if normalized_target_id == "heavy_oak_door_1":
+        door["is_open"] = True
+        door["status"] = "open"
+        _sync_door_state_to_map(map_data=map_data, entities=entities)
+        payload = {
+            "journal_events": [
+                "🚪 [系统] 伴随着沉重的摩擦声，大门被推开了！一缕阳光照进地下室... **[DEMO CLEARED]**"
+            ],
+            "entities": entities,
+            "map_data": map_data,
+            "demo_cleared": True,
+            "raw_roll_data": _build_action_result(
+                intent="INTERACT",
+                actor=actor_id,
+                target=target_id,
+                is_success=True,
+                result_type="SUCCESS",
+                extra={"is_open": True, "demo_cleared": True},
+            ),
+        }
+        if bool(state.get("combat_active", False)):
+            payload.update(
+                {
+                    "combat_phase": str(state.get("combat_phase", "IN_COMBAT")),
+                    "combat_active": True,
+                    "initiative_order": list(state.get("initiative_order") or []),
+                    "current_turn_index": _coerce_int(state.get("current_turn_index"), 0),
+                    "turn_resources": turn_resources,
+                }
+            )
+        return payload
+
     new_is_open = not bool(door.get("is_open", False))
     door["is_open"] = new_is_open
     door["status"] = "open" if new_is_open else "closed"
@@ -5745,6 +5847,7 @@ def execute_interact_action(state: Any) -> Dict[str, Any]:
         "journal_events": [f"🚪 [交互] {actor_name} {action_text} {door_name}。"],
         "entities": entities,
         "map_data": map_data,
+        "demo_cleared": bool(state.get("demo_cleared", False)),
         "raw_roll_data": _build_action_result(
             intent="INTERACT",
             actor=actor_id,
