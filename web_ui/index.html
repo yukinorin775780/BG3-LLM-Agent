@@ -8,6 +8,8 @@
   <link rel="stylesheet" href="./style.css" />
 </head>
 <body>
+  <div id="main-layout" class="main-layout">
+  <section id="game-viewport" class="game-viewport" aria-label="游戏视口">
   <div id="map-stage" class="map-stage" aria-label="2.5D 战术地图">
     <div id="map-container" class="map-container"></div>
   </div>
@@ -202,6 +204,63 @@
       </div>
     </div>
   </div>
+  </div>
+
+  </section>
+
+  <button type="button" id="xray-toggle-btn" class="xray-toggle-btn" aria-controls="xray-panel" aria-expanded="true">
+    X-Ray
+  </button>
+
+  <aside id="xray-panel" class="xray-panel" aria-label="炼金术逻辑追踪器">
+    <header class="xray-header">
+      <p>Developer Scrying Lens</p>
+      <h2>炼金术逻辑追踪器 <span>Logic Tracer</span></h2>
+    </header>
+
+    <section class="xray-section">
+      <div class="xray-section-title">
+        <span>01</span>
+        <h3>Node Trace</h3>
+      </div>
+      <ol id="node-timeline" class="node-timeline">
+        <li data-node="input_processing"><strong>INPUT_NODE</strong><small>Command Intake</small></li>
+        <li data-node="dm_analysis"><strong>DM_NODE</strong><small>Intent Alchemy</small></li>
+        <li data-node="mechanics_processing"><strong>MECHANICS_NODE</strong><small>Dice & Physics</small></li>
+        <li data-node="dialogue_processing"><strong>DIALOGUE_NODE</strong><small>Social Lock</small></li>
+        <li data-node="generation"><strong>GENERATION_NODE</strong><small>Narrative Output</small></li>
+      </ol>
+    </section>
+
+    <section class="xray-section">
+      <div class="xray-section-title">
+        <span>02</span>
+        <h3>State Watcher</h3>
+      </div>
+      <div class="xray-meter-row">
+        <div class="xray-meter-label">
+          <span>耐心 Patience</span>
+          <strong id="patience-value">--</strong>
+        </div>
+        <div class="xray-meter"><div id="patience-bar" class="xray-meter-fill xray-meter-fill--gold"></div></div>
+      </div>
+      <div class="xray-meter-row">
+        <div class="xray-meter-label">
+          <span>恐惧 Fear</span>
+          <strong id="fear-value">--</strong>
+        </div>
+        <div class="xray-meter"><div id="fear-bar" class="xray-meter-fill xray-meter-fill--blood"></div></div>
+      </div>
+    </section>
+
+    <section class="xray-section xray-section--inspector">
+      <div class="xray-section-title">
+        <span>03</span>
+        <h3>Payload Inspector</h3>
+      </div>
+      <pre id="json-inspector" class="json-inspector" aria-live="polite">{}</pre>
+    </section>
+  </aside>
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/phaser@3.60.0/dist/phaser.min.js" defer></script>

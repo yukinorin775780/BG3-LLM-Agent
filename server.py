@@ -99,10 +99,9 @@ async def chat_endpoint(req: ChatRequest) -> ChatResponse:
     return ChatResponse(**result)
 
 
-@app.get("/api/state", response_model=ChatResponse)
-async def state_endpoint(session_id: str = "test_consume_003") -> ChatResponse:
-    result = await game_service.get_state_snapshot(session_id=session_id)
-    return ChatResponse(**result)
+@app.get("/api/state")
+async def state_endpoint(session_id: str = "test_consume_003") -> Dict[str, Any]:
+    return await game_service.get_state_snapshot(session_id=session_id)
 
 
 if __name__ == "__main__":

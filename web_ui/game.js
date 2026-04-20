@@ -84,6 +84,14 @@
       if (!this.scene) return;
       this.scene.playLongRestTransition();
     },
+    resize() {
+      if (!this.game) return;
+      const size = gameViewportSize();
+      this.game.scale.resize(size.width, size.height);
+      if (this.scene) {
+        this.scene.handleResize(size);
+      }
+    },
   };
 
   window.BG3TacticalMap = controller;
@@ -100,6 +108,14 @@
     if (window.BG3DialogueActive === true) return true;
     const overlay = document.getElementById("dialogue-overlay");
     return Boolean(overlay && !overlay.classList.contains("hidden"));
+  }
+
+  function gameViewportSize() {
+    const host = document.getElementById("game-viewport") || document.getElementById("map-container");
+    return {
+      width: Math.max(320, Math.round((host && host.clientWidth) || window.innerWidth * 0.65)),
+      height: Math.max(320, Math.round((host && host.clientHeight) || window.innerHeight)),
+    };
   }
 
   function normalizeMapData(rawMapData) {
@@ -1219,15 +1235,16 @@
     }
   }
 
+  const initialViewport = gameViewportSize();
   const config = {
     type: Phaser.AUTO,
-    parent: "map-container",
+    parent: "game-viewport",
     backgroundColor: "rgba(0,0,0,0)",
     transparent: true,
-    width: window.innerWidth,
-    height: window.innerHeight,
+    width: initialViewport.width,
+    height: initialViewport.height,
     scale: {
-      mode: Phaser.Scale.RESIZE,
+      mode: Phaser.Scale.FIT,
       autoCenter: Phaser.Scale.CENTER_BOTH,
     },
     physics: {
@@ -1238,7 +1255,8 @@
   };
 
   window.addEventListener("DOMContentLoaded", () => {
-    if (!document.getElementById("map-container")) return;
+    if (!document.getElementById("game-viewport")) return;
     controller.game = new Phaser.Game(config);
+    window.addEventListener("resize", () => controller.resize());
   });
 })();

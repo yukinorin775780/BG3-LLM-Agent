@@ -108,6 +108,14 @@
     dialogueInput: document.getElementById("dialogue-input"),
     dialogueSendBtn: document.getElementById("dialogue-send-btn"),
     dialogueAttackBtn: document.getElementById("dialogue-attack-btn"),
+    mainLayout: document.getElementById("main-layout"),
+    xrayToggleBtn: document.getElementById("xray-toggle-btn"),
+    nodeTimeline: document.getElementById("node-timeline"),
+    patienceBar: document.getElementById("patience-bar"),
+    patienceValue: document.getElementById("patience-value"),
+    fearBar: document.getElementById("fear-bar"),
+    fearValue: document.getElementById("fear-value"),
+    jsonInspector: document.getElementById("json-inspector"),
     partyViewModal: document.getElementById("party-view-modal"),
     closePartyViewBtn: document.getElementById("close-party-view-btn"),
     partyViewTabs: document.getElementById("party-view-tabs"),
@@ -1236,6 +1244,96 @@
     els.restControls.setAttribute("aria-hidden", String(!isExploration));
   }
 
+  function normalizeNodeName(nodeName) {
+    const node = normalizeId(nodeName);
+    const aliases = {
+      input_node: "input_processing",
+      dm_node: "dm_analysis",
+      mechanics_node: "mechanics_processing",
+      dialogue_node: "dialogue_processing",
+      generation_node: "generation",
+    };
+    return aliases[node] || node;
+  }
+
+  function inferNodeTrace(data, userLine, intent) {
+    const payload = safeObject(data);
+    const gameState = safeObject(payload.game_state);
+    const explicit = normalizeNodeName(payload.last_node || gameState.last_node || gameState.current_node);
+    if (explicit) return [explicit];
+
+    const text = [userLine, intent, extractEventLines(data).join(" ")].join(" ");
+    const trace = ["input_processing", "dm_analysis"];
+    if (/检定|掷骰|潜行|攻击|推击|法术|装备|卸下|搜刮|开锁|解除陷阱|短休|长休|移动|交互/.test(text)) {
+      trace.push("mechanics_processing");
+    }
+    if (/对话|交涉|台词|说|回复|dialogue/i.test(text)) {
+      trace.push("dialogue_processing");
+    }
+    trace.push("generation");
+    return Array.from(new Set(trace));
+  }
+
+  function setXrayNodeTrace(nodes) {
+    if (!els.nodeTimeline) return;
+    const normalized = safeArray(nodes).map(normalizeNodeName).filter(Boolean);
+    const active = normalized[normalized.length - 1] || "";
+    els.nodeTimeline.querySelectorAll("li[data-node]").forEach((item) => {
+      const node = normalizeNodeName(item.dataset.node);
+      item.classList.toggle("is-active", node === active);
+      item.classList.toggle("is-visited", normalized.includes(node));
+    });
+  }
+
+  function normalizePercent(value) {
+    const num = Number(value);
+    if (!Number.isFinite(num)) return null;
+    const percent = num <= 1 ? num * 100 : num;
+    return Math.max(0, Math.min(100, percent));
+  }
+
+  function readDynamicState(dynamicStates, key) {
+    const states = safeObject(dynamicStates);
+    const value = states[key] ?? states[key.toLowerCase()] ?? states[key.toUpperCase()];
+    if (value && typeof value === "object") {
+      return safeObject(value).value ?? safeObject(value).current ?? safeObject(value).percent;
+    }
+    return value;
+  }
+
+  function updateXrayMeter(bar, label, value) {
+    const percent = normalizePercent(value);
+    if (bar) bar.style.width = percent == null ? "0%" : percent.toFixed(0) + "%";
+    if (label) label.textContent = percent == null ? "--" : percent.toFixed(0) + "%";
+  }
+
+  function updateXrayPanel(data, options = {}) {
+    if (!els.jsonInspector) return;
+    const payload = safeObject(data);
+    const gameState = safeObject(payload.game_state || payload.gameState || payload);
+    const entities = safeObject(gameState.entities || payload.entities);
+    const gribbo = safeObject(entities.gribbo || entities.gribbo_1 || entities.goblin_1);
+    const dynamicStates = safeObject(gribbo.dynamic_states || gribbo.dynamicStates);
+
+    updateXrayMeter(els.patienceBar, els.patienceValue, readDynamicState(dynamicStates, "patience"));
+    updateXrayMeter(els.fearBar, els.fearValue, readDynamicState(dynamicStates, "fear"));
+
+    const trace = options.trace || inferNodeTrace(payload, options.userLine || "", options.intent || "");
+    setXrayNodeTrace(trace);
+
+    const inspectorPayload = gameState === payload
+      ? payload
+      : {
+          last_node: payload.last_node || gameState.last_node || gameState.current_node || null,
+          intent_context: gameState.intent_context || payload.intent_context || null,
+          active_dialogue_target: payload.active_dialogue_target || gameState.active_dialogue_target || null,
+          entities: gameState.entities || null,
+          combat_state: payload.combat_state || gameState.combat_state || null,
+          journal_events: payload.journal_events || gameState.journal_events || [],
+        };
+    els.jsonInspector.textContent = JSON.stringify(inspectorPayload, null, 2);
+  }
+
   function renderInitiativeTracker(combatState, wasCombatActive) {
     const combat = safeObject(combatState);
     const isCombatActive = isCombatStateActive(combat);
@@ -1729,6 +1827,11 @@
       renderTacticalGrid(state.partyStatus, state.environmentObjects, state.mapData);
       renderInitiativeTracker(state.combatState, wasCombatActive);
       updateRestControls(state.combatState);
+      updateXrayPanel(data, {
+        userLine,
+        intent: intentValue,
+        trace: inferNodeTrace(data, userLine, intentValue),
+      });
       if (!opts.skipLogUpdate) {
         updateWorldLog(data, userLine || null);
         triggerMapTransitionEffects(data);
@@ -1800,6 +1903,21 @@
     sendMessage("我直接拔出武器攻击！", null);
   }
 
+  function toggleXrayPanel() {
+    if (!els.mainLayout) return;
+    const collapsed = els.mainLayout.classList.toggle("xray-collapsed");
+    if (els.xrayToggleBtn) {
+      els.xrayToggleBtn.setAttribute("aria-expanded", String(!collapsed));
+      els.xrayToggleBtn.textContent = collapsed ? "X-Ray +" : "X-Ray";
+    }
+    window.setTimeout(() => {
+      window.dispatchEvent(new Event("resize"));
+      if (window.BG3TacticalMap && typeof window.BG3TacticalMap.resize === "function") {
+        window.BG3TacticalMap.resize();
+      }
+    }, 280);
+  }
+
   function handleEnvironmentAction(event) {
     const actionButton = event.target.closest(".object-action");
     if (!actionButton) return;
@@ -1867,6 +1985,7 @@
         submitDialogueInput();
       }
     });
+    els.xrayToggleBtn.addEventListener("click", toggleXrayPanel);
     els.logFilterBar.addEventListener("click", handleLogFilterClick);
     els.partyRoster.addEventListener("click", handlePartyAction);
     els.partyViewContent.addEventListener("click", handlePartyAction);
@@ -1966,6 +2085,7 @@
       state.combatState = combatState;
       updateDialogueOverlay(data);
       updateRestControls(state.combatState);
+      updateXrayPanel(data);
     } catch (_error) {
       // Dialogue polling is an enhancement; chat responses remain the source of truth.
     }
@@ -1987,6 +2107,7 @@
     renderTacticalGrid(state.partyStatus, state.environmentObjects, state.mapData);
     renderInitiativeTracker(state.combatState, false);
     updateRestControls(state.combatState);
+    updateXrayPanel({});
     appendLogEntry("system", "终端接入", "战术桌已连入 `/api/chat`。发出第一条指令后，主叙事区会开始记录世界变化。", {
       color: "#d0ab67",
       sigil: "◎",

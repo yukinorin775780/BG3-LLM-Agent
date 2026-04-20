@@ -183,17 +183,20 @@ class GameService:
         *,
         session_id: str,
         initialize_if_missing: bool = True,
-    ) -> ChatTurnResult:
+    ) -> Dict[str, Any]:
         state = await self.get_session_state(
             session_id=session_id,
             initialize_if_missing=initialize_if_missing,
         )
         journal_events = state.get("journal_events") or []
         previous_journal_len = max(0, len(journal_events) - 8)
-        return self._build_chat_result(
+        result = self._build_chat_result(
             state,
             previous_journal_len=previous_journal_len,
         )
+        result["game_state"] = copy.deepcopy(state)
+        result["last_node"] = state.get("last_node") or state.get("current_node")
+        return result
 
     async def _load_checkpoint_state(
         self,
