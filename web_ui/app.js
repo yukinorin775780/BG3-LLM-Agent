@@ -4,6 +4,8 @@
   const SESSION_ID = "test_consume_003";
   const IDLE_MS = 30000;
   const DIALOGUE_POLL_MS = 1800;
+  const QA_PARAMS = new URLSearchParams(window.location.search);
+  const IS_QA_MODE = Array.from(QA_PARAMS.keys()).some((key) => key.startsWith("qa_"));
 
   const SPEAKER_META = {
     player: { name: "玩家", color: "#6eb5ff", sigil: "⌘" },
@@ -69,7 +71,36 @@
     dialogueText: "",
     xrayTraceTimers: [],
     xrayTraceAnimatingUntil: 0,
+    qaTraceStepMs: Math.max(120, Number(QA_PARAMS.get("qa_trace_step_ms")) || 240),
   };
+
+  function readQaNumber(name, fallback) {
+    const value = Number(QA_PARAMS.get(name));
+    return Number.isFinite(value) ? value : fallback;
+  }
+
+  function readQaActions() {
+    const traceCommand = String(QA_PARAMS.get("qa_trace") || "").trim();
+    const traceIntent = String(QA_PARAMS.get("qa_intent") || "").trim();
+    const xrayMode = String(QA_PARAMS.get("qa_xray") || "").trim().toLowerCase();
+    const previewTrace = QA_PARAMS.get("qa_preview_trace") === "1";
+    const traceDelay = Math.max(0, readQaNumber("qa_trace_delay_ms", 900));
+    const xrayDelay = Math.max(0, readQaNumber("qa_xray_delay_ms", 400));
+    const shouldToggleXray =
+      xrayMode === "toggle"
+      || xrayMode === "collapse"
+      || xrayMode === "expand";
+
+    return {
+      traceCommand,
+      traceIntent,
+      xrayMode,
+      previewTrace,
+      traceDelay,
+      xrayDelay,
+      shouldToggleXray,
+    };
+  }
 
   function extractEventLines(data) {
     const lines = [];
@@ -1330,7 +1361,7 @@
       return;
     }
 
-    const stepMs = 240;
+    const stepMs = state.qaTraceStepMs;
     state.xrayTraceAnimatingUntil = now + normalized.length * stepMs + 180;
     normalized.forEach((node, index) => {
       const timerId = window.setTimeout(() => {
@@ -1358,7 +1389,14 @@
     const value = states[key] ?? states[key.toLowerCase()] ?? states[key.toUpperCase()];
     if (value && typeof value === "object") {
       const record = safeObject(value);
-      return record.value ?? record.current ?? record.percent ?? record.current_value;
+      const direct = record.value ?? record.current ?? record.percent ?? record.current_value;
+      const max = record.max ?? record.max_value ?? record.maximum ?? record.cap;
+      const currentNum = Number(direct);
+      const maxNum = Number(max);
+      if (Number.isFinite(currentNum) && Number.isFinite(maxNum) && maxNum > 0) {
+        return currentNum / maxNum;
+      }
+      return direct;
     }
     return value;
   }
@@ -1896,6 +1934,7 @@
   }
 
   function resetIdleTimer() {
+    if (IS_QA_MODE) return;
     window.clearTimeout(state.idleTimer);
     state.idleTimer = window.setTimeout(() => {
       sendMessage("", "trigger_idle_banter");
@@ -2239,6 +2278,7 @@
   }
 
   function startDialoguePolling() {
+    if (IS_QA_MODE) return;
     window.clearInterval(state.dialoguePollTimer);
     state.dialoguePollTimer = window.setInterval(() => {
       void pollDialogueState();
@@ -2246,6 +2286,7 @@
   }
 
   async function boot() {
+    const qa = readQaActions();
     bindEvents();
     setTacticalOverlay(false);
     renderChrome("幽暗地域营地");
@@ -2260,9 +2301,58 @@
       sigil: "◎",
       logType: "system",
     });
-    await syncInitialState();
-    startDialoguePolling();
+
+    if (qa.shouldToggleXray) {
+      window.setTimeout(() => {
+        const isCollapsed = els.mainLayout && els.mainLayout.classList.contains("xray-collapsed");
+        const shouldToggle =
+          qa.xrayMode === "toggle"
+          || (qa.xrayMode === "collapse" && !isCollapsed)
+          || (qa.xrayMode === "expand" && isCollapsed);
+        if (shouldToggle) {
+          toggleXrayPanel();
+        }
+      }, qa.xrayDelay);
+    }
+
+    if (qa.traceCommand || qa.traceIntent) {
+      if (qa.previewTrace) {
+        clearXrayNodeTraceAnimation();
+        applyXrayNodeClasses([], "");
+        window.setTimeout(() => {
+          const previewTrace = inferNodeTrace({}, qa.traceCommand, qa.traceIntent || "");
+          setXrayNodeTrace(previewTrace, { animate: true });
+        }, 120);
+      }
+
+      window.setTimeout(() => {
+        void sendMessage(qa.traceCommand, qa.traceIntent || null);
+      }, qa.traceDelay);
+    }
+
+    if (!IS_QA_MODE) {
+      await syncInitialState();
+      startDialoguePolling();
+    }
   }
+
+  function exposeTestApi() {
+    if (window.__BG3_ENABLE_TEST_API__ !== true) return;
+    window.__BG3_APP_TEST_API__ = {
+      boot,
+      sendMessage,
+      pollDialogueState,
+      updateDialogueOverlay,
+      updateXrayPanel,
+      interruptDialogueWithAttack,
+      inferNodeTrace,
+      normalizeNodeName,
+      state,
+      els,
+    };
+  }
+
+  exposeTestApi();
 
   document.addEventListener("DOMContentLoaded", () => {
     void boot();
