@@ -67,6 +67,8 @@
     seenLootTargets: new Set(),
     activeDialogueTarget: "",
     dialogueText: "",
+    xrayTraceTimers: [],
+    xrayTraceAnimatingUntil: 0,
   };
 
   function extractEventLines(data) {
@@ -112,8 +114,10 @@
     xrayToggleBtn: document.getElementById("xray-toggle-btn"),
     nodeTimeline: document.getElementById("node-timeline"),
     patienceBar: document.getElementById("patience-bar"),
+    patienceLabel: document.getElementById("patience-label"),
     patienceValue: document.getElementById("patience-value"),
     fearBar: document.getElementById("fear-bar"),
+    fearLabel: document.getElementById("fear-label"),
     fearValue: document.getElementById("fear-value"),
     jsonInspector: document.getElementById("json-inspector"),
     partyViewModal: document.getElementById("party-view-modal"),
@@ -1260,7 +1264,24 @@
     const payload = safeObject(data);
     const gameState = safeObject(payload.game_state);
     const explicit = normalizeNodeName(payload.last_node || gameState.last_node || gameState.current_node);
-    if (explicit) return [explicit];
+    if (explicit) {
+      const trace = ["input_processing", "dm_analysis"];
+      if (explicit === "mechanics_processing") trace.push("mechanics_processing");
+      if (explicit === "dialogue_processing") trace.push("dialogue_processing");
+      if (explicit === "generation") {
+        const combined = [userLine, intent, extractEventLines(data).join(" "), JSON.stringify(gameState.intent_context || {})].join(" ");
+        if (/检定|掷骰|潜行|攻击|推击|法术|装备|卸下|搜刮|开锁|解除陷阱|短休|长休|移动|交互/.test(combined)) {
+          trace.push("mechanics_processing");
+        }
+        if (/对话|交涉|台词|说|回复|dialogue/i.test(combined)) {
+          trace.push("dialogue_processing");
+        }
+        trace.push("generation");
+      } else {
+        trace.push(explicit);
+      }
+      return Array.from(new Set(trace));
+    }
 
     const text = [userLine, intent, extractEventLines(data).join(" ")].join(" ");
     const trace = ["input_processing", "dm_analysis"];
@@ -1274,15 +1295,55 @@
     return Array.from(new Set(trace));
   }
 
-  function setXrayNodeTrace(nodes) {
+  function clearXrayNodeTraceAnimation() {
+    state.xrayTraceTimers.forEach((timerId) => window.clearTimeout(timerId));
+    state.xrayTraceTimers = [];
+    state.xrayTraceAnimatingUntil = 0;
+  }
+
+  function applyXrayNodeClasses(visited, active) {
     if (!els.nodeTimeline) return;
-    const normalized = safeArray(nodes).map(normalizeNodeName).filter(Boolean);
-    const active = normalized[normalized.length - 1] || "";
     els.nodeTimeline.querySelectorAll("li[data-node]").forEach((item) => {
       const node = normalizeNodeName(item.dataset.node);
       item.classList.toggle("is-active", node === active);
-      item.classList.toggle("is-visited", normalized.includes(node));
+      item.classList.toggle("is-visited", visited.includes(node));
     });
+  }
+
+  function setXrayNodeTrace(nodes, options = {}) {
+    const normalized = safeArray(nodes).map(normalizeNodeName).filter(Boolean);
+    if (!normalized.length) {
+      clearXrayNodeTraceAnimation();
+      applyXrayNodeClasses([], "");
+      return;
+    }
+
+    const animate = options.animate === true;
+    const now = Date.now();
+    if (!animate && state.xrayTraceAnimatingUntil > now) {
+      return;
+    }
+
+    clearXrayNodeTraceAnimation();
+    if (!animate || normalized.length === 1) {
+      applyXrayNodeClasses(normalized, normalized[normalized.length - 1] || "");
+      return;
+    }
+
+    const stepMs = 240;
+    state.xrayTraceAnimatingUntil = now + normalized.length * stepMs + 180;
+    normalized.forEach((node, index) => {
+      const timerId = window.setTimeout(() => {
+        applyXrayNodeClasses(normalized.slice(0, index + 1), node);
+      }, index * stepMs);
+      state.xrayTraceTimers.push(timerId);
+    });
+    const finalTimer = window.setTimeout(() => {
+      applyXrayNodeClasses(normalized, normalized[normalized.length - 1] || "");
+      state.xrayTraceTimers = [];
+      state.xrayTraceAnimatingUntil = 0;
+    }, normalized.length * stepMs + 20);
+    state.xrayTraceTimers.push(finalTimer);
   }
 
   function normalizePercent(value) {
@@ -1296,35 +1357,120 @@
     const states = safeObject(dynamicStates);
     const value = states[key] ?? states[key.toLowerCase()] ?? states[key.toUpperCase()];
     if (value && typeof value === "object") {
-      return safeObject(value).value ?? safeObject(value).current ?? safeObject(value).percent;
+      const record = safeObject(value);
+      return record.value ?? record.current ?? record.percent ?? record.current_value;
     }
     return value;
   }
 
-  function updateXrayMeter(bar, label, value) {
+  function updateXrayMeter(bar, label, title, value) {
     const percent = normalizePercent(value);
     if (bar) bar.style.width = percent == null ? "0%" : percent.toFixed(0) + "%";
     if (label) label.textContent = percent == null ? "--" : percent.toFixed(0) + "%";
+    if (title) title.textContent = title.textContent || "";
+  }
+
+  function stateLabelFromEntry(key, value, fallback) {
+    const record = safeObject(value);
+    return String(record.name || fallback || prettifyId(key));
+  }
+
+  function resolveWatcherTarget(payload, gameState) {
+    const entities = safeObject(gameState.entities || payload.entities);
+    const activeDialogueTarget = normalizeId(
+      payload.active_dialogue_target
+      || gameState.active_dialogue_target
+      || safeObject(gameState.intent_context).action_target
+      || "",
+    );
+
+    const candidates = [];
+    const pushCandidate = (id) => {
+      const key = normalizeId(id);
+      if (!key || candidates.includes(key) || !entities[key]) return;
+      candidates.push(key);
+    };
+
+    pushCandidate(activeDialogueTarget);
+    Object.keys(entities).forEach((id) => {
+      if (/gribbo/.test(normalizeId(id)) || /gribbo/.test(normalizeId(safeObject(entities[id]).name))) {
+        pushCandidate(id);
+      }
+    });
+    Object.keys(entities).forEach((id) => {
+      const dynamicStates = safeObject(safeObject(entities[id]).dynamic_states || safeObject(entities[id]).dynamicStates);
+      if (readDynamicState(dynamicStates, "patience") != null || readDynamicState(dynamicStates, "fear") != null) {
+        pushCandidate(id);
+      }
+    });
+    Object.keys(entities).forEach((id) => {
+      const dynamicStates = safeObject(safeObject(entities[id]).dynamic_states || safeObject(entities[id]).dynamicStates);
+      if (Object.keys(dynamicStates).length) pushCandidate(id);
+    });
+
+    const targetId = candidates[0] || "";
+    return {
+      targetId,
+      entity: safeObject(entities[targetId]),
+      dynamicStates: safeObject(
+        safeObject(entities[targetId]).dynamic_states || safeObject(entities[targetId]).dynamicStates
+      ),
+    };
+  }
+
+  function resolveWatcherEntries(dynamicStates) {
+    const states = safeObject(dynamicStates);
+    const patienceValue = readDynamicState(states, "patience");
+    const fearValue = readDynamicState(states, "fear");
+
+    if (patienceValue != null || fearValue != null) {
+      return {
+        primary: {
+          label: stateLabelFromEntry("patience", states.patience, "耐心 Patience"),
+          value: patienceValue,
+        },
+        secondary: {
+          label: stateLabelFromEntry("fear", states.fear, "恐惧 Fear"),
+          value: fearValue,
+        },
+      };
+    }
+
+    const fallbackEntries = Object.entries(states)
+      .map(([key, value]) => ({
+        key,
+        label: stateLabelFromEntry(key, value, prettifyId(key)),
+        value: readDynamicState(states, key),
+      }))
+      .filter((entry) => entry.value != null);
+
+    return {
+      primary: fallbackEntries[0] || { label: "耐心 Patience", value: null },
+      secondary: fallbackEntries[1] || { label: "恐惧 Fear", value: null },
+    };
   }
 
   function updateXrayPanel(data, options = {}) {
     if (!els.jsonInspector) return;
     const payload = safeObject(data);
     const gameState = safeObject(payload.game_state || payload.gameState || payload);
-    const entities = safeObject(gameState.entities || payload.entities);
-    const gribbo = safeObject(entities.gribbo || entities.gribbo_1 || entities.goblin_1);
-    const dynamicStates = safeObject(gribbo.dynamic_states || gribbo.dynamicStates);
+    const watcher = resolveWatcherTarget(payload, gameState);
+    const watcherEntries = resolveWatcherEntries(watcher.dynamicStates);
 
-    updateXrayMeter(els.patienceBar, els.patienceValue, readDynamicState(dynamicStates, "patience"));
-    updateXrayMeter(els.fearBar, els.fearValue, readDynamicState(dynamicStates, "fear"));
+    if (els.patienceLabel) els.patienceLabel.textContent = watcherEntries.primary.label;
+    if (els.fearLabel) els.fearLabel.textContent = watcherEntries.secondary.label;
+    updateXrayMeter(els.patienceBar, els.patienceValue, els.patienceLabel, watcherEntries.primary.value);
+    updateXrayMeter(els.fearBar, els.fearValue, els.fearLabel, watcherEntries.secondary.value);
 
     const trace = options.trace || inferNodeTrace(payload, options.userLine || "", options.intent || "");
-    setXrayNodeTrace(trace);
+    setXrayNodeTrace(trace, { animate: options.animateTrace === true });
 
     const inspectorPayload = gameState === payload
       ? payload
       : {
           last_node: payload.last_node || gameState.last_node || gameState.current_node || null,
+          node_trace: trace,
+          watcher_target: watcher.targetId || null,
           intent_context: gameState.intent_context || payload.intent_context || null,
           active_dialogue_target: payload.active_dialogue_target || gameState.active_dialogue_target || null,
           entities: gameState.entities || null,
@@ -1831,6 +1977,7 @@
         userLine,
         intent: intentValue,
         trace: inferNodeTrace(data, userLine, intentValue),
+        animateTrace: true,
       });
       if (!opts.skipLogUpdate) {
         updateWorldLog(data, userLine || null);
