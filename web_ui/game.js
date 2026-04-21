@@ -16,6 +16,56 @@
     mapData: DEFAULT_MAP_DATA,
   };
 
+  const SPRITE_KEYS = Object.freeze({
+    tiles: "dungeon_tiles",
+    actors: "dungeon_characters",
+  });
+
+  const SPRITE_SHEETS = Object.freeze({
+    tiles: {
+      path: "assets/2D Pixel Dungeon Asset Pack/character and tileset/Dungeon_Tileset.png",
+      frameWidth: 16,
+      frameHeight: 16,
+    },
+    actors: {
+      path: "assets/2D Pixel Dungeon Asset Pack/character and tileset/Dungeon_Character.png",
+      frameWidth: 16,
+      frameHeight: 16,
+    },
+  });
+
+  const DEPTH_LAYERS = Object.freeze({
+    floor: 0,
+    environment: 1,
+    actors: 2,
+  });
+
+  const TILE_FRAMES = Object.freeze({
+    floor: [11, 12, 13, 21, 22, 23, 31, 32, 33, 61, 62, 63, 71, 72, 73],
+    wall: [0, 1, 2, 3, 4, 10, 20, 30, 40, 41, 42, 43, 44, 50, 51, 52, 53, 55],
+    rubble: [49, 59, 64, 68],
+    campfire: [90, 91, 92, 93],
+    prop: [80, 81, 83],
+    trap: [65, 77],
+    doorClosed: 39,
+    doorOpen: 57,
+    chestClosed: 84,
+    chestOpen: 85,
+    loot: [86, 87, 89, 97, 98],
+    poison: 97,
+    locked: 88,
+  });
+
+  const ACTOR_FRAMES = Object.freeze({
+    player: [1, 4, 15, 18],
+    hostile: [11, 12, 13, 25, 26, 27],
+    neutral: [2, 3, 16, 17],
+    object: [9, 10, 23, 24],
+    hostileById: {
+      goblin_1: 11,
+    },
+  });
+
   const controller = {
     game: null,
     scene: null,
@@ -104,6 +154,20 @@
     return String(id || "").trim().toLowerCase();
   }
 
+  function hashString(value) {
+    const text = String(value || "");
+    let hash = 0;
+    for (let i = 0; i < text.length; i += 1) {
+      hash = ((hash << 5) - hash + text.charCodeAt(i)) | 0;
+    }
+    return Math.abs(hash);
+  }
+
+  function pickFrame(frames, seed) {
+    if (!Array.isArray(frames) || frames.length === 0) return 0;
+    return frames[hashString(seed) % frames.length];
+  }
+
   function isDialogueOverlayActive() {
     if (window.BG3DialogueActive === true) return true;
     const overlay = document.getElementById("dialogue-overlay");
@@ -131,14 +195,6 @@
     const num = Number(value);
     if (!Number.isFinite(num)) return fallback;
     return Math.max(0, Math.min(max - 1, Math.round(num)));
-  }
-
-  function firstGlyph(id, data) {
-    const name = String(safeObject(data).name || id || "?");
-    const cjk = name.match(/[\u4e00-\u9fff]/);
-    if (cjk) return cjk[0];
-    const alpha = name.match(/[A-Za-z0-9]/);
-    return alpha ? alpha[0].toUpperCase() : "?";
   }
 
   function tokenKind(id, data, source) {
@@ -303,9 +359,12 @@
   class MainScene extends Phaser.Scene {
     constructor() {
       super("MainScene");
-      this.gridGraphics = null;
-      this.obstacleGraphics = null;
-      this.obstacleLabels = [];
+      this.floorLayer = null;
+      this.environmentLayer = null;
+      this.entityLayer = null;
+      this.floorSprites = [];
+      this.obstacleSprites = [];
+      this.obstacleFxTweens = [];
       this.mapData = DEFAULT_MAP_DATA;
       this.board = { x: 0, y: 0, width: 640, height: 640, cell: 64 };
       this.tokens = new Map();
@@ -314,12 +373,20 @@
     }
 
     preload() {
-      // Geometry-only prototype scene. No external assets are required yet.
+      this.load.spritesheet(SPRITE_KEYS.tiles, SPRITE_SHEETS.tiles.path, {
+        frameWidth: SPRITE_SHEETS.tiles.frameWidth,
+        frameHeight: SPRITE_SHEETS.tiles.frameHeight,
+      });
+      this.load.spritesheet(SPRITE_KEYS.actors, SPRITE_SHEETS.actors.path, {
+        frameWidth: SPRITE_SHEETS.actors.frameWidth,
+        frameHeight: SPRITE_SHEETS.actors.frameHeight,
+      });
     }
 
     create() {
-      this.gridGraphics = this.add.graphics().setDepth(1);
-      this.obstacleGraphics = this.add.graphics().setDepth(5);
+      this.floorLayer = this.add.layer().setDepth(DEPTH_LAYERS.floor);
+      this.environmentLayer = this.add.layer().setDepth(DEPTH_LAYERS.environment);
+      this.entityLayer = this.add.layer().setDepth(DEPTH_LAYERS.actors);
       this.transitionOverlay = this.add.rectangle(0, 0, 1, 1, 0x000000, 0)
         .setOrigin(0, 0)
         .setDepth(500)
@@ -376,8 +443,12 @@
         cell,
       };
 
-      this.drawGrid();
-      this.drawObstacles();
+      this.drawFloorTiles();
+      this.drawObstacleTiles();
+      this.tokens.forEach((token) => {
+        this.updateTokenScale(token);
+        this.updateIdleTween(token, true);
+      });
       this.positionAllTokens(false);
       if (this.transitionOverlay) {
         this.transitionOverlay
@@ -387,73 +458,80 @@
       }
     }
 
-    drawGrid() {
-      const { x, y, width, height, cell } = this.board;
+    destroySpriteList(items) {
+      items.forEach((item) => item.destroy());
+      items.length = 0;
+    }
+
+    scaleForTile(ratio = 1) {
+      return (this.board.cell / SPRITE_SHEETS.tiles.frameWidth) * ratio;
+    }
+
+    drawFloorTiles() {
       const map = normalizeMapData(this.mapData);
+      this.destroySpriteList(this.floorSprites);
 
-      this.gridGraphics.clear();
-
-      // The canvas outside this rounded board remains the dark "unreachable void".
-      this.gridGraphics.fillStyle(0x08090c, 0.76);
-      this.gridGraphics.fillRect(0, 0, this.scale.width, this.scale.height);
-
-      this.gridGraphics.fillStyle(0x12161b, 0.86);
-      this.gridGraphics.fillRoundedRect(x, y, width, height, 14);
-      this.gridGraphics.lineStyle(2, 0xd0ab67, 0.72);
-      this.gridGraphics.strokeRoundedRect(x, y, width, height, 14);
-
-      for (let col = 0; col <= map.width; col += 1) {
-        const px = x + col * cell;
-        const alpha = col === 0 || col === map.width ? 0.78 : 0.28;
-        this.gridGraphics.lineStyle(1, 0x73c6c3, alpha);
-        this.gridGraphics.lineBetween(px, y, px, y + height);
-      }
-
-      for (let row = 0; row <= map.height; row += 1) {
-        const py = y + row * cell;
-        const alpha = row === 0 || row === map.height ? 0.78 : 0.28;
-        this.gridGraphics.lineStyle(1, 0x73c6c3, alpha);
-        this.gridGraphics.lineBetween(x, py, x + width, py);
+      for (let y = 0; y < map.height; y += 1) {
+        for (let x = 0; x < map.width; x += 1) {
+          const frame = (x === 0 || y === 0 || x === map.width - 1 || y === map.height - 1)
+            ? pickFrame(TILE_FRAMES.wall, `${map.id}:wall:${x}:${y}`)
+            : pickFrame(TILE_FRAMES.floor, `${map.id}:floor:${x}:${y}`);
+          const world = this.gridToWorld(x, y);
+          const tile = this.add.image(world.x, world.y, SPRITE_KEYS.tiles, frame)
+            .setScale(this.scaleForTile(1.02))
+            .setDepth(DEPTH_LAYERS.floor);
+          this.floorLayer.add(tile);
+          this.floorSprites.push(tile);
+        }
       }
     }
 
-    drawObstacles() {
-      this.obstacleGraphics.clear();
-      this.obstacleLabels.forEach((label) => label.destroy());
-      this.obstacleLabels = [];
+    obstacleFrame(obstacle, x, y) {
+      const entry = safeObject(obstacle);
+      const kind = normalizeId(entry.type);
+      if (kind.includes("campfire") || kind.includes("torch")) {
+        return pickFrame(TILE_FRAMES.campfire, `${kind}:${x}:${y}`);
+      }
+      if (kind.includes("trap") || kind.includes("spike")) {
+        return pickFrame(TILE_FRAMES.trap, `${kind}:${x}:${y}`);
+      }
+      if (entry.blocks_movement === true && entry.blocks_los === true) {
+        return pickFrame(TILE_FRAMES.wall, `hard:${kind}:${x}:${y}`);
+      }
+      if (entry.blocks_movement === true) {
+        return pickFrame(TILE_FRAMES.prop, `soft:${kind}:${x}:${y}`);
+      }
+      return pickFrame(TILE_FRAMES.rubble, `rubble:${kind}:${x}:${y}`);
+    }
+
+    drawObstacleTiles() {
+      this.destroySpriteList(this.obstacleSprites);
+      this.obstacleFxTweens.forEach((tween) => tween.stop());
+      this.obstacleFxTweens = [];
 
       const obstacles = Array.isArray(this.mapData.obstacles) ? this.mapData.obstacles : [];
       obstacles.forEach((rawObstacle) => {
         const obstacle = safeObject(rawObstacle);
-        const blocksMovement = obstacle.blocks_movement === true;
-        const blocksLos = obstacle.blocks_los === true;
         const kind = normalizeId(obstacle.type);
 
         obstacleCoordinates(obstacle, this.mapData).forEach(({ x, y }) => {
-          const rect = this.gridRect(x, y, 0.16);
+          const world = this.gridToWorld(x, y);
+          const sprite = this.add.image(world.x, world.y, SPRITE_KEYS.tiles, this.obstacleFrame(obstacle, x, y))
+            .setScale(this.scaleForTile(0.95))
+            .setDepth(DEPTH_LAYERS.environment);
+          this.environmentLayer.add(sprite);
+          this.obstacleSprites.push(sprite);
 
-          if (blocksMovement && blocksLos) {
-            this.obstacleGraphics.fillStyle(0x34373d, 0.96);
-            this.obstacleGraphics.lineStyle(2, 0x6c7078, 0.9);
-          } else if (blocksMovement) {
-            this.obstacleGraphics.fillStyle(0xd66a22, 0.9);
-            this.obstacleGraphics.lineStyle(2, 0xffb15e, 0.94);
-          } else {
-            this.obstacleGraphics.fillStyle(0x44606a, 0.62);
-            this.obstacleGraphics.lineStyle(1, 0x73c6c3, 0.5);
-          }
-
-          this.obstacleGraphics.fillRoundedRect(rect.x, rect.y, rect.size, rect.size, 6);
-          this.obstacleGraphics.strokeRoundedRect(rect.x, rect.y, rect.size, rect.size, 6);
-
-          if (kind === "campfire" || (blocksMovement && !blocksLos)) {
-            const label = this.add.text(rect.x + rect.size / 2, rect.y + rect.size / 2, "火", {
-              fontFamily: "Georgia, serif",
-              fontSize: Math.max(12, rect.size * 0.42) + "px",
-              fontStyle: "bold",
-              color: "#fff1c2",
-            }).setOrigin(0.5).setDepth(6);
-            this.obstacleLabels.push(label);
+          if (kind.includes("campfire") || kind.includes("torch")) {
+            const flicker = this.tweens.add({
+              targets: sprite,
+              alpha: 0.66,
+              duration: 150,
+              yoyo: true,
+              repeat: -1,
+              ease: "Sine.easeInOut",
+            });
+            this.obstacleFxTweens.push(flicker);
           }
         });
       });
@@ -914,77 +992,69 @@
       }
 
       token.entity = entity;
-      token.label.setText(this.tokenGlyph(entity));
       this.applyTokenStyle(token, entity.kind);
-      if (token.lockBadge) token.lockBadge.setVisible(false);
-      if (entity.kind === "loot") {
-        if (token.poisonIcon) token.poisonIcon.setVisible(false);
-        token.shape.setScale(1, 1);
-        token.shape.setAngle(0);
-        token.shadow.setScale(1, 1);
-      } else if (entity.kind === "door") {
-        if (token.poisonIcon) token.poisonIcon.setVisible(false);
-        this.applyDoorVisual(token, entity.data);
-      } else if (entity.kind === "trap") {
-        if (token.poisonIcon) token.poisonIcon.setVisible(false);
-        this.applyTrapVisual(token);
-      } else if (entity.kind === "chest") {
-        if (token.poisonIcon) token.poisonIcon.setVisible(false);
-        this.applyChestVisual(token, entity.data);
-      } else {
-        this.applyStatusEffects(token, entity.data);
-      }
+      this.applyTokenVisual(token, entity);
       this.moveToken(token, entity.x, entity.y, true);
     }
 
-    tokenGlyph(entity) {
-      if (entity.kind === "loot") return "✦";
-      if (entity.kind === "door") return "门";
-      if (entity.kind === "trap") return "⚠";
-      if (entity.kind === "chest") return "箱";
-      return firstGlyph(entity.id, entity.data);
+    tokenLayerForKind(kind) {
+      return this.kindDepth(kind) === DEPTH_LAYERS.actors ? this.entityLayer : this.environmentLayer;
+    }
+
+    syncTokenLayer(token, kind) {
+      const layer = this.tokenLayerForKind(kind);
+      if (!layer || token.renderLayer === layer) return;
+      if (token.renderLayer && typeof token.renderLayer.remove === "function") {
+        token.renderLayer.remove(token.container);
+      }
+      layer.add(token.container);
+      token.renderLayer = layer;
+    }
+
+    kindDepth(kind) {
+      if (kind === "player" || kind === "hostile" || kind === "neutral") {
+        return DEPTH_LAYERS.actors;
+      }
+      return DEPTH_LAYERS.environment;
+    }
+
+    kindBaseScale(kind) {
+      const scales = {
+        player: 1.08,
+        hostile: 1.06,
+        neutral: 1.04,
+        object: 0.94,
+        loot: 0.84,
+        door: 1,
+        trap: 0.9,
+        chest: 0.94,
+      };
+      return scales[kind] || 1;
+    }
+
+    updateTokenScale(token) {
+      const baseScale = this.scaleForTile(token.baseScale || 1);
+      token.baseWorldScale = baseScale;
+      token.container.setScale(baseScale);
     }
 
     createToken(entity) {
       const container = this.add.container(0, 0);
-      const radius = Math.max(12, Math.min(22, this.board.cell * 0.31));
-      const shadow = this.add.circle(0, radius * 0.25, radius, 0x000000, 0.32);
-      let shape;
-      if (entity.kind === "door") {
-        shape = this.add.rectangle(0, 0, this.board.cell * 0.86, this.board.cell * 0.82, 0x5b341e, 1);
-      } else if (entity.kind === "trap") {
-        shape = this.add.rectangle(0, 0, this.board.cell * 0.78, this.board.cell * 0.78, 0x380909, 0.34);
-      } else if (entity.kind === "object" || entity.kind === "loot" || entity.kind === "chest") {
-        shape = this.add.rectangle(0, 0, radius * 1.7, radius * 1.7, 0xe67e22, 1);
-      } else {
-        shape = this.add.circle(0, 0, radius, 0x4a90e2, 1);
-      }
-      const label = this.add.text(0, 0, firstGlyph(entity.id, entity.data), {
-        fontFamily: "Georgia, serif",
-        fontSize: Math.max(12, radius * 0.88) + "px",
-        fontStyle: "bold",
-        color: "#ffffff",
-      }).setOrigin(0.5);
-      const poisonIcon = this.add.circle(radius * 0.62, -radius * 0.78, Math.max(4, radius * 0.22), 0x88ff88, 0.92);
-      poisonIcon.setStrokeStyle(2, 0x163f1c, 0.86);
+      const sprite = this.add.image(0, 0, SPRITE_KEYS.actors, pickFrame(ACTOR_FRAMES.neutral, entity.id)).setOrigin(0.5);
+      const poisonIcon = this.add.image(5, -6, SPRITE_KEYS.tiles, TILE_FRAMES.poison)
+        .setOrigin(0.5)
+        .setScale(0.52);
       poisonIcon.setVisible(false);
-      const lockBadge = this.add.text(radius * 0.68, -radius * 0.78, "🔒", {
-        fontFamily: "Georgia, serif",
-        fontSize: Math.max(12, radius * 0.68) + "px",
-        fontStyle: "bold",
-        color: "#ffd86b",
-        stroke: "#2a1600",
-        strokeThickness: 3,
-      }).setOrigin(0.5);
+      const lockBadge = this.add.image(5, -6, SPRITE_KEYS.tiles, TILE_FRAMES.locked)
+        .setOrigin(0.5)
+        .setScale(0.52);
       lockBadge.setVisible(false);
 
-      container.add([shadow, shape, label, poisonIcon, lockBadge]);
-      container.setDepth(entity.kind === "player" ? 100 : 20);
+      container.add([sprite, poisonIcon, lockBadge]);
+      container.setDepth(this.kindDepth(entity.kind));
       return {
         container,
-        shadow,
-        shape,
-        label,
+        sprite,
         poisonIcon,
         entity,
         pulseTween: null,
@@ -996,66 +1066,62 @@
         lockBadge,
         speechBubble: null,
         speechBubbleTimer: null,
+        currentKind: null,
+        baseScale: this.kindBaseScale(entity.kind),
+        baseWorldScale: 1,
+        hasSpawned: false,
+        renderLayer: null,
       };
     }
 
     applyTokenStyle(token, kind) {
-      const colors = {
-        player: { fill: 0x1f6fce, stroke: 0x8ab4f8, depth: 100 },
-        hostile: { fill: 0xb02222, stroke: 0xf88a8a, depth: 50 },
-        neutral: { fill: 0x5f7374, stroke: 0xd5dbdb, depth: 30 },
-        object: { fill: 0x9a5a1f, stroke: 0xf39c12, depth: 25 },
-        loot: { fill: 0xffd700, stroke: 0xfff0a8, depth: 45 },
-        door: { fill: 0x5b341e, stroke: 0xc7904c, depth: 42 },
-        trap: { fill: 0x380909, stroke: 0xff3b3b, depth: 44 },
-        chest: { fill: 0x8a5524, stroke: 0xffcf70, depth: 35 },
-      };
-      const style = colors[kind] || colors.neutral;
-      token.shape.setFillStyle(style.fill, 1);
-      token.shape.setStrokeStyle(3, style.stroke, 1);
-      token.label.setColor("#ffffff");
-      token.container.setDepth(style.depth);
-
-      if (kind === "player" && !token.pulseTween) {
-        token.pulseTween = this.tweens.add({
-          targets: token.container,
-          scaleX: 1.08,
-          scaleY: 1.08,
-          duration: 1100,
-          yoyo: true,
-          repeat: -1,
-          ease: "Sine.easeInOut",
-        });
+      this.syncTokenLayer(token, kind);
+      token.baseScale = this.kindBaseScale(kind);
+      token.container.setDepth(this.kindDepth(kind));
+      this.updateTokenScale(token);
+      if (token.currentKind !== kind) {
+        token.currentKind = kind;
+        this.updateIdleTween(token, true);
       }
+    }
 
-      if (kind !== "player" && token.pulseTween) {
+    updateIdleTween(token, forceReset = false) {
+      if (forceReset && token.pulseTween) {
         token.pulseTween.stop();
         token.pulseTween = null;
-        token.container.setScale(1);
+      }
+      if (forceReset && token.lootTween) {
+        token.lootTween.stop();
+        token.lootTween = null;
+      }
+      if (forceReset && token.trapTween) {
+        token.trapTween.stop();
+        token.trapTween = null;
       }
 
-      if (kind === "loot" && !token.lootTween) {
-        token.lootTween = this.tweens.add({
-          targets: [token.shape, token.label],
-          alpha: 0.6,
-          duration: 820,
-          ease: "Sine.easeInOut",
+      token.container.setScale(token.baseWorldScale);
+      token.sprite.setAlpha(1);
+
+      if (token.currentKind === "player" && !token.pulseTween) {
+        token.pulseTween = this.tweens.add({
+          targets: token.container,
+          scaleX: token.baseWorldScale * 1.06,
+          scaleY: token.baseWorldScale * 1.06,
+          duration: 900,
           yoyo: true,
           repeat: -1,
+          ease: "Sine.easeInOut",
         });
       }
 
-      if (kind !== "loot" && token.lootTween) {
+      if (token.currentKind !== "loot" && token.lootTween) {
         token.lootTween.stop();
         token.lootTween = null;
-        token.shape.setAlpha(1);
-        token.label.setAlpha(1);
       }
-
-      if (kind === "trap" && !token.trapTween) {
-        token.trapTween = this.tweens.add({
-          targets: [token.shape, token.label],
-          alpha: 0.48,
+      if (token.currentKind === "loot" && !token.lootTween) {
+        token.lootTween = this.tweens.add({
+          targets: token.sprite,
+          alpha: 0.62,
           duration: 760,
           ease: "Sine.easeInOut",
           yoyo: true,
@@ -1063,94 +1129,122 @@
         });
       }
 
-      if (kind !== "trap" && token.trapTween) {
+      if (token.currentKind !== "trap" && token.trapTween) {
         token.trapTween.stop();
         token.trapTween = null;
-        token.shape.setAlpha(1);
-        token.label.setAlpha(1);
+      }
+      if (token.currentKind === "trap" && !token.trapTween) {
+        token.trapTween = this.tweens.add({
+          targets: token.sprite,
+          alpha: 0.52,
+          duration: 660,
+          ease: "Sine.easeInOut",
+          yoyo: true,
+          repeat: -1,
+        });
       }
     }
 
-    applyTrapVisual(token) {
-      if (typeof token.shape.setSize === "function") {
-        token.shape.setSize(this.board.cell * 0.78, this.board.cell * 0.78);
+    resetTokenSpriteTransform(token) {
+      token.sprite.setScale(1, 1);
+      token.sprite.setAngle(0);
+      token.sprite.setAlpha(1);
+      if (typeof token.sprite.clearTint === "function") token.sprite.clearTint();
+    }
+
+    resolveActorFrame(entity) {
+      const kind = entity.kind;
+      const id = normalizeId(entity.id);
+      const data = safeObject(entity.data);
+      const hint = normalizeId(data.name || data.type || data.kind || id);
+      if (kind === "player") {
+        return pickFrame(ACTOR_FRAMES.player, id || hint);
       }
-      token.shape.setScale(1, 1);
-      token.shape.setAngle(0);
-      token.shape.setFillStyle(0x380909, 0.34);
-      token.shape.setStrokeStyle(4, 0xff3b3b, 1);
-      token.label.setColor("#ffb3a7");
-      token.label.setAlpha(1);
-      token.shadow.setScale(1.08, 0.82);
+      if (kind === "hostile") {
+        if (ACTOR_FRAMES.hostileById[id] !== undefined) return ACTOR_FRAMES.hostileById[id];
+        if (hint.includes("goblin")) return 11;
+        if (hint.includes("skeleton")) return 13;
+        if (hint.includes("vampire")) return 12;
+        return pickFrame(ACTOR_FRAMES.hostile, id || hint);
+      }
+      if (kind === "neutral") {
+        return pickFrame(ACTOR_FRAMES.neutral, id || hint);
+      }
+      return pickFrame(ACTOR_FRAMES.object, id || hint);
+    }
+
+    applyTokenVisual(token, entity) {
+      this.resetTokenSpriteTransform(token);
+      if (token.poisonIcon) token.poisonIcon.setVisible(false);
+      if (token.lockBadge) token.lockBadge.setVisible(false);
+
+      if (entity.kind === "door") {
+        this.applyDoorVisual(token, entity.data);
+        return;
+      }
+      if (entity.kind === "trap") {
+        this.applyTrapVisual(token, entity);
+        return;
+      }
+      if (entity.kind === "chest") {
+        this.applyChestVisual(token, entity.data);
+        return;
+      }
+      if (entity.kind === "loot") {
+        token.sprite.setTexture(SPRITE_KEYS.tiles, pickFrame(TILE_FRAMES.loot, normalizeId(entity.id)));
+        return;
+      }
+      if (entity.kind === "object") {
+        token.sprite.setTexture(SPRITE_KEYS.tiles, pickFrame(TILE_FRAMES.prop, normalizeId(entity.id)));
+        return;
+      }
+
+      token.sprite.setTexture(SPRITE_KEYS.actors, this.resolveActorFrame(entity));
+      this.applyStatusEffects(token, entity.data);
+    }
+
+    applyTrapVisual(token, entity) {
+      token.sprite.setTexture(SPRITE_KEYS.tiles, pickFrame(TILE_FRAMES.trap, normalizeId(entity.id)));
+      token.sprite.setAlpha(0.96);
     }
 
     applyChestVisual(token, data) {
-      if (typeof token.shape.setSize === "function") {
-        token.shape.setSize(this.board.cell * 0.58, this.board.cell * 0.48);
-      }
-      token.shape.setScale(1, 1);
-      token.shape.setAngle(0);
-      token.shape.setAlpha(1);
-      token.shape.setFillStyle(0x8a5524, 1);
-      token.shape.setStrokeStyle(3, 0xffcf70, 0.95);
-      token.label.setColor("#fff1c2");
-      token.label.setAlpha(1);
-      token.shadow.setScale(1, 0.72);
-      if (token.lockBadge) {
-        token.lockBadge.setVisible(isLocked(data));
-        token.lockBadge.setPosition(this.board.cell * 0.22, -this.board.cell * 0.22);
-      }
+      const locked = isLocked(data);
+      token.sprite.setTexture(SPRITE_KEYS.tiles, locked ? TILE_FRAMES.chestClosed : TILE_FRAMES.chestOpen);
+      if (token.lockBadge) token.lockBadge.setVisible(locked);
     }
 
     applyDoorVisual(token, data) {
       const open = isDoorOpen(data);
-      if (typeof token.shape.setSize === "function") {
-        token.shape.setSize(this.board.cell * 0.86, this.board.cell * 0.82);
-      }
-      const target = open
-        ? { scaleX: 0.16, scaleY: 1.05, angle: 90, alpha: 0.48, labelAlpha: 0.58, shadowScaleX: 0.32, shadowScaleY: 0.9 }
-        : { scaleX: 1, scaleY: 1, angle: 0, alpha: 1, labelAlpha: 0.92, shadowScaleX: 1.18, shadowScaleY: 0.72 };
+      const frame = open ? TILE_FRAMES.doorOpen : TILE_FRAMES.doorClosed;
       const changed = token.doorOpenState !== null && token.doorOpenState !== open;
-
       token.doorOpenState = open;
       if (token.doorTween) {
         token.doorTween.stop();
         token.doorTween = null;
       }
-
       if (!changed) {
-        token.shape.setScale(target.scaleX, target.scaleY);
-        token.shape.setAngle(target.angle);
-        token.shape.setAlpha(target.alpha);
-        token.label.setAlpha(target.labelAlpha);
-        token.shadow.setScale(target.shadowScaleX, target.shadowScaleY);
+        token.sprite.setTexture(SPRITE_KEYS.tiles, frame);
+        token.sprite.setAlpha(open ? 0.76 : 1);
         return;
       }
-
       token.doorTween = this.tweens.add({
-        targets: token.shape,
-        scaleX: target.scaleX,
-        scaleY: target.scaleY,
-        angle: target.angle,
-        alpha: target.alpha,
-        duration: 100,
+        targets: token.sprite,
+        alpha: 0.34,
+        duration: 90,
         ease: "Sine.easeInOut",
         onComplete: () => {
-          token.doorTween = null;
+          token.sprite.setTexture(SPRITE_KEYS.tiles, frame);
+          token.doorTween = this.tweens.add({
+            targets: token.sprite,
+            alpha: open ? 0.76 : 1,
+            duration: 90,
+            ease: "Sine.easeInOut",
+            onComplete: () => {
+              token.doorTween = null;
+            },
+          });
         },
-      });
-      this.tweens.add({
-        targets: [token.label],
-        alpha: target.labelAlpha,
-        duration: 100,
-        ease: "Sine.easeInOut",
-      });
-      this.tweens.add({
-        targets: token.shadow,
-        scaleX: target.shadowScaleX,
-        scaleY: target.shadowScaleY,
-        duration: 100,
-        ease: "Sine.easeInOut",
       });
     }
 
@@ -1162,42 +1256,46 @@
       if (token.poisonIcon) {
         token.poisonIcon.setVisible(isPoisoned);
       }
-      token.shape.setScale(isProne ? 1.35 : 1, isProne ? 0.55 : 1);
-      token.shape.setAngle(isProne ? 90 : 0);
-      token.shadow.setScale(isProne ? 1.4 : 1, isProne ? 0.55 : 1);
-      token.label.setAlpha(isProne ? 0.72 : 1);
+      token.sprite.setScale(isProne ? 1.16 : 1, isProne ? 0.68 : 1);
+      token.sprite.setAngle(isProne ? 90 : 0);
 
-      if (isPoisoned && typeof token.shape.setFillStyle === "function") {
-        token.shape.setAlpha(0.88);
-        if (typeof token.label.setTint === "function") {
-          token.label.setTint(0x88ff88);
+      if (isPoisoned) {
+        token.sprite.setAlpha(0.9);
+        if (typeof token.sprite.setTint === "function") {
+          token.sprite.setTint(0xa2ff9e);
         }
       } else {
-        token.shape.setAlpha(1);
-        if (typeof token.label.clearTint === "function") {
-          token.label.clearTint();
+        token.sprite.setAlpha(1);
+        if (typeof token.sprite.clearTint === "function") {
+          token.sprite.clearTint();
         }
       }
     }
 
     moveToken(token, gridX, gridY, animate) {
       const target = this.gridToWorld(gridX, gridY);
+      const samePosition = Math.abs(token.container.x - target.x) < 0.5 && Math.abs(token.container.y - target.y) < 0.5;
       if (token.moveTween) {
         token.moveTween.stop();
         token.moveTween = null;
       }
-      if (!animate) {
+      if (!animate || !token.hasSpawned) {
         token.container.setPosition(target.x, target.y);
+        token.hasSpawned = true;
+        return;
+      }
+      if (samePosition) {
         return;
       }
       token.moveTween = this.tweens.add({
         targets: token.container,
         x: target.x,
         y: target.y,
-        duration: 360,
-        ease: "Sine.easeInOut",
+        duration: 180,
+        ease: "Sine.easeOut",
         onComplete: () => {
           token.moveTween = null;
+          token.hasSpawned = true;
         },
       });
     }
@@ -1218,15 +1316,6 @@
       token.container.destroy();
     }
 
-    gridRect(gridX, gridY, insetRatio) {
-      const inset = this.board.cell * insetRatio;
-      return {
-        x: this.board.x + gridX * this.board.cell + inset,
-        y: this.board.y + gridY * this.board.cell + inset,
-        size: this.board.cell - inset * 2,
-      };
-    }
-
     gridToWorld(gridX, gridY) {
       return {
         x: this.board.x + (gridX + 0.5) * this.board.cell,
@@ -1241,6 +1330,10 @@
     parent: "game-viewport",
     backgroundColor: "rgba(0,0,0,0)",
     transparent: true,
+    render: {
+      pixelArt: true,
+      roundPixels: true,
+    },
     width: initialViewport.width,
     height: initialViewport.height,
     scale: {
