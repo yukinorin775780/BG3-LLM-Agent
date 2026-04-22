@@ -1,35 +1,58 @@
 map_id: "necromancer_lab"
 name: "死灵法师的废弃实验室"
-dimensions: [20, 20]
+dimensions: [20, 14]
+player_start: [2, 2]
+
+grid:
+  - "W W W W W W W W W W W W W W W W W W W W"
+  - "W . . . . . W W W W W . . . . . . . . W"
+  - "W . . . . . W W W W W . . . . . . . . W"
+  - "W . . . . . . . . . . . . . . . . . . W"
+  - "W . . . . . W W W W W . . . . . . . . W"
+  - "W W W W . W W W W W W W W W W . W W W W"
+  - "W W W W . W W W W W W W W W W . W W W W"
+  - "W . . . . . . . W W . . . . . . . . . W"
+  - "W . . . . . . . W W . . . . . . . . . W"
+  - "W . . . . . . . W W . . . . . . . . . W"
+  - "W W W W W W W W W W . W W W W W W W W W"
+  - "W . . . . . . . . . . W W W W W W W W W"
+  - "W . . . . . . . . . . W W W W W W W W W"
+  - "W W W W W W W W W W W W W W W W W W W W"
 
 environment_objects:
-  - id: "heavy_oak_door_1"
-    type: "door"
-    name: "沉重的橡木门"
-    position: [5, 10]
-    is_open: false
-  - id: "journal_1"
-    type: "readable"
-    name: "残破的实验日志"
-    position: [6, 10]
-    lore_id: "necromancer_journal_1"
   - id: "gas_trap_1"
     type: "trap"
-    name: "毒雾陷阱"
-    position: [12, 10]
+    name: "毒气陷阱"
+    position: [4, 6]
     is_hidden: true
     detect_dc: 13
     disarm_dc: 15
     damage: "2d6"
+    damage_type: "poison"
+    save_dc: 13
+    trigger_radius: 0
+  - id: "chest_1"
+    type: "chest"
+    name: "死灵法师的战利品箱"
+    status: "open"
+    description: "箱盖虚掩，里面散落着钥匙与杂物。"
+    position: [16, 2]
+    inventory:
+      heavy_iron_key: 1
+      gold_coin: 12
+  - id: "necromancer_diary"
+    type: "readable"
+    name: "沾满血污的日记本"
+    position: [15, 3]
+    lore_id: "necromancer_diary_1"
+  - id: "heavy_oak_door_1"
+    type: "door"
+    name: "通往地表的沉重大门"
+    position: [14, 11]
+    is_open: false
 
 spawns:
-  - prefab: "characters/feral_goblin.yaml"
-    instance_id: "goblin_guard_1"
-    position: [4, 9]
-  - prefab: "characters/feral_goblin.yaml"
-    instance_id: "goblin_guard_2"
-    position: [4, 11]
   - prefab: "characters/gribbo.yaml"
     instance_id: "gribbo"
-    position: [15, 10]
+    position: [4, 9]
     faction: "neutral"

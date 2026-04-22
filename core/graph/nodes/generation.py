@@ -13,6 +13,7 @@ Generation 节点：NPC 台词生成（工厂模式 + ReAct 工具）。
 
 import asyncio
 import copy
+import logging
 import os
 from collections.abc import Coroutine
 from typing import Any, Callable, Dict, List, Optional
@@ -47,6 +48,8 @@ from core.utils.text_processor import clean_npc_dialogue, format_history_message
 
 # 全局开关：设为 True 时打印发给大模型的 Payload（调试用）
 DEBUG_AI_PAYLOAD = False
+LLM_TIMEOUT_SECONDS = 4.5
+logger = logging.getLogger(__name__)
 
 
 _CONSUME_ACTION_INTENTS = {"use_item", "consume"}
@@ -672,9 +675,24 @@ async def _maybe_generate_banter_response(
         dm_text=context["dm_text"],
     )
     history_dicts = [{"role": "user", "content": f"[DM]: {context['dm_text']}"}]
-    raw_response = await asyncio.to_thread(
-        generate_dialogue, system_prompt, conversation_history=history_dicts
-    )
+    try:
+        raw_response = await asyncio.wait_for(
+            asyncio.to_thread(
+                generate_dialogue, system_prompt, conversation_history=history_dicts
+            ),
+            timeout=LLM_TIMEOUT_SECONDS,
+        )
+    except Exception as exc:
+        logger.warning("banter generation timed out/failed, fallback line used: %s", exc)
+        fallback_text = "……（短暂的沉默在营地里蔓延）"
+        clean_text = clean_npc_dialogue(speaker, fallback_text)
+        attributed_msg = format_history_message(speaker, clean_text)
+        return {
+            "final_response": clean_text,
+            "speaker_responses": context["prev_responses"] + [(speaker, clean_text)],
+            "thought_process": "",
+            "messages": [AIMessage(content=attributed_msg, name=speaker)],
+        }
     parsed = parse_ai_response(raw_response)
     clean_text = clean_npc_dialogue(speaker, (parsed.get("text") or "...").strip())
     attributed_msg = format_history_message(speaker, clean_text)
@@ -787,7 +805,14 @@ async def _execute_llm_with_tools(
     from ui.renderer import GameRenderer
 
     _debug_print_messages(lc_messages)
-    response = await llm_with_tools.ainvoke(lc_messages)
+    try:
+        response = await asyncio.wait_for(
+            llm_with_tools.ainvoke(lc_messages),
+            timeout=LLM_TIMEOUT_SECONDS,
+        )
+    except Exception as exc:
+        logger.warning("generation LLM invoke timed out/failed, fallback response used: %s", exc)
+        return AIMessage(content="*（星界回响短暂中断，未能组织语言）*"), lc_messages
     GameRenderer().print_system_info(
         f"🔧 [底层透视] LLM 返回的 tool_calls: {getattr(response, 'tool_calls', [])}"
     )
@@ -837,7 +862,18 @@ async def _execute_llm_with_tools(
             lc_messages,
             f"🚨 [ReAct 第 {iteration_count} 轮] 正在打印发给大模型的 Payload (含工具返回)...",
         )
-        response = await llm_with_tools.ainvoke(lc_messages)
+        try:
+            response = await asyncio.wait_for(
+                llm_with_tools.ainvoke(lc_messages),
+                timeout=LLM_TIMEOUT_SECONDS,
+            )
+        except Exception as exc:
+            logger.warning(
+                "generation ReAct follow-up invoke timed out/failed, fallback response used: %s",
+                exc,
+            )
+            response = AIMessage(content="*（星界回响中断，话语戛然而止）*")
+            break
         GameRenderer().print_system_info(
             f"🔧 [底层透视] LLM 返回的 tool_calls (ReAct #{iteration_count}): "
             f"{getattr(response, 'tool_calls', [])}"

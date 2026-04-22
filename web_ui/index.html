@@ -43,6 +43,7 @@
       <div id="dialogue-text" class="dialogue-text">...</div>
       <div class="dialogue-input-area">
         <input type="text" id="dialogue-input" placeholder="输入你的回答..." autocomplete="off" />
+        <button type="button" id="ptt-mic-btn" class="ptt-btn" title="按住说话，松开发送" aria-label="按住说话，松开发送">🎙️ 按住指令</button>
         <button type="button" id="dialogue-send-btn">说话</button>
         <button type="button" id="dialogue-attack-btn" class="danger-btn">拔出武器 (中断交涉)</button>
       </div>
@@ -224,11 +225,11 @@
         <h3>Node Trace</h3>
       </div>
       <ol id="node-timeline" class="node-timeline">
-        <li data-node="input_processing"><strong>INPUT_NODE</strong><small>Command Intake</small></li>
-        <li data-node="dm_analysis"><strong>DM_NODE</strong><small>Intent Alchemy</small></li>
-        <li data-node="mechanics_processing"><strong>MECHANICS_NODE</strong><small>Dice & Physics</small></li>
-        <li data-node="dialogue_processing"><strong>DIALOGUE_NODE</strong><small>Social Lock</small></li>
-        <li data-node="generation"><strong>GENERATION_NODE</strong><small>Narrative Output</small></li>
+        <li data-node="input_processing"><strong>INPUT_NODE</strong><small>Command Intake</small><span class="node-timing">--ms</span></li>
+        <li data-node="dm_analysis"><strong>DM_NODE</strong><small>Intent Alchemy</small><span class="node-timing">--ms</span></li>
+        <li data-node="mechanics_processing"><strong>MECHANICS_NODE</strong><small>Dice & Physics</small><span class="node-timing">--ms</span></li>
+        <li data-node="dialogue_processing"><strong>DIALOGUE_NODE</strong><small>Social Lock</small><span class="node-timing">--ms</span></li>
+        <li data-node="generation"><strong>GENERATION_NODE</strong><small>Narrative Output</small><span class="node-timing">--ms</span></li>
       </ol>
     </section>
 

@@ -4,8 +4,11 @@
   const SESSION_ID = "test_consume_003";
   const IDLE_MS = 30000;
   const DIALOGUE_POLL_MS = 1800;
+  const BACKEND_REQUEST_TIMEOUT_MS = 5000;
+  const NETWORK_TIMEOUT_WARNING = "⚠️ [系统提示] 星界网络波动，暂时无法与该实体建立高维连接。";
   const QA_PARAMS = new URLSearchParams(window.location.search);
   const IS_QA_MODE = Array.from(QA_PARAMS.keys()).some((key) => key.startsWith("qa_"));
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 
   const SPEAKER_META = {
     player: { name: "玩家", color: "#6eb5ff", sigil: "⌘" },
@@ -71,7 +74,12 @@
     dialogueText: "",
     xrayTraceTimers: [],
     xrayTraceAnimatingUntil: 0,
+    xrayNodeTimings: {},
+    lastNetworkTimeoutAt: 0,
     qaTraceStepMs: Math.max(120, Number(QA_PARAMS.get("qa_trace_step_ms")) || 240),
+    speechRecognition: null,
+    speechRecognitionSupported: Boolean(SpeechRecognition),
+    isPttRecording: false,
   };
 
   function readQaNumber(name, fallback) {
@@ -139,6 +147,7 @@
     dialogueNpcName: document.getElementById("dialogue-npc-name"),
     dialogueText: document.getElementById("dialogue-text"),
     dialogueInput: document.getElementById("dialogue-input"),
+    pttMicBtn: document.getElementById("ptt-mic-btn"),
     dialogueSendBtn: document.getElementById("dialogue-send-btn"),
     dialogueAttackBtn: document.getElementById("dialogue-attack-btn"),
     mainLayout: document.getElementById("main-layout"),
@@ -1291,6 +1300,140 @@
     return aliases[node] || node;
   }
 
+  function normalizeTimingMs(value) {
+    const num = Number(value);
+    if (!Number.isFinite(num) || num < 0) return null;
+    return Math.round(num);
+  }
+
+  function extractTimingMsFromEntry(entry) {
+    if (entry == null) return null;
+    if (typeof entry === "number" || typeof entry === "string") {
+      return normalizeTimingMs(entry);
+    }
+    if (typeof entry !== "object") return null;
+    const record = safeObject(entry);
+    return normalizeTimingMs(
+      record.timing_ms
+      ?? record.duration_ms
+      ?? record.elapsed_ms
+      ?? record.latency_ms
+      ?? record.ms
+      ?? record.time_ms
+      ?? record.timeMs
+      ?? record.duration
+      ?? record.elapsed
+      ?? null
+    );
+  }
+
+  function mergeTimingRecord(target, source) {
+    const src = safeObject(source);
+    Object.entries(src).forEach(([rawNode, rawTiming]) => {
+      const node = normalizeNodeName(rawNode);
+      if (!node) return;
+      const ms = extractTimingMsFromEntry(rawTiming);
+      if (ms == null) return;
+      target[node] = ms;
+    });
+  }
+
+  function extractTimingPairsFromArray(target, list) {
+    safeArray(list).forEach((rawItem) => {
+      const item = safeObject(rawItem);
+      const node = normalizeNodeName(item.node || item.node_name || item.name || item.id || "");
+      if (!node) return;
+      const ms = extractTimingMsFromEntry(item);
+      if (ms == null) return;
+      target[node] = ms;
+    });
+  }
+
+  function resolveNodeTimings(payload, gameState) {
+    const timings = {};
+    const p = safeObject(payload);
+    const g = safeObject(gameState);
+    const streamState = safeObject(p.state);
+
+    const objectCandidates = [
+      p.node_timing_map,
+      p.node_timings,
+      p.node_timing,
+      p.timings,
+      p.timing,
+      p.node_metrics,
+      p.trace_timings,
+      p.xray_timing,
+      streamState.node_timing_map,
+      streamState.node_timings,
+      streamState.node_timing,
+      streamState.timings,
+      streamState.timing,
+      streamState.node_metrics,
+      streamState.trace_timings,
+      streamState.xray_timing,
+      g.node_timing_map,
+      g.node_timings,
+      g.node_timing,
+      g.timings,
+      g.timing,
+      g.node_metrics,
+      g.trace_timings,
+      g.xray_timing,
+    ];
+    objectCandidates.forEach((candidate) => mergeTimingRecord(timings, candidate));
+
+    const arrayCandidates = [
+      p.node_results,
+      p.node_timings_list,
+      p.trace_results,
+      p.trace_events,
+      g.node_results,
+      g.node_timings_list,
+      g.trace_results,
+      g.trace_events,
+    ];
+    arrayCandidates.forEach((candidate) => extractTimingPairsFromArray(timings, candidate));
+
+    const directNode = normalizeNodeName(p.node_name || streamState.node_name || "");
+    const directMs = extractTimingMsFromEntry(
+      p.timing_ms
+      ?? p.duration_ms
+      ?? p.elapsed_ms
+      ?? streamState.timing_ms
+      ?? streamState.duration_ms
+      ?? streamState.elapsed_ms
+      ?? null
+    );
+    if (directNode && directMs != null) {
+      timings[directNode] = directMs;
+    }
+
+    return timings;
+  }
+
+  function timingClassForMs(ms) {
+    if (ms == null) return "";
+    if (ms <= 120) return "node-timing--fast";
+    if (ms <= 450) return "node-timing--medium";
+    return "node-timing--slow";
+  }
+
+  function updateXrayNodeTimings(timingMap) {
+    if (!els.nodeTimeline) return;
+    const timings = safeObject(timingMap);
+    els.nodeTimeline.querySelectorAll("li[data-node]").forEach((item) => {
+      const node = normalizeNodeName(item.dataset.node);
+      const badge = item.querySelector(".node-timing");
+      if (!badge) return;
+      const ms = normalizeTimingMs(timings[node]);
+      badge.textContent = ms == null ? "--ms" : ms + "ms";
+      badge.classList.remove("node-timing--fast", "node-timing--medium", "node-timing--slow");
+      const klass = timingClassForMs(ms);
+      if (klass) badge.classList.add(klass);
+    });
+  }
+
   function inferNodeTrace(data, userLine, intent) {
     const payload = safeObject(data);
     const gameState = safeObject(payload.game_state);
@@ -1502,12 +1645,21 @@
 
     const trace = options.trace || inferNodeTrace(payload, options.userLine || "", options.intent || "");
     setXrayNodeTrace(trace, { animate: options.animateTrace === true });
+    const currentTimings = resolveNodeTimings(payload, gameState);
+    if (Object.keys(currentTimings).length) {
+      state.xrayNodeTimings = {
+        ...state.xrayNodeTimings,
+        ...currentTimings,
+      };
+    }
+    updateXrayNodeTimings(state.xrayNodeTimings);
 
     const inspectorPayload = gameState === payload
       ? payload
       : {
           last_node: payload.last_node || gameState.last_node || gameState.current_node || null,
           node_trace: trace,
+          node_timings_ms: state.xrayNodeTimings,
           watcher_target: watcher.targetId || null,
           intent_context: gameState.intent_context || payload.intent_context || null,
           active_dialogue_target: payload.active_dialogue_target || gameState.active_dialogue_target || null,
@@ -1910,12 +2062,16 @@
 
   function setLoading(loading) {
     state.isLoading = loading;
+    if (loading) {
+      stopSpeechRecognition();
+    }
     els.userInput.disabled = loading;
     els.sendBtn.disabled = loading;
     els.sendBtn.textContent = loading ? "命运演算中…" : "执行指令";
     if (els.shortRestBtn) els.shortRestBtn.disabled = loading;
     if (els.longRestBtn) els.longRestBtn.disabled = loading;
     if (els.dialogueInput) els.dialogueInput.disabled = loading;
+    if (els.pttMicBtn) els.pttMicBtn.disabled = loading || !state.speechRecognitionSupported;
     if (els.dialogueSendBtn) els.dialogueSendBtn.disabled = loading;
     if (els.dialogueAttackBtn) els.dialogueAttackBtn.disabled = loading;
     els.shortcutButtons.forEach((button) => {
@@ -1931,6 +2087,28 @@
     if (loading) {
       setNetworkState("命运演算中", "loading");
     }
+  }
+
+  async function fetchWithTimeout(url, options = {}, timeoutMs = BACKEND_REQUEST_TIMEOUT_MS) {
+    const controller = new AbortController();
+    const timerId = window.setTimeout(() => controller.abort(), Math.max(0, Number(timeoutMs) || 0));
+    try {
+      const requestOptions = { ...(options || {}), signal: controller.signal };
+      return await fetch(url, requestOptions);
+    } finally {
+      window.clearTimeout(timerId);
+    }
+  }
+
+  function pushNetworkTimeoutWarning() {
+    const now = Date.now();
+    if (now - (state.lastNetworkTimeoutAt || 0) < 3000) return;
+    state.lastNetworkTimeoutAt = now;
+    appendLogEntry("system", "星界链路", NETWORK_TIMEOUT_WARNING, {
+      color: "#e2b675",
+      sigil: "⚠",
+      logType: "system",
+    });
   }
 
   function resetIdleTimer() {
@@ -1951,6 +2129,8 @@
     }
 
     setLoading(true);
+    state.xrayNodeTimings = {};
+    updateXrayNodeTimings(state.xrayNodeTimings);
 
     const payload = {
       user_input: userLine,
@@ -1967,11 +2147,11 @@
     }
 
     try {
-      const response = await fetch(API_URL, {
+      const response = await fetchWithTimeout(API_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
-      });
+      }, BACKEND_REQUEST_TIMEOUT_MS);
 
       if (!response.ok) {
         const errorText = await response.text();
@@ -2029,6 +2209,11 @@
       setNetworkState("链路在线", "ok");
       return data;
     } catch (error) {
+      if (error && error.name === "AbortError") {
+        setNetworkState("星界波动", "error");
+        pushNetworkTimeoutWarning();
+        return;
+      }
       setNetworkState("通讯受阻", "error");
       appendLogEntry("system", "网络异常", String(error.message || error), {
         color: "#e28a80",
@@ -2081,6 +2266,110 @@
     if (!text) return;
     els.dialogueInput.value = "";
     sendMessage(text, null);
+  }
+
+  function updatePttButtonState() {
+    if (!els.pttMicBtn) return;
+    els.pttMicBtn.classList.toggle("recording-pulse", state.isPttRecording);
+    els.pttMicBtn.setAttribute("aria-pressed", String(state.isPttRecording));
+    els.pttMicBtn.textContent = state.isPttRecording ? "🎙️ 正在聆听..." : "🎙️ 按住指令";
+    els.pttMicBtn.title = state.isPttRecording ? "正在聆听... 松开发送" : "按住说话，松开发送";
+  }
+
+  function stopSpeechRecognition() {
+    if (!state.speechRecognition) return;
+    if (!state.isPttRecording) return;
+    state.isPttRecording = false;
+    updatePttButtonState();
+    try {
+      state.speechRecognition.stop();
+    } catch (_error) {
+      state.isPttRecording = false;
+      updatePttButtonState();
+    }
+  }
+
+  function startSpeechRecognition() {
+    if (!state.speechRecognition || state.isLoading) return;
+    if (state.isPttRecording) return;
+    state.isPttRecording = true;
+    updatePttButtonState();
+    try {
+      state.speechRecognition.start();
+    } catch (_error) {
+      state.isPttRecording = false;
+      updatePttButtonState();
+    }
+  }
+
+  function handlePttPressStart(event) {
+    if (!state.speechRecognition || state.isLoading) return;
+    if (event && event.type === "mousedown" && event.button !== 0) return;
+    if (event && typeof event.preventDefault === "function") {
+      event.preventDefault();
+    }
+    startSpeechRecognition();
+  }
+
+  function handlePttPressEnd(event) {
+    if (!state.speechRecognition || state.isLoading) return;
+    if (event && typeof event.preventDefault === "function") {
+      event.preventDefault();
+    }
+    stopSpeechRecognition();
+  }
+
+  function initSpeechRecognition() {
+    if (!els.pttMicBtn) return;
+    if (!SpeechRecognition) {
+      state.speechRecognitionSupported = false;
+      els.pttMicBtn.disabled = true;
+      els.pttMicBtn.title = "当前浏览器不支持语音输入";
+      return;
+    }
+
+    state.speechRecognitionSupported = true;
+    const recognition = new SpeechRecognition();
+    recognition.lang = "zh-CN";
+    recognition.interimResults = false;
+    recognition.continuous = false;
+    recognition.maxAlternatives = 1;
+
+    recognition.onstart = () => {
+      state.isPttRecording = true;
+      updatePttButtonState();
+    };
+
+    recognition.onresult = (event) => {
+      const transcript = String(event?.results?.[0]?.[0]?.transcript || "").trim();
+      if (!transcript) return;
+      if (els.dialogueInput) {
+        els.dialogueInput.value = transcript;
+        els.dialogueInput.focus();
+      }
+      if (!state.isLoading) {
+        if (state.activeDialogueTarget) {
+          submitDialogueInput();
+        } else if (els.userInput) {
+          els.userInput.value = transcript;
+          submitInput();
+        }
+      }
+    };
+
+    recognition.onerror = () => {
+      state.isPttRecording = false;
+      updatePttButtonState();
+    };
+
+    recognition.onend = () => {
+      state.isPttRecording = false;
+      updatePttButtonState();
+    };
+
+    state.speechRecognition = recognition;
+    els.pttMicBtn.disabled = false;
+    updatePttButtonState();
   }
 
   function interruptDialogueWithAttack() {
@@ -2163,6 +2452,14 @@
 
     document.querySelector(".shortcut-bar").addEventListener("click", handleShortcutClick);
     els.restControls.addEventListener("click", handleRestClick);
+    if (els.pttMicBtn) {
+      els.pttMicBtn.addEventListener("mousedown", handlePttPressStart);
+      els.pttMicBtn.addEventListener("touchstart", handlePttPressStart, { passive: false });
+      els.pttMicBtn.addEventListener("mouseup", handlePttPressEnd);
+      els.pttMicBtn.addEventListener("mouseleave", handlePttPressEnd);
+      els.pttMicBtn.addEventListener("touchend", handlePttPressEnd, { passive: false });
+      els.pttMicBtn.addEventListener("touchcancel", handlePttPressEnd, { passive: false });
+    }
     els.dialogueSendBtn.addEventListener("click", submitDialogueInput);
     els.dialogueAttackBtn.addEventListener("click", interruptDialogueWithAttack);
     els.dialogueInput.addEventListener("keydown", (event) => {
@@ -2260,7 +2557,11 @@
   async function pollDialogueState() {
     if (state.isLoading) return;
     try {
-      const response = await fetch(STATE_URL + "?session_id=" + encodeURIComponent(SESSION_ID));
+      const response = await fetchWithTimeout(
+        STATE_URL + "?session_id=" + encodeURIComponent(SESSION_ID),
+        {},
+        BACKEND_REQUEST_TIMEOUT_MS,
+      );
       if (!response.ok) return;
       const data = await response.json();
       const partyStatus = safeObject(data.party_status);
@@ -2272,7 +2573,11 @@
       updateDialogueOverlay(data);
       updateRestControls(state.combatState);
       updateXrayPanel(data);
-    } catch (_error) {
+    } catch (error) {
+      if (error && error.name === "AbortError") {
+        setNetworkState("星界波动", "error");
+        pushNetworkTimeoutWarning();
+      }
       // Dialogue polling is an enhancement; chat responses remain the source of truth.
     }
   }
@@ -2287,6 +2592,7 @@
 
   async function boot() {
     const qa = readQaActions();
+    initSpeechRecognition();
     bindEvents();
     setTacticalOverlay(false);
     renderChrome("幽暗地域营地");

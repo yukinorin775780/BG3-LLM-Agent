@@ -11,6 +11,7 @@ from typing import Any, Dict
 from config import settings
 
 logger = logging.getLogger(__name__)
+LLM_TIMEOUT_SECONDS = 4.5
 
 
 _FALLBACK_BARKS: Dict[str, str] = {
@@ -76,6 +77,7 @@ def generate_combat_bark(
             ],
             temperature=0.6,
             max_tokens=24,
+            timeout=LLM_TIMEOUT_SECONDS,
         )
         raw_text = completion.choices[0].message.content if completion.choices else ""
         text = _sanitize_bark_text(raw_text or "")
@@ -83,4 +85,3 @@ def generate_combat_bark(
     except Exception as exc:
         logger.warning("generate_combat_bark failed, fallback applied: %s", exc)
         return _fallback_bark(normalized_event)
-

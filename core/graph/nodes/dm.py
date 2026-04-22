@@ -5,6 +5,7 @@ DM 分析、多人发言推进、旁白节点。
 import asyncio
 import copy
 import random
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
 from langchain_core.messages import AIMessage
 
@@ -13,6 +14,17 @@ from core.graph.graph_state import GameState
 from core.graph.nodes.utils import _build_item_lore, default_entities, entity_display_name, first_entity_id
 from core.llm.dm import analyze_intent
 from core.utils.text_processor import format_history_message
+
+LLM_TIMEOUT_SECONDS = 4.5
+
+
+def _run_blocking_with_timeout(func, *args, timeout: float = LLM_TIMEOUT_SECONDS, **kwargs):
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(func, *args, **kwargs)
+        try:
+            return future.result(timeout=timeout)
+        except FuturesTimeoutError as exc:
+            raise TimeoutError("LLM call timeout") from exc
 
 
 def _is_idle_banter_speaker(entity_id: str, entity: dict) -> bool:
@@ -98,17 +110,35 @@ async def dm_node(state: GameState) -> dict:
     fallback_speaker = first_entity_id(entities)
     current_npc_hp = entities.get(fallback_speaker, {}).get("hp", 20) if fallback_speaker != "unknown" else 20
     item_lore = _build_item_lore(state)
-    analysis = await asyncio.to_thread(
-        analyze_intent,
-        state.get("user_input", ""),
-        flags=state.get("flags", {}),
-        time_of_day=state.get("time_of_day", "晨曦 (Morning)"),
-        hp=current_npc_hp,
-        available_npcs=available_npcs,
-        available_targets=available_targets,
-        item_lore=item_lore if item_lore else None,
-        active_dialogue_target=state.get("active_dialogue_target"),
-    )
+    try:
+        analysis = await asyncio.wait_for(
+            asyncio.to_thread(
+                analyze_intent,
+                state.get("user_input", ""),
+                flags=state.get("flags", {}),
+                time_of_day=state.get("time_of_day", "晨曦 (Morning)"),
+                hp=current_npc_hp,
+                available_npcs=available_npcs,
+                available_targets=available_targets,
+                item_lore=item_lore if item_lore else None,
+                active_dialogue_target=state.get("active_dialogue_target"),
+            ),
+            timeout=LLM_TIMEOUT_SECONDS,
+        )
+    except Exception:
+        analysis = {
+            "action_type": "IDLE",
+            "difficulty_class": 0,
+            "reason": "DM analyze timeout/failure fallback.",
+            "is_probing_secret": False,
+            "responders": [fallback_speaker] if fallback_speaker != "unknown" else ["shadowheart"],
+            "affection_changes": {},
+            "flags_changed": {},
+            "item_transfers": [],
+            "hp_changes": [],
+            "action_actor": "player",
+            "action_target": "",
+        }
 
     current_dialogue_target = str(state.get("active_dialogue_target") or "").strip().lower() or None
     next_dialogue_target = current_dialogue_target
@@ -247,7 +277,8 @@ def narration_node(state: GameState) -> dict:
         else "你反复确认了周围情况，但这次没有得到有价值的发现。"
     )
     try:
-        raw_response = generate_dialogue(
+        raw_response = _run_blocking_with_timeout(
+            generate_dialogue,
             system_prompt,
             conversation_history=[{"role": "user", "content": user_input or "继续"}],
         )

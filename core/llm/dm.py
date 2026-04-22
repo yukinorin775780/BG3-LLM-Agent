@@ -20,6 +20,7 @@ from core.systems.spells import resolve_spell_id
 from core.utils.text_processor import parse_llm_json
 
 logger = logging.getLogger(__name__)
+LLM_TIMEOUT_SECONDS = 4.5
 
 DEFAULT_AVAILABLE_NPCS = ["shadowheart", "astarion"]
 DEFAULT_TARGET_NPC = DEFAULT_AVAILABLE_NPCS[0]
@@ -98,7 +99,21 @@ STEALTH_KEYWORDS = ("潜行", "隐匿", "隐藏", "蹲下", "stealth", "sneak", 
 DIALOGUE_START_KEYWORDS = ("交谈", "说话", "沟通", "谈判", "聊聊", "搭话", "谈谈", "talk", "negotiate")
 SHORT_REST_KEYWORDS = ("短休", "稍微休息一下", "小憩", "短暂休息", "short rest")
 LONG_REST_KEYWORDS = ("长休", "扎营", "睡一觉", "过夜休息", "long rest")
-READ_KEYWORDS = ("阅读", "查看", "翻阅", "read", "inspect", "examine")
+READ_KEYWORDS = (
+    "阅读",
+    "查看",
+    "翻阅",
+    "看书",
+    "看看书",
+    "看看书上",
+    "书上写了什么",
+    "日记",
+    "日志",
+    "笔记",
+    "read",
+    "inspect",
+    "examine",
+)
 END_TURN_KEYWORDS = ("待命", "结束回合", "结束行动", "结束轮次", "跳过回合", "跳过行动", "pass", "end turn")
 END_TURN_GROUP_KEYWORDS = ("我方回合", "全员回合", "结束我方", "结束全员", "全员结束", "结束队伍")
 PHYSICAL_ACTION_KEYWORDS = (
@@ -162,6 +177,18 @@ ENTITY_ALIAS_MAP = {
     "door_oak_1": ("door_oak_1", "door", "门", "木门", "橡木门", "沉重的橡木门"),
     "trap_tripwire_1": ("trap_tripwire_1", "陷阱", "绊线陷阱", "绊线", "trap"),
     "journal_1": ("journal_1", "日志", "实验日志", "残破的实验日志", "笔记", "journal", "note"),
+    "necromancer_diary": (
+        "necromancer_diary",
+        "日记",
+        "日记本",
+        "死灵法师日记",
+        "沾满血污的日记本",
+        "血污日记",
+        "书",
+        "书上",
+        "diary",
+        "book",
+    ),
     "gribbo": ("gribbo", "格里波", "变异地精萨满", "地精萨满", "gribbo the mutated"),
 }
 ITEM_ALIAS_MAP = {
@@ -401,7 +428,12 @@ def _extract_target_segment_for_keywords(user_input: str, actor_id: str, keyword
     if actor_id != "player" and any(keyword in normalized_text for keyword in RETURN_TO_PLAYER_KEYWORDS):
         return "player"
 
-    for keyword in keywords:
+    keyword_candidates = sorted(
+        [keyword for keyword in keywords if str(keyword).strip()],
+        key=lambda kw: len(_normalize_reference_text(kw)),
+        reverse=True,
+    )
+    for keyword in keyword_candidates:
         normalized_keyword = _normalize_reference_text(keyword)
         keyword_position = normalized_text.find(normalized_keyword)
         if keyword_position < 0:
@@ -489,6 +521,25 @@ def _is_door_target_id(target_id: str) -> bool:
         or "_door" in normalized
         or normalized.endswith("_door")
     )
+
+
+def _is_probably_readable_target_id(target_id: str) -> bool:
+    normalized = str(target_id or "").strip().lower()
+    if not normalized:
+        return False
+    readable_hints = (
+        "journal",
+        "diary",
+        "book",
+        "note",
+        "lore",
+        "readable",
+        "日志",
+        "日记",
+        "笔记",
+        "书",
+    )
+    return any(hint in normalized for hint in readable_hints)
 
 
 def _resolve_action_target_id(
@@ -969,6 +1020,8 @@ def _detect_read_intent(
     )
     if not target_id:
         return None
+    if not _is_probably_readable_target_id(target_id):
+        return None
 
     return {
         "action_type": "READ",
@@ -1393,7 +1446,8 @@ def analyze_intent(
             model=settings.MODEL_NAME,
             messages=messages,  # type: ignore
             temperature=0.3,  # Lower temperature for more consistent analysis
-            max_tokens=200  # DM analysis should be concise
+            max_tokens=200,  # DM analysis should be concise
+            timeout=LLM_TIMEOUT_SECONDS,
         )
         
         response_text = completion.choices[0].message.content
@@ -1525,5 +1579,24 @@ def analyze_intent(
             responders[0] if responders else DEFAULT_TARGET_NPC,
         )
 
-    except Exception as e:
-        raise RuntimeError(f"DM intent analysis failed: {e}")
+    except Exception as exc:
+        error_text = str(exc)
+        if "API Key" in error_text or "API_KEY" in error_text or "DASHSCOPE_API_KEY" in error_text:
+            raise RuntimeError(error_text)
+        logger.warning("DM intent analysis timed out/failed, fallback to IDLE: %s", exc)
+        responders = available_npcs[:1] or [DEFAULT_TARGET_NPC]
+        return {
+            "action_type": "IDLE",
+            "intent": "IDLE",
+            "target": "",
+            "action_actor": "player",
+            "action_target": "",
+            "difficulty_class": 0,
+            "reason": "LLM timeout/failure; fallback to IDLE.",
+            "is_probing_secret": False,
+            "responders": responders,
+            "affection_changes": {},
+            "flags_changed": {},
+            "item_transfers": [],
+            "hp_changes": [],
+        }

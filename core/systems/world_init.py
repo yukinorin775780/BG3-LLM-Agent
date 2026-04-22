@@ -485,6 +485,25 @@ def _build_environment_objects_from_map(map_data: Dict[str, Any]) -> Dict[str, A
     }
 
 
+def _apply_player_start_from_map(*, entities: Dict[str, Any], map_data: Dict[str, Any]) -> None:
+    if not isinstance(entities, dict) or not isinstance(map_data, dict):
+        return
+    player = entities.get("player")
+    if not isinstance(player, dict):
+        return
+    raw_player_start = map_data.get("player_start")
+    if not isinstance(raw_player_start, (list, tuple)) or len(raw_player_start) != 2:
+        return
+    try:
+        px = int(raw_player_start[0])
+        py = int(raw_player_start[1])
+    except (TypeError, ValueError):
+        return
+    player["x"] = px
+    player["y"] = py
+    player["position"] = "map_spawn"
+
+
 def get_initial_world_state(map_id: str = "goblin_camp") -> Dict[str, Any]:
     """
     生成一个全新的、初始化的游戏世界状态（空存档创世）。
@@ -512,6 +531,7 @@ def get_initial_world_state(map_id: str = "goblin_camp") -> Dict[str, Any]:
     if has_spawn_table:
         _inject_spawn_entities_into_entities(entities=entities, map_data=map_data)
     _inject_map_dynamic_entities_into_entities(entities=entities, map_data=map_data)
+    _apply_player_start_from_map(entities=entities, map_data=map_data)
     environment_objects = _build_environment_objects_from_map(map_data)
     return {
         "entities": entities,

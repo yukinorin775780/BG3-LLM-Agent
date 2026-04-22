@@ -6,7 +6,7 @@ LangGraph 路由逻辑：根据 State 中的 intent 决定下一跳节点。
 """
 
 import random
-from typing import Literal, cast
+from typing import Any, Dict, Literal, cast
 from core.graph.graph_state import GameState
 
 # 路由目标：与 graph_builder 中节点名严格一致，返回字符串必须在此枚举内
@@ -70,6 +70,25 @@ def _validate_dm_route(route: str) -> DM_ROUTE:
     return cast(DM_ROUTE, route)
 
 
+def _is_readable_target(state: GameState, target_id: str) -> bool:
+    normalized_target = str(target_id or "").strip().lower()
+    if not normalized_target:
+        return False
+
+    def _target_type_from(mapping: Any) -> str:
+        if not isinstance(mapping, dict):
+            return ""
+        entry = mapping.get(normalized_target)
+        if not isinstance(entry, dict):
+            return ""
+        return str(entry.get("type") or entry.get("entity_type") or "").strip().lower()
+
+    entities = state.get("entities") if isinstance(state, dict) else {}
+    environment_objects = state.get("environment_objects") if isinstance(state, dict) else {}
+    target_type = _target_type_from(environment_objects) or _target_type_from(entities)
+    return target_type == "readable"
+
+
 def route_after_input(state: GameState) -> INPUT_ROUTE:
     """
     Input 节点之后的路由（与 graph_builder 中 input→world_tick 的实装对照用）。
@@ -101,10 +120,16 @@ def route_after_dm(state: GameState) -> DM_ROUTE:
     intent_raw = state.get("intent", "chat")
     intent = str(intent_raw).strip().upper() if intent_raw else "CHAT"
     is_probing_secret = state.get("is_probing_secret", False)
+    intent_context = state.get("intent_context") if isinstance(state, dict) else {}
+    action_target = ""
+    if isinstance(intent_context, dict):
+        action_target = str(intent_context.get("action_target") or "").strip().lower()
 
     if intent in {"START_DIALOGUE", "DIALOGUE_REPLY"}:
         return _validate_dm_route("dialogue_processing")
     if intent == "READ":
+        return _validate_dm_route("lore_processing")
+    if intent == "INTERACT" and _is_readable_target(state, action_target):
         return _validate_dm_route("lore_processing")
     if is_probing_secret:
         return _validate_dm_route("mechanics_processing")

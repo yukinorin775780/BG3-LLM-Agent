@@ -12,7 +12,7 @@ from core.graph.nodes.dm import advance_speaker_node, dm_node, narration_node
 from core.graph.nodes.dialogue import dialogue_node
 from core.graph.nodes.generation import create_generation_node
 from core.graph.nodes.input import input_node, world_tick_node
-from core.graph.nodes.lore import lore_node
+from core.graph.nodes.lore_node import lore_node
 from core.graph.nodes.mechanics import mechanics_node
 
 

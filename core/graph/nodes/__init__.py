@@ -11,7 +11,7 @@ _EXPORTS = {
     "advance_speaker_node": ("core.graph.nodes.dm", "advance_speaker_node"),
     "narration_node": ("core.graph.nodes.dm", "narration_node"),
     "dialogue_node": ("core.graph.nodes.dialogue", "dialogue_node"),
-    "lore_node": ("core.graph.nodes.lore", "lore_node"),
+    "lore_node": ("core.graph.nodes.lore_node", "lore_node"),
     "mechanics_node": ("core.graph.nodes.mechanics", "mechanics_node"),
     "create_generation_node": ("core.graph.nodes.generation", "create_generation_node"),
     "generation_node": ("core.graph.nodes.generation", "generation_node"),

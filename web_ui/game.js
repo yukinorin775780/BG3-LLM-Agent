@@ -4,6 +4,7 @@
     width: 10,
     height: 10,
     obstacles: [],
+    grid: [],
   };
 
   const FALLBACK_STATE = {
@@ -55,6 +56,9 @@
     poison: 97,
     locked: 88,
   });
+
+  const WALL_FRAME = 1;
+  const FLOOR_FRAME = 11;
 
   const ACTOR_FRAMES = Object.freeze({
     player: [1, 4, 15, 18],
@@ -183,12 +187,63 @@
   }
 
   function normalizeMapData(rawMapData) {
-    const data = safeObject(rawMapData);
+    const outer = safeObject(rawMapData);
+    const data = outer.map_data && typeof outer.map_data === "object"
+      ? safeObject(outer.map_data)
+      : outer;
     const id = String(data.id || data.map_id || data.key || data.name || "").trim();
-    const width = Math.max(1, Math.round(Number(data.width) || DEFAULT_MAP_DATA.width));
-    const height = Math.max(1, Math.round(Number(data.height) || DEFAULT_MAP_DATA.height));
+    const parsedGrid = normalizeGridData(
+      data.grid || data.map_grid || data.layout || data.tiles || data.rows,
+    );
+    const gridHeight = parsedGrid.length;
+    const gridWidth = parsedGrid.reduce((max, row) => Math.max(max, row.length), 0);
+    const width = Math.max(
+      1,
+      Math.round(Number(data.width) || 0),
+      gridWidth || DEFAULT_MAP_DATA.width,
+    );
+    const height = Math.max(
+      1,
+      Math.round(Number(data.height) || 0),
+      gridHeight || DEFAULT_MAP_DATA.height,
+    );
     const obstacles = Array.isArray(data.obstacles) ? data.obstacles : [];
-    return { id, width, height, obstacles };
+    const grid = normalizeGridShape(parsedGrid, width, height);
+    return { id, width, height, obstacles, grid };
+  }
+
+  function normalizeGridData(rawGrid) {
+    if (Array.isArray(rawGrid)) {
+      if (rawGrid.every((row) => typeof row === "string")) {
+        return rawGrid.map((row) => row.split(""));
+      }
+      if (rawGrid.every((row) => Array.isArray(row))) {
+        return rawGrid.map((row) => row.map((cell) => String(cell || "").charAt(0)));
+      }
+    }
+    if (typeof rawGrid === "string") {
+      const rows = rawGrid
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0);
+      return rows.map((row) => row.split(""));
+    }
+    return [];
+  }
+
+  function normalizeGridShape(parsedGrid, width, height) {
+    if (!Array.isArray(parsedGrid) || parsedGrid.length === 0) return [];
+    const out = [];
+    for (let y = 0; y < height; y += 1) {
+      const row = Array.isArray(parsedGrid[y]) ? parsedGrid[y] : [];
+      const normalized = [];
+      for (let x = 0; x < width; x += 1) {
+        const value = String(row[x] || "").toUpperCase();
+        normalized.push(value === "W" ? "W" : ".");
+      }
+      out.push(normalized);
+    }
+    return out;
   }
 
   function gridCoord(value, fallback, max) {
@@ -400,6 +455,8 @@
       this.scale.on("resize", this.handleResize, this);
       controller.scene = this;
       this.syncState(controller.latestState);
+      this.cameras.main.setZoom(2.5);
+      this.updateCameraFollow();
     }
 
     syncState(nextState, options = {}) {
@@ -421,6 +478,7 @@
           this.tokens.delete(id);
         }
       });
+      this.updateCameraFollow();
 
       if (options.mapChanged) {
         this.playMapTransition();
@@ -436,8 +494,8 @@
       const boardHeight = cell * map.height;
 
       this.board = {
-        x: (width - boardWidth) / 2,
-        y: (height - boardHeight) / 2,
+        x: 0,
+        y: 0,
         width: boardWidth,
         height: boardHeight,
         cell,
@@ -456,6 +514,7 @@
           .setSize(width, height)
           .setDisplaySize(width, height);
       }
+      this.updateCameraBounds();
     }
 
     destroySpriteList(items) {
@@ -470,20 +529,40 @@
     drawFloorTiles() {
       const map = normalizeMapData(this.mapData);
       this.destroySpriteList(this.floorSprites);
+      const grid = Array.isArray(map.grid) ? map.grid : [];
+      const hasGrid = grid.length > 0;
 
       for (let y = 0; y < map.height; y += 1) {
         for (let x = 0; x < map.width; x += 1) {
-          const frame = (x === 0 || y === 0 || x === map.width - 1 || y === map.height - 1)
-            ? pickFrame(TILE_FRAMES.wall, `${map.id}:wall:${x}:${y}`)
-            : pickFrame(TILE_FRAMES.floor, `${map.id}:floor:${x}:${y}`);
+          const cell = hasGrid ? String((grid[y] && grid[y][x]) || ".").toUpperCase() : ".";
+          const isWall = cell === "W";
+          const frame = isWall ? WALL_FRAME : FLOOR_FRAME;
           const world = this.gridToWorld(x, y);
           const tile = this.add.image(world.x, world.y, SPRITE_KEYS.tiles, frame)
             .setScale(this.scaleForTile(1.02))
-            .setDepth(DEPTH_LAYERS.floor);
-          this.floorLayer.add(tile);
+            .setDepth(isWall ? DEPTH_LAYERS.environment : DEPTH_LAYERS.floor);
+          if (isWall) {
+            this.environmentLayer.add(tile);
+          } else {
+            this.floorLayer.add(tile);
+          }
           this.floorSprites.push(tile);
         }
       }
+    }
+
+    updateCameraBounds() {
+      const map = normalizeMapData(this.mapData);
+      const mapTotalWidth = map.width * this.board.cell;
+      const mapTotalHeight = map.height * this.board.cell;
+      this.cameras.main.setBounds(0, 0, mapTotalWidth, mapTotalHeight);
+    }
+
+    updateCameraFollow() {
+      const player = this.tokens.get("player")?.container;
+      if (!player) return;
+      this.cameras.main.startFollow(player, true, 0.16, 0.16);
+      this.updateCameraBounds();
     }
 
     obstacleFrame(obstacle, x, y) {
@@ -998,7 +1077,7 @@
     }
 
     tokenLayerForKind(kind) {
-      return this.kindDepth(kind) === DEPTH_LAYERS.actors ? this.entityLayer : this.environmentLayer;
+      return this.entityLayer;
     }
 
     syncTokenLayer(token, kind) {
@@ -1012,10 +1091,17 @@
     }
 
     kindDepth(kind) {
-      if (kind === "player" || kind === "hostile" || kind === "neutral") {
-        return DEPTH_LAYERS.actors;
-      }
-      return DEPTH_LAYERS.environment;
+      const depths = {
+        player: DEPTH_LAYERS.actors + 1,
+        hostile: DEPTH_LAYERS.actors + 1,
+        neutral: DEPTH_LAYERS.actors + 1,
+        object: DEPTH_LAYERS.actors,
+        loot: DEPTH_LAYERS.actors,
+        door: DEPTH_LAYERS.actors,
+        trap: DEPTH_LAYERS.actors,
+        chest: DEPTH_LAYERS.actors,
+      };
+      return depths[kind] || DEPTH_LAYERS.actors;
     }
 
     kindBaseScale(kind) {

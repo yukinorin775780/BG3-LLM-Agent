@@ -4,6 +4,7 @@
 
 import copy
 import random
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from typing import Any, Dict, List, Optional, Tuple
 
 from langchain_core.messages import AIMessage
@@ -13,6 +14,17 @@ from core.graph.graph_state import GameState
 from core.systems.inventory import get_registry
 from core.systems.mechanics import calculate_ability_modifier
 from core.utils.text_processor import format_history_message, parse_llm_json
+
+LLM_TIMEOUT_SECONDS = 4.5
+
+
+def _run_blocking_with_timeout(func, *args, timeout: float = LLM_TIMEOUT_SECONDS, **kwargs):
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(func, *args, **kwargs)
+        try:
+            return future.result(timeout=timeout)
+        except FuturesTimeoutError as exc:
+            raise TimeoutError("LLM call timeout") from exc
 
 
 def _normalize_entity_id(value: Any) -> str:
@@ -337,7 +349,8 @@ def dialogue_node(state: GameState) -> Dict[str, Any]:
     try:
         from core.engine import generate_dialogue
 
-        raw_response = generate_dialogue(
+        raw_response = _run_blocking_with_timeout(
+            generate_dialogue,
             system_prompt=prompt,
             conversation_history=[{"role": "user", "content": user_input or "..."}],
         )

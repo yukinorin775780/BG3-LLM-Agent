@@ -5,6 +5,7 @@
 import copy
 import logging
 import re
+import time
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Protocol, TypedDict
 
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
@@ -143,6 +144,8 @@ class GameService:
                 if stream_handler is None:
                     result_state = await graph.ainvoke(payload, config=config)
                 else:
+                    last_stream_checkpoint = time.perf_counter()
+                    node_timing_totals_ms: Dict[str, int] = {}
                     async for update in graph.astream(
                         payload,
                         config=config,
@@ -150,9 +153,28 @@ class GameService:
                     ):
                         if isinstance(update, dict):
                             for node_name, node_state in update.items():
+                                normalized_node_name = str(node_name)
+                                now = time.perf_counter()
+                                timing_ms = max(
+                                    0,
+                                    int(round((now - last_stream_checkpoint) * 1000)),
+                                )
+                                last_stream_checkpoint = now
+                                node_timing_totals_ms[normalized_node_name] = (
+                                    node_timing_totals_ms.get(normalized_node_name, 0)
+                                    + timing_ms
+                                )
+                                normalized_state = self._normalize_state(node_state)
+                                stream_payload = {
+                                    **normalized_state,
+                                    "node_name": normalized_node_name,
+                                    "timing_ms": timing_ms,
+                                    "timing_total_ms": node_timing_totals_ms[normalized_node_name],
+                                    "state": normalized_state,
+                                }
                                 await stream_handler(
-                                    str(node_name),
-                                    self._normalize_state(node_state),
+                                    normalized_node_name,
+                                    stream_payload,
                                 )
                     result_state = await self._load_checkpoint_state(graph, config)
             except Exception as exc:
