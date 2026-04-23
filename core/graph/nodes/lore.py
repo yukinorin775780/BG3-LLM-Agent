@@ -26,8 +26,8 @@ LLM_TIMEOUT_SECONDS = 4.5
 _LORE_CACHE: Dict[str, Dict[str, Any]] = {}
 DIARY_LORE_IDS = frozenset({"necromancer_diary_1"})
 LORE_TIMEOUT_FALLBACK = {
-    "narrator_text": "日记上的字迹模糊不清...",
-    "character_monologue": "（烦躁地啧了一声）完全看不清写了什么。",
+    "narrator_text": "日记上的字迹被血污彻底覆盖...",
+    "character_monologue": "（烦躁地啧了一声）完全看不清写了什么，真是浪费时间。",
 }
 
 

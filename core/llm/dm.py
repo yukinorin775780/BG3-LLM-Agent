@@ -1585,12 +1585,14 @@ def analyze_intent(
             raise RuntimeError(error_text)
         logger.warning("DM intent analysis timed out/failed, fallback to IDLE: %s", exc)
         responders = available_npcs[:1] or [DEFAULT_TARGET_NPC]
+        fallback_target = str(responders[0] if responders else DEFAULT_TARGET_NPC).strip().lower()
         return {
             "action_type": "IDLE",
-            "intent": "IDLE",
-            "target": "",
+            "intent": "DIALOGUE",
+            "target": fallback_target,
+            "dialogue_text": "（他正警惕地盯着你，什么都不想说。）",
             "action_actor": "player",
-            "action_target": "",
+            "action_target": fallback_target,
             "difficulty_class": 0,
             "reason": "LLM timeout/failure; fallback to IDLE.",
             "is_probing_secret": False,

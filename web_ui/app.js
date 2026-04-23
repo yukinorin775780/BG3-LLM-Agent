@@ -5,7 +5,7 @@
   const IDLE_MS = 30000;
   const DIALOGUE_POLL_MS = 1800;
   const BACKEND_REQUEST_TIMEOUT_MS = 5000;
-  const NETWORK_TIMEOUT_WARNING = "⚠️ [系统提示] 星界网络波动，暂时无法与该实体建立高维连接。";
+  const SILENT_FALLBACK_TEXT = "📖 [环境] 一阵阴冷的穿堂风吹过，你暂时失去了对周围环境的感知。";
   const QA_PARAMS = new URLSearchParams(window.location.search);
   const IS_QA_MODE = Array.from(QA_PARAMS.keys()).some((key) => key.startsWith("qa_"));
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -75,7 +75,6 @@
     xrayTraceTimers: [],
     xrayTraceAnimatingUntil: 0,
     xrayNodeTimings: {},
-    lastNetworkTimeoutAt: 0,
     qaTraceStepMs: Math.max(120, Number(QA_PARAMS.get("qa_trace_step_ms")) || 240),
     speechRecognition: null,
     speechRecognitionSupported: Boolean(SpeechRecognition),
@@ -2100,15 +2099,62 @@
     }
   }
 
-  function pushNetworkTimeoutWarning() {
-    const now = Date.now();
-    if (now - (state.lastNetworkTimeoutAt || 0) < 3000) return;
-    state.lastNetworkTimeoutAt = now;
-    appendLogEntry("system", "星界链路", NETWORK_TIMEOUT_WARNING, {
-      color: "#e2b675",
-      sigil: "⚠",
-      logType: "system",
+  function buildSilentFallbackPayload(userLine, intentValue) {
+    const location = String((els.currentLocation && els.currentLocation.textContent) || "未知区域").trim() || "未知区域";
+    const fallbackTrace = ["input_processing", "dm_analysis", "generation"];
+    const fallbackTimings = {
+      input_processing: 0,
+      dm_analysis: BACKEND_REQUEST_TIMEOUT_MS,
+      generation: 0,
+    };
+    return {
+      responses: [],
+      journal_events: [SILENT_FALLBACK_TEXT],
+      current_location: location,
+      party_status: state.partyStatus,
+      environment_objects: state.environmentObjects,
+      player_inventory: state.playerInventory,
+      combat_state: state.combatState,
+      last_node: "generation",
+      node_trace: fallbackTrace,
+      node_timing_map: fallbackTimings,
+      game_state: {
+        last_node: "generation",
+        intent_context: {
+          action_actor: "player",
+          action_target: "",
+          fallback_intent: normalizeId(intentValue || "fallback"),
+          fallback_reason: "network_timeout_or_unavailable",
+        },
+        entities: state.partyStatus,
+        combat_state: state.combatState,
+      },
+      _local_fallback: true,
+      _fallback_trace: fallbackTrace,
+      _fallback_user_line: userLine || "",
+      _fallback_intent: intentValue || "",
+    };
+  }
+
+  function applySilentNetworkFallback(userLine, intentValue, options = {}) {
+    const data = buildSilentFallbackPayload(userLine, intentValue);
+    const trace = safeArray(data._fallback_trace);
+    const opts = options && typeof options === "object" ? options : {};
+    if (opts.incrementTurn !== false) {
+      state.turnCount += 1;
+      if (els.turnCounter) els.turnCounter.textContent = padTurn(state.turnCount);
+    }
+    updateXrayPanel(data, {
+      userLine: data._fallback_user_line,
+      intent: data._fallback_intent,
+      trace,
+      animateTrace: true,
     });
+    if (!opts.skipLogUpdate) {
+      updateWorldLog(data, userLine || null);
+    }
+    setNetworkState("链路在线", "ok");
+    return data;
   }
 
   function resetIdleTimer() {
@@ -2154,13 +2200,7 @@
       }, BACKEND_REQUEST_TIMEOUT_MS);
 
       if (!response.ok) {
-        const errorText = await response.text();
-        setNetworkState("通讯受阻", "error");
-        appendLogEntry("system", "链路故障", "HTTP " + response.status + " · " + errorText, {
-          color: "#e28a80",
-          sigil: "⚠",
-        });
-        return;
+        return applySilentNetworkFallback(userLine, intentValue, opts);
       }
 
       const data = await response.json();
@@ -2210,16 +2250,9 @@
       return data;
     } catch (error) {
       if (error && error.name === "AbortError") {
-        setNetworkState("星界波动", "error");
-        pushNetworkTimeoutWarning();
-        return;
+        return applySilentNetworkFallback(userLine, intentValue, opts);
       }
-      setNetworkState("通讯受阻", "error");
-      appendLogEntry("system", "网络异常", String(error.message || error), {
-        color: "#e28a80",
-        sigil: "⚠",
-        logType: "system",
-      });
+      return applySilentNetworkFallback(userLine, intentValue, opts);
     } finally {
       setLoading(false);
       resetIdleTimer();
@@ -2575,8 +2608,7 @@
       updateXrayPanel(data);
     } catch (error) {
       if (error && error.name === "AbortError") {
-        setNetworkState("星界波动", "error");
-        pushNetworkTimeoutWarning();
+        setNetworkState("链路在线", "ok");
       }
       // Dialogue polling is an enhancement; chat responses remain the source of truth.
     }
