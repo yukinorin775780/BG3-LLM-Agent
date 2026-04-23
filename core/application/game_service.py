@@ -11,8 +11,13 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Protocol, Typ
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph import START
 
+from core.actors.reflection import run_reflection_tick
 from core.engine.physics import execute_loot
 from core.graph.graph_builder import build_graph
+from core.graph.nodes.event_drain import event_drain_node
+from core.memory.compat import get_default_memory_service
+from core.memory.models import TurnMemoryInput
+from core.memory.service import MemoryService
 from core.systems import mechanics
 from core.systems.world_init import get_initial_world_state
 
@@ -76,12 +81,14 @@ class GameService:
         graph_builder: Callable[..., GraphProtocol] = build_graph,
         initial_state_factory: Callable[[], Dict[str, Any]] = get_initial_world_state,
         loot_executor: Callable[[Dict[str, Any], Dict[str, Any], str, str], str] = execute_loot,
+        memory_service: Optional[MemoryService] = None,
     ) -> None:
         self._db_path = db_path
         self._saver_factory = saver_factory
         self._graph_builder = graph_builder
         self._initial_state_factory = initial_state_factory
         self._loot_executor = loot_executor
+        self._memory_service = memory_service or get_default_memory_service()
 
     async def process_chat_turn(
         self,
@@ -94,6 +101,7 @@ class GameService:
     ) -> ChatTurnResult:
         normalized_input = (user_input or "").strip()
         normalized_intent = (intent or "").strip()
+        normalized_intent_key = normalized_intent.lower()
         if not normalized_input and not normalized_intent:
             raise InvalidChatRequestError(
                 "At least one of user_input or intent must be non-empty."
@@ -110,13 +118,25 @@ class GameService:
                 previous_state = await self._initialize_world_state(graph, config)
                 previous_journal_len = len(previous_state.get("journal_events") or [])
 
-            if normalized_intent == "init_sync":
+            if normalized_intent_key == "init_sync":
                 return self._build_chat_result(
                     previous_state,
                     previous_journal_len=previous_journal_len,
                 )
 
-            if normalized_intent == "ui_action_loot":
+            if normalized_intent_key in {"background_step", "process_reflections"}:
+                result_state = await self._process_background_step(
+                    graph=graph,
+                    config=config,
+                    previous_state=previous_state,
+                    intent_key=normalized_intent_key,
+                )
+                return self._build_chat_result(
+                    result_state,
+                    previous_journal_len=previous_journal_len,
+                )
+
+            if normalized_intent_key == "ui_action_loot":
                 result_state = await self._process_loot_action(
                     graph=graph,
                     config=config,
@@ -125,10 +145,17 @@ class GameService:
                     user_input=normalized_input,
                     character=character,
                 )
-                return self._build_chat_result(
+                chat_result = self._build_chat_result(
                     result_state,
                     previous_journal_len=previous_journal_len,
                 )
+                await self._ingest_turn_memories(
+                    session_id=session_id,
+                    state=self._normalize_state(result_state),
+                    result=chat_result,
+                    user_input=normalized_input,
+                )
+                return chat_result
 
             payload: Dict[str, Any] = {"user_input": normalized_input}
             if normalized_intent:
@@ -180,10 +207,17 @@ class GameService:
             except Exception as exc:
                 raise GraphExecutionError("Failed to process chat turn.") from exc
 
-            return self._build_chat_result(
+            chat_result = self._build_chat_result(
                 self._normalize_state(result_state),
                 previous_journal_len=previous_journal_len,
             )
+            await self._ingest_turn_memories(
+                session_id=session_id,
+                state=self._normalize_state(result_state),
+                result=chat_result,
+                user_input=normalized_input,
+            )
+            return chat_result
 
     async def get_session_state(
         self,
@@ -241,6 +275,54 @@ class GameService:
             await graph.aupdate_state(config, initial_state, as_node=START)  # type: ignore[arg-type]
         except Exception as exc:
             raise StateAccessError("Failed to initialize world state.") from exc
+        return await self._load_checkpoint_state(graph, config)
+
+    async def _process_background_step(
+        self,
+        *,
+        graph: GraphProtocol,
+        config: Dict[str, Any],
+        previous_state: Dict[str, Any],
+        intent_key: str,
+    ) -> Dict[str, Any]:
+        working_state = copy.deepcopy(previous_state)
+        max_items = 3 if intent_key == "background_step" else 1
+        reflection_patch = await run_reflection_tick(working_state, max_items=max_items)
+        if reflection_patch:
+            working_state.update(reflection_patch)
+        event_patch = event_drain_node(working_state)
+        if event_patch:
+            working_state.update(event_patch)
+
+        persist_payload: Dict[str, Any] = {}
+        for patch in (reflection_patch, event_patch):
+            if not isinstance(patch, dict):
+                continue
+            for key in (
+                "reflection_queue",
+                "pending_events",
+                "journal_events",
+                "messages",
+                "speaker_responses",
+                "flags",
+                "actor_runtime_state",
+                "final_response",
+            ):
+                if key in patch:
+                    persist_payload[key] = patch[key]
+
+        if not persist_payload:
+            return previous_state
+
+        try:
+            await graph.aupdate_state(
+                config,
+                persist_payload,
+                as_node=START,
+            )
+        except Exception as exc:
+            raise StateAccessError("Failed to persist background step.") from exc
+
         return await self._load_checkpoint_state(graph, config)
 
     async def _process_loot_action(
@@ -301,6 +383,32 @@ class GameService:
         result_state = await self._load_checkpoint_state(graph, config)
         # 保留原接口结构：loot 分支无对话 responses，仅返回本回合日志与最新状态。
         return result_state
+
+    async def _ingest_turn_memories(
+        self,
+        *,
+        session_id: str,
+        state: Dict[str, Any],
+        result: ChatTurnResult,
+        user_input: str,
+    ) -> None:
+        if not user_input and not result.get("journal_events"):
+            return
+
+        try:
+            turn_input = TurnMemoryInput(
+                session_id=session_id,
+                user_input=str(user_input or ""),
+                responses=list(result.get("responses") or []),
+                journal_events=[str(item) for item in (result.get("journal_events") or [])],
+                current_location=str(result.get("current_location") or ""),
+                turn_index=int(state.get("turn_count") or 0),
+                party_status=dict(result.get("party_status") or {}),
+                flags=dict(state.get("flags") or {}),
+            )
+            self._memory_service.ingest_turn(turn_input)
+        except Exception as exc:  # degrade silently without breaking turn
+            logger.warning("memory ingestion failed, degraded silently: %s", exc)
 
     def _build_chat_result(
         self,
@@ -504,6 +612,7 @@ async def process_chat_turn(
     graph_builder: Callable[..., GraphProtocol] = build_graph,
     initial_state_factory: Callable[[], Dict[str, Any]] = get_initial_world_state,
     loot_executor: Callable[[Dict[str, Any], Dict[str, Any], str, str], str] = execute_loot,
+    memory_service: Optional[MemoryService] = None,
 ) -> ChatTurnResult:
     """测试友好的函数式入口。"""
     service = GameService(
@@ -511,6 +620,7 @@ async def process_chat_turn(
         graph_builder=graph_builder,
         initial_state_factory=initial_state_factory,
         loot_executor=loot_executor,
+        memory_service=memory_service,
     )
     return await service.process_chat_turn(
         user_input=user_input,

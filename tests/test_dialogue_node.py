@@ -1,0 +1,88 @@
+"""
+Dialogue Node 测试：会话锁与谈判破裂开战。
+"""
+
+from core.graph.nodes.dialogue import dialogue_node
+
+
+def _build_minimal_dialogue_state() -> dict:
+    return {
+        "intent": "START_DIALOGUE",
+        "intent_context": {"action_actor": "player", "action_target": "gribbo"},
+        "user_input": "和格里波搭话",
+        "time_of_day": "晨曦 (Morning)",
+        "messages": [],
+        "entities": {
+            "player": {
+                "name": "玩家",
+                "faction": "player",
+                "ability_scores": {"STR": 10, "DEX": 10, "CON": 10, "INT": 10, "WIS": 10, "CHA": 10},
+                "hp": 20,
+                "max_hp": 20,
+                "status": "alive",
+                "inventory": {},
+            },
+            "gribbo": {
+                "name": "Gribbo",
+                "faction": "neutral",
+                "ability_scores": {"STR": 8, "DEX": 14, "CON": 12, "INT": 16, "WIS": 10, "CHA": 8},
+                "hp": 18,
+                "max_hp": 18,
+                "status": "alive",
+                "inventory": {"heavy_iron_key": 1},
+                "dynamic_states": {
+                    "patience": {"current_value": 3},
+                    "fear": {"current_value": 5},
+                },
+            },
+        },
+    }
+
+
+def test_start_dialogue_sets_active_target_and_emits_system_hint():
+    state = _build_minimal_dialogue_state()
+
+    result = dialogue_node(state)
+
+    assert result["active_dialogue_target"] == "gribbo"
+    assert "准备交涉" in result["journal_events"][0]
+
+
+def test_dialogue_reply_decrements_patience_and_breaks_into_combat(monkeypatch):
+    responses = iter(
+        [
+            '{"internal_monologue":"", "reply":"别浪费我的时间。", "trigger_combat": false, "state_changes": {"patience_delta": -1, "fear_delta": 0}}',
+            '{"internal_monologue":"", "reply":"够了！", "trigger_combat": false, "state_changes": {"patience_delta": -2, "fear_delta": 0}}',
+        ]
+    )
+
+    def _fake_generate_dialogue(system_prompt: str, conversation_history=None):
+        return next(responses)
+
+    monkeypatch.setattr("core.engine.generate_dialogue", _fake_generate_dialogue)
+
+    state = _build_minimal_dialogue_state()
+    state["intent"] = "DIALOGUE_REPLY"
+    state["active_dialogue_target"] = "gribbo"
+    state["user_input"] = "你到底行不行"
+
+    first = dialogue_node(state)
+    assert first["active_dialogue_target"] == "gribbo"
+    assert first["entities"]["gribbo"]["dynamic_states"]["patience"]["current_value"] == 2
+    assert not first.get("combat_active", False)
+
+    next_state = {
+        **state,
+        **first,
+        "intent": "DIALOGUE_REPLY",
+        "intent_context": {"action_actor": "player", "action_target": "gribbo"},
+        "user_input": "你就是个笑话",
+    }
+    second = dialogue_node(next_state)
+
+    assert second["active_dialogue_target"] is None
+    assert second["combat_phase"] == "IN_COMBAT"
+    assert second["combat_active"] is True
+    assert "gribbo" in second["initiative_order"]
+    assert "谈判破裂" in "\n".join(second["journal_events"])
+

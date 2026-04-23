@@ -6,10 +6,17 @@ Checkpointer 由调用方（如 main.py）创建并传入，支持 AsyncSqliteSa
 
 from langgraph.graph import END, START, StateGraph
 
-from core.graph.graph_routers import route_after_dm, route_after_mechanics, route_after_narration
+from core.graph.graph_routers import (
+    route_after_actor_invocation,
+    route_after_dm,
+    route_after_mechanics,
+    route_after_narration,
+)
 from core.graph.graph_state import GameState
+from core.graph.nodes.actor_invocation import actor_invocation_node
 from core.graph.nodes.dm import advance_speaker_node, dm_node, narration_node
 from core.graph.nodes.dialogue import dialogue_node
+from core.graph.nodes.event_drain import event_drain_node
 from core.graph.nodes.generation import create_generation_node
 from core.graph.nodes.input import input_node, world_tick_node
 from core.graph.nodes.lore_node import lore_node
@@ -77,6 +84,8 @@ def build_graph(checkpointer=None):
     builder.add_node("dialogue_processing", dialogue_node)
     builder.add_node("lore_processing", lore_node)
     builder.add_node("mechanics_processing", mechanics_node)
+    builder.add_node("actor_invocation", actor_invocation_node)  # type: ignore[arg-type]
+    builder.add_node("event_drain", event_drain_node)
     builder.add_node("narration", narration_node)
     builder.add_node("generation", create_generation_node())  # type: ignore[arg-type]
     builder.add_node("advance_speaker", advance_speaker_node)
@@ -100,7 +109,7 @@ def build_graph(checkpointer=None):
             "mechanics_processing": "mechanics_processing",
             "dialogue_processing": "dialogue_processing",
             "lore_processing": "lore_processing",
-            "generation": "generation",
+            "generation": "actor_invocation",
         },
     )
     builder.add_edge("dialogue_processing", END)
@@ -108,13 +117,23 @@ def build_graph(checkpointer=None):
     builder.add_conditional_edges(
         "mechanics_processing",
         route_after_mechanics,
-        {"generation": "generation", "narration": "narration"},
+        {"generation": "actor_invocation", "narration": "narration"},
     )
     # DM 旁白后：30% 概率触发吐槽，大成功/大失败 100% 吐槽
     builder.add_conditional_edges(
         "narration",
         route_after_narration,
-        {"generation": "generation", "__end__": END},
+        {"generation": "actor_invocation", "__end__": END},
+    )
+    builder.add_conditional_edges(
+        "actor_invocation",
+        route_after_actor_invocation,
+        {"event_drain": "event_drain", "generation": "generation", "__end__": END},
+    )
+    builder.add_conditional_edges(
+        "event_drain",
+        route_after_generation,
+        {"advance_speaker": "advance_speaker", "__end__": END},
     )
     builder.add_conditional_edges(
         "generation",

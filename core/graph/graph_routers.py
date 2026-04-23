@@ -12,10 +12,14 @@ from core.graph.graph_state import GameState
 # 路由目标：与 graph_builder 中节点名严格一致，返回字符串必须在此枚举内
 INPUT_ROUTE = Literal["dm_analysis", "__end__"]
 DM_ROUTE = Literal["mechanics_processing", "dialogue_processing", "lore_processing", "generation"]
+ACTOR_INVOCATION_ROUTE = Literal["event_drain", "generation", "__end__"]
 
 _VALID_INPUT_ROUTES: frozenset[str] = frozenset({"dm_analysis", "__end__"})
 _VALID_DM_ROUTES: frozenset[str] = frozenset(
     {"mechanics_processing", "dialogue_processing", "lore_processing", "generation"}
+)
+_VALID_ACTOR_INVOCATION_ROUTES: frozenset[str] = frozenset(
+    {"event_drain", "generation", "__end__"}
 )
 
 # PERSUASION/DECEPTION/STEALTH 必须在到达 generation 前经过 mechanics_processing 执行检定
@@ -68,6 +72,14 @@ def _validate_dm_route(route: str) -> DM_ROUTE:
     if route not in _VALID_DM_ROUTES:
         raise ValueError(f"Invalid DM_ROUTE: {route!r}. Must be one of {_VALID_DM_ROUTES}")
     return cast(DM_ROUTE, route)
+
+
+def _validate_actor_invocation_route(route: str) -> ACTOR_INVOCATION_ROUTE:
+    if route not in _VALID_ACTOR_INVOCATION_ROUTES:
+        raise ValueError(
+            f"Invalid ACTOR_INVOCATION_ROUTE: {route!r}. Must be one of {_VALID_ACTOR_INVOCATION_ROUTES}"
+        )
+    return cast(ACTOR_INVOCATION_ROUTE, route)
 
 
 def _is_readable_target(state: GameState, target_id: str) -> bool:
@@ -136,6 +148,16 @@ def route_after_dm(state: GameState) -> DM_ROUTE:
     if intent in ACTION_INTENTS:
         return _validate_dm_route("mechanics_processing")
     return _validate_dm_route("generation")
+
+
+def route_after_actor_invocation(state: GameState) -> ACTOR_INVOCATION_ROUTE:
+    mode = str(state.get("actor_invocation_mode", "") or "").strip().lower()
+    if mode == "fallback":
+        return _validate_actor_invocation_route("generation")
+    pending_events = state.get("pending_events") or []
+    if isinstance(pending_events, list) and pending_events:
+        return _validate_actor_invocation_route("event_drain")
+    return _validate_actor_invocation_route("__end__")
 
 
 # -----------------------------------------------------------------------------
@@ -239,6 +261,7 @@ def route_after_narration(state: GameState) -> NARRATION_ROUTE:
 __all__ = [
     "route_after_input",
     "route_after_dm",
+    "route_after_actor_invocation",
     "route_after_mechanics",
     "route_after_narration",
     "ACTION_INTENTS",

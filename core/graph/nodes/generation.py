@@ -24,6 +24,8 @@ from langchain_openai import ChatOpenAI
 
 from config import settings
 from archive.v1_legacy.engine import generate_dialogue, parse_ai_response
+from core.actors import ActorScopedMemoryProvider, build_actor_view
+from core.actors.views import ActorView
 from core.engine.physics import (
     apply_environment_interaction,
     apply_movement,
@@ -42,7 +44,7 @@ from core.graph.nodes.utils import (
 )
 from core.systems.inventory import Inventory, format_inventory_dict_to_display_list, get_registry
 from core.systems.mechanics import process_dialogue_triggers
-from core.systems.memory_rag import episodic_memory
+from core.memory.compat import get_default_memory_service
 from core.tools.npc_tools import check_target_inventory
 from core.utils.text_processor import clean_npc_dialogue, format_history_message, parse_llm_json
 
@@ -178,15 +180,13 @@ def _execute_json_action(
     return tool_physics_events
 
 
-def _build_dynamic_context_prompt(state: GameState, user_input: str, latest_roll: Any) -> str:
-    """组装环境感知、RAG 长期记忆和骰子检定结果的动态提示词"""
+def _build_dynamic_context_prompt(actor_view: ActorView, latest_roll: Any) -> str:
+    """组装环境感知、ActorView 记忆摘要与骰子检定结果的动态提示词。"""
     context_prompt = ""
 
     # 1. 环境感知注入
-    loc = state.get("current_location", "Unknown Location")
-    env_objs = state.get("environment_objects") or {}
-    if not isinstance(env_objs, dict):
-        env_objs = {}
+    loc = actor_view.current_location or "Unknown Location"
+    env_objs = actor_view.visible_environment_objects or {}
     context_prompt += "\n[CURRENT ENVIRONMENT]\n"
     context_prompt += f"You are currently at: {loc}\n"
     if env_objs:
@@ -208,15 +208,13 @@ def _build_dynamic_context_prompt(state: GameState, user_input: str, latest_roll
     else:
         context_prompt += "There are no notable interactive objects around.\n"
 
-    # 2. RAG 长期记忆注入
-    if user_input and user_input.strip():
-        retrieved_memories = episodic_memory.retrieve_relevant_memories(user_input, top_k=2)
-        if retrieved_memories:
-            context_prompt += "\n[LONG-TERM EPISODIC MEMORIES]\n"
-            context_prompt += "These are your past memories related to the current situation:\n"
-            for mem in retrieved_memories:
-                context_prompt += f"- {mem}\n"
-            context_prompt += "Use these memories to inform your reaction if they are relevant.\n"
+    # 2. ActorView memory snippets 注入
+    if actor_view.memory_snippets:
+        context_prompt += "\n[LONG-TERM EPISODIC MEMORIES]\n"
+        context_prompt += "These are your past memories related to the current situation:\n"
+        for mem in actor_view.memory_snippets:
+            context_prompt += f"- {mem}\n"
+        context_prompt += "Use these memories to inform your reaction if they are relevant.\n"
 
     # 3. 掷骰检定结果注入
     if latest_roll and isinstance(latest_roll, dict) and _latest_roll_is_meaningful(latest_roll):
@@ -504,14 +502,20 @@ def _build_a_to_a_suffix(last_speaker_id: str, last_speaker_text: str) -> str:
 
 
 def _format_history_messages(
-    state: GameState,
+    actor_view: ActorView,
     context: Dict[str, Any],
 ) -> List[Dict[str, str]]:
     """将历史消息格式化为 LLM 输入，并保留旧实现的后缀注入位置。"""
-    messages = list(state.get("messages", []))
+    messages = [
+        {
+            "role": visible_message.role,
+            "content": visible_message.content,
+        }
+        for visible_message in actor_view.visible_history
+    ]
     user_input = context["user_input"]
     if context["is_first_npc_of_player_turn"] and user_input:
-        if not messages or _msg_content(messages[-1]) != user_input:
+        if not messages or str(messages[-1].get("content") or "") != user_input:
             messages.append({"role": "user", "content": user_input})
 
     recent_messages = messages[-20:] if len(messages) > 20 else messages
@@ -546,7 +550,10 @@ def _format_history_messages(
 
 def _build_history_dicts(state: GameState, context: Dict[str, Any]) -> List[Dict[str, str]]:
     """兼容旧函数名，委托给新的 history formatter。"""
-    return _format_history_messages(state, context)
+    actor_view = context.get("actor_view")
+    if not isinstance(actor_view, ActorView):
+        actor_view = build_actor_view(state, context.get("speaker", "player"))
+    return _format_history_messages(actor_view, context)
 
 
 def _prepare_generation_context(
@@ -554,43 +561,51 @@ def _prepare_generation_context(
     speaker: str,
     character: Any,
     entities: Dict[str, Any],
+    actor_view: Optional[ActorView] = None,
 ) -> Dict[str, Any]:
-    user_input = state.get("user_input", "")
+    if actor_view is None:
+        actor_view = build_actor_view(state, speaker)
+    user_input = actor_view.user_input
     current_npc = entities.get(speaker, {})
     affection = current_npc.get("affection", 0)
-    flags = state.get("flags", {})
+    flags = actor_view.visible_flags
     inventory_state = _extract_inventory_states(state, current_npc)
     npc_inv = inventory_state["npc_inv"]
     player_inv = inventory_state["player_inv"]
-    journal_events = list(state.get("journal_events", []))
+    journal_events = list(actor_view.recent_public_events)
     summary = state.get("summary", "Graph Mode Testing")
     prev_responses = list(state.get("speaker_responses", []))
     is_first_npc_of_player_turn = len(prev_responses) == 0
-    environmental_awareness = _build_environmental_awareness(state)
+    environmental_awareness = {
+        "current_location": actor_view.current_location or state.get("current_location", "Unknown Location"),
+        "current_env_objs": {
+            env_id: dict(env_data)
+            for env_id, env_data in (actor_view.visible_environment_objects or {}).items()
+            if isinstance(env_data, dict)
+        },
+    }
 
     intent = str(state.get("intent", "chat") or "chat").strip().lower()
     idle_banter = intent == "trigger_idle_banter"
-    latest_roll = state.get("latest_roll")
+    latest_roll = actor_view.latest_roll
     banter_allowed_intents = frozenset({"chat", "banter", "trigger_idle_banter"})
     needs_full_agent = (
         intent not in banter_allowed_intents
         or _latest_roll_is_meaningful(latest_roll)
-        or bool(state.get("is_probing_secret"))
+        or bool(actor_view.is_probing_secret)
         or _player_message_suggests_item_offer(user_input)
     )
 
-    messages = list(state.get("messages", []))
+    messages = list(actor_view.visible_history)
     is_banter = False
     dm_text = ""
     if not needs_full_agent and messages:
         last_msg = messages[-1]
-        last_content = _msg_content(last_msg)
-        last_name = getattr(last_msg, "name", None) or (
-            last_msg.get("name") if isinstance(last_msg, dict) else None
-        )
-        if last_name == "DM" or (last_content and last_content.strip().startswith("[DM]:")):
-                is_banter = True
-                dm_text = last_content.replace("[DM]:", "").strip() if last_content else ""
+        last_content = str(getattr(last_msg, "content", "") or "")
+        last_name = str(getattr(last_msg, "speaker_id", "") or "")
+        if last_name == "dm" or (last_content and last_content.strip().startswith("[DM]:")):
+            is_banter = True
+            dm_text = last_content.replace("[DM]:", "").strip() if last_content else ""
 
     triggers_config = character.data.get("dialogue_triggers", [])
     trigger_state = _process_dialogue_triggers(
@@ -627,6 +642,7 @@ def _prepare_generation_context(
     context: Dict[str, Any] = {
         "speaker": speaker,
         "character": character,
+        "actor_view": actor_view,
         "entities": entities,
         "user_input": user_input,
         "affection": affection,
@@ -650,7 +666,7 @@ def _prepare_generation_context(
         "environment": environmental_awareness,
         **runtime_state,
     }
-    context["history_dicts"] = _format_history_messages(state, context)
+    context["history_dicts"] = _format_history_messages(actor_view, context)
     return context
 
 
@@ -704,7 +720,7 @@ async def _maybe_generate_banter_response(
     }
 
 
-def _build_system_prompt(state: GameState, context: Dict[str, Any]) -> str:
+def _build_system_prompt(actor_view: ActorView, context: Dict[str, Any]) -> str:
     speaker = context["speaker"]
     character = context["character"]
     idle_banter = context["idle_banter"]
@@ -735,22 +751,25 @@ def _build_system_prompt(state: GameState, context: Dict[str, Any]) -> str:
             journal_entries=context["journal_events"][-5:] if context["journal_events"] else [],
             inventory_items=context["inventory_display_list"],
             has_healing_potion=context["has_healing_potion"],
-            time_of_day=state.get("time_of_day", "晨曦 (Morning)"),
+            time_of_day=actor_view.time_of_day or "晨曦 (Morning)",
             hp=current_npc_data.get("hp", 20),
             active_buffs=current_npc_data.get("active_buffs", []),
             shar_faith=current_npc_data.get("shar_faith"),
             memory_awakening=current_npc_data.get("memory_awakening"),
         )
-        item_lore = _build_item_lore(state)
+        item_lore = _build_item_lore(
+            {
+                "entities": context.get("entities", {}),
+                "player_inventory": context.get("player_inv", {}),
+            }
+        )
         if item_lore:
             system_prompt += item_lore
         system_prompt += f"Current Speaker: {speaker}\n"
 
     system_prompt += f"Player's Current Inventory: {context['player_inv']}\n"
     roll_for_prompt = None if idle_banter else context["latest_roll"]
-    system_prompt += _build_dynamic_context_prompt(
-        state, context["user_input"], roll_for_prompt
-    )
+    system_prompt += _build_dynamic_context_prompt(actor_view, roll_for_prompt)
 
     if not idle_banter and len(context["prev_responses"]) > 0:
         last_speaker_id, last_speaker_text = context["prev_responses"][-1]
@@ -1053,17 +1072,29 @@ def create_generation_node() -> Callable[[GameState], Coroutine[Any, Any, dict]]
         fallback_speaker = first_entity_id(entities)
         speaker = (state.get("current_speaker") or "").strip() or fallback_speaker
         character = load_character(speaker)
+        memory_service = get_default_memory_service()
+        actor_view = build_actor_view(
+            state,
+            speaker,
+            memory_provider=ActorScopedMemoryProvider(memory_service.retriever),
+        )
         print(f"🗣️ Generation Node: {speaker.capitalize()} is speaking...")
         early_return = _build_unconscious_response(state, speaker, character, entities)
         if early_return is not None:
             return early_return
 
-        context = _prepare_generation_context(state, speaker, character, entities)
+        context = _prepare_generation_context(
+            state,
+            speaker,
+            character,
+            entities,
+            actor_view=actor_view,
+        )
         banter_response = await _maybe_generate_banter_response(state, context)
         if banter_response is not None:
             return banter_response
 
-        system_prompt = _build_system_prompt(state, context)
+        system_prompt = _build_system_prompt(actor_view, context)
         lc_messages = _build_lc_messages(system_prompt, context["history_dicts"])
         llm_with_tools = _create_llm_client(context["idle_banter"])
         response, _ = await _execute_llm_with_tools(

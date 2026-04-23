@@ -10,7 +10,10 @@ from typing import Any, Dict, List, Optional, Tuple
 from langchain_core.messages import AIMessage
 
 from characters.loader import CharacterLoader
+from core.actors import ActorScopedMemoryProvider, build_actor_view
+from core.actors.views import ActorView
 from core.graph.graph_state import GameState
+from core.memory.compat import get_default_memory_service
 from core.systems.inventory import get_registry
 from core.systems.mechanics import calculate_ability_modifier
 from core.utils.text_processor import format_history_message, parse_llm_json
@@ -78,19 +81,15 @@ def _normalize_dynamic_states(raw_states: Any) -> Dict[str, Dict[str, Any]]:
     return normalized
 
 
-def _extract_recent_dialogue_history(state: GameState, max_items: int = 6) -> str:
-    raw_messages = state.get("messages") or []
+def _extract_recent_dialogue_history(actor_view: ActorView, max_items: int = 6) -> str:
+    raw_messages = actor_view.visible_history or []
     lines: List[str] = []
     for msg in list(raw_messages)[-max_items:]:
-        if isinstance(msg, dict):
-            role = str(msg.get("role", "user")).strip().lower()
-            content = str(msg.get("content", "")).strip()
-        else:
-            role = str(getattr(msg, "type", "human")).strip().lower()
-            content = str(getattr(msg, "content", "")).strip()
+        role = str(getattr(msg, "role", "user")).strip().lower()
+        content = str(getattr(msg, "content", "")).strip()
         if not content:
             continue
-        if role in {"human", "user"}:
+        if role == "user":
             lines.append(f"Player: {content}")
         else:
             lines.append(f"NPC: {content}")
@@ -214,7 +213,7 @@ def _build_dialogue_prompt(
     *,
     target_id: str,
     target_entity: Dict[str, Any],
-    state: GameState,
+    actor_view: ActorView,
     user_input: str,
 ) -> str:
     loader = CharacterLoader()
@@ -232,11 +231,18 @@ def _build_dialogue_prompt(
     template = loader.jinja_env.get_template(template_path)
 
     attrs_from_yaml = character_data.get("attributes") if isinstance(character_data.get("attributes"), dict) else {}
+    actor_name = actor_view.self_state.name or target_entity.get("name", target_id)
+    hp = int(actor_view.self_state.hp or target_entity.get("hp", character_data.get("hp", 1)))
+    max_hp = int(
+        actor_view.self_state.max_hp
+        or target_entity.get("max_hp", character_data.get("max_hp", hp))
+    )
+
     merged_attributes = {
-        "name": target_entity.get("name", character_data.get("name", target_id)),
+        "name": actor_name or character_data.get("name", target_id),
         "race": character_data.get("race", target_entity.get("race", "Unknown")),
         "class": character_data.get("class", target_entity.get("class", "Unknown")),
-        "max_hp": int(target_entity.get("max_hp", character_data.get("max_hp", target_entity.get("hp", 1)))),
+        "max_hp": max_hp,
         "personality": attrs_from_yaml.get("personality", target_entity.get("personality", {"traits": []})),
         "secret_objective": attrs_from_yaml.get(
             "secret_objective",
@@ -244,25 +250,27 @@ def _build_dialogue_prompt(
         ),
     }
 
-    dynamic_states = _normalize_dynamic_states(
-        target_entity.get("dynamic_states")
-        or character_data.get("dynamic_states")
-        or {}
-    )
+    dynamic_states = _normalize_dynamic_states(actor_view.self_state.dynamic_states)
+    if not dynamic_states:
+        dynamic_states = _normalize_dynamic_states(
+            target_entity.get("dynamic_states")
+            or character_data.get("dynamic_states")
+            or {}
+        )
     if "patience" not in dynamic_states:
         dynamic_states["patience"] = {"current_value": 10}
     if "fear" not in dynamic_states:
         dynamic_states["fear"] = {"current_value": 0}
 
     registry = get_registry()
-    inventory_dict = target_entity.get("inventory") if isinstance(target_entity.get("inventory"), dict) else {}
+    inventory_dict = actor_view.self_state.inventory
     inventory_items = [
         f"{registry.get_name(item_id)} x {int(count)}"
         for item_id, count in inventory_dict.items()
         if str(item_id).strip() and int(count or 0) > 0
     ]
 
-    latest_roll = state.get("latest_roll") if isinstance(state.get("latest_roll"), dict) else {}
+    latest_roll = actor_view.latest_roll if isinstance(actor_view.latest_roll, dict) else {}
     recent_skill_check: Optional[Dict[str, Any]] = None
     if latest_roll:
         result = latest_roll.get("result") if isinstance(latest_roll.get("result"), dict) else {}
@@ -274,17 +282,30 @@ def _build_dialogue_prompt(
         }
 
     rendered = template.render(
-        time_of_day=state.get("time_of_day", "晨曦 (Morning)"),
-        hp=int(target_entity.get("hp", character_data.get("hp", 1))),
+        time_of_day=actor_view.time_of_day or "晨曦 (Morning)",
+        hp=hp,
         attributes=merged_attributes,
-        active_buffs=list(target_entity.get("active_buffs") or []),
+        active_buffs=list(actor_view.self_state.active_buffs or target_entity.get("active_buffs") or []),
         dynamic_states=dynamic_states,
         recent_skill_check=recent_skill_check,
         inventory_items=inventory_items,
     )
-    history_text = _extract_recent_dialogue_history(state)
+    history_text = _extract_recent_dialogue_history(actor_view)
+    visible_flags = actor_view.visible_flags
+    visible_flags_text = ", ".join(f"{key}={value}" for key, value in sorted(visible_flags.items())) or "None"
+    memory_text = "\n".join(actor_view.memory_snippets) if actor_view.memory_snippets else "None"
+    peers_text = ", ".join(
+        f"{peer.name}({peer.entity_id})"
+        for peer in actor_view.other_entities.values()
+    ) or "None"
     return (
         f"{rendered}\n\n"
+        "[VISIBLE WORLD FLAGS]\n"
+        f"{visible_flags_text}\n\n"
+        "[VISIBLE COMPANIONS/ENTITIES]\n"
+        f"{peers_text}\n\n"
+        "[MEMORY SNIPPETS]\n"
+        f"{memory_text}\n\n"
         "[RECENT DIALOGUE HISTORY]\n"
         f"{history_text or 'None'}\n\n"
         "[PLAYER LATEST INPUT]\n"
@@ -339,10 +360,16 @@ def dialogue_node(state: GameState) -> Dict[str, Any]:
         }
 
     user_input = str(state.get("user_input", "") or "").strip()
+    memory_service = get_default_memory_service()
+    actor_view = build_actor_view(
+        state,
+        target_id,
+        memory_provider=ActorScopedMemoryProvider(memory_service.retriever),
+    )
     prompt = _build_dialogue_prompt(
         target_id=target_id,
         target_entity=target_entity,
-        state=state,
+        actor_view=actor_view,
         user_input=user_input,
     )
 

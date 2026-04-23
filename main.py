@@ -9,13 +9,9 @@ import asyncio
 import os
 from typing import Any, Dict, List, Tuple
 
-from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_openai import ChatOpenAI
-
-from config import settings
 from core import inventory
 from core.application.game_service import GameService
-from core.systems.memory_rag import episodic_memory
+from core.memory.compat import get_default_memory_service
 from ui.renderer import GameRenderer
 
 DEFAULT_THREAD_ID = "sean_save_01"
@@ -124,70 +120,6 @@ async def _render_turn_output(
     )
 
 
-async def _consolidate_turn_memory(
-    ui: GameRenderer,
-    user_input: str,
-    result: Dict[str, Any],
-    current_state: Dict[str, Any],
-) -> None:
-    """将值得保留的一轮互动沉淀到长期记忆。"""
-    normalized_input = (user_input or "").strip()
-    turn_events = result.get("journal_events") or []
-    turn_responses = result.get("responses") or []
-
-    if not normalized_input or (len(normalized_input) <= 5 and not turn_events):
-        return
-
-    ui.print_system_info("🧠 [系统] 正在将本轮交互沉淀为长期记忆...")
-    turn_summary_prompt = f"玩家说：{normalized_input}\n"
-    if turn_events:
-        turn_summary_prompt += f"发生的事件：{', '.join(turn_events)}\n"
-    for response in turn_responses:
-        speaker = str(response.get("speaker", ""))
-        text = str(response.get("text", ""))
-        if text:
-            turn_summary_prompt += f"{speaker} 回应：{text}\n"
-
-    summary_llm = ChatOpenAI(
-        model=settings.MODEL_NAME,
-        api_key=settings.API_KEY,  # type: ignore[arg-type]
-        base_url=settings.BASE_URL,
-        temperature=0.3,
-    )
-    extract_sys_prompt = (
-        "你是一个记忆提取器。请阅读以下跑团游戏中的一轮交互，判断是否发生了值得长期记住的事件"
-        "（例如：物品的赠送/抢夺、好感度的明显改变、角色吐露了心声或秘密、重大的冲突）。\n"
-        "如果值得记住，请将其浓缩为一句极其精简的第三人称客观描述（不多于50字），例如："
-        "'玩家强行给了莱埃泽尔一瓶药水，遭到阿斯代伦的嘲讽。'\n"
-        "如果只是无意义的闲聊，请严格输出 'NONE'。"
-    )
-
-    try:
-        summary_msg = summary_llm.invoke(
-            [
-                SystemMessage(content=extract_sys_prompt),
-                HumanMessage(content=turn_summary_prompt),
-            ]
-        )
-        raw_output = summary_msg.content
-        if isinstance(raw_output, list):
-            memory_text = "".join(
-                str(block.get("text", block)) if isinstance(block, dict) else str(block)
-                for block in raw_output
-            ).strip()
-        else:
-            memory_text = str(raw_output or "").strip()
-
-        if memory_text and memory_text != "NONE":
-            episodic_memory.add_memory(
-                text=memory_text,
-                speaker="system",
-                metadata={"turn": current_state.get("turn_count", 0)},
-            )
-    except Exception as exc:
-        ui.print_error(f"⚠️ 记忆沉淀失败: {exc}")
-
-
 async def _execute_cli_turn(
     game_service: GameService,
     ui: GameRenderer,
@@ -254,7 +186,6 @@ async def _execute_cli_turn(
         rendered_in_stream=stream_state["rendered_in_stream"],
         dice_rendered=stream_state["dice_rendered"],
     )
-    await _consolidate_turn_memory(ui, user_input, result, current_state)
     return current_state
 
 
@@ -302,7 +233,7 @@ async def main_async() -> None:
 
             if normalized_input.lower() == "/reset":
                 ui.print_system_info("💥 正在执行世界重置 (灭世协议)...")
-                episodic_memory.clear_all_memories()
+                get_default_memory_service().clear_all()
                 if os.path.exists("memory.db"):
                     try:
                         os.remove("memory.db")

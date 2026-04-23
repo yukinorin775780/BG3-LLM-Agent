@@ -1,85 +1,106 @@
+from __future__ import annotations
+
 import os
-import chromadb
-from datetime import datetime
-from typing import List
+from typing import Any, Dict, List, Optional
 
 from config import settings
+from core.memory.chroma_store import ChromaMemoryStore
+from core.memory.compat import create_manual_record
+from core.memory.distiller import RuleBasedMemoryDistiller
+from core.memory.retrieval import ActorScopedMemoryRetriever
+from core.memory.service import MemoryService
 
 
 class EpisodicMemoryManager:
     """
-    RAG-based Episodic Memory Manager.
-    负责将长期的日记事件和重要对话向量化存储，并支持语义检索。
+    Compatibility shim for legacy imports.
+    New logic is delegated to core.memory.MemoryService.
     """
 
-    def __init__(self, collection_name: str = "bg3_memories"):
-        # 记忆数据库存储在本地，和 JSON 存档放在一起
-        self.db_path = os.path.join(settings.SAVE_DIR, "chroma_db")
-        os.makedirs(self.db_path, exist_ok=True)
+    def __init__(self, service=None):
+        if service is not None:
+            self._service = service
+            return
+        # Legacy shim uses isolated storage to avoid polluting actor-scoped runtime memory.
+        legacy_db_path = os.path.join(settings.SAVE_DIR, "chroma_db_legacy")
+        store = ChromaMemoryStore(db_path=legacy_db_path)
+        self._service = MemoryService(
+            store=store,
+            retriever=ActorScopedMemoryRetriever(store),
+            distiller=RuleBasedMemoryDistiller(),
+        )
 
-        # 初始化 ChromaDB 客户端 (本地持久化模式)
-        self.client = chromadb.PersistentClient(path=self.db_path)
+    def clear_all_memories(self) -> None:
+        self._service.clear_all()
+        print("💥 [系统] 长期记忆库已清空。")
 
-        # 获取或创建 Collection
-        self._collection_name = collection_name
-        self.collection = self.client.get_or_create_collection(name=collection_name)
-
-    def clear_all_memories(self):
-        """
-        清空所有长期记忆 (硬重置)。
-        直接删除当前的 Collection 并重新创建一个干净的。
-        """
-        try:
-            self.client.delete_collection(self._collection_name)
-            self.collection = self.client.create_collection(name=self._collection_name)
-            print("💥 [系统] 长期记忆库 (ChromaDB) 已彻底清空！")
-        except Exception as e:
-            print(f"⚠️ 清空记忆失败: {e}")
-
-    def add_memory(self, text: str, speaker: str = "system", metadata: dict = None):
-        """
-        写入一条新记忆。
-        :param text: 记忆内容（如："玩家在晨曦时分将一瓶治疗药水强行塞给了莱埃泽尔"）
-        """
-        if not text.strip():
+    def add_memory(self, text: str, speaker: str = "system", metadata: Optional[Dict[str, Any]] = None) -> None:
+        normalized_text = str(text or "").strip()
+        if not normalized_text:
             return
 
-        memory_id = f"mem_{datetime.now().strftime('%Y%m%d%H%M%S%f')}"
         meta = metadata or {}
-        meta["speaker"] = speaker
-        meta["timestamp"] = datetime.now().isoformat()
-
-        # ChromaDB 会自动将 text 转换为向量并存入
-        self.collection.add(
-            documents=[text],
-            metadatas=[meta],
-            ids=[memory_id],
+        record = create_manual_record(
+            text=normalized_text,
+            speaker=speaker,
+            scope=str(meta.get("scope") or "party_shared"),
+            memory_type=str(meta.get("memory_type") or "episodic"),
+            importance=int(meta.get("importance") or 1),
+            location_id=str(meta.get("location_id") or ""),
+            turn_index=int(meta.get("turn") or meta.get("turn_index") or 0),
+            source_session_id=str(meta.get("session_id") or ""),
         )
-        print(f"🧠 [记忆凝结] {speaker} 的记忆已存入深层潜意识: {text[:30]}...")
+        self._service.upsert(record)
+        print(f"🧠 [记忆凝结] {speaker} 的记忆已存入: {normalized_text[:30]}...")
 
-    def retrieve_relevant_memories(self, query: str, top_k: int = 3) -> List[str]:
-        """
-        根据当前对话（Query），检索最相关的长期记忆。
-        """
-        if not query.strip():
+    def retrieve_relevant_memories(
+        self,
+        query: str,
+        top_k: int = 3,
+        *,
+        actor_id: Optional[str] = None,
+        current_location: str = "",
+        turn_index: int = 0,
+    ) -> List[str]:
+        normalized_query = str(query or "").strip()
+        if not normalized_query:
             return []
 
-        # 如果库里没东西，直接返回
-        if self.collection.count() == 0:
-            return []
+        def _lexical_score(text: str, q: str) -> int:
+            lowered_text = str(text or "").lower()
+            lowered_query = str(q or "").lower()
+            if not lowered_text or not lowered_query:
+                return 0
+            # Hybrid token+character overlap for English/Chinese robustness.
+            score = 0
+            for token in lowered_query.split():
+                if token and token in lowered_text:
+                    score += 2
+            for ch in lowered_query:
+                if ch.strip() and ch in lowered_text:
+                    score += 1
+            return score
 
-        results = self.collection.query(
-            query_texts=[query],
-            n_results=min(top_k, self.collection.count()),
+        if actor_id:
+            actor_texts = self._service.retrieve_texts_for_actor(
+                actor_id=str(actor_id),
+                query_text=normalized_query,
+                current_location=current_location,
+                turn_index=turn_index,
+                top_k=max(top_k * 5, 10),
+            )
+            actor_texts.sort(key=lambda item: _lexical_score(item, normalized_query), reverse=True)
+            return actor_texts[:top_k]
+
+        snippets = self._service.retrieve_for_director(
+            query_text=normalized_query,
+            current_location=current_location,
+            turn_index=turn_index,
+            top_k=max(top_k * 5, 10),
         )
-
-        memories = []
-        if results and results.get("documents") and results["documents"][0]:
-            for doc in results["documents"][0]:
-                memories.append(doc)
-
-        return memories
+        texts = [snippet.text for snippet in snippets if str(snippet.text or "").strip()]
+        texts.sort(key=lambda item: _lexical_score(item, normalized_query), reverse=True)
+        return texts[:top_k]
 
 
-# 单例模式，方便全局调用
 episodic_memory = EpisodicMemoryManager()

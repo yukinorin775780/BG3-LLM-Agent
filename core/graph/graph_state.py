@@ -83,6 +83,10 @@ class GameState(TypedDict, total=False):
     current_turn_index: int
     turn_resources: Dict[str, Dict[str, Any]]
     recent_barks: List[Dict[str, Any]]
+    pending_events: List[Dict[str, Any]]
+    reflection_queue: List[Dict[str, Any]]
+    actor_runtime_state: Dict[str, Dict[str, Any]]
+    last_actor_decision: Dict[str, Any]
 
     # -------------------------------------------------------------------------
     # Journal Events [TRANSIENT within turn]
