@@ -44,3 +44,23 @@ def test_event_drain_turns_world_flag_changed_event_into_flags_patch():
 
     assert result["pending_events"] == []
     assert result["flags"]["world_artifact_revealed"] is True
+
+
+def test_event_drain_does_not_process_reflection_queue_when_no_pending_events():
+    state = {
+        "pending_events": [],
+        "reflection_queue": [
+            {
+                "actor_id": "astarion",
+                "reason": "defer_until_runtime_ready",
+                "priority": 2,
+                "source_turn": 9,
+                "payload": {},
+            }
+        ],
+    }
+
+    result = event_drain_node(state)
+
+    assert result == {"pending_events": []}
+    assert len(state["reflection_queue"]) == 1

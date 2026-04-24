@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, List, Set
 
+from core.eval.telemetry import emit_telemetry
 from core.memory.models import MemoryQuery, MemorySnippet
 from core.memory.protocols import MemoryRetriever, MemoryStore
 
@@ -79,12 +80,38 @@ class ActorScopedMemoryRetriever(MemoryRetriever):
         world_snippets = self._store.query_scope(scope_key="world", query=query, top_k=2)
         all_snippets = actor_snippets + party_snippets + world_snippets
         rescored = self._rescore(query=query, snippets=all_snippets)
-        return self._dedupe(rescored, top_k=max(1, int(query.top_k)))
+        result = self._dedupe(rescored, top_k=max(1, int(query.top_k)))
+        emit_telemetry(
+            "memory_retrieval",
+            mode="actor",
+            actor_id=str(query.actor_id or "").strip().lower(),
+            query_text_length=len(str(query.query_text or "")),
+            top_k=int(query.top_k or 0),
+            hit_count=len(result),
+            scope_hits={
+                "actor_private": len(actor_snippets),
+                "party_shared": len(party_snippets),
+                "world": len(world_snippets),
+            },
+        )
+        return result
 
     def retrieve_for_director(self, query: MemoryQuery) -> List[MemorySnippet]:
         # Director can only see world + party_shared.
         party_snippets = self._store.query_scope(scope_key="party_shared", query=query, top_k=3)
         world_snippets = self._store.query_scope(scope_key="world", query=query, top_k=3)
         rescored = self._rescore(query=query, snippets=party_snippets + world_snippets)
-        return self._dedupe(rescored, top_k=max(1, int(query.top_k)))
-
+        result = self._dedupe(rescored, top_k=max(1, int(query.top_k)))
+        emit_telemetry(
+            "memory_retrieval",
+            mode="director",
+            actor_id=str(query.actor_id or "").strip().lower(),
+            query_text_length=len(str(query.query_text or "")),
+            top_k=int(query.top_k or 0),
+            hit_count=len(result),
+            scope_hits={
+                "party_shared": len(party_snippets),
+                "world": len(world_snippets),
+            },
+        )
+        return result

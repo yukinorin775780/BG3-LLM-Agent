@@ -210,6 +210,12 @@ player_inventory = {
 - 新增物品：改 `config/items.yaml` 并通过 `ItemRegistry` 使用。
 - 不要让 UI/API 层直接修改业务状态，除非通过 `GameService` 封装成明确应用用例。
 
+## Governance Docs
+
+- V1 Contract Freeze: `docs/v1_contract_freeze.md`
+- V1.1 Runtime Registry Governance: `docs/v1_1_runtime_registry.md`
+- V1.1 Runtime NPC SOP (Frozen): `docs/v1_1_runtime_npc_sop.md`
+
 ## Tech Stack
 
 - Python 3.10+
@@ -285,6 +291,28 @@ UI 直连拾取示例：
 ```bash
 pytest
 ```
+
+## Eval / Checks
+
+本地检查：
+
+```bash
+make check
+```
+
+只跑单元测试：
+
+```bash
+make test
+```
+
+只跑 Golden Eval：
+
+```bash
+make eval
+```
+
+详细说明见 `docs/evals.md`。
 
 ## Current Caveats
 

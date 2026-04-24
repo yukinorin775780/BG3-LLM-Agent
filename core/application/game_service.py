@@ -13,6 +13,7 @@ from langgraph.graph import START
 
 from core.actors.reflection import run_reflection_tick
 from core.engine.physics import execute_loot
+from core.eval.telemetry import emit_telemetry
 from core.graph.graph_builder import build_graph
 from core.graph.nodes.event_drain import event_drain_node
 from core.memory.compat import get_default_memory_service
@@ -106,47 +107,130 @@ class GameService:
             raise InvalidChatRequestError(
                 "At least one of user_input or intent must be non-empty."
             )
+        turn_started_at = time.perf_counter()
+        turn_ok = False
+        turn_error_type = ""
+        emit_telemetry(
+            "turn_started",
+            session_id=session_id,
+            intent=normalized_intent_key or "chat",
+            has_user_input=bool(normalized_input),
+            user_input_length=len(normalized_input),
+        )
 
-        config = {"configurable": {"thread_id": session_id}}
+        try:
+            config = {"configurable": {"thread_id": session_id}}
 
-        async with self._saver_factory(self._db_path) as saver:
-            graph = self._graph_builder(checkpointer=saver)
-            previous_state = await self._load_checkpoint_state(graph, config)
-            previous_journal_len = len(previous_state.get("journal_events") or [])
-
-            if not previous_state.get("entities"):
-                previous_state = await self._initialize_world_state(graph, config)
+            async with self._saver_factory(self._db_path) as saver:
+                graph = self._graph_builder(checkpointer=saver)
+                previous_state = await self._load_checkpoint_state(graph, config)
                 previous_journal_len = len(previous_state.get("journal_events") or [])
 
-            if normalized_intent_key == "init_sync":
-                return self._build_chat_result(
-                    previous_state,
-                    previous_journal_len=previous_journal_len,
-                )
+                if not previous_state.get("entities"):
+                    previous_state = await self._initialize_world_state(graph, config)
+                    previous_journal_len = len(previous_state.get("journal_events") or [])
 
-            if normalized_intent_key in {"background_step", "process_reflections"}:
-                result_state = await self._process_background_step(
-                    graph=graph,
-                    config=config,
-                    previous_state=previous_state,
-                    intent_key=normalized_intent_key,
-                )
-                return self._build_chat_result(
-                    result_state,
-                    previous_journal_len=previous_journal_len,
-                )
+                if normalized_intent_key == "init_sync":
+                    turn_ok = True
+                    return self._build_chat_result(
+                        previous_state,
+                        previous_journal_len=previous_journal_len,
+                    )
 
-            if normalized_intent_key == "ui_action_loot":
-                result_state = await self._process_loot_action(
-                    graph=graph,
-                    config=config,
-                    previous_state=previous_state,
-                    previous_journal_len=previous_journal_len,
-                    user_input=normalized_input,
-                    character=character,
+                if normalized_intent_key in {"background_step", "process_reflections"}:
+                    result_state = await self._process_background_step(
+                        graph=graph,
+                        config=config,
+                        previous_state=previous_state,
+                        intent_key=normalized_intent_key,
+                    )
+                    turn_ok = True
+                    return self._build_chat_result(
+                        result_state,
+                        previous_journal_len=previous_journal_len,
+                    )
+
+                if normalized_intent_key == "ui_action_loot":
+                    result_state = await self._process_loot_action(
+                        graph=graph,
+                        config=config,
+                        previous_state=previous_state,
+                        previous_journal_len=previous_journal_len,
+                        user_input=normalized_input,
+                        character=character,
+                    )
+                    chat_result = self._build_chat_result(
+                        result_state,
+                        previous_journal_len=previous_journal_len,
+                    )
+                    await self._ingest_turn_memories(
+                        session_id=session_id,
+                        state=self._normalize_state(result_state),
+                        result=chat_result,
+                        user_input=normalized_input,
+                    )
+                    turn_ok = True
+                    return chat_result
+
+                payload: Dict[str, Any] = {"user_input": normalized_input}
+                if normalized_intent:
+                    payload["intent"] = normalized_intent
+
+                logger.info(
+                    "收到聊天请求: user_input=%r intent=%r session_id=%s",
+                    normalized_input,
+                    normalized_intent,
+                    session_id,
                 )
+                try:
+                    if stream_handler is None:
+                        result_state = await graph.ainvoke(payload, config=config)
+                    else:
+                        last_stream_checkpoint = time.perf_counter()
+                        node_timing_totals_ms: Dict[str, int] = {}
+                        async for update in graph.astream(
+                            payload,
+                            config=config,
+                            stream_mode="updates",
+                        ):
+                            if isinstance(update, dict):
+                                for node_name, node_state in update.items():
+                                    normalized_node_name = str(node_name)
+                                    now = time.perf_counter()
+                                    timing_ms = max(
+                                        0,
+                                        int(round((now - last_stream_checkpoint) * 1000)),
+                                    )
+                                    last_stream_checkpoint = now
+                                    node_timing_totals_ms[normalized_node_name] = (
+                                        node_timing_totals_ms.get(normalized_node_name, 0)
+                                        + timing_ms
+                                    )
+                                    emit_telemetry(
+                                        "node_finished",
+                                        session_id=session_id,
+                                        node_name=normalized_node_name,
+                                        timing_ms=timing_ms,
+                                        timing_total_ms=node_timing_totals_ms[normalized_node_name],
+                                    )
+                                    normalized_state = self._normalize_state(node_state)
+                                    stream_payload = {
+                                        **normalized_state,
+                                        "node_name": normalized_node_name,
+                                        "timing_ms": timing_ms,
+                                        "timing_total_ms": node_timing_totals_ms[normalized_node_name],
+                                        "state": normalized_state,
+                                    }
+                                    await stream_handler(
+                                        normalized_node_name,
+                                        stream_payload,
+                                    )
+                        result_state = await self._load_checkpoint_state(graph, config)
+                except Exception as exc:
+                    raise GraphExecutionError("Failed to process chat turn.") from exc
+
                 chat_result = self._build_chat_result(
-                    result_state,
+                    self._normalize_state(result_state),
                     previous_journal_len=previous_journal_len,
                 )
                 await self._ingest_turn_memories(
@@ -155,69 +239,20 @@ class GameService:
                     result=chat_result,
                     user_input=normalized_input,
                 )
+                turn_ok = True
                 return chat_result
-
-            payload: Dict[str, Any] = {"user_input": normalized_input}
-            if normalized_intent:
-                payload["intent"] = normalized_intent
-
-            logger.info(
-                "收到聊天请求: user_input=%r intent=%r session_id=%s",
-                normalized_input,
-                normalized_intent,
-                session_id,
-            )
-            try:
-                if stream_handler is None:
-                    result_state = await graph.ainvoke(payload, config=config)
-                else:
-                    last_stream_checkpoint = time.perf_counter()
-                    node_timing_totals_ms: Dict[str, int] = {}
-                    async for update in graph.astream(
-                        payload,
-                        config=config,
-                        stream_mode="updates",
-                    ):
-                        if isinstance(update, dict):
-                            for node_name, node_state in update.items():
-                                normalized_node_name = str(node_name)
-                                now = time.perf_counter()
-                                timing_ms = max(
-                                    0,
-                                    int(round((now - last_stream_checkpoint) * 1000)),
-                                )
-                                last_stream_checkpoint = now
-                                node_timing_totals_ms[normalized_node_name] = (
-                                    node_timing_totals_ms.get(normalized_node_name, 0)
-                                    + timing_ms
-                                )
-                                normalized_state = self._normalize_state(node_state)
-                                stream_payload = {
-                                    **normalized_state,
-                                    "node_name": normalized_node_name,
-                                    "timing_ms": timing_ms,
-                                    "timing_total_ms": node_timing_totals_ms[normalized_node_name],
-                                    "state": normalized_state,
-                                }
-                                await stream_handler(
-                                    normalized_node_name,
-                                    stream_payload,
-                                )
-                    result_state = await self._load_checkpoint_state(graph, config)
-            except Exception as exc:
-                raise GraphExecutionError("Failed to process chat turn.") from exc
-
-            chat_result = self._build_chat_result(
-                self._normalize_state(result_state),
-                previous_journal_len=previous_journal_len,
-            )
-            await self._ingest_turn_memories(
+        except Exception as exc:
+            turn_error_type = exc.__class__.__name__
+            raise
+        finally:
+            emit_telemetry(
+                "turn_finished",
                 session_id=session_id,
-                state=self._normalize_state(result_state),
-                result=chat_result,
-                user_input=normalized_input,
+                intent=normalized_intent_key or "chat",
+                success=turn_ok,
+                error_type=turn_error_type,
+                duration_ms=max(0, int(round((time.perf_counter() - turn_started_at) * 1000))),
             )
-            return chat_result
 
     async def get_session_state(
         self,

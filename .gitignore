@@ -221,3 +221,12 @@ __marimo__/
 data/chroma_db/
 *.db
 *.sqlite
+
+# Eval / local run artifacts
+artifacts/evals/
+memory.db
+*.sqlite
+*.sqlite3
+data/chroma_db/
+.pytest_cache/
+__pycache__/

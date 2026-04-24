@@ -1,4 +1,5 @@
 import asyncio
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -47,6 +48,97 @@ def _make_actor_view() -> ActorView:
         recent_public_events=["事件A"],
         latest_roll={},
         memory_snippets=["她记得玩家曾帮助过她。"],
+    )
+
+
+def _make_astarion_actor_view() -> ActorView:
+    return ActorView(
+        actor_id="astarion",
+        user_input="继续",
+        intent="CHAT",
+        intent_context={},
+        is_probing_secret=False,
+        self_state=ActorSelfState(
+            actor_id="astarion",
+            name="Astarion",
+            hp=12,
+            max_hp=12,
+            inventory={"dagger": 1},
+            affection=20,
+            active_buffs=[],
+            position="camp_center",
+            dynamic_states={},
+        ),
+        other_entities={
+            "shadowheart": PublicEntityView(
+                entity_id="shadowheart",
+                name="Shadowheart",
+                position="camp_center",
+                status="alive",
+                faction="party",
+            )
+        },
+        current_location="camp_center",
+        time_of_day="黄昏",
+        turn_count=3,
+        visible_environment_objects={"camp_fire": {"name": "篝火", "status": "burning"}},
+        visible_flags={"world_ready": True},
+        visible_history=[
+            VisibleMessage(role="user", speaker_id="user", content="继续"),
+            VisibleMessage(role="assistant", speaker_id="shadowheart", content="别走神。"),
+        ],
+        recent_public_events=["事件A"],
+        latest_roll={},
+        memory_snippets=["阿斯代伦记得这场谈话。"],
+    )
+
+
+def _make_laezel_actor_view() -> ActorView:
+    return ActorView(
+        actor_id="laezel",
+        user_input="继续",
+        intent="CHAT",
+        intent_context={},
+        is_probing_secret=False,
+        self_state=ActorSelfState(
+            actor_id="laezel",
+            name="Laezel",
+            hp=13,
+            max_hp=13,
+            inventory={"longsword": 1},
+            affection=10,
+            active_buffs=[],
+            position="camp_center",
+            dynamic_states={},
+        ),
+        other_entities={
+            "shadowheart": PublicEntityView(
+                entity_id="shadowheart",
+                name="Shadowheart",
+                position="camp_center",
+                status="alive",
+                faction="party",
+            ),
+            "astarion": PublicEntityView(
+                entity_id="astarion",
+                name="Astarion",
+                position="camp_center",
+                status="alive",
+                faction="party",
+            ),
+        },
+        current_location="camp_center",
+        time_of_day="黄昏",
+        turn_count=3,
+        visible_environment_objects={"camp_fire": {"name": "篝火", "status": "burning"}},
+        visible_flags={"world_ready": True},
+        visible_history=[
+            VisibleMessage(role="user", speaker_id="user", content="继续"),
+            VisibleMessage(role="assistant", speaker_id="shadowheart", content="集中注意。"),
+        ],
+        recent_public_events=["事件A"],
+        latest_roll={},
+        memory_snippets=["莱埃泽尔记得上次交锋。"],
     )
 
 
@@ -133,3 +225,132 @@ def test_format_history_messages_consumes_actor_view_only():
     assert history_dicts[1]["role"] == "assistant"
     assert "🚨 [CRITICAL OVERRIDE - PHYSICAL ACTION REQUIRED]:" not in history_dicts[0]["content"]
 
+
+def test_system_prompt_item_lore_only_uses_actor_visible_items():
+    actor_view = replace(
+        _make_actor_view(),
+        visible_environment_objects={
+            "iron_chest": {
+                "name": "沉重的铁箱子",
+                "status": "opened",
+                "description": "箱子已经被打开。",
+                "inventory": {"gold_coin": 3},
+            }
+        },
+    )
+    fake_character = Mock()
+    fake_character.render_prompt.return_value = "BASE_PROMPT\n"
+    context = {
+        "speaker": "shadowheart",
+        "character": fake_character,
+        "idle_banter": False,
+        "current_npc_data": {"hp": 10, "active_buffs": []},
+        "affection": 15,
+        "flags": {"world_ready": True},
+        "summary": "summary",
+        "journal_events": [],
+        "inventory_display_list": [],
+        "has_healing_potion": True,
+        "player_inv": {},
+        "latest_roll": {},
+        "prev_responses": [],
+        "environment": {
+            "current_location": "camp_center",
+            "current_env_objs": actor_view.visible_environment_objects,
+        },
+        "entities": {
+            "shadowheart": {"inventory": {"healing_potion": 1}},
+            "astarion": {"inventory": {"private_dagger": 1, "ruby_ring": 1}},
+        },
+    }
+
+    prompt = generation._build_system_prompt(actor_view, context)
+
+    assert "ID: healing_potion" in prompt
+    assert "ID: gold_coin" in prompt
+    assert "private_dagger" not in prompt
+    assert "ruby_ring" not in prompt
+    assert "{'private_dagger': 1, 'ruby_ring': 1}" not in prompt
+
+
+def test_astarion_system_prompt_does_not_leak_shadowheart_private_state():
+    actor_view = _make_astarion_actor_view()
+    fake_character = Mock()
+    fake_character.render_prompt.return_value = "BASE_PROMPT\n"
+    context = {
+        "speaker": "astarion",
+        "character": fake_character,
+        "idle_banter": False,
+        "current_npc_data": {"hp": 12, "active_buffs": []},
+        "affection": 20,
+        "flags": {"world_ready": True},
+        "summary": "summary",
+        "journal_events": [],
+        "inventory_display_list": [],
+        "has_healing_potion": False,
+        "player_inv": {},
+        "latest_roll": {},
+        "prev_responses": [],
+        "environment": {
+            "current_location": "camp_center",
+            "current_env_objs": actor_view.visible_environment_objects,
+        },
+        "entities": {
+            "astarion": {"inventory": {"dagger": 1}},
+            "shadowheart": {
+                "inventory": {"private_relic": 1, "mysterious_artifact": 1},
+                "secret_objective": "Protect the artifact.",
+            },
+        },
+    }
+
+    prompt = generation._build_system_prompt(actor_view, context)
+
+    assert "阿斯代伦记得这场谈话。" in prompt
+    assert "private_relic" not in prompt
+    assert "secret_objective" not in prompt
+    assert "Protect the artifact." not in prompt
+
+
+def test_laezel_system_prompt_does_not_leak_peer_private_state():
+    actor_view = _make_laezel_actor_view()
+    fake_character = Mock()
+    fake_character.render_prompt.return_value = "BASE_PROMPT\n"
+    context = {
+        "speaker": "laezel",
+        "character": fake_character,
+        "idle_banter": False,
+        "current_npc_data": {"hp": 13, "active_buffs": []},
+        "affection": 10,
+        "flags": {"world_ready": True},
+        "summary": "summary",
+        "journal_events": [],
+        "inventory_display_list": [],
+        "has_healing_potion": False,
+        "player_inv": {},
+        "latest_roll": {},
+        "prev_responses": [],
+        "environment": {
+            "current_location": "camp_center",
+            "current_env_objs": actor_view.visible_environment_objects,
+        },
+        "entities": {
+            "laezel": {"inventory": {"longsword": 1}},
+            "shadowheart": {
+                "inventory": {"private_relic": 1},
+                "secret_objective": "Protect the artifact.",
+            },
+            "astarion": {
+                "inventory": {"private_dagger": 1},
+                "secret_objective": "Hide vampiric nature.",
+            },
+        },
+    }
+
+    prompt = generation._build_system_prompt(actor_view, context)
+
+    assert "莱埃泽尔记得上次交锋。" in prompt
+    assert "private_relic" not in prompt
+    assert "private_dagger" not in prompt
+    assert "Protect the artifact." not in prompt
+    assert "Hide vampiric nature." not in prompt

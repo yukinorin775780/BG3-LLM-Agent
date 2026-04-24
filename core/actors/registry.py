@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from typing import Dict, Optional
+from pathlib import Path
+from typing import Any, Dict, Iterable, Optional
+
+import yaml
 
 from core.actors.contracts import ActorRuntime
 from core.actors.runtime import TemplateActorRuntime
@@ -25,13 +28,57 @@ class ActorRegistry:
 
 
 _DEFAULT_ACTOR_REGISTRY: Optional[ActorRegistry] = None
+_RUNTIME_ACTORS_FALLBACK: tuple[str, ...] = ("shadowheart", "astarion")
+
+
+def _normalize_actor_ids(raw_items: Iterable[Any]) -> tuple[str, ...]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        actor_id = str(item or "").strip().lower()
+        if not actor_id or actor_id in seen:
+            continue
+        seen.add(actor_id)
+        out.append(actor_id)
+    return tuple(out)
+
+
+def _default_runtime_registry_config_path() -> Path:
+    return Path("config") / "runtime_actor_registry.yaml"
+
+
+def load_runtime_actor_ids(config_path: str | Path | None = None) -> tuple[str, ...]:
+    path = Path(config_path) if config_path is not None else _default_runtime_registry_config_path()
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except OSError:
+        return _RUNTIME_ACTORS_FALLBACK
+    except yaml.YAMLError:
+        return _RUNTIME_ACTORS_FALLBACK
+
+    if not isinstance(raw, dict):
+        return _RUNTIME_ACTORS_FALLBACK
+    actor_items = raw.get("runtime_enabled_actors") or raw.get("runtime_actors") or []
+    if not isinstance(actor_items, list):
+        return _RUNTIME_ACTORS_FALLBACK
+    normalized = _normalize_actor_ids(actor_items)
+    return normalized or _RUNTIME_ACTORS_FALLBACK
+
+
+def _build_default_actor_registry() -> ActorRegistry:
+    registry = ActorRegistry()
+    for actor_id in load_runtime_actor_ids():
+        registry.register(actor_id, TemplateActorRuntime(actor_id))
+    return registry
 
 
 def get_default_actor_registry() -> ActorRegistry:
     global _DEFAULT_ACTOR_REGISTRY
     if _DEFAULT_ACTOR_REGISTRY is None:
-        registry = ActorRegistry()
-        # Phase 3 V1: only shadowheart is upgraded to ActorRuntime.
-        registry.register("shadowheart", TemplateActorRuntime("shadowheart"))
-        _DEFAULT_ACTOR_REGISTRY = registry
+        _DEFAULT_ACTOR_REGISTRY = _build_default_actor_registry()
     return _DEFAULT_ACTOR_REGISTRY
+
+
+def reset_default_actor_registry() -> None:
+    global _DEFAULT_ACTOR_REGISTRY
+    _DEFAULT_ACTOR_REGISTRY = None

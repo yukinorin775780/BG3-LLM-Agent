@@ -152,12 +152,11 @@ def route_after_dm(state: GameState) -> DM_ROUTE:
 
 def route_after_actor_invocation(state: GameState) -> ACTOR_INVOCATION_ROUTE:
     mode = str(state.get("actor_invocation_mode", "") or "").strip().lower()
-    if mode == "fallback":
-        return _validate_actor_invocation_route("generation")
-    pending_events = state.get("pending_events") or []
-    if isinstance(pending_events, list) and pending_events:
+    if mode == "runtime":
         return _validate_actor_invocation_route("event_drain")
-    return _validate_actor_invocation_route("__end__")
+    if mode in {"fallback", "legacy"}:
+        return _validate_actor_invocation_route("generation")
+    return _validate_actor_invocation_route("generation")
 
 
 # -----------------------------------------------------------------------------

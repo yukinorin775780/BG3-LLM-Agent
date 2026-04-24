@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import time
 from typing import Any, Dict, List
 
 from core.actors.contracts import ReflectionRequest, reflection_request_to_dict
 from core.actors.executor import process_reflection_queue
 from core.actors.registry import ActorRegistry, get_default_actor_registry
+from core.eval.telemetry import emit_telemetry
 from core.events.apply import apply_domain_events
 from core.events.models import event_from_dict
 from core.events.store import drain_pending_events
@@ -12,8 +14,14 @@ from core.graph.graph_state import GameState
 
 
 def event_drain_node(state: GameState) -> Dict[str, Any]:
+    started_at = time.perf_counter()
     pending = drain_pending_events(dict(state or {}))
     if not pending:
+        emit_telemetry(
+            "event_drain",
+            event_count=0,
+            duration_ms=max(0, int(round((time.perf_counter() - started_at) * 1000))),
+        )
         return {"pending_events": []}
 
     events = [event_from_dict(item) for item in pending if isinstance(item, dict)]
@@ -35,6 +43,11 @@ def event_drain_node(state: GameState) -> Dict[str, Any]:
         out["speaker_responses"] = list(patch.speaker_responses)
     if patch.final_response:
         out["final_response"] = patch.final_response
+    emit_telemetry(
+        "event_drain",
+        event_count=len(events),
+        duration_ms=max(0, int(round((time.perf_counter() - started_at) * 1000))),
+    )
     return out
 
 
@@ -53,7 +66,6 @@ async def drain_reflection_queue(
         elif isinstance(item, dict):
             normalized_queue.append(dict(item))
     normalized_state["reflection_queue"] = normalized_queue
-
     processed = await process_reflection_queue(
         state=normalized_state,
         registry=actor_registry or get_default_actor_registry(),

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import time
 from typing import Tuple
 from uuid import uuid4
 
 from core.actors.contracts import ActorDecision, ReflectionRequest
 from core.actors.views import ActorView
+from core.eval.telemetry import emit_telemetry
 from core.events.models import DomainEvent
 
 
@@ -24,9 +26,30 @@ class TemplateActorRuntime:
         self.actor_id = str(actor_id or "").strip().lower()
 
     async def decide(self, actor_view: ActorView) -> ActorDecision:
+        started_at = time.perf_counter()
         user_input = str(actor_view.user_input or "").strip()
         if not user_input:
-            return ActorDecision(actor_id=self.actor_id, kind="silent")
+            decision = ActorDecision(actor_id=self.actor_id, kind="silent")
+            duration_ms = max(0, int(round((time.perf_counter() - started_at) * 1000)))
+            emit_telemetry(
+                "llm_call",
+                component="actor_runtime",
+                actor_id=self.actor_id,
+                provider="template_runtime",
+                model="template_actor_runtime",
+                success=True,
+                duration_ms=duration_ms,
+                token_usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            )
+            emit_telemetry(
+                "actor_runtime_decision",
+                actor_id=self.actor_id,
+                decision_kind=decision.kind,
+                emitted_event_count=0,
+                reflection_request_count=0,
+                duration_ms=duration_ms,
+            )
+            return decision
 
         # Minimal deterministic phrasing to keep runtime predictable in tests.
         spoken_text = self._compose_reply(actor_view)
@@ -51,7 +74,7 @@ class TemplateActorRuntime:
                     payload={"user_input": user_input},
                 ),
             )
-        return ActorDecision(
+        decision = ActorDecision(
             actor_id=self.actor_id,
             kind="speak",
             spoken_text=spoken_text,
@@ -59,6 +82,26 @@ class TemplateActorRuntime:
             emitted_events=events,
             requested_reflections=requested_reflections,
         )
+        duration_ms = max(0, int(round((time.perf_counter() - started_at) * 1000)))
+        emit_telemetry(
+            "llm_call",
+            component="actor_runtime",
+            actor_id=self.actor_id,
+            provider="template_runtime",
+            model="template_actor_runtime",
+            success=True,
+            duration_ms=duration_ms,
+            token_usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        )
+        emit_telemetry(
+            "actor_runtime_decision",
+            actor_id=self.actor_id,
+            decision_kind=decision.kind,
+            emitted_event_count=len(decision.emitted_events),
+            reflection_request_count=len(decision.requested_reflections),
+            duration_ms=duration_ms,
+        )
+        return decision
 
     async def reflect(self, request: ReflectionRequest) -> Tuple[DomainEvent, ...]:
         belief_text = f"{self.actor_id} 在反思中记录：{request.reason}"
@@ -94,4 +137,3 @@ class TemplateActorRuntime:
         if "攻击" in user_input or "战斗" in user_input:
             return "我在看着。你最好别失手。"
         return "我听见了。继续。"
-

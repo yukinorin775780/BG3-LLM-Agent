@@ -15,6 +15,7 @@ import asyncio
 import copy
 import logging
 import os
+import time
 from collections.abc import Coroutine
 from typing import Any, Callable, Dict, List, Optional
 
@@ -32,9 +33,9 @@ from core.engine.physics import (
     apply_physics,
     execute_loot,
 )
+from core.eval.telemetry import emit_telemetry, extract_token_usage
 from core.graph.graph_state import GameState
 from core.graph.nodes.utils import (
-    _build_item_lore,
     _message_to_dict,
     _msg_content,
     default_entities,
@@ -240,6 +241,80 @@ def _build_dynamic_context_prompt(actor_view: ActorView, latest_roll: Any) -> st
             )
 
     return context_prompt
+
+
+def _collect_visible_item_ids_from_inventory(raw_inventory: Any, registry: Any) -> set[str]:
+    item_ids: set[str] = set()
+    if isinstance(raw_inventory, dict):
+        for item_id, count in raw_inventory.items():
+            try:
+                qty = int(count)
+            except (TypeError, ValueError):
+                qty = 0
+            if qty <= 0:
+                continue
+            resolved = registry.resolve_item_id(item_id)
+            if resolved:
+                item_ids.add(resolved)
+        return item_ids
+
+    if isinstance(raw_inventory, list):
+        for item in raw_inventory:
+            if isinstance(item, dict):
+                resolved = registry.resolve_item_id(item.get("id"))
+            else:
+                resolved = registry.resolve_item_id(item)
+            if resolved:
+                item_ids.add(resolved)
+        return item_ids
+
+    resolved = registry.resolve_item_id(raw_inventory)
+    if resolved:
+        item_ids.add(resolved)
+    return item_ids
+
+
+def _build_actor_visible_item_lore(actor_view: ActorView) -> str:
+    """
+    构造仅基于当前 Actor 可见范围的物品知识：
+    1) 自身背包
+    2) 可见环境对象上的公开物品（inventory/items/item_id）
+    """
+    registry = get_registry()
+    known_items: set[str] = set()
+
+    known_items.update(
+        _collect_visible_item_ids_from_inventory(actor_view.self_state.inventory, registry)
+    )
+
+    for obj_data in (actor_view.visible_environment_objects or {}).values():
+        if not isinstance(obj_data, dict):
+            continue
+        known_items.update(
+            _collect_visible_item_ids_from_inventory(obj_data.get("inventory"), registry)
+        )
+        known_items.update(
+            _collect_visible_item_ids_from_inventory(obj_data.get("items"), registry)
+        )
+        known_items.update(
+            _collect_visible_item_ids_from_inventory(obj_data.get("item_id"), registry)
+        )
+
+    if not known_items:
+        return ""
+
+    item_lore = (
+        "\n\n[CRITICAL KNOWLEDGE: ITEM DATABASE]\n"
+        "Here is the real data for the items currently in the game. "
+        "Use their translated names and respect their effects/descriptions:\n"
+    )
+    for item_id in sorted(known_items):
+        data = registry.get(item_id)
+        item_lore += (
+            f"- ID: {item_id} | Name: {data.get('name')} | "
+            f"Desc: {data.get('description')} | Effect: {data.get('effect', 'None')}\n"
+        )
+    return item_lore
 
 
 def _prompt_environment() -> Environment:
@@ -692,14 +767,36 @@ async def _maybe_generate_banter_response(
     )
     history_dicts = [{"role": "user", "content": f"[DM]: {context['dm_text']}"}]
     try:
+        llm_started_at = time.perf_counter()
         raw_response = await asyncio.wait_for(
             asyncio.to_thread(
                 generate_dialogue, system_prompt, conversation_history=history_dicts
             ),
             timeout=LLM_TIMEOUT_SECONDS,
         )
+        emit_telemetry(
+            "llm_call",
+            component="generation",
+            stage="banter",
+            provider="legacy_engine",
+            model=settings.MODEL_NAME,
+            success=True,
+            duration_ms=max(0, int(round((time.perf_counter() - llm_started_at) * 1000))),
+            token_usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        )
     except Exception as exc:
         logger.warning("banter generation timed out/failed, fallback line used: %s", exc)
+        emit_telemetry(
+            "llm_call",
+            component="generation",
+            stage="banter",
+            provider="legacy_engine",
+            model=settings.MODEL_NAME,
+            success=False,
+            error_type=exc.__class__.__name__,
+            duration_ms=max(0, int(round((time.perf_counter() - llm_started_at) * 1000))),
+            token_usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        )
         fallback_text = "……（短暂的沉默在营地里蔓延）"
         clean_text = clean_npc_dialogue(speaker, fallback_text)
         attributed_msg = format_history_message(speaker, clean_text)
@@ -757,12 +854,7 @@ def _build_system_prompt(actor_view: ActorView, context: Dict[str, Any]) -> str:
             shar_faith=current_npc_data.get("shar_faith"),
             memory_awakening=current_npc_data.get("memory_awakening"),
         )
-        item_lore = _build_item_lore(
-            {
-                "entities": context.get("entities", {}),
-                "player_inventory": context.get("player_inv", {}),
-            }
-        )
+        item_lore = _build_actor_visible_item_lore(actor_view)
         if item_lore:
             system_prompt += item_lore
         system_prompt += f"Current Speaker: {speaker}\n"
@@ -824,13 +916,35 @@ async def _execute_llm_with_tools(
     from ui.renderer import GameRenderer
 
     _debug_print_messages(lc_messages)
+    llm_started_at = time.perf_counter()
     try:
         response = await asyncio.wait_for(
             llm_with_tools.ainvoke(lc_messages),
             timeout=LLM_TIMEOUT_SECONDS,
         )
+        emit_telemetry(
+            "llm_call",
+            component="generation",
+            stage="initial",
+            provider="langchain_openai",
+            model=settings.MODEL_NAME,
+            success=True,
+            duration_ms=max(0, int(round((time.perf_counter() - llm_started_at) * 1000))),
+            token_usage=extract_token_usage(response),
+        )
     except Exception as exc:
         logger.warning("generation LLM invoke timed out/failed, fallback response used: %s", exc)
+        emit_telemetry(
+            "llm_call",
+            component="generation",
+            stage="initial",
+            provider="langchain_openai",
+            model=settings.MODEL_NAME,
+            success=False,
+            error_type=exc.__class__.__name__,
+            duration_ms=max(0, int(round((time.perf_counter() - llm_started_at) * 1000))),
+            token_usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        )
         return AIMessage(content="*（星界回响短暂中断，未能组织语言）*"), lc_messages
     GameRenderer().print_system_info(
         f"🔧 [底层透视] LLM 返回的 tool_calls: {getattr(response, 'tool_calls', [])}"
@@ -881,15 +995,37 @@ async def _execute_llm_with_tools(
             lc_messages,
             f"🚨 [ReAct 第 {iteration_count} 轮] 正在打印发给大模型的 Payload (含工具返回)...",
         )
+        llm_started_at = time.perf_counter()
         try:
             response = await asyncio.wait_for(
                 llm_with_tools.ainvoke(lc_messages),
                 timeout=LLM_TIMEOUT_SECONDS,
             )
+            emit_telemetry(
+                "llm_call",
+                component="generation",
+                stage=f"react_{iteration_count}",
+                provider="langchain_openai",
+                model=settings.MODEL_NAME,
+                success=True,
+                duration_ms=max(0, int(round((time.perf_counter() - llm_started_at) * 1000))),
+                token_usage=extract_token_usage(response),
+            )
         except Exception as exc:
             logger.warning(
                 "generation ReAct follow-up invoke timed out/failed, fallback response used: %s",
                 exc,
+            )
+            emit_telemetry(
+                "llm_call",
+                component="generation",
+                stage=f"react_{iteration_count}",
+                provider="langchain_openai",
+                model=settings.MODEL_NAME,
+                success=False,
+                error_type=exc.__class__.__name__,
+                duration_ms=max(0, int(round((time.perf_counter() - llm_started_at) * 1000))),
+                token_usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
             )
             response = AIMessage(content="*（星界回响中断，话语戛然而止）*")
             break

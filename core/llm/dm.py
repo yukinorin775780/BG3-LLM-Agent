@@ -8,6 +8,7 @@ import logging
 import operator
 import os
 import re
+import time
 from typing import Any, Dict, List, Mapping, Optional
 
 from jinja2 import Environment, FileSystemLoader, Template, TemplateNotFound
@@ -15,6 +16,7 @@ from openai import OpenAI
 
 from characters.loader import load_character
 from config import settings
+from core.eval.telemetry import emit_telemetry, extract_token_usage
 from core.systems.inventory import get_registry
 from core.systems.spells import resolve_spell_id
 from core.utils.text_processor import parse_llm_json
@@ -1441,6 +1443,7 @@ def analyze_intent(
         # Call LLM
         messages = [{"role": "user", "content": prompt}]
         client = _get_openai_client()
+        llm_started_at = time.perf_counter()
         
         completion = client.chat.completions.create(
             model=settings.MODEL_NAME,
@@ -1448,6 +1451,15 @@ def analyze_intent(
             temperature=0.3,  # Lower temperature for more consistent analysis
             max_tokens=200,  # DM analysis should be concise
             timeout=LLM_TIMEOUT_SECONDS,
+        )
+        emit_telemetry(
+            "llm_call",
+            component="dm",
+            provider="openai",
+            model=settings.MODEL_NAME,
+            success=True,
+            duration_ms=max(0, int(round((time.perf_counter() - llm_started_at) * 1000))),
+            token_usage=extract_token_usage(completion),
         )
         
         response_text = completion.choices[0].message.content
@@ -1580,6 +1592,17 @@ def analyze_intent(
         )
 
     except Exception as exc:
+        if "llm_started_at" in locals():
+            emit_telemetry(
+                "llm_call",
+                component="dm",
+                provider="openai",
+                model=settings.MODEL_NAME,
+                success=False,
+                error_type=exc.__class__.__name__,
+                duration_ms=max(0, int(round((time.perf_counter() - llm_started_at) * 1000))),
+                token_usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            )
         error_text = str(exc)
         if "API Key" in error_text or "API_KEY" in error_text or "DASHSCOPE_API_KEY" in error_text:
             raise RuntimeError(error_text)

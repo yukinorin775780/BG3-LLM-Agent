@@ -87,6 +87,8 @@ class GameState(TypedDict, total=False):
     reflection_queue: List[Dict[str, Any]]
     actor_runtime_state: Dict[str, Dict[str, Any]]
     last_actor_decision: Dict[str, Any]
+    actor_invocation_mode: str
+    actor_invocation_reason: str
 
     # -------------------------------------------------------------------------
     # Journal Events [TRANSIENT within turn]
