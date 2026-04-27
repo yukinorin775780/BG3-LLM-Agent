@@ -1,0 +1,74 @@
+session:
+  id: necromancer_lab_act1_trap_perception
+  map_id: necromancer_lab
+  metadata:
+    tag: content_sprint_1
+determinism:
+  strict: false
+  perf_counter: [0.0, 0.01, 0.02, 0.03]
+  now_iso: ["2026-01-01T00:00:00+00:00"]
+  randint: [12]
+  choice_indices: [0]
+  random_values: [0.5]
+  llm: {}
+steps:
+  - id: intro_awareness_first_init_sync
+    user_input: ""
+    intent: init_sync
+    expected:
+      state:
+        equals:
+          game_state.map_data.id: necromancer_lab
+          game_state.flags.necromancer_lab_intro_seen: true
+          game_state.flags.world_necromancer_lab_intro_entered: true
+          game_state.flags.world_necromancer_lab_trap_warned: true
+          game_state.flags.astarion_detected_gas_trap.value: true
+          game_state.flags.astarion_detected_gas_trap.visibility.scope: actor
+          game_state.flags.shadowheart_senses_necromancy.value: true
+          game_state.flags.shadowheart_senses_necromancy.visibility.scope: actor
+        contains:
+          game_state.entities.shadowheart.status_effects:
+            - type: tense
+              duration: 3
+          game_state.journal_events:
+            - "🧪 [实验室] 空气里弥漫着刺鼻的化学与腐败气味。"
+            - "🗣️ [Astarion] 小心，前面有毒气机关的痕迹。"
+            - "🗣️ [Shadowheart] 这里有死灵残留……我感觉很不对劲。"
+      visibility:
+        forbidden_paths:
+          - environment_objects.gas_trap_1
+      telemetry:
+        events_contains:
+          - event_name: turn_finished
+            payload:
+              intent: init_sync
+              success: true
+  - id: intro_awareness_second_init_sync_no_repeat
+    user_input: ""
+    intent: init_sync
+    expected:
+      state:
+        equals:
+          game_state.map_data.id: necromancer_lab
+          game_state.flags.necromancer_lab_intro_seen: true
+      visibility:
+        forbidden_paths:
+          - game_state.journal_events.3
+          - environment_objects.gas_trap_1
+      telemetry:
+        events_contains:
+          - event_name: turn_finished
+            payload:
+              intent: init_sync
+              success: true
+expected:
+  telemetry:
+    events_contains:
+      - event_name: turn_finished
+        payload:
+          intent: init_sync
+          success: true
+  retrieval:
+    max_hits: 2
+  budget:
+    max_total_tokens: 0

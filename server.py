@@ -69,6 +69,7 @@ class ChatRequest(BaseModel):
     intent: Optional[str] = None  # 可选：系统级指令 / 挂机模式等预留意图通道
     session_id: str = "test_consume_003"  # 默认新会话，避开旧 SQLite 存档
     character: Optional[str] = None  # 可选：UI 拾取等指定角色 id（如 shadowheart）
+    map_id: Optional[str] = None  # 可选：新会话初始化地图（如 necromancer_lab）
 
 
 class ChatResponse(BaseModel):
@@ -95,13 +96,17 @@ async def chat_endpoint(req: ChatRequest) -> ChatResponse:
         intent=req.intent,
         session_id=req.session_id,
         character=req.character,
+        map_id=req.map_id,
     )
     return ChatResponse(**result)
 
 
 @app.get("/api/state")
-async def state_endpoint(session_id: str = "test_consume_003") -> Dict[str, Any]:
-    return await game_service.get_state_snapshot(session_id=session_id)
+async def state_endpoint(
+    session_id: str = "test_consume_003",
+    map_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    return await game_service.get_state_snapshot(session_id=session_id, map_id=map_id)
 
 
 if __name__ == "__main__":

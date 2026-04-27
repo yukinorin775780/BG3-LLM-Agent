@@ -38,6 +38,7 @@ class ActorDecision:
 @dataclass(frozen=True)
 class StatePatch:
     entities: Optional[Dict[str, Any]] = None
+    player_inventory: Optional[Dict[str, Any]] = None
     flags: Optional[Dict[str, Any]] = None
     journal_events: Tuple[str, ...] = ()
     messages: Tuple[Any, ...] = ()
@@ -45,6 +46,11 @@ class StatePatch:
     reflection_queue: Tuple[Dict[str, Any], ...] = ()
     actor_runtime_state: Optional[Dict[str, Dict[str, Any]]] = None
     pending_events: Tuple[Dict[str, Any], ...] = ()
+    combat_phase: str = ""
+    combat_active: Optional[bool] = None
+    initiative_order: Tuple[str, ...] = ()
+    current_turn_index: Optional[int] = None
+    turn_resources: Optional[Dict[str, Dict[str, Any]]] = None
     final_response: str = ""
 
 
@@ -80,4 +86,3 @@ def actor_decision_to_dict(decision: ActorDecision) -> Dict[str, Any]:
         "emitted_events": [asdict(event) for event in decision.emitted_events],
         "requested_reflections": [asdict(item) for item in decision.requested_reflections],
     }
-

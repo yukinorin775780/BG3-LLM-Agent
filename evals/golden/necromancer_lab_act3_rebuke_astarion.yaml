@@ -1,0 +1,99 @@
+session:
+  id: necromancer_lab_act3_rebuke_astarion
+  map_id: necromancer_lab
+  metadata:
+    tag: content_sprint_1
+determinism:
+  strict: false
+  perf_counter: [0.0, 0.01, 0.02, 0.03, 0.04, 0.05, 0.06]
+  now_iso: ["2026-01-01T00:00:00+00:00"]
+  randint: [12, 12]
+  choice_indices: [0]
+  random_values: [0.5]
+  llm:
+    dm:
+      - action_type: START_DIALOGUE
+        difficulty_class: 0
+        reason: scripted_act3_start_dialogue
+        is_probing_secret: false
+        responders: ["gribbo"]
+        affection_changes: {}
+        flags_changed: {}
+        item_transfers: []
+        hp_changes: []
+        action_actor: player
+        action_target: gribbo
+      - action_type: CHAT
+        difficulty_class: 0
+        reason: scripted_act3_rebuke_astarion
+        is_probing_secret: false
+        responders: ["astarion", "shadowheart"]
+        affection_changes: {}
+        flags_changed: {}
+        item_transfers: []
+        hp_changes: []
+        action_actor: player
+        action_target: gribbo
+steps:
+  - id: act3_start_dialogue_with_gribbo
+    user_input: 我想和格里波谈谈。
+    intent: chat
+    expected:
+      state:
+        equals:
+          game_state.map_data.id: necromancer_lab
+          game_state.active_dialogue_target: gribbo
+  - id: act3_rebuke_astarion_runtime_party_turn
+    user_input: 阿斯代伦，闭嘴，别再嘲笑他了。
+    intent: chat
+    expected:
+      responses:
+        exact:
+          - speaker: astarion
+            text: 当众让我闭嘴？行，我记下了。
+          - speaker: shadowheart
+            text: 我听见了。继续。
+      state:
+        equals:
+          game_state.actor_invocation_mode: runtime
+          game_state.actor_invocation_reason: party_turn_runtime_multi
+          game_state.flags.necromancer_lab_gribbo_negotiation_started: true
+          game_state.flags.necromancer_lab_astarion_mocked_gribbo: true
+          game_state.flags.necromancer_lab_player_sided_with_astarion: false
+          game_state.flags.necromancer_lab_gribbo_combat_triggered: true
+          game_state.entities.astarion.affection: -3
+          game_state.entities.gribbo.dynamic_states.patience.current_value: 0
+          game_state.entities.gribbo.faction: hostile
+          game_state.combat_phase: IN_COMBAT
+          game_state.combat_active: true
+        contains:
+          game_state.actor_runtime_state.astarion.memory_notes:
+            - 玩家当众训斥了我，我会记住这笔账。
+          game_state.journal_events:
+            - "💢 [谈判破裂] Gribbo 的 paranoia 爆发，认定你们在算计他。"
+      visibility:
+        forbidden_paths:
+          - game_state.actor_runtime_state.shadowheart.memory_notes.0
+          - game_state.actor_runtime_state.laezel.memory_notes.0
+          - environment_objects.gas_trap_1
+      telemetry:
+        events_contains:
+          - event_name: actor_runtime_decision
+            payload:
+              reason: party_turn_runtime_multi
+          - event_name: event_drain
+            payload:
+              event_count: 9
+expected:
+  telemetry:
+    events_contains:
+      - event_name: actor_runtime_decision
+        payload:
+          reason: party_turn_runtime_multi
+      - event_name: event_drain
+        payload:
+          event_count: 9
+  retrieval:
+    max_hits: 6
+  budget:
+    max_total_tokens: 0

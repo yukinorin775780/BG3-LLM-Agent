@@ -1,6 +1,7 @@
 from unittest.mock import patch
 
 from core.graph.nodes.dialogue import dialogue_node
+from core.graph.nodes.event_drain import event_drain_node
 from core.systems import mechanics
 from core.systems.world_init import get_initial_world_state
 
@@ -131,14 +132,39 @@ def test_necromancer_lab_dialogue_transfer_key_then_interact_clears_demo():
             }
         )
 
-    assert dialogue_result["player_inventory"].get("heavy_iron_key", 0) == 1
-    assert dialogue_result["entities"]["gribbo"]["inventory"].get("heavy_iron_key", 0) == 0
-    assert any("你获得了 heavy_iron_key" in event for event in dialogue_result.get("journal_events", []))
+    assert dialogue_result["pending_events"]
+    tx_event = dialogue_result["pending_events"][0]
+    assert tx_event["event_type"] == "actor_item_transaction_requested"
+    assert tx_event["payload"]["transaction"]["transaction_type"] == "transfer"
+    assert tx_event["payload"]["transaction"]["from_entity"] == "gribbo"
+    assert tx_event["payload"]["transaction"]["to_entity"] == "player"
+    assert tx_event["payload"]["transaction"]["item"] == "heavy_iron_key"
+    assert dialogue_result["player_inventory"].get("heavy_iron_key", 0) == 0
+    assert dialogue_result["entities"]["gribbo"]["inventory"].get("heavy_iron_key", 0) == 1
+
+    drained_patch = event_drain_node(
+        {
+            **state,
+            **start_result,
+            **dialogue_result,
+        }
+    )
+    drained_state = {
+        **state,
+        **start_result,
+        **dialogue_result,
+        **drained_patch,
+    }
+    assert drained_state["player_inventory"].get("heavy_iron_key", 0) == 1
+    assert drained_state["entities"]["gribbo"]["inventory"].get("heavy_iron_key", 0) == 0
+    assert any(
+        "heavy_iron_key" in event or "沉重铁钥匙" in event
+        for event in drained_state.get("journal_events", [])
+    )
 
     interact_result = mechanics.execute_interact_action(
         {
-            **state,
-            **dialogue_result,
+            **drained_state,
             "intent_context": {
                 "action_actor": "player",
                 "action_target": "heavy_oak_door_1",

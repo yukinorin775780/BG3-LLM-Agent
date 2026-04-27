@@ -172,3 +172,13 @@ breaking change（V1 内禁止）：
   - `docs/v1_1_runtime_registry.md`
 - Runtime NPC 准入 SOP（Thread D Freeze）见：
   - `docs/v1_1_runtime_npc_sop.md`
+
+## V1.3 能力扩展冻结文档
+- Social Action / Item Transactions：
+  - `docs/v1_3_social_item_transactions.md`
+- Party Turn Coordinator：
+  - `docs/v1_3_party_turn_coordinator.md`
+- Policy-based Actor Visibility：
+  - `docs/v1_3_actor_visibility_policy.md`
+- V1.3 Capability Freeze（正式门禁与 breaking change 定义）：
+  - `docs/v1_3_capability_freeze.md`

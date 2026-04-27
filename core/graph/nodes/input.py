@@ -3,6 +3,7 @@ Input / World Tick 节点：斜杠命令与世界心跳。
 """
 
 import copy
+import json
 
 from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
@@ -251,8 +252,13 @@ def input_node(state: GameState) -> dict:
     # --- /FLAG <key> <value> (开发者指令：动态修改标志位) ---
     if command == "/flag" and len(parts) > 2:
         flag_key = parts[1]
-        flag_val_str = parts[2].lower()
-        flag_val = True if flag_val_str in ("true", "1", "yes", "on") else False
+        raw_flag_value = user_input.split(None, 2)[2]
+        flag_val: object
+        try:
+            flag_val = json.loads(raw_flag_value)
+        except json.JSONDecodeError:
+            flag_val_str = parts[2].lower()
+            flag_val = True if flag_val_str in ("true", "1", "yes", "on") else False
 
         new_flags = dict(state.get("flags", {}))
         new_flags[flag_key] = flag_val

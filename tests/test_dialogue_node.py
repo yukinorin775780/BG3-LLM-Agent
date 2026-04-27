@@ -3,6 +3,7 @@ Dialogue Node 测试：会话锁与谈判破裂开战。
 """
 
 from core.graph.nodes.dialogue import dialogue_node
+from core.graph.nodes.event_drain import event_drain_node
 
 
 def _build_minimal_dialogue_state() -> dict:
@@ -86,3 +87,41 @@ def test_dialogue_reply_decrements_patience_and_breaks_into_combat(monkeypatch):
     assert "gribbo" in second["initiative_order"]
     assert "谈判破裂" in "\n".join(second["journal_events"])
 
+
+def test_dialogue_transfer_item_emits_pending_event_without_direct_inventory_mutation(monkeypatch):
+    def _fake_generate_dialogue(system_prompt: str, conversation_history=None):
+        _ = (system_prompt, conversation_history)
+        return (
+            '{"internal_monologue":"",'
+            '"reply":"拿去吧，别烦我。",'
+            '"trigger_combat": false,'
+            '"state_changes":{"patience_delta":0,"fear_delta":0},'
+            '"physical_action":{"action_type":"transfer_item","source_id":"gribbo","target_id":"player","item_id":"heavy_iron_key","count":1}}'
+        )
+
+    monkeypatch.setattr("core.engine.generate_dialogue", _fake_generate_dialogue)
+
+    state = _build_minimal_dialogue_state()
+    state["intent"] = "DIALOGUE_REPLY"
+    state["active_dialogue_target"] = "gribbo"
+    state["player_inventory"] = {}
+    state["user_input"] = "把钥匙给我"
+
+    result = dialogue_node(state)
+
+    assert result["player_inventory"] == {}
+    assert result["entities"]["gribbo"]["inventory"].get("heavy_iron_key", 0) == 1
+    assert result["pending_events"]
+    event = result["pending_events"][0]
+    assert event["event_type"] == "actor_item_transaction_requested"
+    transaction = event["payload"]["transaction"]
+    assert transaction["transaction_type"] == "transfer"
+    assert transaction["from_entity"] == "gribbo"
+    assert transaction["to_entity"] == "player"
+    assert transaction["item"] == "heavy_iron_key"
+    assert transaction["accepted"] is True
+    assert result["speaker_responses"] == [("gribbo", "拿去吧，别烦我。")]
+
+    drained = event_drain_node({**state, **result})
+    assert drained["player_inventory"]["heavy_iron_key"] == 1
+    assert drained["entities"]["gribbo"]["inventory"].get("heavy_iron_key", 0) == 0

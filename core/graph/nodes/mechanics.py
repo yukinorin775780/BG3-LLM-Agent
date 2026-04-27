@@ -109,4 +109,6 @@ def mechanics_node(state: GameState) -> dict:
         out["recent_barks"] = result["recent_barks"]
     if "map_data" in result:
         out["map_data"] = result["map_data"]
+    if "demo_cleared" in result:
+        out["demo_cleared"] = bool(result["demo_cleared"])
     return out

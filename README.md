@@ -215,6 +215,10 @@ player_inventory = {
 - V1 Contract Freeze: `docs/v1_contract_freeze.md`
 - V1.1 Runtime Registry Governance: `docs/v1_1_runtime_registry.md`
 - V1.1 Runtime NPC SOP (Frozen): `docs/v1_1_runtime_npc_sop.md`
+- V1.3 Social Action / Item Transactions: `docs/v1_3_social_item_transactions.md`
+- V1.3 Party Turn Coordinator: `docs/v1_3_party_turn_coordinator.md`
+- V1.3 Actor Visibility Policy: `docs/v1_3_actor_visibility_policy.md`
+- V1.3 Capability Freeze: `docs/v1_3_capability_freeze.md`
 
 ## Tech Stack
 

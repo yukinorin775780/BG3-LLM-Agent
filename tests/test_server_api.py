@@ -27,8 +27,9 @@ def test_chat_endpoint_delegates_to_service_and_preserves_response_schema():
         },
     }
     original_service = server.game_service
-    server.game_service = AsyncMock()
-    server.game_service.process_chat_turn.return_value = expected_payload
+    mock_service = AsyncMock()
+    mock_service.process_chat_turn.return_value = expected_payload
+    server.game_service = mock_service
 
     try:
         client = TestClient(server.app)
@@ -39,6 +40,7 @@ def test_chat_endpoint_delegates_to_service_and_preserves_response_schema():
                 "intent": "chat",
                 "session_id": "session-1",
                 "character": "shadowheart",
+                "map_id": "necromancer_lab",
             },
         )
     finally:
@@ -46,6 +48,13 @@ def test_chat_endpoint_delegates_to_service_and_preserves_response_schema():
 
     assert response.status_code == 200
     assert response.json() == expected_payload
+    mock_service.process_chat_turn.assert_awaited_once_with(
+        user_input="你好",
+        intent="chat",
+        session_id="session-1",
+        character="shadowheart",
+        map_id="necromancer_lab",
+    )
 
 
 def test_chat_endpoint_maps_service_validation_error_to_http_400():
@@ -66,3 +75,27 @@ def test_chat_endpoint_maps_service_validation_error_to_http_400():
 
     assert response.status_code == 400
     assert response.json() == {"detail": "Unknown character: shadowheart"}
+
+
+def test_state_endpoint_forwards_optional_map_id_to_game_service():
+    original_service = server.game_service
+    expected = {"game_state": {"current_location": "死灵法师的废弃实验室"}}
+    mock_service = AsyncMock()
+    mock_service.get_state_snapshot.return_value = expected
+    server.game_service = mock_service
+
+    try:
+        client = TestClient(server.app)
+        response = client.get(
+            "/api/state",
+            params={"session_id": "session-map", "map_id": "necromancer_lab"},
+        )
+    finally:
+        server.game_service = original_service
+
+    assert response.status_code == 200
+    assert response.json() == expected
+    mock_service.get_state_snapshot.assert_awaited_once_with(
+        session_id="session-map",
+        map_id="necromancer_lab",
+    )

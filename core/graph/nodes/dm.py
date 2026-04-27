@@ -9,6 +9,11 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeou
 
 from langchain_core.messages import AIMessage
 
+from core.campaigns import (
+    ACT3_CHOICE_REBUKE_ASTARION,
+    ACT3_CHOICE_SIDE_WITH_ASTARION,
+    detect_lab_act3_choice,
+)
 from core.engine import generate_dialogue, parse_ai_response
 from core.graph.graph_state import GameState
 from core.graph.nodes.utils import _build_item_lore, default_entities, entity_display_name, first_entity_id
@@ -16,6 +21,38 @@ from core.llm.dm import analyze_intent
 from core.utils.text_processor import format_history_message
 
 LLM_TIMEOUT_SECONDS = 4.5
+
+
+def _apply_act3_necromancer_lab_override(*, state: GameState, analysis: dict) -> dict:
+    choice = detect_lab_act3_choice(dict(state or {}))
+    if choice not in {ACT3_CHOICE_SIDE_WITH_ASTARION, ACT3_CHOICE_REBUKE_ASTARION}:
+        return analysis
+
+    reason = (
+        "act3_side_with_astarion"
+        if choice == ACT3_CHOICE_SIDE_WITH_ASTARION
+        else "act3_rebuke_astarion"
+    )
+    overridden = dict(analysis or {})
+    overridden["action_type"] = "CHAT"
+    overridden["action_actor"] = "player"
+    overridden["action_target"] = "gribbo"
+    overridden["reason"] = reason
+    overridden["responders"] = ["astarion", "shadowheart"]
+
+    flags_changed = dict(overridden.get("flags_changed") or {})
+    flags_changed["necromancer_lab_gribbo_negotiation_started"] = True
+    flags_changed["necromancer_lab_astarion_mocked_gribbo"] = True
+    flags_changed["necromancer_lab_player_sided_with_astarion"] = (
+        choice == ACT3_CHOICE_SIDE_WITH_ASTARION
+    )
+    flags_changed["necromancer_lab_gribbo_combat_triggered"] = True
+    overridden["flags_changed"] = flags_changed
+
+    intent_context = dict(overridden.get("intent_context") or {})
+    intent_context["act3_choice"] = choice
+    overridden["intent_context"] = intent_context
+    return overridden
 
 
 def _run_blocking_with_timeout(func, *args, timeout: float = LLM_TIMEOUT_SECONDS, **kwargs):
@@ -140,6 +177,11 @@ async def dm_node(state: GameState) -> dict:
             "action_target": "",
         }
 
+    analysis = _apply_act3_necromancer_lab_override(
+        state=state,
+        analysis=analysis if isinstance(analysis, dict) else {},
+    )
+
     current_dialogue_target = str(state.get("active_dialogue_target") or "").strip().lower() or None
     next_dialogue_target = current_dialogue_target
     analyzed_action = str(analysis.get("action_type", "CHAT") or "CHAT").strip().upper()
@@ -190,6 +232,11 @@ async def dm_node(state: GameState) -> dict:
             "item_id": analysis.get("item_id", ""),
             "spell_id": analysis.get("spell_id", ""),
             "action_spell": analysis.get("spell_id", ""),
+            "act3_choice": str(
+                (analysis.get("intent_context") or {}).get("act3_choice")
+                or analysis.get("act3_choice")
+                or ""
+            ).strip(),
         },
         "is_probing_secret": analysis.get("is_probing_secret", False),
         "active_dialogue_target": next_dialogue_target,

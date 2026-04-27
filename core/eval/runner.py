@@ -83,6 +83,11 @@ def _build_eval_llm_specs() -> List[LlmPatchSpec]:
         [
             LlmPatchSpec(target="core.graph.nodes.dm.analyze_intent", channel="dm", is_async=False),
             LlmPatchSpec(
+                target="core.graph.nodes.dm.generate_dialogue",
+                channel="generation",
+                is_async=False,
+            ),
+            LlmPatchSpec(
                 target="core.graph.nodes.generation.generate_dialogue",
                 channel="generation",
                 is_async=False,
@@ -145,6 +150,7 @@ async def run_eval_case(
     telemetry_sink = create_telemetry_sink(paths)
     replay_context = build_replay_context(case)
     session_id = case.session_id
+    map_id = str(case.session.get("map_id") or "").strip() or None
     step_reports: List[Dict[str, Any]] = []
     overall_passed = True
 
@@ -180,10 +186,12 @@ async def run_eval_case(
                     intent=step_payload.pop("intent", None),
                     session_id=session_id,
                     character=step_payload.pop("character", None),
+                    map_id=map_id,
                 )
                 snapshot_payload = await service.get_state_snapshot(
                     session_id=session_id,
                     initialize_if_missing=True,
+                    map_id=map_id,
                 )
                 assertion_report = assert_eval_expectations(
                     expected=step.expected,
@@ -231,6 +239,7 @@ async def run_eval_case(
         final_state = await service.get_state_snapshot(
             session_id=session_id,
             initialize_if_missing=True,
+            map_id=map_id,
         )
         writer.write_final_state(copy.deepcopy(final_state))
         case_assertions = assert_eval_expectations(

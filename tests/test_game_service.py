@@ -163,6 +163,161 @@ def test_process_chat_turn_uses_existing_checkpoint_for_regular_dialogue():
     }
 
 
+def test_process_chat_turn_init_sync_initializes_empty_checkpoint_with_map_id():
+    initial_world_state = {
+        "entities": {"gribbo": {"hp": 18}},
+        "player_inventory": {"healing_potion": 2},
+        "journal_events": [],
+        "current_location": "死灵法师的废弃实验室",
+        "environment_objects": {},
+    }
+    fake_graph = _FakeGraph(
+        snapshots=[{}, initial_world_state],
+        invoke_result={},
+    )
+    build_graph = Mock(return_value=fake_graph)
+    saver_factory = Mock(return_value=_AsyncContextManager(value=object()))
+    initial_state_factory = Mock(return_value=initial_world_state)
+
+    result = asyncio.run(
+        process_chat_turn(
+            user_input="",
+            intent="init_sync",
+            session_id="session-necromancer-map",
+            character=None,
+            map_id="necromancer_lab",
+            saver_factory=saver_factory,
+            graph_builder=build_graph,
+            initial_state_factory=initial_state_factory,
+        )
+    )
+
+    initial_state_factory.assert_called_once_with(map_id="necromancer_lab")
+    assert fake_graph.aupdate_state_calls == [
+        {
+            "config": {"configurable": {"thread_id": "session-necromancer-map"}},
+            "payload": initial_world_state,
+            "as_node": START,
+        }
+    ]
+    assert result["current_location"] == "死灵法师的废弃实验室"
+
+
+def test_process_chat_turn_init_sync_applies_necromancer_lab_intro_awareness_once():
+    initial_world_state = {
+        "entities": {
+            "shadowheart": {
+                "hp": 10,
+                "status_effects": [],
+                "ability_scores": {"WIS": 15},
+            },
+            "astarion": {
+                "hp": 12,
+                "status_effects": [],
+                "ability_scores": {"DEX": 17, "WIS": 10},
+            },
+        },
+        "player_inventory": {"healing_potion": 2},
+        "journal_events": [],
+        "flags": {},
+        "map_data": {"id": "necromancer_lab"},
+        "current_location": "死灵法师的废弃实验室",
+        "environment_objects": {
+            "gas_trap_1": {"entity_type": "trap", "is_hidden": True}
+        },
+    }
+    intro_applied_state = {
+        **initial_world_state,
+        "flags": {
+            "necromancer_lab_intro_seen": True,
+            "world_necromancer_lab_intro_entered": True,
+        },
+        "journal_events": [
+            "🧪 [实验室] 空气里弥漫着刺鼻的化学与腐败气味。",
+            "🗣️ [Astarion] 小心，前面有毒气机关的痕迹。",
+            "🗣️ [Shadowheart] 这里有死灵残留……我感觉很不对劲。",
+        ],
+        "entities": {
+            "shadowheart": {
+                "hp": 10,
+                "status_effects": [{"type": "tense", "duration": 3}],
+                "ability_scores": {"WIS": 15},
+            },
+            "astarion": {
+                "hp": 12,
+                "status_effects": [],
+                "ability_scores": {"DEX": 17, "WIS": 10},
+            },
+        },
+    }
+    fake_graph = _FakeGraph(
+        snapshots=[{}, initial_world_state, intro_applied_state],
+        invoke_result={},
+    )
+    build_graph = Mock(return_value=fake_graph)
+    saver_factory = Mock(return_value=_AsyncContextManager(value=object()))
+    initial_state_factory = Mock(return_value=initial_world_state)
+
+    result = asyncio.run(
+        process_chat_turn(
+            user_input="",
+            intent="init_sync",
+            session_id="session-necromancer-intro",
+            character=None,
+            map_id="necromancer_lab",
+            saver_factory=saver_factory,
+            graph_builder=build_graph,
+            initial_state_factory=initial_state_factory,
+        )
+    )
+
+    assert len(fake_graph.aupdate_state_calls) == 2
+    assert fake_graph.aupdate_state_calls[0]["payload"] == initial_world_state
+    intro_payload = fake_graph.aupdate_state_calls[1]["payload"]
+    assert intro_payload["flags"]["necromancer_lab_intro_seen"] is True
+    assert any(
+        "Astarion" in line and ("陷阱" in line or "机关" in line)
+        for line in intro_payload["journal_events"]
+    )
+    assert result["journal_events"] == intro_applied_state["journal_events"]
+    assert "gas_trap_1" not in result["environment_objects"]
+
+
+def test_process_chat_turn_init_sync_without_map_id_keeps_default_goblin_camp():
+    initial_world_state = {
+        "entities": {"shadowheart": {"hp": 10}},
+        "player_inventory": {"healing_potion": 2},
+        "journal_events": [],
+        "map_data": {"id": "goblin_camp"},
+        "current_location": "地精营地",
+        "environment_objects": {},
+    }
+    fake_graph = _FakeGraph(
+        snapshots=[{}, initial_world_state],
+        invoke_result={},
+    )
+
+    def _initial_state_factory(map_id: str = "goblin_camp"):
+        _ = map_id
+        return initial_world_state
+
+    result = asyncio.run(
+        process_chat_turn(
+            user_input="",
+            intent="init_sync",
+            session_id="session-default-map",
+            character=None,
+            saver_factory=Mock(return_value=_AsyncContextManager(value=object())),
+            graph_builder=Mock(return_value=fake_graph),
+            initial_state_factory=_initial_state_factory,
+        )
+    )
+
+    persisted = fake_graph.aupdate_state_calls[0]["payload"]
+    assert persisted["map_data"]["id"] == "goblin_camp"
+    assert result["current_location"] == "地精营地"
+
+
 def test_process_chat_turn_init_sync_returns_current_state_without_invoking_graph():
     existing_state = {
         "entities": {"shadowheart": {"hp": 10}},

@@ -64,3 +64,124 @@ def test_event_drain_does_not_process_reflection_queue_when_no_pending_events():
 
     assert result == {"pending_events": []}
     assert len(state["reflection_queue"]) == 1
+
+
+def test_event_drain_applies_accepted_item_transaction_to_inventories():
+    state = {
+        "pending_events": [
+            DomainEvent(
+                event_id="evt-transfer",
+                event_type="actor_item_transaction_requested",
+                actor_id="shadowheart",
+                turn_index=5,
+                visibility="party",
+                payload={
+                    "social_action": {
+                        "action_type": "gift_accept",
+                        "actor_id": "shadowheart",
+                        "target_actor_id": "player",
+                        "item_id": "healing_potion",
+                        "quantity": 1,
+                        "reason": "accepted_gift",
+                    },
+                    "transaction": {
+                        "transaction_type": "transfer",
+                        "from_entity": "player",
+                        "to_entity": "shadowheart",
+                        "item": "healing_potion",
+                        "quantity": 1,
+                        "accepted": True,
+                        "reason": "accepted_gift",
+                    },
+                },
+            )
+        ],
+        "entities": {"shadowheart": {"inventory": {"healing_potion": 1}}},
+        "player_inventory": {"healing_potion": 2},
+    }
+
+    result = event_drain_node(state)
+
+    assert result["pending_events"] == []
+    assert result["player_inventory"]["healing_potion"] == 1
+    assert result["entities"]["shadowheart"]["inventory"]["healing_potion"] == 2
+
+
+def test_event_drain_rejected_item_transaction_keeps_player_inventory_intact():
+    state = {
+        "pending_events": [
+            DomainEvent(
+                event_id="evt-reject",
+                event_type="actor_item_transaction_requested",
+                actor_id="astarion",
+                turn_index=5,
+                visibility="party",
+                payload={
+                    "social_action": {
+                        "action_type": "gift_reject",
+                        "actor_id": "astarion",
+                        "target_actor_id": "player",
+                        "item_id": "healing_potion",
+                        "quantity": 1,
+                        "reason": "unwanted_gift",
+                    },
+                    "transaction": {
+                        "transaction_type": "no_op",
+                        "from_entity": "player",
+                        "to_entity": "astarion",
+                        "item": "healing_potion",
+                        "quantity": 1,
+                        "accepted": False,
+                        "reason": "unwanted_gift",
+                    },
+                },
+            )
+        ],
+        "entities": {"astarion": {"inventory": {}}},
+        "player_inventory": {"healing_potion": 2},
+    }
+
+    result = event_drain_node(state)
+
+    assert result["pending_events"] == []
+    assert result["player_inventory"]["healing_potion"] == 2
+    assert result["entities"]["astarion"]["inventory"] == {}
+
+
+def test_event_drain_supports_actor_private_and_party_shared_memory_scopes():
+    state = {
+        "pending_events": [
+            DomainEvent(
+                event_id="evt-memory-private",
+                event_type="actor_memory_update_requested",
+                actor_id="player",
+                turn_index=7,
+                visibility="actor",
+                payload={
+                    "scope": "actor_private",
+                    "text": "我读懂了 Gribbo 与毒气陷阱的关联。",
+                },
+            ),
+            DomainEvent(
+                event_id="evt-memory-party",
+                event_type="actor_memory_update_requested",
+                actor_id="player",
+                turn_index=7,
+                visibility="party",
+                payload={
+                    "scope": "party_shared",
+                    "text": "队伍已知 heavy_iron_key 与逃生有关。",
+                },
+            ),
+        ],
+        "actor_runtime_state": {},
+    }
+
+    result = event_drain_node(state)
+
+    assert result["pending_events"] == []
+    assert "我读懂了 Gribbo 与毒气陷阱的关联。" in result["actor_runtime_state"]["player"]["memory_notes"]
+    assert (
+        "队伍已知 heavy_iron_key 与逃生有关。"
+        in result["actor_runtime_state"]["__party_shared__"]["memory_notes"]
+    )

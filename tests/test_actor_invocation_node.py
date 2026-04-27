@@ -315,6 +315,91 @@ def test_invoke_actor_runtime_uses_actor_scoped_memory_for_astarion():
     assert not hasattr(actor_view.other_entities["shadowheart"], "inventory")
 
 
+def test_actor_invocation_runtime_path_receives_policy_filtered_flags():
+    state = {
+        "current_speaker": "astarion",
+        "user_input": "继续",
+        "intent": "CHAT",
+        "turn_count": 9,
+        "flags": {
+            "world_party_mercy_choice": True,
+            "shadowheart_artifact_secret": {
+                "value": True,
+                "visibility": {"scope": "actor", "actors": ["shadowheart"]},
+            },
+            "party_tension_high": {
+                "value": True,
+                "visibility": {"scope": "party"},
+            },
+        },
+        "entities": {
+            "astarion": {
+                "name": "Astarion",
+                "hp": 12,
+                "max_hp": 12,
+                "inventory": {"dagger": 1},
+                "status": "alive",
+                "faction": "party",
+                "position": "camp_center",
+            },
+            "shadowheart": {
+                "name": "Shadowheart",
+                "hp": 10,
+                "max_hp": 10,
+                "inventory": {"private_relic": 1},
+                "status": "alive",
+                "faction": "party",
+                "position": "camp_center",
+            },
+        },
+        "pending_events": [],
+    }
+
+    fake_runtime = AsyncMock()
+    fake_runtime.decide.return_value = ActorDecision(
+        actor_id="astarion",
+        kind="speak",
+        spoken_text="我听见了。继续。",
+        thought_summary="",
+        emitted_events=(),
+        requested_reflections=(),
+    )
+    fake_registry = Mock()
+    fake_registry.try_get.return_value = fake_runtime
+
+    class _FakeRetriever:
+        def retrieve_for_actor(self, query):
+            _ = query
+            return []
+
+        def retrieve_for_director(self, query):
+            _ = query
+            return []
+
+    fake_memory_service = Mock()
+    fake_memory_service.retriever = _FakeRetriever()
+
+    with patch(
+        "core.actors.executor.get_default_memory_service",
+        return_value=fake_memory_service,
+    ):
+        result = asyncio.run(
+            actor_invocation_node(
+                state,
+                actor_registry=fake_registry,
+            )
+        )
+
+    assert result["actor_invocation_mode"] == "runtime"
+    fake_runtime.decide.assert_awaited_once()
+    actor_view = fake_runtime.decide.await_args.args[0]
+    assert actor_view.visible_flags == {
+        "world_party_mercy_choice": True,
+        "party_tension_high": True,
+    }
+    assert "shadowheart_artifact_secret" not in actor_view.visible_flags
+
+
 def test_actor_invocation_node_emits_fallback_telemetry_for_astarion_runtime_missing():
     state = {
         "current_speaker": "astarion",
@@ -593,3 +678,373 @@ def test_actor_invocation_marker_survives_event_drain_patch_merge():
 
     assert merged_state["actor_invocation_mode"] == "runtime"
     assert merged_state["actor_invocation_reason"] == "runtime_enabled"
+
+
+def test_astarion_rejects_unwanted_gift_without_direct_state_mutation():
+    state = {
+        "current_speaker": "astarion",
+        "user_input": "阿斯代伦，我送你一瓶治疗药水。",
+        "intent": "CHAT",
+        "turn_count": 13,
+        "current_location": "camp_center",
+        "entities": {
+            "astarion": {
+                "name": "Astarion",
+                "hp": 12,
+                "max_hp": 12,
+                "inventory": {},
+                "status": "alive",
+                "faction": "party",
+                "position": "camp_center",
+            }
+        },
+        "player_inventory": {"healing_potion": 2},
+        "pending_events": [],
+        "messages": [],
+    }
+
+    class _FakeRetriever:
+        def retrieve_for_actor(self, query):
+            _ = query
+            return []
+
+        def retrieve_for_director(self, query):
+            _ = query
+            return []
+
+    fake_memory_service = Mock()
+    fake_memory_service.retriever = _FakeRetriever()
+
+    with patch(
+        "core.actors.executor.get_default_memory_service",
+        return_value=fake_memory_service,
+    ):
+        invocation_patch = asyncio.run(
+            actor_invocation_node(
+                state,
+                actor_registry=get_default_actor_registry(),
+            )
+        )
+
+    assert invocation_patch["actor_invocation_mode"] == "runtime"
+    assert invocation_patch["actor_invocation_reason"] == "runtime_enabled"
+    assert "player_inventory" not in invocation_patch
+    assert "entities" not in invocation_patch
+    assert invocation_patch["pending_events"]
+    tx_event = next(
+        event for event in invocation_patch["pending_events"] if event.get("event_type") == "actor_item_transaction_requested"
+    )
+    assert tx_event["payload"]["transaction"]["accepted"] is False
+    assert tx_event["payload"]["transaction"]["transaction_type"] == "no_op"
+
+
+def test_shadowheart_accepts_healing_potion_via_event_drain_writeback():
+    state = {
+        "current_speaker": "shadowheart",
+        "user_input": "影心，我给你治疗药水。",
+        "intent": "CHAT",
+        "turn_count": 14,
+        "current_location": "camp_center",
+        "entities": {
+            "shadowheart": {
+                "name": "Shadowheart",
+                "hp": 10,
+                "max_hp": 10,
+                "inventory": {"healing_potion": 1},
+                "status": "alive",
+                "faction": "party",
+                "position": "camp_center",
+            }
+        },
+        "player_inventory": {"healing_potion": 2},
+        "pending_events": [],
+        "speaker_responses": [],
+        "messages": [],
+        "flags": {},
+    }
+
+    class _FakeRetriever:
+        def retrieve_for_actor(self, query):
+            _ = query
+            return []
+
+        def retrieve_for_director(self, query):
+            _ = query
+            return []
+
+    fake_memory_service = Mock()
+    fake_memory_service.retriever = _FakeRetriever()
+
+    with patch(
+        "core.actors.executor.get_default_memory_service",
+        return_value=fake_memory_service,
+    ):
+        invocation_patch = asyncio.run(
+            actor_invocation_node(
+                state,
+                actor_registry=get_default_actor_registry(),
+            )
+        )
+
+    patched_state = {**state, **invocation_patch}
+    drain_patch = event_drain_node(patched_state)
+
+    assert drain_patch["player_inventory"]["healing_potion"] == 1
+    assert drain_patch["entities"]["shadowheart"]["inventory"]["healing_potion"] == 2
+
+
+def test_party_turn_invocation_runs_multiple_runtime_actors_in_deterministic_order():
+    state = {
+        "current_speaker": "shadowheart",
+        "speaker_queue": ["astarion"],
+        "user_input": "继续。",
+        "intent": "CHAT",
+        "turn_count": 31,
+        "current_location": "camp_center",
+        "entities": {
+            "shadowheart": {
+                "name": "Shadowheart",
+                "hp": 10,
+                "max_hp": 10,
+                "inventory": {"healing_potion": 1},
+                "status": "alive",
+                "faction": "party",
+                "position": "camp_center",
+            },
+            "astarion": {
+                "name": "Astarion",
+                "hp": 12,
+                "max_hp": 12,
+                "inventory": {"dagger": 1},
+                "status": "alive",
+                "faction": "party",
+                "position": "camp_center",
+            },
+        },
+        "pending_events": [],
+        "speaker_responses": [],
+        "messages": [],
+        "flags": {},
+    }
+
+    class _FakeRetriever:
+        def __init__(self):
+            self.calls = []
+
+        def retrieve_for_actor(self, query):
+            self.calls.append(query)
+            return []
+
+        def retrieve_for_director(self, query):
+            _ = query
+            return []
+
+    fake_retriever = _FakeRetriever()
+    fake_memory_service = Mock()
+    fake_memory_service.retriever = fake_retriever
+
+    with patch(
+        "core.actors.executor.get_default_memory_service",
+        return_value=fake_memory_service,
+    ):
+        invocation_patch = asyncio.run(
+            actor_invocation_node(
+                state,
+                actor_registry=get_default_actor_registry(),
+            )
+        )
+
+    assert invocation_patch["actor_invocation_mode"] == "runtime"
+    assert invocation_patch["actor_invocation_reason"] == "party_turn_runtime_multi"
+    assert "entities" not in invocation_patch
+    assert "player_inventory" not in invocation_patch
+    assert invocation_patch["speaker_queue"] == []
+    assert [call.actor_id for call in fake_retriever.calls] == ["shadowheart", "astarion"]
+
+    actor_spoke_ids = [
+        event["actor_id"]
+        for event in invocation_patch["pending_events"]
+        if event.get("event_type") == "actor_spoke"
+    ]
+    assert actor_spoke_ids == ["shadowheart", "astarion"]
+
+    patched_state = {**state, **invocation_patch}
+    drain_patch = event_drain_node(patched_state)
+    assert drain_patch["speaker_responses"] == [
+        ("shadowheart", "我听见了。继续。"),
+        ("astarion", "我听见了。继续。"),
+    ]
+
+
+def test_party_turn_mercy_choice_records_actor_scoped_memory_updates():
+    state = {
+        "current_speaker": "laezel",
+        "speaker_queue": ["shadowheart", "astarion"],
+        "user_input": "我决定仁慈一点，放过那个敌人。",
+        "intent": "CHAT",
+        "turn_count": 32,
+        "current_location": "camp_center",
+        "entities": {
+            "laezel": {
+                "name": "Laezel",
+                "hp": 13,
+                "max_hp": 13,
+                "inventory": {"longsword": 1},
+                "status": "alive",
+                "faction": "party",
+                "position": "camp_center",
+            },
+            "shadowheart": {
+                "name": "Shadowheart",
+                "hp": 10,
+                "max_hp": 10,
+                "inventory": {"private_relic": 1},
+                "secret_objective": "Protect the artifact.",
+                "status": "alive",
+                "faction": "party",
+                "position": "camp_center",
+            },
+            "astarion": {
+                "name": "Astarion",
+                "hp": 12,
+                "max_hp": 12,
+                "inventory": {"private_dagger": 1},
+                "secret_objective": "Hide vampiric nature.",
+                "status": "alive",
+                "faction": "party",
+                "position": "camp_center",
+            },
+        },
+        "pending_events": [],
+        "speaker_responses": [],
+        "messages": [],
+        "flags": {},
+    }
+
+    class _FakeRetriever:
+        def retrieve_for_actor(self, query):
+            _ = query
+            return []
+
+        def retrieve_for_director(self, query):
+            _ = query
+            return []
+
+    fake_memory_service = Mock()
+    fake_memory_service.retriever = _FakeRetriever()
+
+    with patch(
+        "core.actors.executor.get_default_memory_service",
+        return_value=fake_memory_service,
+    ):
+        invocation_patch = asyncio.run(
+            actor_invocation_node(
+                state,
+                actor_registry=get_default_actor_registry(),
+            )
+        )
+
+    assert invocation_patch["actor_invocation_mode"] == "runtime"
+    assert invocation_patch["actor_invocation_reason"] == "party_turn_runtime_multi"
+    assert "entities" not in invocation_patch
+    assert "player_inventory" not in invocation_patch
+
+    patched_state = {**state, **invocation_patch}
+    drain_patch = event_drain_node(patched_state)
+
+    assert drain_patch["speaker_responses"][0][0] == "laezel"
+    assert "软弱" in drain_patch["speaker_responses"][0][1]
+    assert "shadowheart" in drain_patch["actor_runtime_state"]
+    assert "astarion" in drain_patch["actor_runtime_state"]
+    assert "laezel" in drain_patch["actor_runtime_state"]
+    assert drain_patch["actor_runtime_state"]["laezel"]["memory_notes"]
+    assert drain_patch["actor_runtime_state"]["shadowheart"]["memory_notes"]
+    assert drain_patch["actor_runtime_state"]["astarion"]["memory_notes"]
+
+
+def test_party_turn_keeps_non_runtime_actor_for_explicit_generation_fallback_marker():
+    state = {
+        "current_speaker": "shadowheart",
+        "speaker_queue": ["gribbo", "astarion"],
+        "user_input": "继续。",
+        "intent": "CHAT",
+        "turn_count": 33,
+        "current_location": "camp_center",
+        "entities": {
+            "shadowheart": {
+                "name": "Shadowheart",
+                "hp": 10,
+                "max_hp": 10,
+                "inventory": {},
+                "status": "alive",
+                "faction": "party",
+                "position": "camp_center",
+            },
+            "astarion": {
+                "name": "Astarion",
+                "hp": 12,
+                "max_hp": 12,
+                "inventory": {},
+                "status": "alive",
+                "faction": "party",
+                "position": "camp_center",
+            },
+            "gribbo": {
+                "name": "Gribbo",
+                "hp": 8,
+                "max_hp": 8,
+                "inventory": {},
+                "status": "alive",
+                "faction": "party",
+                "position": "camp_center",
+            },
+        },
+        "pending_events": [],
+        "speaker_responses": [],
+        "messages": [],
+        "flags": {},
+    }
+
+    class _FakeRetriever:
+        def retrieve_for_actor(self, query):
+            _ = query
+            return []
+
+        def retrieve_for_director(self, query):
+            _ = query
+            return []
+
+    fake_memory_service = Mock()
+    fake_memory_service.retriever = _FakeRetriever()
+    sink = InMemoryTelemetrySink()
+
+    with telemetry_scope(sink), patch(
+        "core.actors.executor.get_default_memory_service",
+        return_value=fake_memory_service,
+    ):
+        invocation_patch = asyncio.run(
+            actor_invocation_node(
+                state,
+                actor_registry=get_default_actor_registry(),
+            )
+        )
+
+    assert invocation_patch["actor_invocation_mode"] == "runtime"
+    assert invocation_patch["actor_invocation_reason"] == "party_turn_runtime_multi"
+    assert invocation_patch["speaker_queue"] == ["gribbo"]
+    actor_spoke_ids = [
+        event["actor_id"]
+        for event in invocation_patch["pending_events"]
+        if event.get("event_type") == "actor_spoke"
+    ]
+    assert actor_spoke_ids == ["shadowheart", "astarion"]
+
+    fallback_events = [
+        event
+        for event in sink.events
+        if event.get("event_name") == "actor_runtime_decision"
+        and event.get("payload", {}).get("mode") == "legacy"
+        and event.get("payload", {}).get("actor_id") == "gribbo"
+        and event.get("payload", {}).get("reason") == "party_turn_fallback_generation"
+    ]
+    assert fallback_events

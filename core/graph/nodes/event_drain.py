@@ -25,6 +25,17 @@ def event_drain_node(state: GameState) -> Dict[str, Any]:
         return {"pending_events": []}
 
     events = [event_from_dict(item) for item in pending if isinstance(item, dict)]
+    transaction_events = [event for event in events if event.event_type == "actor_item_transaction_requested"]
+    transaction_accepted_count = 0
+    transaction_rejected_count = 0
+    for event in transaction_events:
+        payload = event.payload if isinstance(event.payload, dict) else {}
+        tx = payload.get("transaction") if isinstance(payload.get("transaction"), dict) else {}
+        if bool(tx.get("accepted", False)):
+            transaction_accepted_count += 1
+        else:
+            transaction_rejected_count += 1
+
     patch = apply_domain_events(dict(state or {}), events)
     out: Dict[str, Any] = {
         "pending_events": list(patch.pending_events),
@@ -33,6 +44,8 @@ def event_drain_node(state: GameState) -> Dict[str, Any]:
     }
     if patch.entities is not None:
         out["entities"] = patch.entities
+    if patch.player_inventory is not None:
+        out["player_inventory"] = patch.player_inventory
     if patch.flags is not None:
         out["flags"] = patch.flags
     if patch.journal_events:
@@ -43,9 +56,22 @@ def event_drain_node(state: GameState) -> Dict[str, Any]:
         out["speaker_responses"] = list(patch.speaker_responses)
     if patch.final_response:
         out["final_response"] = patch.final_response
+    if patch.combat_phase:
+        out["combat_phase"] = patch.combat_phase
+    if patch.combat_active is not None:
+        out["combat_active"] = bool(patch.combat_active)
+    if patch.initiative_order:
+        out["initiative_order"] = list(patch.initiative_order)
+    if patch.current_turn_index is not None:
+        out["current_turn_index"] = int(patch.current_turn_index)
+    if patch.turn_resources is not None:
+        out["turn_resources"] = patch.turn_resources
     emit_telemetry(
         "event_drain",
         event_count=len(events),
+        transaction_event_count=len(transaction_events),
+        transaction_accepted_count=transaction_accepted_count,
+        transaction_rejected_count=transaction_rejected_count,
         duration_ms=max(0, int(round((time.perf_counter() - started_at) * 1000))),
     )
     return out

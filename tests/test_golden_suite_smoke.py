@@ -21,8 +21,9 @@ class _FakeEvalGameService:
         intent: str | None = None,
         session_id: str,
         character: str | None = None,
+        map_id: str | None = None,
     ):
-        _ = (user_input, intent, session_id, character)
+        _ = (user_input, intent, session_id, character, map_id)
         emit_telemetry("turn_finished", session_id=session_id, intent=intent or "", duration_ms=1)
         return {
             "responses": [],
@@ -34,8 +35,14 @@ class _FakeEvalGameService:
             "combat_state": {},
         }
 
-    async def get_state_snapshot(self, *, session_id: str, initialize_if_missing: bool = True):
-        _ = (session_id, initialize_if_missing)
+    async def get_state_snapshot(
+        self,
+        *,
+        session_id: str,
+        initialize_if_missing: bool = True,
+        map_id: str | None = None,
+    ):
+        _ = (session_id, initialize_if_missing, map_id)
         return {
             "game_state": {
                 "flags": {},
@@ -56,12 +63,28 @@ def test_golden_suite_contains_expected_minimum_cases():
     case_ids = {case.session_id for case in cases}
     assert {
         "astarion_runtime_isolation",
+        "astarion_rejects_unwanted_gift",
+        "background_reflection_after_conflict",
+        "combat_damage_then_healing",
         "laezel_runtime_registry",
+        "player_gives_potion_to_shadowheart",
+        "shadowheart_accepts_healing_potion",
         "shadowheart_artifact_probe",
+        "shadowheart_artifact_secret_actor_visibility",
+        "shadowheart_secret_not_visible_to_astarion",
         "gift_potion_acceptance",
         "combat_opening_round",
+        "party_banter_after_player_choice",
+        "laezel_disagrees_with_mercy_choice",
+        "necromancer_lab_gribbo_key_path",
+        "necromancer_lab_act1_trap_perception",
+        "necromancer_lab_act2_diary_int_success",
+        "necromancer_lab_act2_diary_int_failure",
+        "necromancer_lab_act3_side_with_astarion",
+        "necromancer_lab_act3_rebuke_astarion",
         "reflection_queue_drain",
         "world_flag_reveal",
+        "world_flag_reveal_to_visible_party",
     }.issubset(case_ids)
 
 

@@ -210,6 +210,26 @@ def test_build_actor_view_filters_flags_to_public_only():
     assert "shadowheart_private_doubt" not in actor_view.visible_flags
 
 
+def test_build_actor_view_policy_flags_do_not_leak_visibility_metadata():
+    state = make_sample_state()
+    state["flags"] = {
+        "world_artifact_revealed": True,
+        "shadowheart_artifact_secret": {
+            "value": True,
+            "visibility": {"scope": "actor", "actors": ["shadowheart"], "reason": "personal_secret"},
+            "hidden_metadata": {"internal_id": "sec-01"},
+        },
+    }
+
+    shadowheart_view = build_actor_view(state, "shadowheart")
+    astarion_view = build_actor_view(state, "astarion")
+
+    assert shadowheart_view.visible_flags["shadowheart_artifact_secret"] is True
+    assert "hidden_metadata" not in shadowheart_view.visible_flags
+    assert "visibility" not in shadowheart_view.visible_flags
+    assert "shadowheart_artifact_secret" not in astarion_view.visible_flags
+
+
 def test_build_actor_view_normalizes_history_messages():
     state = make_sample_state()
 

@@ -6,12 +6,15 @@ import copy
 import random
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from typing import Any, Dict, List, Optional, Tuple
+from uuid import uuid4
 
 from langchain_core.messages import AIMessage
 
 from characters.loader import CharacterLoader
 from core.actors import ActorScopedMemoryProvider, build_actor_view
 from core.actors.views import ActorView
+from core.events.models import DomainEvent, event_to_dict
+from core.events.store import append_pending_events
 from core.graph.graph_state import GameState
 from core.memory.compat import get_default_memory_service
 from core.systems.inventory import get_registry
@@ -126,58 +129,54 @@ def _extract_transfer_item_action(parsed: Dict[str, Any]) -> Optional[Dict[str, 
     return None
 
 
-def _apply_transfer_item_action(
+def _new_event_id() -> str:
+    return f"evt_{uuid4().hex}"
+
+
+def _build_transfer_item_event(
     *,
     action: Dict[str, Any],
-    entities: Dict[str, Dict[str, Any]],
-    player_inventory: Dict[str, int],
-) -> Tuple[List[str], Dict[str, int]]:
+    dialogue_actor_id: str,
+    turn_index: int,
+) -> Tuple[Optional[DomainEvent], str]:
     source_id = _normalize_entity_id(action.get("source_id"))
     target_id = _normalize_entity_id(action.get("target_id"))
     item_id = _normalize_entity_id(action.get("item_id"))
     transfer_count = _coerce_count(action.get("count", action.get("amount", 1)), default=1)
 
     if not source_id or not target_id or not item_id or transfer_count <= 0:
-        return [], player_inventory
+        return None, "⚠️ [系统] 物品转移请求无效，缺少 source/target/item/count。"
 
-    source_entity = entities.get(source_id)
-    if not isinstance(source_entity, dict):
-        return [f"⚠️ [系统] 物品转移失败：找不到来源 {source_id}。"], player_inventory
-    source_inventory = source_entity.get("inventory")
-    if not isinstance(source_inventory, dict):
-        return [f"⚠️ [系统] 物品转移失败：{source_id} 没有可用背包。"], player_inventory
-    source_count = _coerce_count(source_inventory.get(item_id), default=0)
-    if source_count <= 0:
-        return [f"⚠️ [系统] 物品转移失败：{source_id} 没有 {item_id}。"], player_inventory
-
-    actual_count = min(source_count, transfer_count)
-    source_inventory[item_id] = source_count - actual_count
-    if source_inventory[item_id] <= 0:
-        source_inventory.pop(item_id, None)
-
-    if target_id == "player":
-        player_inventory[item_id] = _coerce_count(player_inventory.get(item_id), default=0) + actual_count
-        player_entity = entities.get("player")
-        if isinstance(player_entity, dict):
-            player_entity_inventory = player_entity.get("inventory")
-            if not isinstance(player_entity_inventory, dict):
-                player_entity_inventory = {}
-                player_entity["inventory"] = player_entity_inventory
-            player_entity_inventory[item_id] = _coerce_count(player_entity_inventory.get(item_id), default=0) + actual_count
-        return [f"🎒 [系统] 你获得了 {item_id} x{actual_count}。"], player_inventory
-
-    target_entity = entities.get(target_id)
-    if not isinstance(target_entity, dict):
-        # 回滚
-        source_inventory[item_id] = _coerce_count(source_inventory.get(item_id), default=0) + actual_count
-        return [f"⚠️ [系统] 物品转移失败：找不到目标 {target_id}。"], player_inventory
-    target_inventory = target_entity.get("inventory")
-    if not isinstance(target_inventory, dict):
-        target_inventory = {}
-        target_entity["inventory"] = target_inventory
-    target_inventory[item_id] = _coerce_count(target_inventory.get(item_id), default=0) + actual_count
-    target_name = _display_entity_name(target_id, target_entity)
-    return [f"🎒 [系统] {target_name} 获得了 {item_id} x{actual_count}。"], player_inventory
+    reason = "dialogue_transfer_item"
+    actor_id = dialogue_actor_id or source_id or "unknown"
+    event = DomainEvent(
+        event_id=_new_event_id(),
+        event_type="actor_item_transaction_requested",
+        actor_id=actor_id,
+        turn_index=max(0, int(turn_index)),
+        visibility="party",
+        payload={
+            "social_action": {
+                "action_type": "item_transfer",
+                "actor_id": source_id,
+                "target_actor_id": target_id,
+                "item_id": item_id,
+                "quantity": transfer_count,
+                "accepted": True,
+                "reason": reason,
+            },
+            "transaction": {
+                "transaction_type": "transfer",
+                "from_entity": source_id,
+                "to_entity": target_id,
+                "item": item_id,
+                "quantity": transfer_count,
+                "accepted": True,
+                "reason": reason,
+            },
+        },
+    )
+    return event, ""
 
 
 def _build_initiative_for_dialogue_combat(
@@ -317,6 +316,7 @@ def dialogue_node(state: GameState) -> Dict[str, Any]:
     intent = str(state.get("intent", "CHAT") or "CHAT").strip().upper()
     entities = copy.deepcopy(state.get("entities") or {})
     player_inventory = copy.deepcopy(state.get("player_inventory") or {})
+    pending_events = list(state.get("pending_events") or [])
     intent_context = state.get("intent_context") or {}
 
     if intent == "START_DIALOGUE":
@@ -397,11 +397,18 @@ def dialogue_node(state: GameState) -> Dict[str, Any]:
     transfer_action = _extract_transfer_item_action(parsed if isinstance(parsed, dict) else {})
     transfer_events: List[str] = []
     if transfer_action is not None:
-        transfer_events, player_inventory = _apply_transfer_item_action(
+        transfer_event, transfer_event_error = _build_transfer_item_event(
             action=transfer_action,
-            entities=entities,
-            player_inventory=player_inventory if isinstance(player_inventory, dict) else {},
+            dialogue_actor_id=target_id,
+            turn_index=int(state.get("turn_count") or 0),
         )
+        if transfer_event is not None:
+            pending_events = append_pending_events(
+                dict(state or {}),
+                [event_to_dict(transfer_event)],
+            )
+        elif transfer_event_error:
+            transfer_events.append(transfer_event_error)
     state_changes = parsed.get("state_changes") if isinstance(parsed.get("state_changes"), dict) else {}
     patience_delta = int(state_changes.get("patience_delta", 0) or 0)
     fear_delta = int(state_changes.get("fear_delta", 0) or 0)
@@ -434,6 +441,7 @@ def dialogue_node(state: GameState) -> Dict[str, Any]:
             "journal_events": dialogue_events,
             "entities": entities,
             "player_inventory": player_inventory if isinstance(player_inventory, dict) else {},
+            "pending_events": pending_events,
             "active_dialogue_target": None,
             "speaker_queue": [],
             "current_speaker": target_id,
@@ -450,6 +458,7 @@ def dialogue_node(state: GameState) -> Dict[str, Any]:
         "journal_events": dialogue_events,
         "entities": entities,
         "player_inventory": player_inventory if isinstance(player_inventory, dict) else {},
+        "pending_events": pending_events,
         "active_dialogue_target": target_id,
         "speaker_queue": [],
         "current_speaker": target_id,

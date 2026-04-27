@@ -13,6 +13,8 @@ import yaml
 from openai import OpenAI
 
 from config import settings
+from core.events.models import DomainEvent, event_to_dict
+from core.systems import dice as dice_module
 from core.utils.text_processor import parse_llm_json
 
 if TYPE_CHECKING:
@@ -29,6 +31,9 @@ LORE_TIMEOUT_FALLBACK = {
     "narrator_text": "日记上的字迹被血污彻底覆盖...",
     "character_monologue": "（烦躁地啧了一声）完全看不清写了什么，真是浪费时间。",
 }
+DIARY_DECODE_DC = 14
+DIARY_AUTO_SUCCESS_INT = 14
+DIARY_AUTO_FAILURE_INT = 10
 
 
 def _normalize_id(value: Any) -> str:
@@ -131,6 +136,265 @@ def _extract_actor_personality(entity: Dict[str, Any]) -> str:
         return ""
     normalized_traits = [str(trait).strip() for trait in traits if str(trait).strip()]
     return "；".join(normalized_traits[:3])
+
+
+def _extract_actor_skill_bonus(entity: Dict[str, Any], *, skill: str) -> int:
+    normalized_skill = _normalize_id(skill)
+    skills = entity.get("skills")
+    if isinstance(skills, dict):
+        for key, value in skills.items():
+            if _normalize_id(key) != normalized_skill:
+                continue
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                break
+    if normalized_skill == "arcana":
+        return 2
+    if normalized_skill == "investigation":
+        return 1
+    return 0
+
+
+def _ability_modifier(score: int) -> int:
+    return (int(score) - 10) // 2
+
+
+def _normalize_diary_skill(raw_skill: Any) -> str:
+    normalized = _normalize_id(raw_skill)
+    if normalized in {"arcana", "奥术"}:
+        return "arcana"
+    if normalized in {"investigation", "调查", "investigate"}:
+        return "investigation"
+    if normalized in {"int", "intelligence", "智力"}:
+        return "intelligence"
+    return ""
+
+
+def _detect_diary_skill(*, intent_context: Dict[str, Any], user_input: str) -> str:
+    mapped = _normalize_diary_skill(
+        intent_context.get("skill")
+        or intent_context.get("check_skill")
+        or intent_context.get("check")
+    )
+    if mapped:
+        return mapped
+    normalized_input = str(user_input or "").strip().lower()
+    if "arcana" in normalized_input or "奥术" in user_input:
+        return "arcana"
+    if "investigation" in normalized_input or "调查" in user_input:
+        return "investigation"
+    if "intelligence" in normalized_input or "智力" in user_input:
+        return "intelligence"
+    return "intelligence"
+
+
+def _resolve_diary_check(
+    *,
+    actor: Dict[str, Any],
+    int_score: int,
+    skill: str,
+) -> Dict[str, Any]:
+    normalized_skill = _normalize_diary_skill(skill) or "intelligence"
+    ability_bonus = _ability_modifier(int_score)
+    skill_bonus = _extract_actor_skill_bonus(actor, skill=normalized_skill)
+    modifier = ability_bonus + skill_bonus
+
+    if int_score >= DIARY_AUTO_SUCCESS_INT:
+        return {
+            "skill": normalized_skill,
+            "dc": DIARY_DECODE_DC,
+            "modifier": modifier,
+            "result": {
+                "raw_roll": 20,
+                "total": 20 + modifier,
+                "is_success": True,
+                "result_type": "AUTO_SUCCESS_INT",
+            },
+            "is_success": True,
+        }
+    if int_score < DIARY_AUTO_FAILURE_INT:
+        return {
+            "skill": normalized_skill,
+            "dc": DIARY_DECODE_DC,
+            "modifier": modifier,
+            "result": {
+                "raw_roll": 1,
+                "total": 1 + modifier,
+                "is_success": False,
+                "result_type": "AUTO_FAILURE_INT",
+            },
+            "is_success": False,
+        }
+
+    raw_roll = int(dice_module.random.randint(1, 20))
+    total = raw_roll + modifier
+    if raw_roll == 20:
+        is_success = True
+        result_type = "CRITICAL_SUCCESS"
+    elif raw_roll == 1:
+        is_success = False
+        result_type = "CRITICAL_FAILURE"
+    else:
+        is_success = total >= DIARY_DECODE_DC
+        result_type = "SUCCESS" if is_success else "FAILURE"
+    return {
+        "skill": normalized_skill,
+        "dc": DIARY_DECODE_DC,
+        "modifier": modifier,
+        "result": {
+            "raw_roll": raw_roll,
+            "total": total,
+            "is_success": bool(is_success),
+            "result_type": result_type,
+        },
+        "is_success": bool(is_success),
+    }
+
+
+def _build_memory_event(
+    *,
+    event_id: str,
+    actor_id: str,
+    turn_index: int,
+    visibility: str,
+    scope: str,
+    text: str,
+    location_id: str,
+    participants: list[str],
+) -> Dict[str, Any]:
+    return event_to_dict(
+        DomainEvent(
+            event_id=event_id,
+            event_type="actor_memory_update_requested",
+            actor_id=actor_id,
+            turn_index=turn_index,
+            visibility=visibility,
+            payload={
+                "scope": scope,
+                "memory_type": "lore",
+                "text": text,
+                "participants": participants,
+                "location_id": location_id,
+            },
+        )
+    )
+
+
+def _build_diary_resolution(
+    *,
+    state: GameState,
+    actor_id: str,
+    actor: Dict[str, Any],
+    int_score: int,
+) -> Dict[str, Any]:
+    intent_context = state.get("intent_context") or {}
+    user_input = str(state.get("user_input") or "")
+    skill = _detect_diary_skill(
+        intent_context=intent_context if isinstance(intent_context, dict) else {},
+        user_input=user_input,
+    )
+    check = _resolve_diary_check(actor=actor, int_score=int_score, skill=skill)
+    is_success = bool(check.get("is_success"))
+    turn_index = int(state.get("turn_count") or 0)
+    location_id = str(state.get("current_location") or "necromancer_lab")
+
+    flags = dict(state.get("flags") or {})
+    flags["necromancer_lab_diary_read"] = True
+    flags["necromancer_lab_diary_decoded"] = is_success
+
+    participants = [actor_id]
+    entities = state.get("entities") if isinstance(state.get("entities"), dict) else {}
+    for member_id in ("shadowheart", "astarion", "laezel"):
+        if member_id in entities:
+            participants.append(member_id)
+
+    pending_events: list[Dict[str, Any]] = []
+    if is_success:
+        flags["necromancer_lab_antidote_formula_fragment_known"] = {
+            "value": True,
+            "visibility": {
+                "scope": "actor",
+                "actors": [actor_id],
+                "reason": "diary_decoded_private_fragment",
+            },
+        }
+        flags["necromancer_lab_key_hint_known"] = {
+            "value": True,
+            "visibility": {
+                "scope": "party",
+                "reason": "diary_decoded_party_hint",
+            },
+        }
+
+        private_text = (
+            "我读懂了：Gribbo 因实验药剂变得聪明但极不稳定，毒气陷阱会触发他的警觉，"
+            "逃生关键是 heavy_iron_key。日记末尾写着“解药配方其实就在……”却被血迹打断。"
+        )
+        party_text = "队伍确认：毒气陷阱与 Gribbo 警觉联动，heavy_iron_key 是逃离实验室的关键。"
+        pending_events = [
+            _build_memory_event(
+                event_id=f"lore:diary:{actor_id}:{turn_index}:private",
+                actor_id=actor_id,
+                turn_index=turn_index,
+                visibility="actor",
+                scope="actor_private",
+                text=private_text,
+                location_id=location_id,
+                participants=[actor_id],
+            ),
+            _build_memory_event(
+                event_id=f"lore:diary:{actor_id}:{turn_index}:party",
+                actor_id=actor_id,
+                turn_index=turn_index,
+                visibility="party",
+                scope="party_shared",
+                text=party_text,
+                location_id=location_id,
+                participants=participants,
+            ),
+        ]
+        narrator_text = (
+            "他读出了完整危险知识：Gribbo 因实验药剂畸变后变得聪明且不稳定，"
+            "毒气陷阱会触发他的警觉，逃生关键是 heavy_iron_key。"
+            "最后一页留下“解药配方其实就在……”的中断线索。"
+        )
+        monologue = "这本血污日记把机关全写死了，只差最后那半句解药配方。"
+    else:
+        flags.pop("necromancer_lab_antidote_formula_fragment_known", None)
+        flags.pop("necromancer_lab_key_hint_known", None)
+        fragment_text = "我只辨认出碎片词句：地精、箱子、毒气，没法拼出完整线索。"
+        pending_events = [
+            _build_memory_event(
+                event_id=f"lore:diary:{actor_id}:{turn_index}:fragment",
+                actor_id=actor_id,
+                turn_index=turn_index,
+                visibility="actor",
+                scope="actor_private",
+                text=fragment_text,
+                location_id=location_id,
+                participants=[actor_id],
+            )
+        ]
+        narrator_text = "他只从血污字迹里看出零碎词句：地精、箱子、毒气，仍无法解读完整危险知识。"
+        monologue = "字迹像被酸液灼过，只剩地精、箱子、毒气几个词。"
+
+    latest_roll = {
+        "intent": "READ",
+        "target": "necromancer_diary",
+        "skill": str(check.get("skill") or "intelligence"),
+        "dc": int(check.get("dc") or DIARY_DECODE_DC),
+        "modifier": int(check.get("modifier") or 0),
+        "result": dict(check.get("result") or {}),
+    }
+    return {
+        "flags": flags,
+        "pending_events": pending_events,
+        "latest_roll": latest_roll,
+        "narrator_text": narrator_text,
+        "character_monologue": monologue,
+        "decoded": is_success,
+    }
 
 
 def _fallback_read_payload(
@@ -331,23 +595,40 @@ def lore_node(state: GameState) -> Dict[str, Any]:
 
     actor_name = _display_entity_name(actor_id, actor)
     int_score = _extract_actor_int(actor)
-    actor_profile = _extract_actor_personality(actor)
-    read_payload = _generate_read_payload(
-        actor_name=actor_name,
-        actor_profile=actor_profile,
-        int_score=int_score,
-        title=title,
-        raw_text=raw_text,
-    )
-    narrator_text = str(read_payload.get("narrator_text") or "").strip()
-    character_monologue = str(read_payload.get("character_monologue") or "").strip()
-    if not narrator_text:
-        narrator_text = _fallback_read_payload(
+    flags_patch = dict(state.get("flags") or {})
+    pending_events: list[Dict[str, Any]] = []
+    latest_roll = dict(state.get("latest_roll") or {})
+
+    if lore_id in DIARY_LORE_IDS:
+        diary_resolution = _build_diary_resolution(
+            state=state,
+            actor_id=actor_id,
+            actor=actor,
+            int_score=int_score,
+        )
+        narrator_text = str(diary_resolution.get("narrator_text") or "").strip()
+        character_monologue = str(diary_resolution.get("character_monologue") or "").strip()
+        flags_patch = dict(diary_resolution.get("flags") or flags_patch)
+        pending_events = list(diary_resolution.get("pending_events") or [])
+        latest_roll = dict(diary_resolution.get("latest_roll") or latest_roll)
+    else:
+        actor_profile = _extract_actor_personality(actor)
+        read_payload = _generate_read_payload(
             actor_name=actor_name,
+            actor_profile=actor_profile,
             int_score=int_score,
             title=title,
             raw_text=raw_text,
-        )["narrator_text"]
+        )
+        narrator_text = str(read_payload.get("narrator_text") or "").strip()
+        character_monologue = str(read_payload.get("character_monologue") or "").strip()
+        if not narrator_text:
+            narrator_text = _fallback_read_payload(
+                actor_name=actor_name,
+                int_score=int_score,
+                title=title,
+                raw_text=raw_text,
+            )["narrator_text"]
     base_lore_text = raw_text
     final_output = (
         f"📜 [原文] {base_lore_text}\n\n"
@@ -355,8 +636,14 @@ def lore_node(state: GameState) -> Dict[str, Any]:
         f"💬 [独白] {character_monologue}"
     )
 
-    return {
+    patch: Dict[str, Any] = {
         "journal_events": [final_output],
         "entities": entities,
         "environment_objects": environment_objects,
+        "flags": flags_patch,
     }
+    if pending_events:
+        patch["pending_events"] = pending_events
+    if latest_roll:
+        patch["latest_roll"] = latest_roll
+    return patch

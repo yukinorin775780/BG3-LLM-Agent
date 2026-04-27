@@ -61,6 +61,13 @@ async def invoke_actor_runtime(
             "error_type": exc.__class__.__name__,
         }, [], []
 
+    visible_flags = getattr(actor_view, "visible_flags", {})
+    visible_environment_objects = getattr(actor_view, "visible_environment_objects", {})
+    if not isinstance(visible_flags, dict):
+        visible_flags = {}
+    if not isinstance(visible_environment_objects, dict):
+        visible_environment_objects = {}
+
     decision_dict = {
         "mode": "runtime",
         "actor_id": decision.actor_id,
@@ -68,6 +75,10 @@ async def invoke_actor_runtime(
         "spoken_text": decision.spoken_text,
         "thought_summary": decision.thought_summary,
         "physical_action": dict(decision.physical_action or {}) if decision.physical_action else None,
+        "visible_flag_keys": sorted(str(key) for key in visible_flags.keys()),
+        "visible_environment_object_ids": sorted(
+            str(key) for key in visible_environment_objects.keys()
+        ),
     }
     return decision_dict, list(decision.emitted_events), list(decision.requested_reflections)
 

@@ -6,7 +6,13 @@ from typing import Any, Dict, List, Tuple
 from langchain_core.messages import AIMessage
 
 from core.actors.contracts import StatePatch
-from core.events.models import DomainEvent
+from core.engine.physics import apply_physics
+from core.events.models import (
+    DomainEvent,
+    item_transaction_from_payload,
+    item_transaction_to_transfer_payload,
+    social_action_from_payload,
+)
 from core.utils.text_processor import format_history_message
 
 
@@ -38,8 +44,158 @@ def _apply_world_flag_changed(
     flags[key] = bool(event.payload.get("value", True))
 
 
+def _apply_actor_affection_changed(
+    *,
+    event: DomainEvent,
+    entities: Dict[str, Dict[str, Any]],
+    journal_events: List[str],
+) -> None:
+    payload = dict(event.payload or {})
+    target_actor_id = str(payload.get("target_actor_id") or event.actor_id or "").strip().lower()
+    if not target_actor_id:
+        return
+    entity = entities.get(target_actor_id)
+    if not isinstance(entity, dict):
+        return
+    try:
+        delta = int(payload.get("delta") or 0)
+    except (TypeError, ValueError):
+        delta = 0
+    if delta == 0:
+        return
+
+    current_affection = int(entity.get("affection") or 0)
+    next_affection = max(-100, min(100, current_affection + delta))
+    entity["affection"] = next_affection
+
+    dynamic_states = entity.get("dynamic_states")
+    if isinstance(dynamic_states, dict):
+        affection_state = dynamic_states.get("affection")
+        if isinstance(affection_state, dict):
+            affection_state["current_value"] = next_affection
+            dynamic_states["affection"] = affection_state
+            entity["dynamic_states"] = dynamic_states
+
+    reason = str(payload.get("reason") or "").strip()
+    reason_suffix = f" ({reason})" if reason else ""
+    journal_events.append(
+        f"💞 [关系] {target_actor_id} affection {delta:+d} -> {next_affection}{reason_suffix}"
+    )
+
+
+def _build_deterministic_initiative(
+    *,
+    entities: Dict[str, Dict[str, Any]],
+    focus_actor_id: str,
+) -> List[str]:
+    preferred_order = ["player", "astarion", "shadowheart", "laezel", focus_actor_id]
+    seen: set[str] = set()
+    ordered: List[str] = []
+
+    for actor_id in preferred_order:
+        normalized = str(actor_id or "").strip().lower()
+        entity = entities.get(normalized)
+        if not normalized or normalized in seen or not isinstance(entity, dict):
+            continue
+        if str(entity.get("status", "alive")).strip().lower() in {"dead", "downed", "unconscious"}:
+            continue
+        if entity.get("is_alive") is False:
+            continue
+        seen.add(normalized)
+        ordered.append(normalized)
+
+    for actor_id, entity in entities.items():
+        normalized = str(actor_id or "").strip().lower()
+        if normalized in seen or not isinstance(entity, dict):
+            continue
+        if str(entity.get("status", "alive")).strip().lower() in {"dead", "downed", "unconscious"}:
+            continue
+        if entity.get("is_alive") is False:
+            continue
+        if str(entity.get("faction", "")).strip().lower() not in {"party", "player", "hostile"}:
+            continue
+        seen.add(normalized)
+        ordered.append(normalized)
+
+    return ordered
+
+
+def _apply_actor_negotiation_outcome(
+    *,
+    event: DomainEvent,
+    entities: Dict[str, Dict[str, Any]],
+    journal_events: List[str],
+) -> Dict[str, Any]:
+    payload = dict(event.payload or {})
+    target_actor_id = str(payload.get("target_actor_id") or "").strip().lower()
+    if not target_actor_id:
+        return {}
+    target = entities.get(target_actor_id)
+    if not isinstance(target, dict):
+        return {}
+
+    dynamic_states = target.get("dynamic_states")
+    if not isinstance(dynamic_states, dict):
+        dynamic_states = {}
+
+    patience_state = dynamic_states.get("patience")
+    if not isinstance(patience_state, dict):
+        patience_state = {"current_value": 0}
+    patience_set_raw = payload.get("patience_set")
+    if patience_set_raw is not None:
+        try:
+            patience_state["current_value"] = max(0, int(patience_set_raw))
+        except (TypeError, ValueError):
+            patience_state["current_value"] = 0
+    dynamic_states["patience"] = patience_state
+
+    for state_key, delta_key in (("fear", "fear_delta"), ("paranoia", "paranoia_delta")):
+        raw_delta = payload.get(delta_key)
+        try:
+            delta = int(raw_delta or 0)
+        except (TypeError, ValueError):
+            delta = 0
+        if delta == 0 and state_key != "paranoia":
+            continue
+        state_payload = dynamic_states.get(state_key)
+        if not isinstance(state_payload, dict):
+            state_payload = {"current_value": 0}
+        current_value = int(state_payload.get("current_value") or 0)
+        state_payload["current_value"] = max(0, min(20, current_value + delta))
+        dynamic_states[state_key] = state_payload
+
+    target["dynamic_states"] = dynamic_states
+    if bool(payload.get("force_hostile", True)):
+        target["faction"] = "hostile"
+
+    reason = str(payload.get("reason") or "").strip().lower()
+    if reason == "paranoia_meltdown":
+        journal_events.append("💢 [谈判破裂] Gribbo 的 paranoia 爆发，认定你们在算计他。")
+    else:
+        journal_events.append("💢 [谈判破裂] Gribbo 被当众激怒，彻底失去耐心。")
+
+    trigger_combat = bool(payload.get("trigger_combat", False))
+    if not trigger_combat:
+        return {}
+
+    initiative_order = _build_deterministic_initiative(
+        entities=entities,
+        focus_actor_id=target_actor_id,
+    )
+    if initiative_order:
+        journal_events.append("⚔️ [战斗] 谈判崩塌，战斗立即爆发。")
+    return {
+        "combat_phase": "IN_COMBAT",
+        "combat_active": bool(initiative_order),
+        "initiative_order": initiative_order,
+        "current_turn_index": 0,
+        "turn_resources": {},
+    }
+
+
 def apply_domain_events(state: Dict[str, Any], events: List[DomainEvent]) -> StatePatch:
     entities = copy.deepcopy(state.get("entities") or {})
+    player_inventory = copy.deepcopy(state.get("player_inventory") or {})
     flags = dict(state.get("flags") or {})
     messages: List[Any] = []
     speaker_responses: List[Tuple[str, str]] = []
@@ -47,6 +203,11 @@ def apply_domain_events(state: Dict[str, Any], events: List[DomainEvent]) -> Sta
     reflection_queue = list(state.get("reflection_queue") or [])
     actor_runtime_state = copy.deepcopy(state.get("actor_runtime_state") or {})
     final_response = ""
+    combat_phase = None
+    combat_active = None
+    initiative_order = None
+    current_turn_index = None
+    turn_resources = None
 
     for event in events:
         if event.event_type == "actor_spoke":
@@ -90,15 +251,91 @@ def apply_domain_events(state: Dict[str, Any], events: List[DomainEvent]) -> Sta
             continue
 
         if event.event_type == "actor_memory_update_requested":
-            journal_events.append(f"🧠 [记忆] {event.actor_id} 记录了一条私有记忆。")
+            payload = dict(event.payload or {})
+            scope = str(payload.get("scope") or "actor_private").strip().lower()
+            bucket_id = str(event.actor_id or "").strip().lower() or "unknown"
+            if scope == "party_shared":
+                bucket_id = "__party_shared__"
+            elif scope == "world":
+                bucket_id = "__world__"
+
+            runtime_state = dict(actor_runtime_state.get(bucket_id) or {})
+            memory_notes = list(runtime_state.get("memory_notes") or [])
+            memory_text = str(payload.get("text") or "").strip()
+            if memory_text:
+                memory_notes.append(memory_text)
+                runtime_state["memory_notes"] = memory_notes[-20:]
+                actor_runtime_state[bucket_id] = runtime_state
+            if scope == "party_shared":
+                journal_events.append("🧠 [记忆] 队伍共享记忆新增了一条线索。")
+            elif scope == "world":
+                journal_events.append("🧠 [记忆] 世界记忆新增了一条线索。")
+            else:
+                journal_events.append(f"🧠 [记忆] {event.actor_id} 记录了一条私有记忆。")
+            continue
+
+        if event.event_type == "actor_affection_changed":
+            _apply_actor_affection_changed(
+                event=event,
+                entities=entities,
+                journal_events=journal_events,
+            )
+            continue
+
+        if event.event_type == "actor_negotiation_outcome_requested":
+            combat_patch = _apply_actor_negotiation_outcome(
+                event=event,
+                entities=entities,
+                journal_events=journal_events,
+            )
+            if combat_patch:
+                combat_phase = str(combat_patch.get("combat_phase") or "IN_COMBAT")
+                combat_active = bool(combat_patch.get("combat_active", False))
+                initiative_order = list(combat_patch.get("initiative_order") or [])
+                current_turn_index = int(combat_patch.get("current_turn_index") or 0)
+                turn_resources = dict(combat_patch.get("turn_resources") or {})
             continue
 
         if event.event_type == "actor_physical_action_requested":
             journal_events.append(f"⚙️ [行动请求] {event.actor_id} 请求了物理动作结算。")
             continue
 
+        if event.event_type == "actor_item_transaction_requested":
+            social_action = social_action_from_payload(
+                event.payload.get("social_action"),
+                actor_id=event.actor_id,
+                reason=str(event.payload.get("reason") or ""),
+            )
+            transaction = item_transaction_from_payload(
+                event.payload.get("transaction"),
+                default_reason=social_action.reason if social_action else "",
+            )
+            if transaction is None:
+                journal_events.append(f"❌ [社交物品] {event.actor_id} 的交易事件缺失 transaction payload。")
+                continue
+
+            if transaction.accepted and transaction.transaction_type in {"transfer", "return", "consume"}:
+                item_transfers = [item_transaction_to_transfer_payload(transaction)]
+                hp_changes = list(event.payload.get("hp_changes") or [])
+                physics_events = apply_physics(
+                    entities,
+                    player_inventory,
+                    item_transfers=item_transfers,
+                    hp_changes=hp_changes,
+                )
+                journal_events.extend(physics_events)
+                continue
+
+            action_label = social_action.action_type if social_action else "gift_reject"
+            rejected_reason = transaction.reason or "rejected"
+            journal_events.append(
+                f"🚫 [社交物品] {event.actor_id} {action_label} -> {transaction.item} ({rejected_reason})"
+            )
+            continue
+
     return StatePatch(
         entities=entities,
+        player_inventory=player_inventory,
         flags=flags,
         journal_events=tuple(journal_events),
         messages=tuple(messages),
@@ -106,5 +343,10 @@ def apply_domain_events(state: Dict[str, Any], events: List[DomainEvent]) -> Sta
         reflection_queue=tuple(reflection_queue),
         actor_runtime_state=actor_runtime_state,
         pending_events=tuple(),
+        combat_phase=combat_phase or "",
+        combat_active=combat_active,
+        initiative_order=tuple(initiative_order or ()),
+        current_turn_index=current_turn_index,
+        turn_resources=turn_resources,
         final_response=final_response,
     )

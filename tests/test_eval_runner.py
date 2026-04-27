@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import yaml
 
-from core.eval.runner import run_eval_suite_sync
+from core.eval.runner import _build_eval_llm_specs, run_eval_suite_sync
 from core.eval.telemetry import emit_telemetry
 
 
@@ -16,6 +16,9 @@ def _write_case(path: Path, payload: dict) -> None:
 
 
 class _FakeEvalGameService:
+    process_calls: list[dict] = []
+    snapshot_calls: list[dict] = []
+
     def __init__(self, db_path: str):
         _ = db_path
         self._flags = {}
@@ -28,8 +31,17 @@ class _FakeEvalGameService:
         intent: str | None = None,
         session_id: str,
         character: str | None = None,
+        map_id: str | None = None,
     ):
-        _ = (user_input, intent, session_id, character)
+        self.process_calls.append(
+            {
+                "user_input": user_input,
+                "intent": intent,
+                "session_id": session_id,
+                "character": character,
+                "map_id": map_id,
+            }
+        )
         emit_telemetry("turn_finished", session_id=session_id, intent=intent or "", duration_ms=1)
         return {
             "responses": [],
@@ -41,8 +53,20 @@ class _FakeEvalGameService:
             "combat_state": {},
         }
 
-    async def get_state_snapshot(self, *, session_id: str, initialize_if_missing: bool = True):
-        _ = (session_id, initialize_if_missing)
+    async def get_state_snapshot(
+        self,
+        *,
+        session_id: str,
+        initialize_if_missing: bool = True,
+        map_id: str | None = None,
+    ):
+        self.snapshot_calls.append(
+            {
+                "session_id": session_id,
+                "initialize_if_missing": initialize_if_missing,
+                "map_id": map_id,
+            }
+        )
         return {
             "game_state": {
                 "flags": dict(self._flags),
@@ -59,6 +83,8 @@ class _FakeEvalGameService:
 
 
 def test_eval_runner_loads_yaml_and_writes_artifacts(tmp_path):
+    _FakeEvalGameService.process_calls.clear()
+    _FakeEvalGameService.snapshot_calls.clear()
     eval_dir = tmp_path / "evals" / "golden"
     output_root = tmp_path / "artifacts"
     _write_case(
@@ -98,6 +124,8 @@ def test_eval_runner_loads_yaml_and_writes_artifacts(tmp_path):
 
 
 def test_eval_runner_assertion_failure_contains_expected_actual_diff(tmp_path):
+    _FakeEvalGameService.process_calls.clear()
+    _FakeEvalGameService.snapshot_calls.clear()
     eval_dir = tmp_path / "evals" / "golden"
     output_root = tmp_path / "artifacts"
     _write_case(
@@ -134,3 +162,39 @@ def test_eval_runner_assertion_failure_contains_expected_actual_diff(tmp_path):
     assert failure["expected"] == 123
     assert failure["actual"] is None
     assert "does not exist" in failure["message"]
+
+
+def test_eval_runner_passes_session_map_id_to_game_service(tmp_path):
+    _FakeEvalGameService.process_calls.clear()
+    _FakeEvalGameService.snapshot_calls.clear()
+    eval_dir = tmp_path / "evals" / "golden"
+    output_root = tmp_path / "artifacts"
+    _write_case(
+        eval_dir / "runner_map.yaml",
+        {
+            "session": {"id": "runner_map", "map_id": "necromancer_lab"},
+            "determinism": {"strict": False},
+            "steps": [{"id": "s1", "intent": "init_sync", "user_input": ""}],
+            "expected": {},
+        },
+    )
+
+    with patch("core.eval.runner.GameService", new=_FakeEvalGameService):
+        result = run_eval_suite_sync(
+            suite="golden",
+            eval_dir=eval_dir,
+            case_selector=None,
+            output_root=str(output_root),
+        )
+
+    assert result["ok"] is True
+    assert _FakeEvalGameService.process_calls
+    assert all(call["map_id"] == "necromancer_lab" for call in _FakeEvalGameService.process_calls)
+    assert _FakeEvalGameService.snapshot_calls
+    assert all(call["map_id"] == "necromancer_lab" for call in _FakeEvalGameService.snapshot_calls)
+
+
+def test_eval_runner_llm_specs_patch_dm_narration_generate_dialogue():
+    specs = _build_eval_llm_specs()
+    targets = {spec.target: spec.channel for spec in specs}
+    assert targets["core.graph.nodes.dm.generate_dialogue"] == "generation"

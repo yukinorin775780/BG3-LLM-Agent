@@ -3,6 +3,7 @@
 """
 
 import copy
+import inspect
 import logging
 import re
 import time
@@ -11,6 +12,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Protocol, Typ
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph import START
 
+from core.campaigns import detect_lab_intro_awareness
 from core.actors.reflection import run_reflection_tick
 from core.engine.physics import execute_loot
 from core.eval.telemetry import emit_telemetry
@@ -80,7 +82,7 @@ class GameService:
         db_path: str = "memory.db",
         saver_factory: Callable[[str], Any] = AsyncSqliteSaver.from_conn_string,
         graph_builder: Callable[..., GraphProtocol] = build_graph,
-        initial_state_factory: Callable[[], Dict[str, Any]] = get_initial_world_state,
+        initial_state_factory: Callable[..., Dict[str, Any]] = get_initial_world_state,
         loot_executor: Callable[[Dict[str, Any], Dict[str, Any], str, str], str] = execute_loot,
         memory_service: Optional[MemoryService] = None,
     ) -> None:
@@ -98,6 +100,7 @@ class GameService:
         intent: Optional[str] = None,
         session_id: str,
         character: Optional[str] = None,
+        map_id: Optional[str] = None,
         stream_handler: Optional[StreamHandler] = None,
     ) -> ChatTurnResult:
         normalized_input = (user_input or "").strip()
@@ -127,8 +130,19 @@ class GameService:
                 previous_journal_len = len(previous_state.get("journal_events") or [])
 
                 if not previous_state.get("entities"):
-                    previous_state = await self._initialize_world_state(graph, config)
+                    previous_state = await self._initialize_world_state(
+                        graph,
+                        config,
+                        map_id=map_id,
+                    )
                     previous_journal_len = len(previous_state.get("journal_events") or [])
+
+                previous_state = await self._apply_campaign_intro_if_needed(
+                    graph=graph,
+                    config=config,
+                    state=previous_state,
+                    session_id=session_id,
+                )
 
                 if normalized_intent_key == "init_sync":
                     turn_ok = True
@@ -229,13 +243,19 @@ class GameService:
                 except Exception as exc:
                     raise GraphExecutionError("Failed to process chat turn.") from exc
 
+                normalized_result_state = self._normalize_state(result_state)
+                normalized_result_state = await self._drain_pending_events_if_needed(
+                    graph=graph,
+                    config=config,
+                    state=normalized_result_state,
+                )
                 chat_result = self._build_chat_result(
-                    self._normalize_state(result_state),
+                    normalized_result_state,
                     previous_journal_len=previous_journal_len,
                 )
                 await self._ingest_turn_memories(
                     session_id=session_id,
-                    state=self._normalize_state(result_state),
+                    state=normalized_result_state,
                     result=chat_result,
                     user_input=normalized_input,
                 )
@@ -259,6 +279,7 @@ class GameService:
         *,
         session_id: str,
         initialize_if_missing: bool = True,
+        map_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Load the current session state and optionally run Genesis on empty checkpoints."""
         config = {"configurable": {"thread_id": session_id}}
@@ -266,7 +287,7 @@ class GameService:
             graph = self._graph_builder(checkpointer=saver)
             state = await self._load_checkpoint_state(graph, config)
             if initialize_if_missing and not state.get("entities"):
-                state = await self._initialize_world_state(graph, config)
+                state = await self._initialize_world_state(graph, config, map_id=map_id)
             return state
 
     async def get_state_snapshot(
@@ -274,10 +295,12 @@ class GameService:
         *,
         session_id: str,
         initialize_if_missing: bool = True,
+        map_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         state = await self.get_session_state(
             session_id=session_id,
             initialize_if_missing=initialize_if_missing,
+            map_id=map_id,
         )
         journal_events = state.get("journal_events") or []
         previous_journal_len = max(0, len(journal_events) - 8)
@@ -304,12 +327,101 @@ class GameService:
         self,
         graph: GraphProtocol,
         config: Dict[str, Any],
+        *,
+        map_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        initial_state = self._initial_state_factory()
+        initial_state = self._build_initial_state(map_id=map_id)
         try:
             await graph.aupdate_state(config, initial_state, as_node=START)  # type: ignore[arg-type]
         except Exception as exc:
             raise StateAccessError("Failed to initialize world state.") from exc
+        return await self._load_checkpoint_state(graph, config)
+
+    def _build_initial_state(self, *, map_id: Optional[str]) -> Dict[str, Any]:
+        normalized_map_id = str(map_id or "").strip()
+        if not normalized_map_id:
+            return self._initial_state_factory()
+
+        try:
+            return self._initial_state_factory(map_id=normalized_map_id)
+        except TypeError:
+            signature = inspect.signature(self._initial_state_factory)
+            if "map_id" not in signature.parameters:
+                logger.warning(
+                    "initial_state_factory does not accept map_id; fallback to default map."
+                )
+                return self._initial_state_factory()
+            raise
+
+    async def _drain_pending_events_if_needed(
+        self,
+        *,
+        graph: GraphProtocol,
+        config: Dict[str, Any],
+        state: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        pending = list(state.get("pending_events") or [])
+        if not pending:
+            return state
+
+        event_patch = event_drain_node(dict(state))
+        if not event_patch:
+            return state
+
+        persist_payload: Dict[str, Any] = {}
+        for key in (
+            "pending_events",
+            "entities",
+            "player_inventory",
+            "flags",
+            "journal_events",
+            "messages",
+            "speaker_responses",
+            "reflection_queue",
+            "actor_runtime_state",
+            "final_response",
+            "combat_phase",
+            "combat_active",
+            "initiative_order",
+            "current_turn_index",
+            "turn_resources",
+        ):
+            if key in event_patch:
+                persist_payload[key] = event_patch[key]
+
+        if not persist_payload:
+            return state
+
+        try:
+            await graph.aupdate_state(
+                config,
+                persist_payload,
+                as_node=START,
+            )
+        except Exception as exc:
+            raise StateAccessError("Failed to persist pending event drain patch.") from exc
+        return await self._load_checkpoint_state(graph, config)
+
+    async def _apply_campaign_intro_if_needed(
+        self,
+        *,
+        graph: GraphProtocol,
+        config: Dict[str, Any],
+        state: Dict[str, Any],
+        session_id: str,
+    ) -> Dict[str, Any]:
+        intro_patch = detect_lab_intro_awareness(dict(state))
+        if not intro_patch:
+            return state
+        try:
+            await graph.aupdate_state(
+                config,
+                intro_patch,
+                as_node=START,
+            )
+        except Exception as exc:
+            raise StateAccessError("Failed to persist campaign intro patch.") from exc
+        _ = session_id
         return await self._load_checkpoint_state(graph, config)
 
     async def _process_background_step(
@@ -505,6 +617,18 @@ class GameService:
         payload = copy.deepcopy(state.get("environment_objects") or {})
         if not isinstance(payload, dict):
             payload = {}
+        else:
+            sanitized_payload: Dict[str, Any] = {}
+            for obj_id, obj in payload.items():
+                if not isinstance(obj, dict):
+                    continue
+                entity_type = str(obj.get("entity_type", obj.get("type", ""))).strip().lower()
+                is_hidden = bool(obj.get("is_hidden", False))
+                status = str(obj.get("status", "")).strip().lower()
+                if entity_type == "trap" and (is_hidden or status == "hidden"):
+                    continue
+                sanitized_payload[str(obj_id)] = obj
+            payload = sanitized_payload
 
         entities = state.get("entities") or {}
         if not isinstance(entities, dict):
@@ -642,10 +766,11 @@ async def process_chat_turn(
     intent: Optional[str] = None,
     session_id: str,
     character: Optional[str] = None,
+    map_id: Optional[str] = None,
     stream_handler: Optional[StreamHandler] = None,
     saver_factory: Callable[[str], Any] = AsyncSqliteSaver.from_conn_string,
     graph_builder: Callable[..., GraphProtocol] = build_graph,
-    initial_state_factory: Callable[[], Dict[str, Any]] = get_initial_world_state,
+    initial_state_factory: Callable[..., Dict[str, Any]] = get_initial_world_state,
     loot_executor: Callable[[Dict[str, Any], Dict[str, Any], str, str], str] = execute_loot,
     memory_service: Optional[MemoryService] = None,
 ) -> ChatTurnResult:
@@ -662,5 +787,6 @@ async def process_chat_turn(
         intent=intent,
         session_id=session_id,
         character=character,
+        map_id=map_id,
         stream_handler=stream_handler,
     )

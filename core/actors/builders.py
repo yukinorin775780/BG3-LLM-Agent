@@ -148,7 +148,11 @@ def build_actor_view(
             normalized_state,
             normalized_actor_id,
         ),
-        visible_flags=filter_flags_for_actor(normalized_state.get("flags") or {}, normalized_actor_id),
+        visible_flags=filter_flags_for_actor(
+            normalized_state.get("flags") or {},
+            normalized_actor_id,
+            state=normalized_state,
+        ),
         visible_history=build_visible_history(
             normalized_state.get("messages") or [],
             actor_id=normalized_actor_id,
