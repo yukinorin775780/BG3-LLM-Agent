@@ -54,6 +54,8 @@ def test_chat_endpoint_delegates_to_service_and_preserves_response_schema():
         session_id="session-1",
         character="shadowheart",
         map_id="necromancer_lab",
+        target=None,
+        source=None,
     )
 
 
@@ -98,4 +100,53 @@ def test_state_endpoint_forwards_optional_map_id_to_game_service():
     mock_service.get_state_snapshot.assert_awaited_once_with(
         session_id="session-map",
         map_id="necromancer_lab",
+    )
+
+
+def test_chat_endpoint_forwards_target_and_source_to_game_service():
+    expected_payload = {
+        "responses": [],
+        "journal_events": [],
+        "current_location": "camp_center",
+        "environment_objects": {},
+        "party_status": {},
+        "player_inventory": {},
+        "combat_state": {
+            "combat_active": False,
+            "initiative_order": [],
+            "current_turn_index": 0,
+            "turn_resources": {},
+        },
+    }
+    original_service = server.game_service
+    mock_service = AsyncMock()
+    mock_service.process_chat_turn.return_value = expected_payload
+    server.game_service = mock_service
+
+    try:
+        client = TestClient(server.app)
+        response = client.post(
+            "/api/chat",
+            json={
+                "user_input": "",
+                "intent": "INTERACT",
+                "session_id": "session-target",
+                "character": "player",
+                "map_id": "necromancer_lab",
+                "target": "heavy_oak_door_1",
+                "source": "interaction",
+            },
+        )
+    finally:
+        server.game_service = original_service
+
+    assert response.status_code == 200
+    mock_service.process_chat_turn.assert_awaited_once_with(
+        user_input="",
+        intent="INTERACT",
+        session_id="session-target",
+        character="player",
+        map_id="necromancer_lab",
+        target="heavy_oak_door_1",
+        source="interaction",
     )

@@ -257,13 +257,13 @@ python main.py
 运行 API：
 
 ```bash
-python server.py
+python -m uvicorn server:app --host 127.0.0.1 --port 8010
 ```
 
 默认服务地址：
 
 ```text
-POST http://localhost:8000/api/chat
+POST http://127.0.0.1:8010/api/chat
 ```
 
 请求示例：

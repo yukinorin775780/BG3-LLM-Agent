@@ -138,6 +138,38 @@
       if (!this.scene) return;
       this.scene.playLongRestTransition();
     },
+    /** Move player token locally (no backend call). Called by input-controller. */
+    movePlayerLocal(gridX, gridY) {
+      if (!this.scene) return;
+      const token = this.scene.tokens.get("player");
+      if (!token) return;
+      token.entity.x = gridX;
+      token.entity.y = gridY;
+      this.scene.moveToken(token, gridX, gridY, true);
+      this.scene.updateCameraFollow();
+      /* Also update latestState so sync doesn't snap back */
+      if (this.latestState && this.latestState.partyStatus && this.latestState.partyStatus.player) {
+        this.latestState.partyStatus.player.x = gridX;
+        this.latestState.partyStatus.player.y = gridY;
+      }
+    },
+    /** Get current player grid position */
+    getPlayerGridPosition() {
+      if (!this.scene) return { x: 0, y: 0 };
+      const token = this.scene.tokens.get("player");
+      if (!token) return { x: 0, y: 0 };
+      return { x: token.entity.x, y: token.entity.y };
+    },
+    /** Draw red overlay on LoS-blocked tiles */
+    drawLoSBlockerOverlay(blockedTiles) {
+      if (!this.scene || typeof this.scene.drawLoSOverlay !== "function") return;
+      this.scene.drawLoSOverlay(blockedTiles);
+    },
+    /** Clear LoS overlay */
+    clearLoSBlockerOverlay() {
+      if (!this.scene || typeof this.scene.clearLoSOverlay !== "function") return;
+      this.scene.clearLoSOverlay();
+    },
     resize() {
       if (!this.game) return;
       const size = gameViewportSize();

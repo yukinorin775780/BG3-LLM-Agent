@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import requests
 
 
-API_URL = "http://127.0.0.1:8000/api/chat"
+API_URL = "http://127.0.0.1:8010/api/chat"
 SESSION_ID = "simulate-battle"
 CHARACTER = "player"
 POLL_SLEEP_SEC = 0.05

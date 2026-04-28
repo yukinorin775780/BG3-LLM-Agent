@@ -70,6 +70,8 @@ class ChatRequest(BaseModel):
     session_id: str = "test_consume_003"  # 默认新会话，避开旧 SQLite 存档
     character: Optional[str] = None  # 可选：UI 拾取等指定角色 id（如 shadowheart）
     map_id: Optional[str] = None  # 可选：新会话初始化地图（如 necromancer_lab）
+    target: Optional[str] = None  # 可选：结构化目标 id（如 gribbo / heavy_oak_door_1）
+    source: Optional[str] = None  # 可选：请求来源（如 interaction / ui_click）
 
 
 class ChatResponse(BaseModel):
@@ -80,6 +82,8 @@ class ChatResponse(BaseModel):
     party_status: Dict[str, Any]  # 队友的血量、好感度等状态
     player_inventory: Dict[str, Any]  # 玩家背包
     combat_state: Optional[Dict[str, Any]] = None  # 回合制战斗状态
+    latest_roll: Optional[Dict[str, Any]] = None
+    demo_cleared: Optional[bool] = None
 
 
 @app.get("/", include_in_schema=False)
@@ -89,7 +93,7 @@ async def root() -> RedirectResponse:
     return RedirectResponse(url="/docs")
 
 
-@app.post("/api/chat", response_model=ChatResponse)
+@app.post("/api/chat", response_model=ChatResponse, response_model_exclude_none=True)
 async def chat_endpoint(req: ChatRequest) -> ChatResponse:
     result = await game_service.process_chat_turn(
         user_input=req.user_input,
@@ -97,6 +101,8 @@ async def chat_endpoint(req: ChatRequest) -> ChatResponse:
         session_id=req.session_id,
         character=req.character,
         map_id=req.map_id,
+        target=req.target,
+        source=req.source,
     )
     return ChatResponse(**result)
 
@@ -112,4 +118,4 @@ async def state_endpoint(
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="127.0.0.1", port=8010)

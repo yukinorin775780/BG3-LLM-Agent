@@ -6,6 +6,7 @@ import asyncio
 import copy
 import random
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+from typing import Optional
 
 from langchain_core.messages import AIMessage
 
@@ -23,6 +24,8 @@ from core.llm.dm import analyze_intent
 from core.utils.text_processor import format_history_message
 
 LLM_TIMEOUT_SECONDS = 4.5
+_DOOR_ATTACK_MARKERS = ("攻击门", "砸门", "打门", "破门", "attack door", "smash door")
+_DOOR_INTERACT_MARKERS = ("开门", "打开门", "使用钥匙", "heavy_iron_key", "heavy_oak_door_1", "check heavy_oak_door_1")
 
 
 def _apply_act3_necromancer_lab_override(*, state: GameState, analysis: dict) -> dict:
@@ -88,6 +91,110 @@ def _run_blocking_with_timeout(func, *args, timeout: float = LLM_TIMEOUT_SECONDS
             return future.result(timeout=timeout)
         except FuturesTimeoutError as exc:
             raise TimeoutError("LLM call timeout") from exc
+
+
+def _coerce_client_intent(state: GameState) -> str:
+    raw_intent = str(state.get("intent") or "").strip().upper()
+    if raw_intent in {"READ", "INTERACT", "CHAT", "START_DIALOGUE", "DIALOGUE_REPLY"}:
+        return raw_intent
+    if raw_intent == "UI_ACTION_LOOT":
+        return "LOOT"
+    return ""
+
+
+def _extract_client_target(state: GameState, *, include_active_dialogue_target: bool) -> str:
+    intent_context = state.get("intent_context") if isinstance(state, dict) else {}
+    ctx = intent_context if isinstance(intent_context, dict) else {}
+    active_dialogue_target = state.get("active_dialogue_target") if include_active_dialogue_target else ""
+    return (
+        str(
+            state.get("target")
+            or ctx.get("action_target")
+            or active_dialogue_target
+            or ""
+        )
+        .strip()
+        .lower()
+    )
+
+
+def _is_necromancer_lab(state: GameState) -> bool:
+    map_id = str((state.get("map_data") or {}).get("id") or "").strip().lower()
+    return map_id == "necromancer_lab"
+
+
+def _looks_like_door_attack(user_input: str) -> bool:
+    text = str(user_input or "").strip()
+    lowered = text.lower()
+    return any(marker in text or marker in lowered for marker in _DOOR_ATTACK_MARKERS)
+
+
+def _looks_like_door_interact(user_input: str) -> bool:
+    text = str(user_input or "").strip()
+    if not text:
+        return False
+    lowered = text.lower()
+    if _looks_like_door_attack(text):
+        return False
+    has_door_hint = ("门" in text) or ("door" in lowered) or ("heavy_oak_door_1" in lowered)
+    if not has_door_hint:
+        return False
+    return any(marker in text or marker in lowered for marker in _DOOR_INTERACT_MARKERS)
+
+
+def _build_structured_client_analysis(
+    *,
+    state: GameState,
+    entities: dict,
+    fallback_speaker: str,
+) -> Optional[dict]:
+    client_intent = _coerce_client_intent(state)
+    if not client_intent:
+        return None
+
+    # Only treat CHAT as structured when the client provides explicit routing hints.
+    # Otherwise we should keep natural-language turns on DM intent analysis.
+    if client_intent == "CHAT":
+        has_explicit_hints = bool(
+            str(state.get("target") or "").strip()
+            or str(state.get("source") or "").strip()
+        )
+        if not has_explicit_hints:
+            return None
+
+    include_active_dialogue_target = client_intent not in {"READ", "INTERACT"}
+    action_target = _extract_client_target(
+        state,
+        include_active_dialogue_target=include_active_dialogue_target,
+    )
+    action_type = client_intent
+    active_dialogue_target = str(state.get("active_dialogue_target") or "").strip().lower()
+    if client_intent == "CHAT" and action_target == "gribbo":
+        action_type = "DIALOGUE_REPLY" if active_dialogue_target == "gribbo" else "START_DIALOGUE"
+
+    if _is_necromancer_lab(state) and action_target == "heavy_oak_door_1":
+        if not _looks_like_door_attack(str(state.get("user_input") or "")):
+            action_type = "INTERACT"
+
+    responders = []
+    if action_target and action_target in entities and action_target != "player":
+        responders = [action_target]
+    elif fallback_speaker and fallback_speaker != "unknown":
+        responders = [fallback_speaker]
+
+    return {
+        "action_type": action_type,
+        "difficulty_class": 12,
+        "reason": "client_structured_intent",
+        "is_probing_secret": False,
+        "responders": responders,
+        "affection_changes": {},
+        "flags_changed": {},
+        "item_transfers": [],
+        "hp_changes": [],
+        "action_actor": "player",
+        "action_target": action_target,
+    }
 
 
 def _is_idle_banter_speaker(entity_id: str, entity: dict) -> bool:
@@ -173,44 +280,69 @@ async def dm_node(state: GameState) -> dict:
     fallback_speaker = first_entity_id(entities)
     current_npc_hp = entities.get(fallback_speaker, {}).get("hp", 20) if fallback_speaker != "unknown" else 20
     item_lore = _build_item_lore(state)
-    try:
-        analysis = await asyncio.wait_for(
-            asyncio.to_thread(
-                analyze_intent,
-                state.get("user_input", ""),
-                flags=state.get("flags", {}),
-                time_of_day=state.get("time_of_day", "晨曦 (Morning)"),
-                hp=current_npc_hp,
-                available_npcs=available_npcs,
-                available_targets=available_targets,
-                item_lore=item_lore if item_lore else None,
-                active_dialogue_target=state.get("active_dialogue_target"),
-            ),
-            timeout=LLM_TIMEOUT_SECONDS,
+    structured_analysis = _build_structured_client_analysis(
+        state=state,
+        entities=entities,
+        fallback_speaker=fallback_speaker,
+    )
+    if isinstance(structured_analysis, dict):
+        structured_analysis = _apply_act3_necromancer_lab_override(
+            state=state,
+            analysis=structured_analysis,
         )
-    except Exception:
-        analysis = {
-            "action_type": "IDLE",
-            "difficulty_class": 0,
-            "reason": "DM analyze timeout/failure fallback.",
-            "is_probing_secret": False,
-            "responders": [fallback_speaker] if fallback_speaker != "unknown" else ["shadowheart"],
-            "affection_changes": {},
-            "flags_changed": {},
-            "item_transfers": [],
-            "hp_changes": [],
-            "action_actor": "player",
-            "action_target": "",
-        }
+        structured_analysis = _apply_act4_necromancer_lab_override(
+            state=state,
+            analysis=structured_analysis,
+        )
+    else:
+        # Act3 side/rebuke choices should remain deterministic even without an explicit target/source payload.
+        act3_fast_path = _apply_act3_necromancer_lab_override(
+            state=state,
+            analysis={},
+        )
+        if isinstance(act3_fast_path, dict) and str(act3_fast_path.get("action_type") or "").strip():
+            structured_analysis = act3_fast_path
+    if structured_analysis:
+        analysis = structured_analysis
+    else:
+        try:
+            analysis = await asyncio.wait_for(
+                asyncio.to_thread(
+                    analyze_intent,
+                    state.get("user_input", ""),
+                    flags=state.get("flags", {}),
+                    time_of_day=state.get("time_of_day", "晨曦 (Morning)"),
+                    hp=current_npc_hp,
+                    available_npcs=available_npcs,
+                    available_targets=available_targets,
+                    item_lore=item_lore if item_lore else None,
+                    active_dialogue_target=state.get("active_dialogue_target"),
+                ),
+                timeout=LLM_TIMEOUT_SECONDS,
+            )
+        except Exception:
+            analysis = {
+                "action_type": "IDLE",
+                "difficulty_class": 0,
+                "reason": "DM analyze timeout/failure fallback.",
+                "is_probing_secret": False,
+                "responders": [fallback_speaker] if fallback_speaker != "unknown" else ["shadowheart"],
+                "affection_changes": {},
+                "flags_changed": {},
+                "item_transfers": [],
+                "hp_changes": [],
+                "action_actor": "player",
+                "action_target": "",
+            }
 
-    analysis = _apply_act3_necromancer_lab_override(
-        state=state,
-        analysis=analysis if isinstance(analysis, dict) else {},
-    )
-    analysis = _apply_act4_necromancer_lab_override(
-        state=state,
-        analysis=analysis if isinstance(analysis, dict) else {},
-    )
+        analysis = _apply_act3_necromancer_lab_override(
+            state=state,
+            analysis=analysis if isinstance(analysis, dict) else {},
+        )
+        analysis = _apply_act4_necromancer_lab_override(
+            state=state,
+            analysis=analysis if isinstance(analysis, dict) else {},
+        )
 
     current_dialogue_target = str(state.get("active_dialogue_target") or "").strip().lower() or None
     next_dialogue_target = current_dialogue_target

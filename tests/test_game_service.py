@@ -92,7 +92,7 @@ def test_process_chat_turn_initializes_empty_checkpoint_then_invokes_graph():
     ]
     assert fake_graph.ainvoke_calls == [
         {
-            "payload": {"user_input": "你好"},
+            "payload": {"user_input": "你好", "intent": "chat", "target": "", "source": ""},
             "config": {"configurable": {"thread_id": "session-1"}},
         }
     ]
@@ -142,7 +142,7 @@ def test_process_chat_turn_uses_existing_checkpoint_for_regular_dialogue():
     assert fake_graph.aupdate_state_calls == []
     assert fake_graph.ainvoke_calls == [
         {
-            "payload": {"user_input": "说点什么", "intent": "chat"},
+            "payload": {"user_input": "说点什么", "intent": "chat", "target": "", "source": ""},
             "config": {"configurable": {"thread_id": "session-2"}},
         }
     ]
@@ -159,6 +159,48 @@ def test_process_chat_turn_uses_existing_checkpoint_for_regular_dialogue():
             "current_turn_index": 0,
             "turn_resources": {},
             "recent_barks": [],
+        },
+    }
+
+
+def test_process_chat_turn_passes_structured_target_source_into_graph_payload():
+    existing_state = {
+        "entities": {"player": {"hp": 20}, "gribbo": {"hp": 18}},
+        "journal_events": [],
+    }
+    final_state = {
+        "speaker_responses": [("gribbo", "离远点。")],
+        "journal_events": ["gribbo replied"],
+        "current_location": "necromancer_lab",
+        "environment_objects": {},
+        "entities": {"player": {"hp": 20}, "gribbo": {"hp": 18}},
+    }
+    fake_graph = _FakeGraph(snapshots=[existing_state], invoke_result=final_state)
+
+    asyncio.run(
+        process_chat_turn(
+            user_input="",
+            intent="CHAT",
+            session_id="session-structured-payload",
+            character="player",
+            map_id="necromancer_lab",
+            target="gribbo",
+            source="interaction",
+            saver_factory=Mock(return_value=_AsyncContextManager(value=object())),
+            graph_builder=Mock(return_value=fake_graph),
+            initial_state_factory=Mock(),
+        )
+    )
+
+    assert fake_graph.ainvoke_calls[0]["payload"] == {
+        "user_input": "",
+        "intent": "CHAT",
+        "target": "gribbo",
+        "source": "interaction",
+        "intent_context": {
+            "action_actor": "player",
+            "action_target": "gribbo",
+            "source": "interaction",
         },
     }
 
@@ -279,7 +321,9 @@ def test_process_chat_turn_init_sync_applies_necromancer_lab_intro_awareness_onc
         "Astarion" in line and ("陷阱" in line or "机关" in line)
         for line in intro_payload["journal_events"]
     )
-    assert result["journal_events"] == intro_applied_state["journal_events"]
+    # P0-3: init_sync no longer leaks intro journal entries into the response.
+    # The intro is still persisted in state, just not surfaced in the API delta.
+    assert result["journal_events"] == []
     assert "gas_trap_1" not in result["environment_objects"]
 
 
@@ -861,3 +905,173 @@ def test_process_chat_turn_background_step_processes_up_to_three_reflections():
     persisted_payload = fake_graph.aupdate_state_calls[0]["payload"]
     assert len(persisted_payload["reflection_queue"]) == 1
     assert persisted_payload["reflection_queue"][0]["reason"] == "r4"
+
+
+# ═══════════════════════════════════════════════════════════════
+# P0 Backend Fix Tests
+# ═══════════════════════════════════════════════════════════════
+
+
+def test_p0_gribbo_render_prompt_succeeds():
+    """P0-1: Gribbo's hostile NPC template renders without UndefinedError."""
+    from characters.loader import load_character
+
+    ch = load_character("gribbo")
+    prompt = ch.render_prompt(
+        relationship_score=0,
+        affection=0,
+        flags={},
+        summary="test",
+        journal_entries=[],
+        inventory_items=["heavy_iron_key", "scroll_of_firebolt"],
+        has_healing_potion=False,
+        time_of_day="晨曦",
+        hp=18,
+        active_buffs=[],
+        shar_faith=None,
+        memory_awakening=None,
+    )
+    assert len(prompt) > 100
+    # Template must reference Gribbo's personality traits
+    assert "arrogant" in prompt.lower() or "genius" in prompt.lower()
+    # Template must reference the secret_objective
+    assert "iron key" in prompt.lower() or "password" in prompt.lower()
+
+
+def test_p0_gribbo_render_does_not_break_astarion():
+    """P0-1 regression: existing companions must still render via persona_template."""
+    from characters.loader import load_character
+
+    for name in ("astarion", "shadowheart"):
+        ch = load_character(name)
+        prompt = ch.render_prompt(
+            relationship_score=0,
+            affection=0,
+            flags={},
+            summary="test",
+            journal_entries=[],
+            inventory_items=[],
+            has_healing_potion=False,
+        )
+        assert len(prompt) > 100
+
+
+def test_p0_init_sync_returns_empty_journal_on_fresh_necromancer_lab():
+    """P0-3: init_sync must return journal_events=[] even when campaign intro fires."""
+    initial_world_state = {
+        "entities": {
+            "shadowheart": {
+                "hp": 10,
+                "status_effects": [],
+                "ability_scores": {"WIS": 15},
+            },
+            "astarion": {
+                "hp": 12,
+                "status_effects": [],
+                "ability_scores": {"DEX": 17, "WIS": 10},
+            },
+        },
+        "player_inventory": {},
+        "journal_events": [],
+        "flags": {},
+        "map_data": {"id": "necromancer_lab"},
+        "current_location": "死灵法师的废弃实验室",
+        "environment_objects": {},
+    }
+    # After init: 0 journal entries.  After campaign intro: 3 entries.
+    intro_state = {
+        **initial_world_state,
+        "flags": {
+            "necromancer_lab_intro_seen": True,
+            "world_necromancer_lab_intro_entered": True,
+            "astarion_detected_gas_trap": {"value": True},
+            "world_necromancer_lab_trap_warned": True,
+            "shadowheart_senses_necromancy": {"value": True},
+        },
+        "journal_events": [
+            "🧪 [实验室] 空气里弥漫着刺鼻的化学与腐败气味。",
+            "🗣️ [Astarion] 小心，前面有毒气机关的痕迹。",
+            "🗣️ [Shadowheart] 这里有死灵残留……我感觉很不对劲。",
+        ],
+    }
+    fake_graph = _FakeGraph(
+        snapshots=[{}, initial_world_state, intro_state],
+        invoke_result={},
+    )
+
+    result = asyncio.run(
+        process_chat_turn(
+            user_input="",
+            intent="init_sync",
+            session_id="session-p0-init-quiet",
+            character=None,
+            map_id="necromancer_lab",
+            saver_factory=Mock(return_value=_AsyncContextManager(value=object())),
+            graph_builder=Mock(return_value=fake_graph),
+            initial_state_factory=Mock(return_value=initial_world_state),
+        )
+    )
+
+    # init_sync must NOT leak campaign intro journal entries
+    assert result["journal_events"] == []
+
+
+def test_p0_loot_target_alias_resolves_gribbo():
+    """P0-2: Chinese alias '地精' resolves to entity ID 'gribbo'."""
+    from core.application.game_service import GameService
+
+    target = GameService._extract_loot_target_id(
+        user_input="搜刮地精",
+        entities={"gribbo": {"hp": 0}, "player": {"hp": 20}},
+        environment_objects={},
+    )
+    assert target == "gribbo"
+
+
+def test_p0_loot_target_alias_resolves_chest():
+    """P0-2: Chinese alias '箱子' resolves to entity ID 'chest_1'."""
+    from core.application.game_service import GameService
+
+    target = GameService._extract_loot_target_id(
+        user_input="搜刮箱子",
+        entities={"chest_1": {"status": "open"}, "player": {"hp": 20}},
+        environment_objects={},
+    )
+    assert target == "chest_1"
+
+
+def test_p0_duplicate_gribbo_loot_blocked():
+    """P0-2: Second loot of Gribbo must not re-add heavy_iron_key."""
+    from core.systems.mechanics import execute_loot_action
+
+    state = {
+        "map_data": {"id": "necromancer_lab"},
+        "flags": {
+            "world_necromancer_lab_gribbo_defeated": True,
+            "necromancer_lab_gribbo_key_looted": True,  # already looted once
+        },
+        "entities": {
+            "player": {"hp": 20, "inventory": {}, "x": 4, "y": 9,
+                       "name": "玩家", "faction": "player"},
+            "gribbo": {
+                "name": "Gribbo",
+                "hp": 0,
+                "max_hp": 18,
+                "status": "dead",
+                "faction": "hostile",
+                "x": 4,
+                "y": 9,
+                "inventory": {},
+            },
+        },
+        "player_inventory": {"heavy_iron_key": 1},
+        "journal_events": [],
+        "environment_objects": {},
+        "intent_context": {
+            "action_actor": "player",
+            "action_target": "gribbo",
+        },
+    }
+    result = execute_loot_action(state)
+    # Should not add a second key
+    assert result.get("player_inventory", {}).get("heavy_iron_key", 0) <= 1

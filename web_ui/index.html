@@ -3,220 +3,235 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>BG3 LLM | 赛博羊皮纸战术桌</title>
+  <title>BG3 LLM | 废弃死灵实验室</title>
+  <meta name="description" content="博德之门3 LLM Agent — 废弃死灵实验室 2.5D 可探索 Demo" />
   <link rel="icon" href="data:," />
-  <link rel="stylesheet" href="./style.css?v=20260421-qa2" />
+  <link rel="stylesheet" href="./style.css?v=20260428" />
 </head>
 <body>
   <div id="main-layout" class="main-layout">
+
+  <!-- ═══════════════════════════════════════════════════
+       PRIMARY: 2.5D Explorable Map (fills center/left)
+       ═══════════════════════════════════════════════════ -->
   <section id="game-viewport" class="game-viewport" aria-label="游戏视口">
-  <div id="map-stage" class="map-stage" aria-label="2.5D 战术地图">
-    <div id="map-container" class="map-container"></div>
-  </div>
-
-  <div id="initiative-tracker" class="initiative-tracker is-hidden" aria-live="polite" aria-label="先攻顺位条">
-    <div class="initiative-frame">
-      <span class="initiative-title">Initiative</span>
-      <div id="initiative-list" class="initiative-list"></div>
+    <div id="map-stage" class="map-stage" aria-label="2.5D 战术地图">
+      <div id="map-container" class="map-container"></div>
     </div>
-  </div>
 
-  <button type="button" id="tactical-toggle-btn" class="tactical-toggle-btn" aria-controls="tactical-pause-overlay" aria-expanded="false">
-    战术菜单 <span>Space</span>
-  </button>
+    <!-- Act Progress — top-left overlay, small -->
+    <div id="act-progress" class="act-progress act-progress--hidden" aria-live="polite">
+      <span class="act-location" id="current-location">死灵法师的废弃实验室</span>
+      <h2 class="act-title" id="act-title">Act 1 — 陷阱感知</h2>
+      <p class="act-summary" id="act-summary">发现毒气陷阱，Astarion 气泡提醒</p>
+    </div>
 
-  <div id="rest-controls" class="rest-controls" aria-label="探索休整入口">
-    <button type="button" id="short-rest-btn" class="rest-btn" data-rest-type="short">
-      <span>⛺</span> 短休 <small>Short Rest</small>
+    <!-- Initiative tracker (combat) -->
+    <div id="initiative-tracker" class="initiative-tracker is-hidden" aria-live="polite" aria-label="先攻顺位条">
+      <div class="initiative-frame">
+        <span class="initiative-title">Initiative</span>
+        <div id="initiative-list" class="initiative-list"></div>
+      </div>
+    </div>
+
+    <!-- Tactical menu toggle -->
+    <button type="button" id="tactical-toggle-btn" class="tactical-toggle-btn" aria-controls="tactical-pause-overlay" aria-expanded="false">
+      战术菜单 <span>Space</span>
     </button>
-    <button type="button" id="long-rest-btn" class="rest-btn rest-btn--long" data-rest-type="long">
-      <span>🏕</span> 长休 <small>Long Rest</small>
-    </button>
-  </div>
 
-  <div id="dialogue-overlay" class="dialogue-overlay hidden" aria-hidden="true" role="dialog" aria-labelledby="dialogue-npc-name">
-    <div class="dialogue-box">
-      <div class="dialogue-speaker-row">
-        <span class="dialogue-sigil">◆</span>
-        <h2 id="dialogue-npc-name">NPC Name</h2>
-      </div>
-      <div id="dialogue-text" class="dialogue-text">...</div>
-      <div class="dialogue-input-area">
-        <input type="text" id="dialogue-input" placeholder="输入你的回答..." autocomplete="off" />
-        <button type="button" id="ptt-mic-btn" class="ptt-btn" title="按住说话，松开发送" aria-label="按住说话，松开发送">🎙️ 按住指令</button>
-        <button type="button" id="dialogue-send-btn">说话</button>
-        <button type="button" id="dialogue-attack-btn" class="danger-btn">拔出武器 (中断交涉)</button>
+    <!-- Rest controls (exploration only) -->
+    <div id="rest-controls" class="rest-controls" aria-label="探索休整入口">
+      <button type="button" id="short-rest-btn" class="rest-btn" data-rest-type="short">
+        <span>⛺</span> 短休 <small>Short Rest</small>
+      </button>
+      <button type="button" id="long-rest-btn" class="rest-btn rest-btn--long" data-rest-type="long">
+        <span>🏕</span> 长休 <small>Long Rest</small>
+      </button>
+    </div>
+
+    <!-- Dialogue overlay -->
+    <div id="dialogue-overlay" class="dialogue-overlay hidden" aria-hidden="true" role="dialog" aria-labelledby="dialogue-npc-name">
+      <div class="dialogue-box">
+        <div class="dialogue-speaker-row">
+          <span class="dialogue-sigil">◆</span>
+          <h2 id="dialogue-npc-name">NPC Name</h2>
+        </div>
+        <div id="dialogue-text" class="dialogue-text">...</div>
+        <div class="dialogue-input-area">
+          <input type="text" id="dialogue-input" placeholder="输入你的回答..." autocomplete="off" />
+          <button type="button" id="ptt-mic-btn" class="ptt-btn" title="按住说话，松开发送" aria-label="按住说话，松开发送">🎙️ 按住指令</button>
+          <button type="button" id="dialogue-send-btn">说话</button>
+          <button type="button" id="dialogue-attack-btn" class="danger-btn">拔出武器 (中断交涉)</button>
+        </div>
       </div>
     </div>
-  </div>
 
-  <div id="party-view-modal" class="party-view-modal is-hidden" aria-hidden="true" role="dialog" aria-labelledby="party-view-title">
-    <div class="party-view-panel panel-frame">
-      <div class="party-view-head">
-        <div>
-          <p class="panel-eyebrow">Party Management / TAB · I</p>
-          <h2 id="party-view-title">小队管理界面</h2>
+    <!-- Loot modal -->
+    <div id="loot-modal" class="loot-modal hidden" aria-hidden="true" role="dialog" aria-labelledby="loot-title">
+      <div class="loot-panel panel-frame">
+        <div class="loot-head">
+          <div>
+            <p class="panel-eyebrow">Container Access</p>
+            <h3 id="loot-title">铁箱内容物</h3>
+          </div>
+          <button type="button" id="close-loot-btn" class="loot-close" aria-label="关闭搜刮面板">关闭</button>
         </div>
-        <button type="button" id="close-party-view-btn" class="loot-close" aria-label="关闭小队管理界面">关闭</button>
+        <div id="loot-items" class="loot-grid"></div>
+        <div class="loot-actions">
+          <button type="button" id="loot-all-btn" class="loot-confirm">全部拾取</button>
+        </div>
       </div>
-
-      <nav id="party-view-tabs" class="party-view-tabs" aria-label="小队管理页签">
-        <button type="button" class="party-view-tab is-active" data-party-tab="inventory">物品装备 Inventory</button>
-        <button type="button" class="party-view-tab" data-party-tab="sheet">属性面板 Character Sheet</button>
-        <button type="button" class="party-view-tab" data-party-tab="spells">法术与动作 Spells & Actions</button>
-        <button type="button" class="party-view-tab" data-party-tab="journal">日志与好感 Journal</button>
-      </nav>
-
-      <div id="party-view-content" class="party-view-content"></div>
     </div>
-  </div>
 
-  <div id="tactical-pause-overlay" class="tactical-pause-overlay is-hidden" aria-hidden="true">
-  <div class="app-shell">
-    <header class="topbar panel-frame">
-      <div class="brand-block">
-        <p class="eyebrow">BG3 LLM / Tactical Console</p>
-        <h1>赛博羊皮纸战术桌</h1>
-      </div>
-      <div class="status-strip">
-        <div class="status-cell">
-          <span class="status-label">Current Location</span>
-          <strong id="current-location">未知区域</strong>
+    <!-- Party view modal (drawer) -->
+    <div id="party-view-modal" class="party-view-modal is-hidden" aria-hidden="true" role="dialog" aria-labelledby="party-view-title">
+      <div class="party-view-panel panel-frame">
+        <div class="party-view-head">
+          <div>
+            <p class="panel-eyebrow">Party Management / TAB · I</p>
+            <h2 id="party-view-title">小队管理界面</h2>
+          </div>
+          <button type="button" id="close-party-view-btn" class="loot-close" aria-label="关闭小队管理界面">关闭</button>
         </div>
-        <div class="status-cell">
-          <span class="status-label">Net Link</span>
-          <strong id="network-state" data-state="idle">链路待命</strong>
-        </div>
-        <div class="status-cell">
-          <span class="status-label">Turn</span>
-          <strong id="turn-counter">00</strong>
-        </div>
+        <nav id="party-view-tabs" class="party-view-tabs" aria-label="小队管理页签">
+          <button type="button" class="party-view-tab is-active" data-party-tab="inventory">物品装备 Inventory</button>
+          <button type="button" class="party-view-tab" data-party-tab="sheet">属性面板 Character Sheet</button>
+          <button type="button" class="party-view-tab" data-party-tab="spells">法术与动作 Spells &amp; Actions</button>
+          <button type="button" class="party-view-tab" data-party-tab="journal">日志与好感 Journal</button>
+        </nav>
+        <div id="party-view-content" class="party-view-content"></div>
       </div>
-    </header>
+    </div>
 
-    <main class="battlefield-layout">
-      <div class="left-column">
-        <section class="world-panel panel-frame">
-          <div class="panel-header">
-            <div>
-              <p class="panel-eyebrow">Main Log / World View</p>
-              <h2>主叙事区</h2>
-            </div>
-            <div class="panel-chip-row" id="log-filter-bar" aria-label="日志筛选">
-              <button type="button" class="panel-chip log-filter-btn is-active" data-filter="dialogue" aria-pressed="true">对话</button>
-              <button type="button" class="panel-chip log-filter-btn is-active" data-filter="system" aria-pressed="true">系统事件</button>
-              <button type="button" class="panel-chip log-filter-btn is-active" data-filter="narration" aria-pressed="true">掷骰旁白</button>
-            </div>
+    <!-- Tactical pause overlay (old console as drawer) -->
+    <div id="tactical-pause-overlay" class="tactical-pause-overlay is-hidden" aria-hidden="true">
+      <div class="app-shell">
+        <header class="topbar panel-frame">
+          <div class="brand-block">
+            <p class="eyebrow">BG3 LLM / Tactical Console</p>
+            <h1>赛博羊皮纸战术桌</h1>
           </div>
-
-          <div id="world-log" class="world-log" aria-live="polite" aria-label="主叙事日志"></div>
-        </section>
-
-        <footer class="console panel-frame">
-          <div class="console-head">
-            <div>
-              <p class="panel-eyebrow">Command Input</p>
-              <h2>控制台</h2>
+          <div class="status-strip">
+            <div class="status-cell">
+              <span class="status-label">Current Location</span>
+              <strong id="tactical-location">未知区域</strong>
             </div>
-            <span class="console-subtitle">快捷动作会自动写入并执行指令</span>
-          </div>
-
-          <div class="shortcut-bar" aria-label="快捷动作">
-            <button type="button" class="shortcut-btn" data-command="查看周围">查看周围</button>
-            <button type="button" class="shortcut-btn" data-command="查看背包">查看背包</button>
-            <button type="button" class="shortcut-btn" data-command="检查铁箱">检查铁箱</button>
-            <button type="button" class="shortcut-btn" data-command="靠近篝火">靠近篝火</button>
-            <button type="button" class="shortcut-btn" data-command="汇报当前队伍状态">队伍状态</button>
-            <button type="button" class="shortcut-btn shortcut-btn--danger" data-command="我准备战斗，汇报当前可用的战斗动作">战斗动作</button>
-          </div>
-
-          <div class="console-body">
-            <label class="sr-only" for="user-input">输入你的指令</label>
-            <textarea
-              id="user-input"
-              rows="3"
-              placeholder="输入对白、行动或战术指令……"
-              autocomplete="off"
-            ></textarea>
-
-            <div class="console-actions">
-              <p class="console-hint">30 秒无动作将触发同伴闲聊 `trigger_idle_banter`</p>
-              <button type="button" id="send-btn" class="send-btn">执行指令</button>
+            <div class="status-cell">
+              <span class="status-label">Net Link</span>
+              <strong id="network-state" data-state="idle">链路待命</strong>
+            </div>
+            <div class="status-cell">
+              <span class="status-label">Turn</span>
+              <strong id="turn-counter">00</strong>
             </div>
           </div>
-        </footer>
-      </div>
-
-      <aside class="side-column sidebar-container">
-        <section class="party-panel panel-frame">
-          <div class="panel-header">
-            <div>
-              <p class="panel-eyebrow">Party Roster</p>
-              <h2>队伍状态栏</h2>
-            </div>
-            <span id="party-count" class="panel-badge">0 名单位</span>
-          </div>
-
-          <div class="panel-body">
-            <div id="party-roster" class="party-roster" aria-label="队伍状态"></div>
-          </div>
-        </section>
-
-        <section class="state-panel panel-frame">
-          <div class="panel-header">
-            <div>
-              <p class="panel-eyebrow">Environment Objects</p>
-              <h2>场景对象区</h2>
-            </div>
-            <span id="environment-count" class="panel-badge">0 个对象</span>
-          </div>
-
-          <div class="panel-body">
-            <div class="state-stack">
-              <section class="subpanel">
-                <div class="subpanel-header">
-                  <h3>场景对象</h3>
+        </header>
+        <main class="battlefield-layout">
+          <div class="left-column">
+            <section class="world-panel panel-frame">
+              <div class="panel-header">
+                <div>
+                  <p class="panel-eyebrow">Main Log / World View</p>
+                  <h2>主叙事区</h2>
                 </div>
-                <div class="subpanel-body">
-                  <div id="environment-list" class="environment-list" aria-label="环境物品"></div>
+                <div class="panel-chip-row" id="log-filter-bar" aria-label="日志筛选">
+                  <button type="button" class="panel-chip log-filter-btn is-active" data-filter="dialogue" aria-pressed="true">对话</button>
+                  <button type="button" class="panel-chip log-filter-btn is-active" data-filter="system" aria-pressed="true">系统事件</button>
+                  <button type="button" class="panel-chip log-filter-btn is-active" data-filter="narration" aria-pressed="true">掷骰旁白</button>
                 </div>
-              </section>
-            </div>
+              </div>
+              <div id="world-log" class="world-log" aria-live="polite" aria-label="主叙事日志"></div>
+            </section>
+            <footer class="console panel-frame">
+              <div class="console-head">
+                <div>
+                  <p class="panel-eyebrow">Command Input</p>
+                  <h2>控制台</h2>
+                </div>
+                <span class="console-subtitle">快捷动作会自动写入并执行指令</span>
+              </div>
+              <div class="shortcut-bar" aria-label="快捷动作">
+                <button type="button" class="shortcut-btn" data-command="查看周围">查看周围</button>
+                <button type="button" class="shortcut-btn" data-command="查看背包">查看背包</button>
+                <button type="button" class="shortcut-btn" data-command="检查铁箱">检查铁箱</button>
+                <button type="button" class="shortcut-btn" data-command="靠近篝火">靠近篝火</button>
+                <button type="button" class="shortcut-btn" data-command="汇报当前队伍状态">队伍状态</button>
+                <button type="button" class="shortcut-btn shortcut-btn--danger" data-command="我准备战斗，汇报当前可用的战斗动作">战斗动作</button>
+              </div>
+              <div class="console-body">
+                <label class="sr-only" for="user-input">输入你的指令</label>
+                <textarea id="user-input" rows="3" placeholder="输入对白、行动或战术指令……" autocomplete="off"></textarea>
+                <div class="console-actions">
+                  <p class="console-hint">30 秒无动作将触发同伴闲聊 `trigger_idle_banter`</p>
+                  <button type="button" id="send-btn" class="send-btn">执行指令</button>
+                </div>
+              </div>
+            </footer>
           </div>
-        </section>
-      </aside>
-    </main>
-  </div>
-
-  <div id="loot-modal" class="loot-modal hidden" aria-hidden="true" role="dialog" aria-labelledby="loot-title">
-    <div class="loot-panel panel-frame">
-      <div class="loot-head">
-        <div>
-          <p class="panel-eyebrow">Container Access</p>
-          <h3 id="loot-title">铁箱内容物</h3>
-        </div>
-        <button type="button" id="close-loot-btn" class="loot-close" aria-label="关闭搜刮面板">关闭</button>
-      </div>
-
-      <div id="loot-items" class="loot-grid"></div>
-
-      <div class="loot-actions">
-        <button type="button" id="loot-all-btn" class="loot-confirm">全部拾取</button>
+          <aside class="side-column sidebar-container">
+            <section class="party-panel panel-frame">
+              <div class="panel-header">
+                <div>
+                  <p class="panel-eyebrow">Party Roster</p>
+                  <h2>队伍状态栏</h2>
+                </div>
+                <span id="party-count" class="panel-badge">0 名单位</span>
+              </div>
+              <div class="panel-body">
+                <div id="party-roster" class="party-roster" aria-label="队伍状态"></div>
+              </div>
+            </section>
+            <section class="state-panel panel-frame">
+              <div class="panel-header">
+                <div>
+                  <p class="panel-eyebrow">Environment Objects</p>
+                  <h2>场景对象区</h2>
+                </div>
+                <span id="environment-count" class="panel-badge">0 个对象</span>
+              </div>
+              <div class="panel-body">
+                <div class="state-stack">
+                  <section class="subpanel">
+                    <div class="subpanel-header"><h3>场景对象</h3></div>
+                    <div class="subpanel-body">
+                      <div id="environment-list" class="environment-list" aria-label="环境物品"></div>
+                    </div>
+                  </section>
+                </div>
+              </div>
+            </section>
+          </aside>
+        </main>
       </div>
     </div>
-  </div>
-  </div>
 
+    <!-- HUD floating containers -->
+    <div id="toast-container" class="toast-container" aria-live="polite"></div>
+    <div id="dice-card-container" class="dice-card-container"></div>
+
+    <!-- Bottom Input Dock -->
+    <div id="bottom-dock" class="bottom-dock">
+      <span id="interaction-hint" class="interaction-hint hint-hidden"></span>
+      <div class="bottom-dock-input">
+        <label class="sr-only" for="dock-input">输入指令</label>
+        <input type="text" id="dock-input" class="dock-input" placeholder="输入对白或行动指令…" autocomplete="off" />
+        <button type="button" id="dock-send-btn" class="dock-send-btn">发送</button>
+      </div>
+    </div>
   </section>
 
-  <button type="button" id="xray-toggle-btn" class="xray-toggle-btn" aria-controls="xray-panel" aria-expanded="true">
-    X-Ray
+  <!-- ═══════════════════════════════════════════════════
+       RIGHT: Director Trace Panel (replaces X-Ray)
+       ═══════════════════════════════════════════════════ -->
+  <button type="button" id="xray-toggle-btn" class="xray-toggle-btn" aria-controls="director-trace-panel" aria-expanded="true">
+    Director
   </button>
 
-  <aside id="xray-panel" class="xray-panel" aria-label="炼金术逻辑追踪器">
+  <aside id="director-trace-panel" class="xray-panel" aria-label="Director Trace Panel">
     <header class="xray-header">
-      <p>Developer Scrying Lens</p>
-      <h2>炼金术逻辑追踪器 <span>Logic Tracer</span></h2>
+      <p>AI Director Pipeline</p>
+      <h2>Director Trace <span>Logic Tracer</span></h2>
+      <div id="director-state-indicator" class="director-state-indicator director-state--idle">Director Idle · Local Exploration</div>
     </header>
 
     <section class="xray-section">
@@ -224,12 +239,13 @@
         <span>01</span>
         <h3>Node Trace</h3>
       </div>
-      <ol id="node-timeline" class="node-timeline">
-        <li data-node="input_processing"><strong>INPUT_NODE</strong><small>Command Intake</small><span class="node-timing">--ms</span></li>
-        <li data-node="dm_analysis"><strong>DM_NODE</strong><small>Intent Alchemy</small><span class="node-timing">--ms</span></li>
-        <li data-node="mechanics_processing"><strong>MECHANICS_NODE</strong><small>Dice & Physics</small><span class="node-timing">--ms</span></li>
-        <li data-node="dialogue_processing"><strong>DIALOGUE_NODE</strong><small>Social Lock</small><span class="node-timing">--ms</span></li>
-        <li data-node="generation"><strong>GENERATION_NODE</strong><small>Narrative Output</small><span class="node-timing">--ms</span></li>
+      <ol id="director-node-timeline" class="node-timeline">
+        <li data-node="input_processing"><strong>Input</strong><small>玩家叙事触发</small><span class="node-timing">--ms</span></li>
+        <li data-node="dm_analysis"><strong>AI Director</strong><small>意图识别 · 剧情路由</small><span class="node-timing">--ms</span></li>
+        <li data-node="mechanics_processing"><strong>Mechanics</strong><small>检定 · 物理 · LoS · 物品</small><span class="node-timing">--ms</span></li>
+        <li data-node="dialogue_processing"><strong>Actor Runtime</strong><small>队友/NPC 发言与事件</small><span class="node-timing">--ms</span></li>
+        <li data-node="event_drain"><strong>EventDrain</strong><small>好感 · 记忆 · 物品 · 状态写回</small><span class="node-timing">--ms</span></li>
+        <li data-node="generation"><strong>Narration</strong><small>最终叙事输出</small><span class="node-timing">--ms</span></li>
       </ol>
     </section>
 
@@ -265,7 +281,13 @@
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/phaser@3.60.0/dist/phaser.min.js" defer></script>
-  <script src="./game.js?v=20260421-qa2" defer></script>
-  <script src="./app.js?v=20260421-qa2" defer></script>
+  <script src="./necromancer-meta.js?v=20260428" defer></script>
+  <script src="./tiled-adapter.js?v=20260428" defer></script>
+  <script src="./ui-event-adapter.js?v=20260428" defer></script>
+  <script src="./director-trace.js?v=20260428" defer></script>
+  <script src="./input-controller.js?v=20260428" defer></script>
+  <script src="./hud-renderers.js?v=20260428" defer></script>
+  <script src="./game.js?v=20260428" defer></script>
+  <script src="./app.js?v=20260428" defer></script>
 </body>
 </html>

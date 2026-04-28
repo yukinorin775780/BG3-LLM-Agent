@@ -101,11 +101,17 @@ class GameService:
         session_id: str,
         character: Optional[str] = None,
         map_id: Optional[str] = None,
+        target: Optional[str] = None,
+        source: Optional[str] = None,
         stream_handler: Optional[StreamHandler] = None,
     ) -> ChatTurnResult:
         normalized_input = (user_input or "").strip()
         normalized_intent = (intent or "").strip()
+        if not normalized_intent and normalized_input:
+            normalized_intent = "chat"
         normalized_intent_key = normalized_intent.lower()
+        normalized_target = (target or "").strip()
+        normalized_source = (source or "").strip().lower()
         if not normalized_input and not normalized_intent:
             raise InvalidChatRequestError(
                 "At least one of user_input or intent must be non-empty."
@@ -143,13 +149,20 @@ class GameService:
                     state=previous_state,
                     session_id=session_id,
                 )
+                # Recapture journal length after intro patch so intro entries
+                # are excluded from the init_sync response.
+                previous_journal_len = len(previous_state.get("journal_events") or [])
 
                 if normalized_intent_key == "init_sync":
                     turn_ok = True
-                    return self._build_chat_result(
+                    chat_result = self._build_chat_result(
                         previous_state,
                         previous_journal_len=previous_journal_len,
                     )
+                    # init_sync is a pure state sync contract: no per-turn narrative delta.
+                    chat_result["responses"] = []
+                    chat_result["journal_events"] = []
+                    return chat_result
 
                 if normalized_intent_key in {"background_step", "process_reflections"}:
                     result_state = await self._process_background_step(
@@ -172,6 +185,7 @@ class GameService:
                         previous_journal_len=previous_journal_len,
                         user_input=normalized_input,
                         character=character,
+                        target=normalized_target,
                     )
                     chat_result = self._build_chat_result(
                         result_state,
@@ -189,6 +203,14 @@ class GameService:
                 payload: Dict[str, Any] = {"user_input": normalized_input}
                 if normalized_intent:
                     payload["intent"] = normalized_intent
+                payload["target"] = normalized_target
+                payload["source"] = normalized_source
+                if normalized_target or normalized_source:
+                    payload["intent_context"] = {
+                        "action_actor": "player",
+                        "action_target": normalized_target.lower(),
+                        "source": normalized_source,
+                    }
 
                 logger.info(
                     "收到聊天请求: user_input=%r intent=%r session_id=%s",
@@ -481,6 +503,7 @@ class GameService:
         previous_journal_len: int,
         user_input: str,
         character: Optional[str],
+        target: Optional[str],
     ) -> Dict[str, Any]:
         entities = copy.deepcopy(previous_state.get("entities") or {})
         environment_objects = copy.deepcopy(previous_state.get("environment_objects") or {})
@@ -500,6 +523,7 @@ class GameService:
             user_input=user_input,
             entities=entities,
             environment_objects=environment_objects,
+            explicit_target=target,
         )
         loot_result = mechanics.execute_loot_action(
             {
@@ -614,6 +638,16 @@ class GameService:
         environment_objects = self._build_environment_objects_payload(state)
         player_inventory = state.get("player_inventory")
         return {
+            **(
+                {"latest_roll": copy.deepcopy(state.get("latest_roll"))}
+                if isinstance(state.get("latest_roll"), dict) and state.get("latest_roll")
+                else {}
+            ),
+            **(
+                {"demo_cleared": True}
+                if bool(state.get("demo_cleared", False))
+                else {}
+            ),
             "responses": formatted_responses,
             "journal_events": new_journal,
             "current_location": state.get("current_location", "Unknown"),
@@ -774,7 +808,12 @@ class GameService:
         user_input: str,
         entities: Dict[str, Any],
         environment_objects: Dict[str, Any],
+        explicit_target: Optional[str] = None,
     ) -> str:
+        normalized_explicit = str(explicit_target or "").strip().lower()
+        if normalized_explicit:
+            return normalized_explicit
+
         normalized_input = str(user_input or "").strip().lower()
         candidates = [
             str(target_id).strip().lower()
@@ -782,9 +821,21 @@ class GameService:
             if str(target_id).strip()
         ]
 
+        # Direct ID match
         for candidate in candidates:
             if candidate and candidate in normalized_input:
                 return candidate
+
+        # Alias-based resolution for common targets
+        _LOOT_ALIASES: Dict[str, tuple] = {
+            "gribbo": ("地精", "哥布林", "gribbo"),
+            "chest_1": ("箱子", "宝箱", "战利品箱", "chest"),
+        }
+        for target_id, aliases in _LOOT_ALIASES.items():
+            if target_id not in candidates:
+                continue
+            if any(alias in normalized_input for alias in aliases):
+                return target_id
 
         match = re.search(r"(?:loot|搜刮|搜尸|摸尸|拾取)\s+([a-zA-Z0-9_]+)", normalized_input)
         if match:
@@ -800,6 +851,8 @@ async def process_chat_turn(
     session_id: str,
     character: Optional[str] = None,
     map_id: Optional[str] = None,
+    target: Optional[str] = None,
+    source: Optional[str] = None,
     stream_handler: Optional[StreamHandler] = None,
     saver_factory: Callable[[str], Any] = AsyncSqliteSaver.from_conn_string,
     graph_builder: Callable[..., GraphProtocol] = build_graph,
@@ -821,5 +874,7 @@ async def process_chat_turn(
         session_id=session_id,
         character=character,
         map_id=map_id,
+        target=target,
+        source=source,
         stream_handler=stream_handler,
     )

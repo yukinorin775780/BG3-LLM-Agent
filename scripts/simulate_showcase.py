@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional
 import requests
 
 
-API_URL = "http://127.0.0.1:8000/api/chat"
+API_URL = "http://127.0.0.1:8010/api/chat"
 SESSION_ID = "simulate-showcase"
 DEFAULT_CHARACTER = "player"
 PARTY_IDS = {"player", "astarion", "shadowheart", "laezel"}

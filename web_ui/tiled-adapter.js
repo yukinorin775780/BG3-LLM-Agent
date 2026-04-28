@@ -1,0 +1,555 @@
+/**
+ * tiled-adapter.js
+ * ───────────────────────────────────────────────────────
+ * Tiled JSON normalization layer.
+ *
+ * normalizeTiledMap(rawJson) → {
+ *   id, width, height, tileLayers,
+ *   collision[][], losBlockers[][],
+ *   triggers[], interactables[], spawns[]
+ * }
+ *
+ * Currently uses a built-in NECROMANCER_LAB_FIXTURE derived
+ * from data/maps/necromancer_lab.yaml.  When a real Tiled JSON
+ * export is available, the parser path will handle it transparently.
+ *
+ * Exposed on window.BG3TiledAdapter.
+ */
+(() => {
+  "use strict";
+
+  /* ── helpers ── */
+  function safeObj(v) {
+    return v && typeof v === "object" ? v : {};
+  }
+  function safeArr(v) {
+    return Array.isArray(v) ? v : [];
+  }
+
+  function make2D(w, h, fill) {
+    const grid = [];
+    for (let y = 0; y < h; y++) {
+      const row = [];
+      for (let x = 0; x < w; x++) row.push(fill);
+      grid.push(row);
+    }
+    return grid;
+  }
+
+  /* ── Parse our YAML-style grid strings ── */
+  function parseGridStrings(raw, w, h) {
+    const collision = make2D(w, h, false);
+    const rows = safeArr(raw);
+    for (let y = 0; y < Math.min(rows.length, h); y++) {
+      const cells =
+        typeof rows[y] === "string"
+          ? rows[y].trim().split(/\s+/)
+          : safeArr(rows[y]);
+      for (let x = 0; x < Math.min(cells.length, w); x++) {
+        collision[y][x] = String(cells[x]).toUpperCase() === "W";
+      }
+    }
+    return collision;
+  }
+
+  /* ── Parse obstacles into losBlockers grid ── */
+  function buildLosGrid(obstacles, w, h) {
+    const grid = make2D(w, h, false);
+    safeArr(obstacles).forEach((obs) => {
+      const o = safeObj(obs);
+      if (!o.blocks_los) return;
+      safeArr(o.coordinates).forEach((coord) => {
+        if (!Array.isArray(coord) || coord.length < 2) return;
+        const x = Math.round(Number(coord[0]));
+        const y = Math.round(Number(coord[1]));
+        if (x >= 0 && x < w && y >= 0 && y < h) grid[y][x] = true;
+      });
+    });
+    return grid;
+  }
+
+  /* ── Mark obstacle collision into collision grid ── */
+  function mergeObstacleCollision(collision, obstacles, w, h) {
+    safeArr(obstacles).forEach((obs) => {
+      const o = safeObj(obs);
+      if (!o.blocks_movement) return;
+      safeArr(o.coordinates).forEach((coord) => {
+        if (!Array.isArray(coord) || coord.length < 2) return;
+        const x = Math.round(Number(coord[0]));
+        const y = Math.round(Number(coord[1]));
+        if (x >= 0 && x < w && y >= 0 && y < h) collision[y][x] = true;
+      });
+    });
+  }
+
+  /* ── Extract triggers from obstacles ── */
+  function extractTriggers(obstacles) {
+    return safeArr(obstacles)
+      .filter((o) => {
+        const type = String(safeObj(o).type || "").toLowerCase();
+        return (
+          type === "transition_zone" ||
+          type === "trigger" ||
+          type === "narrative_trigger" ||
+          type === "trap"
+        );
+      })
+      .map((o) => {
+        const obs = safeObj(o);
+        const coords = safeArr(obs.coordinates);
+        const first = safeArr(coords[0]);
+        return {
+          id: obs.entity_id || obs.id || obs.name || "trigger",
+          x: Number(first[0]) || 0,
+          y: Number(first[1]) || 0,
+          w: 1,
+          h: 1,
+          type: obs.type || "trigger",
+          data: obs,
+        };
+      });
+  }
+
+  /* ── Extract interactables from environment_objects ── */
+  function extractInteractables(envObjects) {
+    return safeArr(envObjects).map((raw) => {
+      const o = safeObj(raw);
+      const pos = safeArr(o.position);
+      const status = String(o.status || (o.is_hidden ? "hidden" : "")).toLowerCase();
+      return {
+        id: o.id || "",
+        x: Number(pos[0]) || Number(o.x) || 0,
+        y: Number(pos[1]) || Number(o.y) || 0,
+        type: o.type || "object",
+        name: o.name || o.id || "",
+        status,
+        is_hidden: Boolean(o.is_hidden),
+        is_revealed: Boolean(o.is_revealed),
+        discovered: Boolean(o.discovered),
+        label:
+          (window.BG3NecromancerMeta &&
+            window.BG3NecromancerMeta.OBJECT_LABELS[o.id]) ||
+          o.name ||
+          o.id ||
+          "",
+        data: o,
+      };
+    });
+  }
+
+  /* ── Extract spawns ── */
+  function extractSpawns(rawSpawns) {
+    return safeArr(rawSpawns).map((raw) => {
+      const s = safeObj(raw);
+      const pos = safeArr(s.position);
+      return {
+        id: s.instance_id || s.id || "",
+        x: Number(pos[0]) || Number(s.x) || 0,
+        y: Number(pos[1]) || Number(s.y) || 0,
+        faction: s.faction || "neutral",
+        prefab: s.prefab || "",
+      };
+    });
+  }
+
+  function extractSpawnInteractables(rawSpawns) {
+    return safeArr(rawSpawns)
+      .map((raw) => {
+        const s = safeObj(raw);
+        const pos = safeArr(s.position);
+        const id = s.instance_id || s.id || "";
+        if (!id) return null;
+        return {
+          id,
+          x: Number(pos[0]) || Number(s.x) || 0,
+          y: Number(pos[1]) || Number(s.y) || 0,
+          type: "npc",
+          name: id,
+          label:
+            (window.BG3NecromancerMeta &&
+              window.BG3NecromancerMeta.OBJECT_LABELS[id]) ||
+            id,
+        };
+      })
+      .filter(Boolean);
+  }
+
+  /* ══════════════════════════════════════════════════════
+   *  NECROMANCER_LAB_FIXTURE
+   *  Derived from data/maps/necromancer_lab.yaml
+   * ══════════════════════════════════════════════════════ */
+  const NECROMANCER_LAB_FIXTURE = Object.freeze({
+    map_id: "necromancer_lab",
+    name: "死灵法师的废弃实验室",
+    dimensions: [20, 14],
+    player_start: [2, 2],
+    grid: [
+      "W W W W W W W W W W W W W W W W W W W W",
+      "W . . . . . W W W W W . . . . . . . . W",
+      "W . . . . . W W W W W . . . . . . . . W",
+      "W . . . . . . . . . . . . . . . . . . W",
+      "W . . . . . W W W W W . . . . . . . . W",
+      "W W W W . W W W W W W W W W W . W W W W",
+      "W W W W . W W W W W W W W W W . W W W W",
+      "W . . . . . . . W W . . . . . . . . . W",
+      "W . . . . . . . W W . . . . . . . . . W",
+      "W . . . . . . . W W . . . . . . . . . W",
+      "W W W W W W W W W W . W W W W W W W W W",
+      "W . . . . . . . . . . . . . . W W W W W",
+      "W . . . . . . . . . . W W W W W W W W W",
+      "W W W W W W W W W W W W W W W W W W W W",
+    ],
+    environment_objects: [
+      {
+        id: "gas_trap_1",
+        type: "trap",
+        name: "毒气陷阱",
+        position: [4, 6],
+        is_hidden: true,
+        detect_dc: 13,
+        disarm_dc: 15,
+        damage: "2d6",
+        damage_type: "poison",
+        save_dc: 13,
+        trigger_radius: 0,
+      },
+      {
+        id: "chest_1",
+        type: "chest",
+        name: "死灵法师的战利品箱",
+        status: "open",
+        description: "箱盖虚掩，里面散落着钥匙与杂物。",
+        position: [16, 2],
+        inventory: { heavy_iron_key: 1, gold_coin: 12 },
+      },
+      {
+        id: "necromancer_diary",
+        type: "readable",
+        name: "沾满血污的日记本",
+        position: [15, 3],
+        lore_id: "necromancer_diary_1",
+      },
+      {
+        id: "heavy_oak_door_1",
+        type: "door",
+        name: "通往地表的沉重大门",
+        position: [14, 11],
+        is_open: false,
+      },
+    ],
+    obstacles: [
+      /* Act 1 — corridor approach trigger zone at rows 3-4, columns 1-5 */
+      {
+        type: "narrative_trigger",
+        entity_id: "act1_corridor_approach",
+        name: "走廊感知区",
+        coordinates: [[1, 3], [2, 3], [3, 3], [4, 3], [5, 3]],
+        blocks_movement: false,
+        blocks_los: false,
+      },
+    ],
+    spawns: [
+      {
+        prefab: "characters/gribbo.yaml",
+        instance_id: "gribbo",
+        position: [4, 9],
+        faction: "neutral",
+      },
+    ],
+  });
+
+  /* ══════════════════════════════════════════════════════
+   *  normalizeTiledMap(rawJson)
+   *
+   *  Accepts:
+   *    - Our YAML-derived map format (with .grid, .dimensions, etc.)
+   *    - Future: Tiled JSON export (with .layers, .tilesets, etc.)
+   *    - null/undefined → returns necromancer_lab fixture
+   * ══════════════════════════════════════════════════════ */
+  function normalizeTiledMap(rawJson) {
+    const raw = safeObj(rawJson);
+
+    /* No input / empty → default fixture */
+    if (!rawJson || Object.keys(raw).length === 0) {
+      return normalizeTiledMap(NECROMANCER_LAB_FIXTURE);
+    }
+
+    /* Tiled JSON format detection (has .layers array) */
+    if (Array.isArray(raw.layers)) {
+      return parseTiledJson(raw);
+    }
+
+    /* Our YAML-derived format */
+    return parseYamlFormat(raw);
+  }
+
+  function parseYamlFormat(raw) {
+    const dims = safeArr(raw.dimensions);
+    const w = Number(dims[0]) || Number(raw.width) || 20;
+    const h = Number(dims[1]) || Number(raw.height) || 14;
+    const playerStart = safeArr(raw.player_start);
+
+    const collision = parseGridStrings(raw.grid, w, h);
+    mergeObstacleCollision(collision, raw.obstacles, w, h);
+    const losBlockers = buildLosGrid(raw.obstacles, w, h);
+
+    /* Merge wall cells into losBlockers too */
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        if (collision[y][x]) losBlockers[y][x] = true;
+      }
+    }
+
+    return {
+      id: raw.map_id || raw.id || "",
+      name: raw.name || "",
+      width: w,
+      height: h,
+      playerStart: {
+        x: Number(playerStart[0]) || 0,
+        y: Number(playerStart[1]) || 0,
+      },
+      tileLayers: [],
+      collision,
+      losBlockers,
+      triggers: extractTriggers(raw.obstacles),
+      interactables: extractInteractables(raw.environment_objects).concat(
+        extractSpawnInteractables(raw.spawns)
+      ),
+      spawns: extractSpawns(raw.spawns),
+    };
+  }
+
+  /* ══════════════════════════════════════════════════════
+   *  parseTiledJson — full Tiled JSON parsing
+   *  Handles:
+   *    - tilelayer with name collision/walls → collision grid
+   *    - tilelayer with name los_blockers/los → losBlockers grid
+   *    - objectgroup layers → triggers, interactables, spawns,
+   *      player_start, collision rects, los_blocker rects
+   * ══════════════════════════════════════════════════════ */
+  function parseTiledJson(raw) {
+    const tw = Number(raw.tilewidth) || 32;
+    const th = Number(raw.tileheight) || 32;
+    const w = Number(raw.width) || 20;
+    const h = Number(raw.height) || 14;
+    const collision = make2D(w, h, false);
+    const losBlockers = make2D(w, h, false);
+    const triggers = [];
+    const interactables = [];
+    const spawns = [];
+    let playerStart = { x: 0, y: 0 };
+
+    safeArr(raw.layers).forEach((layer) => {
+      const l = safeObj(layer);
+      const name = String(l.name || "").toLowerCase();
+      const ltype = String(l.type || "").toLowerCase();
+
+      /* ── Tile layers (gid-based collision / los) ── */
+      if (ltype === "tilelayer" && Array.isArray(l.data)) {
+        const data = l.data;
+        if (name === "collision" || name === "walls") {
+          data.forEach((gid, i) => {
+            if (gid > 0) {
+              const x = i % w;
+              const y = Math.floor(i / w);
+              if (x < w && y < h) collision[y][x] = true;
+            }
+          });
+        }
+        if (name === "los_blockers" || name === "los") {
+          data.forEach((gid, i) => {
+            if (gid > 0) {
+              const x = i % w;
+              const y = Math.floor(i / w);
+              if (x < w && y < h) losBlockers[y][x] = true;
+            }
+          });
+        }
+        return;
+      }
+
+      /* ── Object group layers ── */
+      if (ltype === "objectgroup" && Array.isArray(l.objects)) {
+        l.objects.forEach((rawObj) => {
+          const obj = safeObj(rawObj);
+          parseObjectGroupItem(obj, name, tw, th, w, h,
+            collision, losBlockers, triggers, interactables, spawns,
+            (ps) => { playerStart = ps; });
+        });
+      }
+    });
+
+    return {
+      id: raw.map_id || raw.id || "",
+      name: raw.name || "",
+      width: w,
+      height: h,
+      playerStart,
+      tileLayers: safeArr(raw.layers),
+      collision,
+      losBlockers,
+      triggers,
+      interactables,
+      spawns,
+    };
+  }
+
+  /**
+   * Parse a single Tiled object from an objectgroup layer.
+   *
+   * Object classification priority:
+   *   1. obj.type / obj.class (Tiled ≥ 1.9 uses "class" instead of "type")
+   *   2. Layer name as fallback category
+   *   3. Custom properties array → flattened to key/value map
+   */
+  function parseObjectGroupItem(
+    obj, layerName, tw, th, mapW, mapH,
+    collision, losBlockers, triggers, interactables, spawns,
+    playerStartSetter
+  ) {
+    const objType = String(obj.type || obj["class"] || "").toLowerCase();
+    const objName = String(obj.name || "").toLowerCase();
+    const props = flattenProperties(obj.properties);
+
+    /* Pixel → grid coordinates */
+    const gx = Math.floor(Number(obj.x || 0) / tw);
+    const gy = Math.floor(Number(obj.y || 0) / th);
+    const gw = Math.max(1, Math.floor(Number(obj.width || tw) / tw));
+    const gh = Math.max(1, Math.floor(Number(obj.height || th) / th));
+
+    /* ── player_start / spawn_point ── */
+    if (
+      objType === "player_start" || objType === "spawn_point" ||
+      objName === "player_start" || objName === "player" ||
+      layerName === "player_start"
+    ) {
+      playerStartSetter({ x: gx, y: gy });
+      return;
+    }
+
+    /* ── collision rects ── */
+    if (
+      objType === "collision" || objType === "wall" ||
+      layerName === "collision" || layerName === "walls"
+    ) {
+      markRect(collision, gx, gy, gw, gh, mapW, mapH);
+      return;
+    }
+
+    /* ── los_blockers rects ── */
+    if (
+      objType === "los_blocker" || objType === "los" ||
+      layerName === "los_blockers" || layerName === "los"
+    ) {
+      markRect(losBlockers, gx, gy, gw, gh, mapW, mapH);
+      return;
+    }
+
+    /* ── triggers ── */
+    if (
+      objType === "trigger" || objType === "transition_zone" ||
+      objType === "narrative_trigger" ||
+      layerName === "triggers" || layerName === "trigger"
+    ) {
+      triggers.push({
+        id: obj.name || props.id || "trigger_" + gx + "_" + gy,
+        x: gx,
+        y: gy,
+        w: gw,
+        h: gh,
+        type: objType || "trigger",
+        data: { ...props, name: obj.name || "" },
+      });
+      return;
+    }
+
+    /* ── spawns ── */
+    if (
+      objType === "spawn" || objType === "npc" || objType === "enemy" ||
+      layerName === "spawns" || layerName === "spawn"
+    ) {
+      const spawnId = obj.name || props.instance_id || props.id || "";
+      spawns.push({
+        id: spawnId,
+        x: gx,
+        y: gy,
+        faction: props.faction || "neutral",
+        prefab: props.prefab || "",
+      });
+      if (spawnId) {
+        interactables.push({
+          id: spawnId,
+          x: gx,
+          y: gy,
+          type: "npc",
+          name: spawnId,
+          label:
+            (window.BG3NecromancerMeta &&
+              window.BG3NecromancerMeta.OBJECT_LABELS[spawnId]) ||
+            spawnId,
+        });
+      }
+      return;
+    }
+
+    /* ── interactables (default for named objects in interactable layers) ── */
+    if (
+      objType === "interactable" || objType === "chest" || objType === "door" ||
+      objType === "readable" || objType === "trap" || objType === "object" ||
+      layerName === "interactables" || layerName === "objects" ||
+      layerName === "environment_objects"
+    ) {
+      interactables.push({
+        id: obj.name || props.id || "",
+        x: gx,
+        y: gy,
+        type: objType || "object",
+        name: obj.name || props.name || "",
+        label:
+          (window.BG3NecromancerMeta &&
+            window.BG3NecromancerMeta.OBJECT_LABELS[obj.name || props.id]) ||
+          obj.name || props.name || "",
+      });
+      return;
+    }
+
+    /* ── Fallback: treat named objects in unknown layers as interactables ── */
+    if (obj.name) {
+      interactables.push({
+        id: obj.name,
+        x: gx,
+        y: gy,
+        type: objType || "object",
+        name: obj.name,
+        label: obj.name,
+      });
+    }
+  }
+
+  /** Flatten Tiled custom properties [{name, value, type}] → {key: value} */
+  function flattenProperties(props) {
+    const out = {};
+    safeArr(props).forEach((p) => {
+      const o = safeObj(p);
+      if (o.name) out[o.name] = o.value !== undefined ? o.value : true;
+    });
+    return out;
+  }
+
+  /** Mark a rectangle in a 2D boolean grid */
+  function markRect(grid, gx, gy, gw, gh, mapW, mapH) {
+    for (let dy = 0; dy < gh; dy++) {
+      for (let dx = 0; dx < gw; dx++) {
+        const y = gy + dy, x = gx + dx;
+        if (x >= 0 && x < mapW && y >= 0 && y < mapH) grid[y][x] = true;
+      }
+    }
+  }
+
+  /* ── Public API ── */
+  window.BG3TiledAdapter = Object.freeze({
+    normalizeTiledMap,
+    NECROMANCER_LAB_FIXTURE,
+  });
+})();

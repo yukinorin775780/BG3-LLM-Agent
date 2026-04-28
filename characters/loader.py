@@ -236,13 +236,15 @@ class CharacterLoader:
         except yaml.YAMLError as e:
             raise yaml.YAMLError(f"Error parsing YAML file {yaml_path}: {e}")
     
-    def load_template(self, name: str) -> Any:
+    def load_template(self, name: str, template_path: Optional[str] = None) -> Any:
         """
         Load Jinja2 template for the character.
         
         Args:
             name: Character name (e.g., "shadowheart")
                 The method will look for {name}_persona_template.j2 or persona_template.j2 in the characters directory.
+            template_path: Optional explicit template path from YAML (e.g., "prompts/hostile_npc_template.j2").
+                If provided, this is tried first before the default fallback chain.
         
         Returns:
             jinja2.Template: Loaded Jinja2 template
@@ -250,11 +252,12 @@ class CharacterLoader:
         Raises:
             TemplateNotFound: If the template file doesn't exist
         """
-        # Try character-specific template first (e.g., shadowheart_persona_template.j2)
-        template_names = [
-            f"{name}_persona_template.j2",
-            "persona_template.j2"  # Fallback to generic persona_template.j2
-        ]
+        # Build candidate list: explicit template_path first, then standard fallbacks
+        template_names = []
+        if template_path and isinstance(template_path, str) and template_path.strip():
+            template_names.append(template_path.strip())
+        template_names.append(f"{name}_persona_template.j2")
+        template_names.append("persona_template.j2")
         
         for template_name in template_names:
             try:
@@ -295,8 +298,9 @@ class CharacterLoader:
         if attributes is None:
             attributes = self.load_character(name)
         
-        # Load template
-        template = self.load_template(name)
+        # Load template — respect template_path from YAML if present
+        template_path = attributes.get("template_path") if isinstance(attributes, dict) else None
+        template = self.load_template(name, template_path=template_path)
         
         # 预处理 dynamic_states：计算激活的规则描述
         dynamic_states = _resolve_dynamic_states(attributes, **kwargs)
@@ -412,7 +416,15 @@ class Character:
         # 注入 relationship，并补全 ability_scores / dialogue_style 等模板必需字段（兼容简版 YAML）
         current_attributes = normalize_character_attributes_for_template(self.data)
         current_attributes["relationship"] = relationship_score
-        
+
+        # Flatten nested 'attributes' subkey for hostile NPC YAMLs (e.g., gribbo.yaml)
+        # that nest personality/secret_objective under an 'attributes:' key.
+        nested_attrs = current_attributes.get("attributes")
+        if isinstance(nested_attrs, dict):
+            for key in ("personality", "secret_objective", "ability_scores"):
+                if key in nested_attrs and key not in current_attributes:
+                    current_attributes[key] = nested_attrs[key]
+
         # Ensure flags is a dict (default to empty)
         if flags is None:
             flags = {}

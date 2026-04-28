@@ -16,7 +16,7 @@ pip install -r requirements.txt
 python main.py
 
 # 运行 API 服务
-python server.py
+python -m uvicorn server:app --host 127.0.0.1 --port 8010
 
 # 运行测试
 pytest

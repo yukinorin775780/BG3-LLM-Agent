@@ -40,7 +40,7 @@ def _dialogue_reply_analysis() -> dict:
 
 def test_dm_node_overrides_act3_side_choice_to_party_turn_chat():
     state = _build_dm_state("阿斯代伦说得对，我们一起嘲笑 Gribbo。")
-    with patch("core.graph.nodes.dm.analyze_intent", return_value=_dialogue_reply_analysis()):
+    with patch("core.graph.nodes.dm.analyze_intent", side_effect=AssertionError("should not call llm")):
         result = asyncio.run(dm_node(state))
 
     assert result["intent"] == "CHAT"
@@ -69,10 +69,51 @@ def test_dm_node_overrides_act4_post_combat_banter_to_party_turn_chat():
     state["player_inventory"] = {"heavy_iron_key": 1}
     state["active_dialogue_target"] = None
 
-    with patch("core.graph.nodes.dm.analyze_intent", return_value=_dialogue_reply_analysis()):
+    with patch("core.graph.nodes.dm.analyze_intent", return_value=_dialogue_reply_analysis()) as mocked_llm:
         result = asyncio.run(dm_node(state))
 
+    mocked_llm.assert_called_once()
     assert result["intent"] == "CHAT"
     assert result["current_speaker"] == "astarion"
     assert result["speaker_queue"] == ["shadowheart", "laezel"]
     assert result["intent_context"]["act4_post_combat_banter"] is True
+
+
+def test_dm_node_structured_chat_to_gribbo_routes_without_llm_timeout():
+    state = _build_dm_state("")
+    state["intent"] = "CHAT"
+    state["target"] = "gribbo"
+    state["source"] = "interaction"
+    state["active_dialogue_target"] = None
+    state["intent_context"] = {"action_target": "gribbo", "source": "interaction"}
+    with patch("core.graph.nodes.dm.analyze_intent", side_effect=AssertionError("should not call llm")):
+        result = asyncio.run(dm_node(state))
+
+    assert result["intent"] == "START_DIALOGUE"
+    assert result["intent_context"]["action_target"] == "gribbo"
+    assert result["active_dialogue_target"] == "gribbo"
+
+
+def test_dm_node_plain_chat_does_not_force_structured_dialogue_from_active_target():
+    state = _build_dm_state("移动到 13,11。")
+    state["active_dialogue_target"] = "gribbo"
+    move_analysis = {
+        "action_type": "MOVE",
+        "difficulty_class": 0,
+        "reason": "scripted_move",
+        "is_probing_secret": False,
+        "responders": ["player"],
+        "affection_changes": {},
+        "flags_changed": {},
+        "item_transfers": [],
+        "hp_changes": [],
+        "action_actor": "player",
+        "action_target": "13,11",
+    }
+
+    with patch("core.graph.nodes.dm.analyze_intent", return_value=move_analysis) as mocked_llm:
+        result = asyncio.run(dm_node(state))
+
+    mocked_llm.assert_called_once()
+    assert result["intent"] == "MOVE"
+    assert result["intent_context"]["action_target"] == "13,11"

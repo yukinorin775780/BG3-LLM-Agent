@@ -1,25 +1,32 @@
 (() => {
   const API_URL = "/api/chat";
   const STATE_URL = "/api/state";
-  const SESSION_ID = "test_consume_003";
+  const SESSION_ID =
+    new URLSearchParams(window.location.search).get("session_id") ||
+    "necromancer_lab_demo";
   const IDLE_MS = 30000;
   const DIALOGUE_POLL_MS = 1800;
   const BACKEND_REQUEST_TIMEOUT_MS = 5000;
   const SILENT_FALLBACK_TEXT = "📖 [环境] 一阵阴冷的穿堂风吹过，你暂时失去了对周围环境的感知。";
   const QA_PARAMS = new URLSearchParams(window.location.search);
   const IS_QA_MODE = Array.from(QA_PARAMS.keys()).some((key) => key.startsWith("qa_"));
+  const QA_NO_IDLE = QA_PARAMS.get("qa_no_idle") === "1" || window.__BG3_QA_NO_IDLE__ === true;
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 
-  const SPEAKER_META = {
+  /* Merge necromancer-meta extensions if loaded */
+  const _necroMeta = window.BG3NecromancerMeta || {};
+  const MAP_ID = (_necroMeta.MAP_ID) || "necromancer_lab";
+
+  const SPEAKER_META = Object.assign({
     player: { name: "玩家", color: "#6eb5ff", sigil: "⌘" },
     shadowheart: { name: "影心", color: "#9b84c6", sigil: "✦" },
     astarion: { name: "阿斯代伦", color: "#c97a75", sigil: "🜂" },
     laezel: { name: "莱埃泽尔", color: "#70b99d", sigil: "⚔" },
     dm: { name: "地下城主", color: "#d0ab67", sigil: "☍" },
     npc: { name: "同行者", color: "#b29f7e", sigil: "◈" },
-  };
+  }, _necroMeta.SPEAKER_META_EXTENSIONS || {});
 
-  const ITEM_META = {
+  const ITEM_META = Object.assign({
     gold: { label: "金币", icon: "🪙" },
     gold_coin: { label: "金币", icon: "🪙" },
     scimitar: { label: "弯刀", icon: "🗡" },
@@ -33,7 +40,7 @@
     healing_potion: { label: "治疗药水", icon: "🧪" },
     mysterious_artifact: { label: "神秘遗物", icon: "🜄" },
     rusty_key: { label: "锈钥匙", icon: "🗝" },
-  };
+  }, _necroMeta.ITEM_META_EXTENSIONS || {});
 
   const EQUIPMENT_SLOT_LABELS = {
     weapon: "主手",
@@ -47,11 +54,11 @@
     accessory: "饰品",
   };
 
-  const LOCATION_LABELS = {
+  const LOCATION_LABELS = Object.assign({
     camp_center: "营地中央",
     camp_fire: "篝火",
     iron_chest: "铁箱",
-  };
+  }, _necroMeta.LOCATION_LABEL_EXTENSIONS || {});
 
   const state = {
     partyStatus: {},
@@ -70,6 +77,9 @@
     isLoading: false,
     currentLootTargetId: "",
     seenLootTargets: new Set(),
+    currentInteractable: "",
+    currentIntent: "",
+    readTarget: "",
     activeDialogueTarget: "",
     dialogueText: "",
     xrayTraceTimers: [],
@@ -80,6 +90,44 @@
     speechRecognitionSupported: Boolean(SpeechRecognition),
     isPttRecording: false,
   };
+
+  const INTERACTION_SOURCES = new Set([
+    "interaction",
+    "ui_click",
+    "ui_interaction",
+    "keyboard_interaction",
+  ]);
+  const ACT3_SIDE_MARKERS = [
+    "阿斯代伦说得对",
+    "顺着阿斯代伦",
+    "我同意阿斯代伦",
+    "一起嘲笑",
+    "和阿斯代伦一起嘲笑",
+    "side_with_astarion",
+    "side with astarion",
+    "sided with astarion",
+    "mock gribbo",
+  ];
+  const ACT3_REBUKE_MARKERS = [
+    "阿斯代伦，闭嘴",
+    "阿斯代伦闭嘴",
+    "训斥阿斯代伦",
+    "别拱火",
+    "别再嘲笑",
+    "rebuke_astarion",
+    "rebuke astarion",
+    "shut up astarion",
+  ];
+  const DOOR_ATTACK_MARKERS = ["攻击门", "砸门", "打门", "破门", "attack door", "smash door"];
+  const DOOR_INTERACT_MARKERS = [
+    "打开门",
+    "开门",
+    "使用钥匙打开门",
+    "用 heavy_iron_key 打开门",
+    "检查 heavy_oak_door_1",
+    "open heavy_oak_door_1",
+    "check heavy_oak_door_1",
+  ];
 
   function readQaNumber(name, fallback) {
     const value = Number(QA_PARAMS.get(name));
@@ -151,7 +199,7 @@
     dialogueAttackBtn: document.getElementById("dialogue-attack-btn"),
     mainLayout: document.getElementById("main-layout"),
     xrayToggleBtn: document.getElementById("xray-toggle-btn"),
-    nodeTimeline: document.getElementById("node-timeline"),
+    nodeTimeline: document.getElementById("director-node-timeline") || document.getElementById("node-timeline"),
     patienceBar: document.getElementById("patience-bar"),
     patienceLabel: document.getElementById("patience-label"),
     patienceValue: document.getElementById("patience-value"),
@@ -181,6 +229,12 @@
     lootItems: document.getElementById("loot-items"),
     lootAllBtn: document.getElementById("loot-all-btn"),
     closeLootBtn: document.getElementById("close-loot-btn"),
+    /* New layout elements */
+    dockInput: document.getElementById("dock-input"),
+    dockSendBtn: document.getElementById("dock-send-btn"),
+    actProgress: document.getElementById("act-progress"),
+    actTitle: document.getElementById("act-title"),
+    actSummary: document.getElementById("act-summary"),
   };
 
   function setNetworkState(text, mode) {
@@ -362,6 +416,184 @@
     const data = safeObject(target);
     const status = normalizeId(data.status);
     return inventoryEntries(data.inventory).length > 0 && (status === "open" || status === "opened" || status === "dead");
+  }
+
+  function mapInteractableToStructuredAction(interactable) {
+    const target = safeObject(interactable);
+    const targetId = normalizeId(target.id || "");
+    const targetType = normalizeId(target.type || target.entity_type || "");
+    if (!targetId) return null;
+
+    if (targetId === "necromancer_diary" || targetType === "readable") {
+      return {
+        text: "阅读 " + targetId,
+        intent: "READ",
+        target: "necromancer_diary",
+        source: "interaction",
+      };
+    }
+    if (targetId === "gribbo" || targetType === "npc" || targetType === "character") {
+      return {
+        text: "",
+        intent: "CHAT",
+        target: "gribbo",
+        source: "interaction",
+      };
+    }
+    if (targetId === "heavy_oak_door_1" || targetType === "door") {
+      return {
+        text: "",
+        intent: "INTERACT",
+        target: "heavy_oak_door_1",
+        source: "interaction",
+      };
+    }
+    if (
+      targetType === "loot"
+      || targetType === "chest"
+      || targetType === "corpse"
+      || targetType === "container"
+    ) {
+      return {
+        text: "",
+        intent: "ui_action_loot",
+        character: "player",
+        target: targetId,
+        source: "interaction",
+      };
+    }
+    return {
+      text: "检查 " + (target.label || target.name || targetId),
+      intent: "INTERACT",
+      target: targetId,
+      source: "interaction",
+    };
+  }
+
+  function isAct3ChoiceText(text) {
+    const raw = String(text || "").trim();
+    if (!raw) return false;
+    const normalized = raw.toLowerCase();
+    return ACT3_SIDE_MARKERS.some((marker) => raw.includes(marker) || normalized.includes(marker))
+      || ACT3_REBUKE_MARKERS.some((marker) => raw.includes(marker) || normalized.includes(marker));
+  }
+
+  function isDoorAttackText(text) {
+    const raw = String(text || "").trim();
+    if (!raw) return false;
+    const normalized = raw.toLowerCase();
+    return DOOR_ATTACK_MARKERS.some((marker) => raw.includes(marker) || normalized.includes(marker));
+  }
+
+  function shouldRouteDoorInteractText(text) {
+    const raw = String(text || "").trim();
+    if (!raw) return false;
+    const normalized = raw.toLowerCase();
+    const hasDoorHint = raw.includes("门")
+      || normalized.includes("door")
+      || normalized.includes("heavy_oak_door_1");
+    if (!hasDoorHint) return false;
+    if (isDoorAttackText(raw)) return false;
+    if (DOOR_INTERACT_MARKERS.some((marker) => raw.includes(marker) || normalized.includes(marker))) {
+      return true;
+    }
+    if (normalized.includes("heavy_oak_door_1")) {
+      return /(打开|开门|使用|检查|open|interact|check)/i.test(raw);
+    }
+    return false;
+  }
+
+  function clearTransientInteractionContext(options = {}) {
+    const opts = options && typeof options === "object" ? options : {};
+    state.currentInteractable = "";
+    state.currentIntent = "";
+    state.readTarget = "";
+    if (opts.keepDialogueTarget !== true) {
+      state.activeDialogueTarget = "";
+    }
+  }
+
+  function rememberTransientInteractionContext(intent, target, source) {
+    const normalizedIntent = String(intent || "").trim().toUpperCase();
+    const normalizedTarget = normalizeId(target);
+    const normalizedSource = String(source || "").trim().toLowerCase();
+    if (INTERACTION_SOURCES.has(normalizedSource)) {
+      state.currentInteractable = normalizedTarget;
+      state.currentIntent = normalizedIntent;
+    }
+    if (normalizedIntent === "READ") {
+      state.readTarget = normalizedTarget;
+    }
+  }
+
+  function resolveChatRouting(text, intent, options = {}) {
+    const opts = options && typeof options === "object" ? options : {};
+    const userLine = String(text || "").trim();
+    const explicitIntent = String(intent || "").trim();
+    const explicitTarget = String(opts.target || "").trim();
+    const explicitSource = String(opts.source || "").trim();
+
+    let resolvedIntent = explicitIntent;
+    let resolvedTarget = explicitTarget;
+    let resolvedSource = explicitSource;
+    const activeMapId = String(MAP_ID || "").trim().toLowerCase();
+
+    if (
+      activeMapId === "necromancer_lab"
+      && !resolvedIntent
+      && shouldRouteDoorInteractText(userLine)
+    ) {
+      resolvedIntent = "INTERACT";
+      resolvedTarget = "heavy_oak_door_1";
+      resolvedSource = resolvedSource || "text_input";
+    }
+
+    if (!resolvedIntent) {
+      const activeDialogueTarget = normalizeId(state.activeDialogueTarget);
+      if (activeDialogueTarget === "gribbo") {
+        resolvedIntent = "CHAT";
+        resolvedTarget = resolvedTarget || "gribbo";
+        resolvedSource = resolvedSource || "dialogue_input";
+      } else if (isAct3ChoiceText(userLine)) {
+        resolvedIntent = "CHAT";
+        resolvedTarget = resolvedTarget || "gribbo";
+        resolvedSource = resolvedSource || "text_input";
+      } else {
+        resolvedIntent = "chat";
+        resolvedSource = resolvedSource || "text_input";
+      }
+    }
+
+    if (String(resolvedIntent).trim().toUpperCase() === "READ") {
+      resolvedSource = resolvedSource || "interaction";
+      if (!String(resolvedTarget || "").trim()) {
+        resolvedTarget = state.readTarget || "necromancer_diary";
+      }
+    }
+
+    return {
+      userLine,
+      intentValue: String(resolvedIntent || "").trim(),
+      target: String(resolvedTarget || "").trim(),
+      source: String(resolvedSource || "").trim(),
+    };
+  }
+
+  function buildChatPayload(text, intent, character, options = {}) {
+    const routed = resolveChatRouting(text, intent, options);
+    const characterId = character ? normalizeId(character) : "";
+    const payload = {
+      user_input: routed.userLine,
+      intent: routed.intentValue,
+      target: routed.target,
+      source: routed.source,
+      session_id: SESSION_ID,
+      map_id: MAP_ID,
+    };
+    if (characterId) {
+      payload.character = characterId;
+    }
+    return { payload, routed };
   }
 
   function hpPercent(hp, maxHp) {
@@ -1942,6 +2174,10 @@
       inspectBtn.type = "button";
       inspectBtn.className = "object-action";
       inspectBtn.dataset.command = "检查" + (data.name || prettifyId(id));
+      inspectBtn.dataset.targetId = id;
+      inspectBtn.dataset.targetType = String(data.type || data.entity_type || "");
+      inspectBtn.dataset.targetLabel = String(data.name || prettifyId(id));
+      inspectBtn.dataset.targetName = String(data.name || prettifyId(id));
       inspectBtn.textContent = "检查";
       actions.appendChild(inspectBtn);
 
@@ -2158,17 +2394,25 @@
   }
 
   function resetIdleTimer() {
-    if (IS_QA_MODE) return;
+    if (IS_QA_MODE || QA_NO_IDLE) return;
     window.clearTimeout(state.idleTimer);
     state.idleTimer = window.setTimeout(() => {
       sendMessage("", "trigger_idle_banter");
     }, IDLE_MS);
   }
 
-  async function sendMessage(text, intent, character, options = {}) {
-    const userLine = String(text || "").trim();
-    const intentValue = intent ? String(intent).trim() : "";
+  async function sendStructuredAction(action = {}) {
+    const descriptor = action && typeof action === "object" ? action : {};
+    const options = descriptor.options && typeof descriptor.options === "object" ? descriptor.options : {};
     const opts = options && typeof options === "object" ? options : {};
+    const text = descriptor.text;
+    const intent = descriptor.intent;
+    const character = descriptor.character;
+    const built = buildChatPayload(text, intent, character, opts);
+    const payload = built.payload;
+    const routed = built.routed;
+    const userLine = routed.userLine;
+    const intentValue = routed.intentValue;
 
     if (!userLine && !intentValue) {
       return;
@@ -2178,19 +2422,13 @@
     state.xrayNodeTimings = {};
     updateXrayNodeTimings(state.xrayNodeTimings);
 
-    const payload = {
-      user_input: userLine,
-      intent: intentValue || null,
-      session_id: SESSION_ID,
-    };
-
-    const characterId = character ? normalizeId(character) : "";
-    if (characterId) {
-      payload.character = characterId;
+    /* Activate Director Trace only for narrative requests */
+    const _isNarrative = isNarrativeRequest(intentValue, userLine, routed.source);
+    if (_isNarrative && window.BG3DirectorTrace && typeof window.BG3DirectorTrace.setPending === "function") {
+      window.BG3DirectorTrace.setPending();
     }
-    if (opts.target) {
-      payload.target = String(opts.target).trim();
-    }
+    rememberTransientInteractionContext(intentValue, routed.target, routed.source);
+    const shouldClearReadContext = normalizeId(intentValue) === "read";
 
     try {
       const response = await fetchWithTimeout(API_URL, {
@@ -2208,6 +2446,7 @@
         state.turnCount += 1;
       }
       const wasCombatActive = isCombatStateActive(state.combatState);
+      const prevPartySnapshot = { ...state.partyStatus };
       state.partyStatus = safeObject(data.party_status);
       state.environmentObjects = safeObject(data.environment_objects);
       state.playerInventory = safeObject(data.player_inventory);
@@ -2232,12 +2471,24 @@
       renderTacticalGrid(state.partyStatus, state.environmentObjects, state.mapData);
       renderInitiativeTracker(state.combatState, wasCombatActive);
       updateRestControls(state.combatState);
+      const trace = inferNodeTrace(data, userLine, intentValue);
       updateXrayPanel(data, {
         userLine,
         intent: intentValue,
-        trace: inferNodeTrace(data, userLine, intentValue),
+        trace,
         animateTrace: true,
       });
+
+      /* Director Trace lifecycle: activateTrace on narrative response */
+      if (_isNarrative && window.BG3DirectorTrace && typeof window.BG3DirectorTrace.activateTrace === "function") {
+        window.BG3DirectorTrace.activateTrace(trace, { animate: true });
+      }
+
+      /* Dispatch HUD UI events from response (#1) */
+      if (intentValue.toLowerCase() !== "init_sync") {
+        dispatchUIEventsFromResponse(data, { party_status: prevPartySnapshot });
+      }
+
       if (!opts.skipLogUpdate) {
         updateWorldLog(data, userLine || null);
         triggerMapTransitionEffects(data);
@@ -2249,21 +2500,38 @@
       setNetworkState("链路在线", "ok");
       return data;
     } catch (error) {
+      /* Director Trace: reset to idle on error */
+      if (_isNarrative && window.BG3DirectorTrace && typeof window.BG3DirectorTrace.setIdle === "function") {
+        window.BG3DirectorTrace.setIdle();
+      }
       if (error && error.name === "AbortError") {
         return applySilentNetworkFallback(userLine, intentValue, opts);
       }
       return applySilentNetworkFallback(userLine, intentValue, opts);
     } finally {
+      if (shouldClearReadContext) {
+        clearTransientInteractionContext({ keepDialogueTarget: true });
+      }
       setLoading(false);
       resetIdleTimer();
     }
+  }
+
+  async function sendMessage(text, intent, character, options = {}) {
+    return sendStructuredAction({
+      text,
+      intent,
+      character,
+      options,
+    });
   }
 
   function submitInput() {
     const text = els.userInput.value.trim();
     if (!text) return;
     els.userInput.value = "";
-    sendMessage(text, null);
+    clearTransientInteractionContext({ keepDialogueTarget: true });
+    sendMessage(text, null, null, { source: "text_input" });
   }
 
   function queueCommand(command) {
@@ -2298,7 +2566,10 @@
     const text = String(els.dialogueInput.value || "").trim();
     if (!text) return;
     els.dialogueInput.value = "";
-    sendMessage(text, null);
+    sendMessage(text, null, null, {
+      source: "dialogue_input",
+      target: normalizeId(state.activeDialogueTarget),
+    });
   }
 
   function updatePttButtonState() {
@@ -2408,7 +2679,10 @@
   function interruptDialogueWithAttack() {
     if (state.isLoading || !state.activeDialogueTarget) return;
     els.dialogueInput.value = "";
-    sendMessage("我直接拔出武器攻击！", null);
+    sendMessage("我直接拔出武器攻击！", null, null, {
+      source: "dialogue_input",
+      target: normalizeId(state.activeDialogueTarget),
+    });
   }
 
   function toggleXrayPanel() {
@@ -2429,11 +2703,22 @@
   function handleEnvironmentAction(event) {
     const actionButton = event.target.closest(".object-action");
     if (!actionButton) return;
+    if (state.isLoading) return;
     if (actionButton.dataset.loot === "true") {
       openLootModalForTarget(actionButton.dataset.targetId || "");
       return;
     }
-    queueCommand(actionButton.dataset.command || "");
+    const mapped = mapInteractableToStructuredAction({
+      id: actionButton.dataset.targetId || "",
+      type: actionButton.dataset.targetType || "",
+      label: actionButton.dataset.targetLabel || "",
+      name: actionButton.dataset.targetName || "",
+    });
+    if (!mapped) return;
+    sendMessage(mapped.text || "", mapped.intent || null, mapped.character || null, {
+      target: mapped.target || "",
+      source: mapped.source || "ui_click",
+    });
   }
 
   function handlePartyAction(event) {
@@ -2532,7 +2817,10 @@
       hideLootModal();
       if (!targetId) return;
       state.seenLootTargets.add(targetId);
-      sendMessage("我要搜刮 " + targetId, "ui_action_loot", "player");
+      sendMessage("我要搜刮 " + targetId, "ui_action_loot", "player", {
+        target: targetId,
+        source: "ui_click",
+      });
     });
 
     document.addEventListener("keydown", (event) => {
@@ -2600,12 +2888,15 @@
       const partyStatus = safeObject(data.party_status);
       const environmentObjects = safeObject(data.environment_objects);
       const combatState = safeObject(data.combat_state);
+      const prevPollParty = { ...state.partyStatus };
       if (Object.keys(partyStatus).length) state.partyStatus = partyStatus;
       if (Object.keys(environmentObjects).length) state.environmentObjects = environmentObjects;
       state.combatState = combatState;
       updateDialogueOverlay(data);
       updateRestControls(state.combatState);
       updateXrayPanel(data);
+      /* P1-1: dispatch HUD events from state polling too */
+      dispatchUIEventsFromResponse(data, { party_status: prevPollParty });
     } catch (error) {
       if (error && error.name === "AbortError") {
         setNetworkState("链路在线", "ok");
@@ -2622,19 +2913,138 @@
     }, DIALOGUE_POLL_MS);
   }
 
+  function submitDockInput() {
+    if (!els.dockInput) return;
+    const text = els.dockInput.value.trim();
+    if (!text) return;
+    els.dockInput.value = "";
+    clearTransientInteractionContext({ keepDialogueTarget: true });
+    sendMessage(text, null, null, { source: "dock_input" });
+  }
+
+  function bindDockEvents() {
+    if (els.dockInput) {
+      els.dockInput.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          submitDockInput();
+        }
+      });
+    }
+    if (els.dockSendBtn) {
+      els.dockSendBtn.addEventListener("click", submitDockInput);
+    }
+  }
+
+  function initNewModules() {
+    /* Initialize Director Trace Panel */
+    if (window.BG3DirectorTrace && typeof window.BG3DirectorTrace.init === "function") {
+      window.BG3DirectorTrace.init();
+    }
+
+    /* Load and normalize map */
+    let normalizedMap = null;
+    if (window.BG3TiledAdapter) {
+      normalizedMap = window.BG3TiledAdapter.normalizeTiledMap(null);
+    }
+
+    /* Initialize Input Controller for WASD */
+    if (window.BG3InputController && normalizedMap) {
+      window.BG3InputController.init({
+        normalizedMap,
+        playerStart: normalizedMap.playerStart,
+        onNarrativeTrigger: (trigger) => {
+          if (QA_NO_IDLE) return;
+          const data = trigger && trigger.data ? trigger.data : {};
+          const triggerId = (trigger && trigger.id) ? String(trigger.id) : "unknown";
+          sendMessage(
+            "我踩到了一个触发区域: " + triggerId,
+            "trigger_zone",
+            null,
+            {
+              target: triggerId,
+              source: "trigger_zone",
+            }
+          );
+        },
+        onInteraction: (interactable) => {
+          const mapped = mapInteractableToStructuredAction(interactable);
+          if (!mapped) return;
+          sendMessage(mapped.text || "", mapped.intent || null, mapped.character || null, {
+            target: mapped.target || "",
+            source: mapped.source || "interaction",
+          });
+        },
+      });
+    }
+
+    /* Show initial act progress */
+    if (window.BG3HudRenderers) {
+      window.BG3HudRenderers.updateActProgress(1);
+    }
+
+    state.mapId = MAP_ID;
+  }
+
+  /**
+   * isNarrativeRequest — determines if an intent/text/source should
+   * activate the Director Trace panel.
+   *
+   * Only these sources activate it:
+   *   - trigger zones (intent: trigger_zone)
+   *   - E-key interactions (source: interaction)
+   *   - dialogue / choices (intent contains 'dialogue', 'choice', 'talk')
+   *   - companion interrupts (intent: companion_interrupt)
+   *   - explicit user commands (non-empty text without system intents)
+   *
+   * These do NOT activate it:
+   *   - init_sync
+   *   - trigger_idle_banter
+   *   - ui_action_loot (loot pickup is a UI action, not narrative)
+   *   - state polling
+   */
+  function isNarrativeRequest(intent, text, source) {
+    const i = String(intent || "").toLowerCase().trim();
+    const t = String(text || "").trim();
+    const s = String(source || "").toLowerCase().trim();
+
+    /* Explicit non-narrative intents */
+    const NON_NARRATIVE = ["init_sync", "trigger_idle_banter", "ui_action_loot"];
+    if (NON_NARRATIVE.includes(i)) return false;
+
+    /* Known narrative sources */
+    if (s === "interaction" || s === "trigger_zone") return true;
+    if (i === "trigger_zone" || i === "companion_interrupt") return true;
+    if (/dialogue|choice|talk|speak|converse/i.test(i)) return true;
+
+    /* User typed something meaningful */
+    if (t.length > 0 && !i) return true;
+    if (t.length > 0 && i) return true;
+
+    return false;
+  }
+
+  function dispatchUIEventsFromResponse(data, previousState) {
+    if (!window.BG3UIEventAdapter || !window.BG3HudRenderers) return;
+    const events = window.BG3UIEventAdapter.extractUIEvents(data, previousState);
+    window.BG3HudRenderers.dispatchUIEvents(events);
+  }
+
   async function boot() {
     const qa = readQaActions();
     initSpeechRecognition();
     bindEvents();
+    bindDockEvents();
+    initNewModules();
     setTacticalOverlay(false);
-    renderChrome("幽暗地域营地");
+    renderChrome(LOCATION_LABELS[MAP_ID] || "废弃死灵实验室");
     renderPartyRoster();
     renderEnvironmentObjects();
     renderTacticalGrid(state.partyStatus, state.environmentObjects, state.mapData);
     renderInitiativeTracker(state.combatState, false);
     updateRestControls(state.combatState);
     updateXrayPanel({});
-    appendLogEntry("system", "终端接入", "战术桌已连入 `/api/chat`。发出第一条指令后，主叙事区会开始记录世界变化。", {
+    appendLogEntry("system", "终端接入", "已进入 " + (LOCATION_LABELS[MAP_ID] || MAP_ID) + "。WASD 移动探索，E 键交互。", {
       color: "#d0ab67",
       sigil: "◎",
       logType: "system",
@@ -2679,14 +3089,21 @@
     window.__BG3_APP_TEST_API__ = {
       boot,
       sendMessage,
+      sendStructuredAction,
+      buildChatPayload,
       pollDialogueState,
       updateDialogueOverlay,
       updateXrayPanel,
       interruptDialogueWithAttack,
       inferNodeTrace,
       normalizeNodeName,
+      isNarrativeRequest,
+      dispatchUIEventsFromResponse,
       state,
       els,
+      MAP_ID,
+      SESSION_ID,
+      ITEM_META,
     };
   }
 

@@ -13,6 +13,40 @@ from core.graph.nodes.utils import _entity_snapshot, default_entities, first_ent
 from core.systems import mechanics
 from core.systems.inventory import get_registry
 
+_ACT3_SIDE_MARKERS = (
+    "阿斯代伦说得对",
+    "顺着阿斯代伦",
+    "我同意阿斯代伦",
+    "一起嘲笑",
+    "和阿斯代伦一起嘲笑",
+    "side_with_astarion",
+    "side with astarion",
+    "sided with astarion",
+    "mock gribbo",
+)
+_ACT3_REBUKE_MARKERS = (
+    "阿斯代伦，闭嘴",
+    "阿斯代伦闭嘴",
+    "训斥阿斯代伦",
+    "别拱火",
+    "别再嘲笑",
+    "rebuke_astarion",
+    "rebuke astarion",
+    "shut up astarion",
+)
+
+
+def _looks_like_act3_choice(map_id: str, user_input: str) -> bool:
+    if str(map_id or "").strip().lower() != "necromancer_lab":
+        return False
+    text = str(user_input or "").strip()
+    if not text:
+        return False
+    normalized = text.lower()
+    return any(marker in text or marker in normalized for marker in _ACT3_SIDE_MARKERS) or any(
+        marker in text or marker in normalized for marker in _ACT3_REBUKE_MARKERS
+    )
+
 
 def input_node(state: GameState) -> dict:
     """
@@ -32,6 +66,16 @@ def input_node(state: GameState) -> dict:
     for npc_id, default_data in default_entities.items():
         if npc_id not in entities:
             entities[npc_id] = copy.deepcopy(default_data)
+    incoming_intent = str(state.get("intent") or "").strip()
+    incoming_intent_key = incoming_intent.lower()
+    incoming_target = str(state.get("target") or "").strip()
+    incoming_source = str(state.get("source") or "").strip().lower()
+    intent_context = {}
+    if incoming_target:
+        intent_context["action_target"] = incoming_target.lower()
+    if incoming_source:
+        intent_context["source"] = incoming_source
+
     base = {
         "intent": "pending",
         "speaker_queue": [],
@@ -42,16 +86,42 @@ def input_node(state: GameState) -> dict:
         "turn_count": state.get("turn_count", 0),
         "time_of_day": state.get("time_of_day", "晨曦 (Morning)"),
         "entities": entities,
+        "target": incoming_target,
+        "source": incoming_source,
+        "intent_context": intent_context,
     }
 
     if not user_input:
         # 保留服务端传入的系统意图（如挂机闲聊），勿覆盖为 pending
-        incoming_intent = str(state.get("intent") or "").strip().lower()
-        if incoming_intent == "trigger_idle_banter":
-            return {**base, "intent": "trigger_idle_banter"}
+        if incoming_intent_key in {"trigger_idle_banter", "init_sync"}:
+            return {**base, "intent": incoming_intent}
         return base
 
     if not user_input.startswith("/"):
+        is_read_intent = incoming_intent_key == "read"
+        read_target_key = incoming_target.lower()
+        read_target_missing = not read_target_key or read_target_key in {"unknown", "null", "none"}
+        map_id = str((state.get("map_data") or {}).get("id") or "").strip().lower()
+        if is_read_intent and read_target_missing:
+            if _looks_like_act3_choice(map_id=map_id, user_input=user_input):
+                intent_context["action_target"] = "gribbo"
+                intent_context.setdefault("source", incoming_source or "text_input")
+                return {
+                    **base,
+                    "intent": "CHAT",
+                    "target": "gribbo",
+                    "source": incoming_source or "text_input",
+                    "intent_context": intent_context,
+                }
+            # READ 目标缺失时不保留 READ，避免把后续普通文本误路由到 lore。
+            return base
+        # 允许前端发送结构化 intent（READ/CHAT/INTERACT 等），避免被覆盖成 pending。
+        if incoming_intent and (
+            incoming_intent_key not in {"pending", "chat"}
+            or bool(incoming_target)
+            or bool(incoming_source)
+        ):
+            return {**base, "intent": incoming_intent}
         return base
 
     parts = user_input.split()

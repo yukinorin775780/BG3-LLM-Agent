@@ -225,6 +225,24 @@ def test_lore_node_diary_arcana_and_investigation_mapping(monkeypatch):
     assert investigation_result["latest_roll"]["result"]["is_success"] is False
 
 
+def test_lore_node_diary_browser_equivalent_payload_returns_latest_roll_and_memory(monkeypatch):
+    monkeypatch.setattr("core.graph.nodes.lore.settings.API_KEY", None)
+    state = _build_diary_read_state(
+        int_score=16,
+        skill="arcana",
+        user_input="",
+    )
+
+    result = lore_node(state)
+    latest_roll = result.get("latest_roll") or {}
+    pending_events = result.get("pending_events") or []
+
+    assert latest_roll.get("intent") == "READ"
+    assert latest_roll.get("target") == "necromancer_diary"
+    assert latest_roll.get("result", {}).get("is_success") is True
+    assert any(event.get("event_type") == "actor_memory_update_requested" for event in pending_events)
+
+
 def test_lore_node_diary_actor_scoped_clue_not_visible_to_other_actor(monkeypatch):
     monkeypatch.setattr("core.graph.nodes.lore.settings.API_KEY", None)
     state = _build_diary_read_state(int_score=16, skill="arcana")
