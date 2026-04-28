@@ -95,6 +95,8 @@ def mechanics_node(state: GameState) -> dict:
         out["player_inventory"] = result["player_inventory"]
     if "environment_objects" in result:
         out["environment_objects"] = result["environment_objects"]
+    if "flags" in result:
+        out["flags"] = result["flags"]
     if "combat_active" in result:
         out["combat_active"] = result["combat_active"]
     if "combat_phase" in result:
@@ -109,6 +111,8 @@ def mechanics_node(state: GameState) -> dict:
         out["recent_barks"] = result["recent_barks"]
     if "map_data" in result:
         out["map_data"] = result["map_data"]
+    if "pending_events" in result:
+        out["pending_events"] = result["pending_events"]
     if "demo_cleared" in result:
         out["demo_cleared"] = bool(result["demo_cleared"])
     return out

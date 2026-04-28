@@ -5,7 +5,7 @@
 - 约束：不改主图拓扑；不绕过 ActorView / MemoryService / EventDrain；不引入真实 LLM/网络依赖。
 - 本文定位：剧情与状态契约（design freeze），不是完整业务实现。
 - 启动方式：新会话可通过 `map_id=necromancer_lab` 初始化该剧情地图；未传 `map_id` 保持默认地图行为。
-- 当前落地：Act 1 开场感知 + Act 2 日记判定/知识沉淀 + Act 3 谈判分支已实现；Act 4 维持设计冻结待后续线程实现。
+- 当前落地：Act 1 开场感知 + Act 2 日记判定/知识沉淀 + Act 3 谈判分支 + Act 4 搜刮/逃脱闭环均已实现。
 
 ## 2. Four-Act Overview
 
@@ -134,7 +134,7 @@
 - `no_op/return`：若社交拒绝发生，保证“不吞物品/不误扣”。
 - `consume`：保留药剂类消耗语义（与已有 use_item/consume 兼容）。
 - 写回边界：Gribbo 交涉给钥匙走 `DomainEvent -> EventDrain`；`dialogue` 只产出事件，不直接改背包。
-- 兼容说明：`mechanics.execute_loot_action` 旧搜刮路径暂保留，后续再统一事件化。
+- 兼容说明：`mechanics.execute_loot_action` 旧搜刮路径保留；仅 `necromancer_lab + gribbo + heavy_iron_key` 走事件化写回（EventDrain），其余 loot 继续 legacy 直写。
 
 ### 7.5 Act 1 已落地字段（Thread B）
 - 触发点：`GameService.process_chat_turn` 在 `necromancer_lab` 且 `necromancer_lab_intro_seen != true` 时应用一次 intro patch。
@@ -182,6 +182,23 @@
   - `necromancer_lab_act3_side_with_astarion`
   - `necromancer_lab_act3_rebuke_astarion`
 
+### 7.8 Act 4 已落地字段（Thread E）
+- Loot key 写回：
+  - `mechanics.execute_loot_action` 对 `necromancer_lab/gribbo/heavy_iron_key` 产出 `actor_item_transaction_requested` pending event。
+  - `event_drain` 统一完成 `gribbo -> player` 物品转移，并写入 `necromancer_lab_gribbo_key_looted=true`。
+  - 已加防重复：重复搜刮不会重复获得 `heavy_iron_key`。
+- 战后 banter/reflection：
+  - `dm_node` 在满足 Act4 条件时 deterministic override 到 `CHAT + party turn runtime`。
+  - Astarion/Shadowheart/Lae'zel 同回合 runtime 发言，marker 为 `party_turn_runtime_multi`。
+  - 各自写入 `actor_private` 战后记忆，不泄露给其他 actor_private。
+- 开门逃脱：
+  - `heavy_oak_door_1` 成功交互后：
+    - `demo_cleared=true`
+    - `flags.necromancer_lab_escape_complete=true`
+    - `flags.content_sprint_1_complete=true`
+- 对应 golden：
+  - `necromancer_lab_act4_loot_key_and_escape`
+
 ## 8. Success / Failure Branches
 
 ### Act 1
@@ -202,7 +219,9 @@
 ## 9. demo_cleared Contract
 - 叙事准入（Content Sprint 1）建议条件：
   - `world_necromancer_lab_gribbo_defeated == true`
-  - `world_necromancer_lab_heavy_key_obtained == true`
+  - `necromancer_lab_gribbo_key_looted == true`
   - `heavy_oak_door_1.is_open == true`
+  - `flags.necromancer_lab_escape_complete == true`
+  - `flags.content_sprint_1_complete == true`
   - `demo_cleared == true`
 - 兼容说明：若引擎暂保留旧 demo 的快捷通关路径，后续线程需补“主线通关判定优先级”策略，避免绕过四幕主叙事。

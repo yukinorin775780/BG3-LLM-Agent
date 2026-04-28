@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 INTRO_SEEN_FLAG = "necromancer_lab_intro_seen"
 ACT3_CHOICE_SIDE_WITH_ASTARION = "side_with_astarion"
 ACT3_CHOICE_REBUKE_ASTARION = "rebuke_astarion"
+ACT4_POST_COMBAT_BANTER = "act4_post_combat_banter"
 
 _ACT3_SIDE_MARKERS = (
     "阿斯代伦说得对",
@@ -26,6 +27,17 @@ _ACT3_REBUKE_MARKERS = (
     "别再嘲笑",
     "rebuke astarion",
     "shut up astarion",
+)
+_ACT4_BANTER_MARKERS = (
+    "离开",
+    "撤离",
+    "快走",
+    "继续前进",
+    "准备开门",
+    "escape",
+    "move out",
+    "open the door",
+    "let's go",
 )
 
 
@@ -92,6 +104,32 @@ def detect_lab_act3_choice(state: Dict[str, Any]) -> str:
     if any(marker in user_input or marker in normalized_input for marker in _ACT3_REBUKE_MARKERS):
         return ACT3_CHOICE_REBUKE_ASTARION
     return ""
+
+
+def detect_lab_act4_post_combat_banter(state: Dict[str, Any]) -> bool:
+    normalized_state = _safe_dict(state)
+    if _map_id(normalized_state) != "necromancer_lab":
+        return False
+
+    flags = _safe_dict(normalized_state.get("flags"))
+    if _flag_bool(flags.get("necromancer_lab_post_combat_banter_done")):
+        return False
+    if not _flag_bool(flags.get("world_necromancer_lab_gribbo_defeated")):
+        return False
+
+    player_inventory = _safe_dict(normalized_state.get("player_inventory"))
+    if int(player_inventory.get("heavy_iron_key") or 0) <= 0:
+        return False
+
+    intent_context = _safe_dict(normalized_state.get("intent_context"))
+    if bool(intent_context.get("act4_post_combat_banter")):
+        return True
+
+    user_input = str(normalized_state.get("user_input") or "")
+    normalized_input = user_input.strip().lower()
+    if not normalized_input:
+        return False
+    return any(marker in user_input or marker in normalized_input for marker in _ACT4_BANTER_MARKERS)
 
 
 def _should_trigger_intro(state: Dict[str, Any]) -> bool:

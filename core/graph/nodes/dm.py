@@ -12,7 +12,9 @@ from langchain_core.messages import AIMessage
 from core.campaigns import (
     ACT3_CHOICE_REBUKE_ASTARION,
     ACT3_CHOICE_SIDE_WITH_ASTARION,
+    ACT4_POST_COMBAT_BANTER,
     detect_lab_act3_choice,
+    detect_lab_act4_post_combat_banter,
 )
 from core.engine import generate_dialogue, parse_ai_response
 from core.graph.graph_state import GameState
@@ -51,6 +53,30 @@ def _apply_act3_necromancer_lab_override(*, state: GameState, analysis: dict) ->
 
     intent_context = dict(overridden.get("intent_context") or {})
     intent_context["act3_choice"] = choice
+    overridden["intent_context"] = intent_context
+    return overridden
+
+
+def _apply_act4_necromancer_lab_override(*, state: GameState, analysis: dict) -> dict:
+    if not detect_lab_act4_post_combat_banter(dict(state or {})):
+        return analysis
+
+    overridden = dict(analysis or {})
+    overridden["action_type"] = "CHAT"
+    overridden["action_actor"] = "player"
+    overridden["action_target"] = "heavy_oak_door_1"
+    overridden["reason"] = ACT4_POST_COMBAT_BANTER
+    overridden["responders"] = ["astarion", "shadowheart", "laezel"]
+
+    flags_changed = dict(overridden.get("flags_changed") or {})
+    flags_changed["necromancer_lab_post_combat_banter_done"] = True
+    overridden["flags_changed"] = flags_changed
+
+    current_flags = dict(state.get("flags") or {})
+    sided_with_astarion = bool(current_flags.get("necromancer_lab_player_sided_with_astarion", False))
+    intent_context = dict(overridden.get("intent_context") or {})
+    intent_context["act4_post_combat_banter"] = True
+    intent_context["player_sided_with_astarion"] = sided_with_astarion
     overridden["intent_context"] = intent_context
     return overridden
 
@@ -181,6 +207,10 @@ async def dm_node(state: GameState) -> dict:
         state=state,
         analysis=analysis if isinstance(analysis, dict) else {},
     )
+    analysis = _apply_act4_necromancer_lab_override(
+        state=state,
+        analysis=analysis if isinstance(analysis, dict) else {},
+    )
 
     current_dialogue_target = str(state.get("active_dialogue_target") or "").strip().lower() or None
     next_dialogue_target = current_dialogue_target
@@ -237,6 +267,17 @@ async def dm_node(state: GameState) -> dict:
                 or analysis.get("act3_choice")
                 or ""
             ).strip(),
+            "act4_post_combat_banter": bool(
+                (analysis.get("intent_context") or {}).get("act4_post_combat_banter")
+                or analysis.get("act4_post_combat_banter")
+                or False
+            ),
+            "player_sided_with_astarion": bool(
+                (analysis.get("intent_context") or {}).get("player_sided_with_astarion")
+                if isinstance(analysis.get("intent_context"), dict)
+                and "player_sided_with_astarion" in analysis.get("intent_context")
+                else bool(state.get("flags", {}).get("necromancer_lab_player_sided_with_astarion", False))
+            ),
         },
         "is_probing_secret": analysis.get("is_probing_secret", False),
         "active_dialogue_target": next_dialogue_target,

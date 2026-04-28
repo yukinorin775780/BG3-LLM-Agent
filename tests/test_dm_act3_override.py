@@ -58,3 +58,21 @@ def test_dm_node_keeps_dialogue_reply_for_non_act3_input():
     assert result["intent"] == "DIALOGUE_REPLY"
     assert result["current_speaker"] == "gribbo"
     assert result["speaker_queue"] == []
+
+
+def test_dm_node_overrides_act4_post_combat_banter_to_party_turn_chat():
+    state = _build_dm_state("钥匙拿到了，快离开这鬼地方。")
+    state["flags"] = {
+        "world_necromancer_lab_gribbo_defeated": True,
+        "necromancer_lab_gribbo_key_looted": True,
+    }
+    state["player_inventory"] = {"heavy_iron_key": 1}
+    state["active_dialogue_target"] = None
+
+    with patch("core.graph.nodes.dm.analyze_intent", return_value=_dialogue_reply_analysis()):
+        result = asyncio.run(dm_node(state))
+
+    assert result["intent"] == "CHAT"
+    assert result["current_speaker"] == "astarion"
+    assert result["speaker_queue"] == ["shadowheart", "laezel"]
+    assert result["intent_context"]["act4_post_combat_banter"] is True

@@ -2439,6 +2439,59 @@ def _resolve_loot_destination(
     return actor_inventory, _display_entity_name(actor, actor_id)
 
 
+def _is_necromancer_lab_map(state: Any) -> bool:
+    map_data = state.get("map_data") if isinstance(state, dict) else {}
+    if not isinstance(map_data, dict):
+        return False
+    return str(map_data.get("id") or "").strip().lower() == "necromancer_lab"
+
+
+def _flags_dict(state: Any) -> Dict[str, Any]:
+    if not isinstance(state, dict):
+        return {}
+    flags = state.get("flags")
+    return dict(flags) if isinstance(flags, dict) else {}
+
+
+def _is_gribbo_loot_source(*, target_id: str, target_obj: Dict[str, Any]) -> bool:
+    normalized_target_id = _normalize_entity_id(target_id)
+    if normalized_target_id == "gribbo":
+        return True
+    source_entity_id = _normalize_entity_id(target_obj.get("source_entity_id"))
+    return source_entity_id == "gribbo"
+
+
+def _allow_necromancer_lab_gribbo_loot(state: Any, *, target_id: str, target_obj: Dict[str, Any]) -> bool:
+    if not _is_necromancer_lab_map(state):
+        return False
+    if not _is_gribbo_loot_source(target_id=target_id, target_obj=target_obj):
+        return False
+    flags = _flags_dict(state)
+    return bool(flags.get("world_necromancer_lab_gribbo_defeated", False))
+
+
+def _should_eventize_necromancer_lab_gribbo_key_loot(
+    state: Any,
+    *,
+    actor_id: str,
+    target_id: str,
+    target_obj: Dict[str, Any],
+    loot_items: Dict[str, int],
+) -> bool:
+    if actor_id != "player":
+        return False
+    if not _is_necromancer_lab_map(state):
+        return False
+    if not _is_gribbo_loot_source(target_id=target_id, target_obj=target_obj):
+        return False
+    if int(loot_items.get("heavy_iron_key", 0) or 0) <= 0:
+        return False
+    flags = _flags_dict(state)
+    if bool(flags.get("necromancer_lab_gribbo_key_looted", False)):
+        return False
+    return True
+
+
 def _format_loot_entries(items: Dict[str, int]) -> str:
     registry = get_registry()
     entries: List[str] = []
@@ -4688,6 +4741,21 @@ def execute_loot_action(state: Any) -> Dict[str, Any]:
     if target_is_character_like:
         target_hp = _coerce_int(target_obj.get("hp"), 0)
         target_status = str(target_obj.get("status", "")).strip().lower()
+        if (
+            target_hp > 0
+            and target_status not in {"dead", "open", "opened"}
+            and _allow_necromancer_lab_gribbo_loot(
+                state=state,
+                target_id=target_id,
+                target_obj=target_obj,
+            )
+        ):
+            target_obj["hp"] = 0
+            target_obj["status"] = "dead"
+            target_obj["is_alive"] = False
+            entities[target_id] = target_obj
+            target_hp = 0
+            target_status = "dead"
         if target_hp > 0 and target_status not in {"dead", "open", "opened"}:
             actor = _ensure_actor_entity(actor_id=actor_id, entities=entities, state=state)
             actor_name = _display_entity_name(actor, actor_id)
@@ -4801,23 +4869,110 @@ def execute_loot_action(state: Any) -> Dict[str, Any]:
         entities=entities,
         player_inventory=player_inventory,
     )
+    pending_events: List[Dict[str, Any]] = []
+    direct_loot_items = dict(loot_items)
+    eventized_loot_items: Dict[str, int] = {}
+    if _should_eventize_necromancer_lab_gribbo_key_loot(
+        state=state,
+        actor_id=actor_id,
+        target_id=target_id,
+        target_obj=target_obj,
+        loot_items=loot_items,
+    ):
+        key_count = int(loot_items.get("heavy_iron_key") or 0)
+        if key_count > 0:
+            direct_loot_items.pop("heavy_iron_key", None)
+            eventized_loot_items["heavy_iron_key"] = key_count
+            source_entity_id = _normalize_entity_id(target_id)
+            event_suffix = f"{int(state.get('turn_count') or 0)}_{actor_id}_{source_entity_id}"
+            pending_events.extend(
+                [
+                    {
+                        "event_id": f"evt_loot_transfer_{event_suffix}",
+                        "event_type": "actor_item_transaction_requested",
+                        "actor_id": actor_id,
+                        "turn_index": int(state.get("turn_count") or 0),
+                        "visibility": "party",
+                        "payload": {
+                            "social_action": {
+                                "action_type": "item_transfer",
+                                "actor_id": actor_id,
+                                "target_actor_id": actor_id,
+                                "item_id": "heavy_iron_key",
+                                "quantity": key_count,
+                                "reason": "act4_gribbo_loot",
+                            },
+                            "transaction": {
+                                "transaction_type": "transfer",
+                                "from_entity": source_entity_id,
+                                "to_entity": actor_id,
+                                "item": "heavy_iron_key",
+                                "quantity": key_count,
+                                "accepted": True,
+                                "reason": "act4_gribbo_loot",
+                            },
+                        },
+                    },
+                    {
+                        "event_id": f"evt_loot_flag_{event_suffix}",
+                        "event_type": "world_flag_changed",
+                        "actor_id": actor_id,
+                        "turn_index": int(state.get("turn_count") or 0),
+                        "visibility": "party",
+                        "payload": {
+                            "key": "necromancer_lab_gribbo_key_looted",
+                            "value": True,
+                        },
+                    },
+                    {
+                        "event_id": f"evt_loot_flag_defeated_{event_suffix}",
+                        "event_type": "world_flag_changed",
+                        "actor_id": actor_id,
+                        "turn_index": int(state.get("turn_count") or 0),
+                        "visibility": "party",
+                        "payload": {
+                            "key": "world_necromancer_lab_gribbo_defeated",
+                            "value": True,
+                        },
+                    },
+                    {
+                        "event_id": f"evt_loot_memory_{event_suffix}",
+                        "event_type": "actor_memory_update_requested",
+                        "actor_id": actor_id,
+                        "turn_index": int(state.get("turn_count") or 0),
+                        "visibility": "party",
+                        "payload": {
+                            "scope": "party_shared",
+                            "memory_type": "quest_progress",
+                            "text": "Gribbo 已倒下，我们拿到了 heavy_iron_key，出口就在前方。",
+                        },
+                    },
+                ]
+            )
 
-    for item_id, qty in loot_items.items():
+    for item_id, qty in direct_loot_items.items():
         destination_inventory[item_id] = destination_inventory.get(item_id, 0) + qty
-    target_obj["inventory"] = {}
+        remaining = int(source_inventory.get(item_id, 0) or 0) - int(qty)
+        if remaining > 0:
+            source_inventory[item_id] = remaining
+        else:
+            source_inventory.pop(item_id, None)
+    target_obj["inventory"] = source_inventory
     if target_is_loot_drop:
         source_name = str(target_obj.get("source_name") or target_name)
-        entities.pop(target_id, None)
+        if not target_obj["inventory"]:
+            entities.pop(target_id, None)
     else:
         source_name = target_name
 
-    if loot_items:
-        items_text = _format_loot_entries(loot_items)
+    display_loot_items = {**direct_loot_items, **eventized_loot_items}
+    if display_loot_items:
+        items_text = _format_loot_entries(display_loot_items)
         journal_events = [f"💰 [搜刮] {actor_name} 从 {source_name} 上搜刮到了: {items_text}。"] + approach_events
     else:
         journal_events = [f"💰 [搜刮] {actor_name} 搜刮了 {source_name}，但没有找到任何有价值的物品。"] + approach_events
 
-    return {
+    out = {
         "journal_events": journal_events,
         "entities": entities,
         "environment_objects": environment_objects,
@@ -4828,9 +4983,16 @@ def execute_loot_action(state: Any) -> Dict[str, Any]:
             target=target_id,
             is_success=True,
             result_type="SUCCESS",
-            extra={"loot_items": loot_items},
+            extra={
+                "loot_items": display_loot_items,
+                "eventized_items": eventized_loot_items,
+                "eventized": bool(eventized_loot_items),
+            },
         ),
     }
+    if pending_events:
+        out["pending_events"] = pending_events
+    return out
 
 
 def execute_use_item(state: Any) -> Dict[str, Any]:
@@ -5807,12 +5969,16 @@ def execute_interact_action(state: Any) -> Dict[str, Any]:
         door["is_open"] = True
         door["status"] = "open"
         _sync_door_state_to_map(map_data=map_data, entities=entities)
+        flags = dict(state.get("flags") or {})
+        flags["necromancer_lab_escape_complete"] = True
+        flags["content_sprint_1_complete"] = True
         payload = {
             "journal_events": [
                 "🚪 [系统] 伴随着沉重的摩擦声，大门被推开了！一缕阳光照进地下室... **[DEMO CLEARED]**"
             ],
             "entities": entities,
             "map_data": map_data,
+            "flags": flags,
             "demo_cleared": True,
             "raw_roll_data": _build_action_result(
                 intent="INTERACT",

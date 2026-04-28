@@ -660,6 +660,75 @@ def test_process_chat_turn_ui_loot_accepts_player_as_valid_character():
     }
 
 
+def test_process_chat_turn_ui_loot_necromancer_gribbo_key_drains_event_before_persist():
+    existing_state = {
+        "map_data": {"id": "necromancer_lab"},
+        "flags": {"world_necromancer_lab_gribbo_defeated": True},
+        "entities": {
+            "player": {"hp": 20, "inventory": {}, "x": 4, "y": 9},
+            "gribbo": {
+                "name": "Gribbo",
+                "hp": 18,
+                "max_hp": 18,
+                "status": "alive",
+                "faction": "hostile",
+                "x": 4,
+                "y": 9,
+                "inventory": {"heavy_iron_key": 1},
+            },
+        },
+        "player_inventory": {},
+        "journal_events": [],
+        "current_location": "necromancer_lab",
+        "environment_objects": {},
+    }
+    updated_state = {
+        "map_data": {"id": "necromancer_lab"},
+        "flags": {
+            "world_necromancer_lab_gribbo_defeated": True,
+            "necromancer_lab_gribbo_key_looted": True,
+        },
+        "entities": {
+            "player": {"hp": 20, "inventory": {}, "x": 4, "y": 9},
+            "gribbo": {
+                "name": "Gribbo",
+                "hp": 0,
+                "max_hp": 18,
+                "status": "dead",
+                "faction": "hostile",
+                "x": 4,
+                "y": 9,
+                "inventory": {},
+            },
+        },
+        "player_inventory": {"heavy_iron_key": 1},
+        "pending_events": [],
+        "journal_events": ["💰 [搜刮] 玩家 从 Gribbo 身上搜刮到了: heavy_iron_key x 1。"],
+        "current_location": "necromancer_lab",
+        "environment_objects": {},
+    }
+    fake_graph = _FakeGraph(snapshots=[existing_state, updated_state], invoke_result={})
+
+    result = asyncio.run(
+        process_chat_turn(
+            user_input="loot gribbo",
+            intent="ui_action_loot",
+            session_id="session-ui-loot-necromancer-gribbo",
+            character="player",
+            saver_factory=Mock(return_value=_AsyncContextManager(value=object())),
+            graph_builder=Mock(return_value=fake_graph),
+            initial_state_factory=Mock(),
+        )
+    )
+
+    persisted_payload = fake_graph.aupdate_state_calls[0]["payload"]
+    assert persisted_payload["player_inventory"].get("heavy_iron_key", 0) == 1
+    assert persisted_payload["entities"]["gribbo"]["inventory"].get("heavy_iron_key", 0) == 0
+    assert persisted_payload["pending_events"] == []
+    assert persisted_payload["flags"]["necromancer_lab_gribbo_key_looted"] is True
+    assert result["player_inventory"].get("heavy_iron_key", 0) == 1
+
+
 def test_process_chat_turn_process_reflections_handles_runtime_queue_without_graph_invoke():
     existing_state = {
         "entities": {"shadowheart": {"hp": 10}},

@@ -38,19 +38,25 @@ def test_necromancer_lab_kill_loot_then_interact_clears_demo():
         }
     )
 
-    assert loot_result["player_inventory"].get("heavy_iron_key", 0) == 1
-    assert loot_result["entities"]["gribbo"]["inventory"] == {}
+    if loot_result.get("pending_events"):
+        drained = event_drain_node({**state, **loot_result})
+        loot_state = {**state, **loot_result, **drained}
+    else:
+        loot_state = loot_result
+
+    assert loot_state["player_inventory"].get("heavy_iron_key", 0) == 1
+    assert loot_state["entities"]["gribbo"]["inventory"] == {}
     assert any("搜刮" in event for event in loot_result.get("journal_events", []))
 
     interact_result = mechanics.execute_interact_action(
         {
             **state,
             **{
-                **loot_result,
+                **loot_state,
                 "entities": {
-                    **(loot_result.get("entities") or {}),
+                    **(loot_state.get("entities") or {}),
                     "player": {
-                        **((loot_result.get("entities") or {}).get("player") or {}),
+                        **((loot_state.get("entities") or {}).get("player") or {}),
                         "x": 13,
                         "y": 11,
                     },
@@ -175,3 +181,83 @@ def test_necromancer_lab_dialogue_transfer_key_then_interact_clears_demo():
     assert interact_result["entities"]["heavy_oak_door_1"]["is_open"] is True
     assert interact_result.get("demo_cleared") is True
     assert any("DEMO CLEARED" in event for event in interact_result.get("journal_events", []))
+
+
+def test_necromancer_lab_act4_loot_key_uses_event_drain_and_prevents_duplication():
+    state = _build_lab_state()
+    state["flags"]["world_necromancer_lab_gribbo_defeated"] = True
+    state["entities"]["player"]["x"] = 4
+    state["entities"]["player"]["y"] = 9
+    state["entities"]["gribbo"]["x"] = 4
+    state["entities"]["gribbo"]["y"] = 9
+    state["entities"]["gribbo"]["hp"] = 18
+    state["entities"]["gribbo"]["status"] = "alive"
+    state["entities"]["gribbo"]["inventory"] = {"heavy_iron_key": 1}
+
+    loot_result = mechanics.execute_loot_action(
+        {
+            **state,
+            "intent_context": {
+                "action_actor": "player",
+                "action_target": "gribbo",
+            },
+        }
+    )
+
+    assert loot_result["pending_events"]
+    tx_event = loot_result["pending_events"][0]
+    assert tx_event["event_type"] == "actor_item_transaction_requested"
+    assert tx_event["payload"]["transaction"]["transaction_type"] == "transfer"
+    assert tx_event["payload"]["transaction"]["item"] == "heavy_iron_key"
+    assert loot_result["player_inventory"].get("heavy_iron_key", 0) == 0
+    assert loot_result["entities"]["gribbo"]["inventory"].get("heavy_iron_key", 0) == 1
+
+    drained_patch = event_drain_node(
+        {
+            **state,
+            **loot_result,
+        }
+    )
+    drained_state = {
+        **state,
+        **loot_result,
+        **drained_patch,
+    }
+    assert drained_state["pending_events"] == []
+    assert drained_state["player_inventory"].get("heavy_iron_key", 0) == 1
+    assert drained_state["entities"]["gribbo"]["inventory"].get("heavy_iron_key", 0) == 0
+
+    second_loot_result = mechanics.execute_loot_action(
+        {
+            **drained_state,
+            "intent_context": {
+                "action_actor": "player",
+                "action_target": "gribbo",
+            },
+        }
+    )
+    assert second_loot_result.get("pending_events", []) == []
+    assert second_loot_result["player_inventory"].get("heavy_iron_key", 0) == 1
+
+
+def test_necromancer_lab_open_door_sets_escape_completion_flags():
+    state = _build_lab_state()
+    state["entities"]["player"]["x"] = 13
+    state["entities"]["player"]["y"] = 11
+    state["player_inventory"]["heavy_iron_key"] = 1
+    state["flags"] = {}
+
+    interact_result = mechanics.execute_interact_action(
+        {
+            **state,
+            "intent_context": {
+                "action_actor": "player",
+                "action_target": "heavy_oak_door_1",
+            },
+        }
+    )
+
+    assert interact_result["entities"]["heavy_oak_door_1"]["is_open"] is True
+    assert interact_result.get("demo_cleared") is True
+    assert interact_result["flags"]["necromancer_lab_escape_complete"] is True
+    assert interact_result["flags"]["content_sprint_1_complete"] is True

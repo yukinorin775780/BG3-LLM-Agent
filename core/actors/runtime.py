@@ -91,6 +91,17 @@ def _detect_act3_choice_context(actor_view: ActorView) -> str:
     return ""
 
 
+def _detect_act4_post_combat_context(actor_view: ActorView) -> bool:
+    explicit = bool(actor_view.intent_context.get("act4_post_combat_banter"))
+    if not explicit:
+        return False
+    visible_flags = actor_view.visible_flags if isinstance(actor_view.visible_flags, dict) else {}
+    if not bool(visible_flags.get("world_necromancer_lab_gribbo_defeated")):
+        return False
+    location_text = str(actor_view.current_location or "").strip().lower()
+    return "necromancer" in location_text or "实验室" in str(actor_view.current_location or "")
+
+
 def _build_act3_memory_note(choice_context: str) -> str:
     if choice_context == ACT3_CHOICE_SIDE_WITH_ASTARION:
         return "玩家与我一起嘲笑了 Gribbo，这种默契让我满意。"
@@ -209,6 +220,16 @@ def _build_choice_memory_note(*, actor_id: str, choice_context: str) -> str:
             return "laezel 记录小队抉择：反对延后追击敌人。"
         return f"{actor_id} 记录小队抉择：对救援优先级表达立场。"
     return ""
+
+
+def _build_act4_memory_note(*, actor_id: str, sided_with_astarion: bool) -> str:
+    if actor_id == "shadowheart":
+        return "Gribbo 倒下后，我仍能感到死灵残渣。拿到钥匙不代表安全。"
+    if actor_id == "laezel":
+        return "目标已完成：拿钥匙、开门、撤离。拖延毫无意义。"
+    if sided_with_astarion:
+        return "玩家在 Gribbo 事件里与我同调。拿到钥匙后应立刻离开。"
+    return "玩家曾当众压我一头，但钥匙到手后我依旧选择推进撤离。"
 
 
 def _resolve_item_id_from_text(text: str) -> str:
@@ -377,11 +398,13 @@ class TemplateActorRuntime:
         social_action = _build_social_action(actor_view)
         choice_context = _detect_party_choice_context(user_input)
         act3_choice_context = _detect_act3_choice_context(actor_view)
+        act4_post_combat_context = _detect_act4_post_combat_context(actor_view)
         spoken_text = self._compose_reply(
             actor_view,
             social_action=social_action,
             choice_context=choice_context,
             act3_choice_context=act3_choice_context,
+            act4_post_combat_context=act4_post_combat_context,
         )
         events = [
             DomainEvent(
@@ -450,6 +473,26 @@ class TemplateActorRuntime:
                     actor_id=self.actor_id,
                     turn_index=int(actor_view.turn_count or 0),
                     choice_context=act3_choice_context,
+                )
+            )
+        if act4_post_combat_context and self.actor_id in {"astarion", "shadowheart", "laezel"}:
+            sided_with_astarion = bool(actor_view.intent_context.get("player_sided_with_astarion", False))
+            memory_note = _build_act4_memory_note(
+                actor_id=self.actor_id,
+                sided_with_astarion=sided_with_astarion,
+            )
+            events.append(
+                DomainEvent(
+                    event_id=_new_event_id(),
+                    event_type="actor_memory_update_requested",
+                    actor_id=self.actor_id,
+                    turn_index=int(actor_view.turn_count or 0),
+                    visibility="private",
+                    payload={
+                        "scope": "actor_private",
+                        "memory_type": "post_combat_reflection",
+                        "text": memory_note,
+                    },
                 )
             )
         requested_reflections: Tuple[ReflectionRequest, ...] = ()
@@ -524,6 +567,7 @@ class TemplateActorRuntime:
         social_action: Dict[str, Any],
         choice_context: str = "",
         act3_choice_context: str = "",
+        act4_post_combat_context: bool = False,
     ) -> str:
         action_type = str(social_action.get("action_type") or "").strip().lower()
         if action_type == "gift_accept":
@@ -559,6 +603,17 @@ class TemplateActorRuntime:
                 return "看见了吗，Gribbo？连玩家都觉得你可笑。"
             if act3_choice_context == ACT3_CHOICE_REBUKE_ASTARION:
                 return "当众让我闭嘴？行，我记下了。"
+
+        if act4_post_combat_context:
+            if self.actor_id == "shadowheart":
+                return "死灵气息淡了些，但别松懈。我们先离开这里。"
+            if self.actor_id == "laezel":
+                return "废话够了。开门，继续前进。"
+            if self.actor_id == "astarion":
+                sided_with_astarion = bool(actor_view.intent_context.get("player_sided_with_astarion", False))
+                if sided_with_astarion:
+                    return "至少你这次没拖后腿。钥匙到手，走人。"
+                return "别误会，我只是想离开这鬼地方。"
 
         user_input = str(actor_view.user_input or "").strip()
         if "谢谢" in user_input:

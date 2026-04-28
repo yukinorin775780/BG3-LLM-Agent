@@ -506,22 +506,55 @@ class GameService:
                 "entities": entities,
                 "environment_objects": environment_objects,
                 "player_inventory": player_inventory,
+                "map_data": copy.deepcopy(previous_state.get("map_data") or {}),
+                "flags": copy.deepcopy(previous_state.get("flags") or {}),
+                "turn_count": int(previous_state.get("turn_count") or 0),
                 "intent_context": {
                     "action_actor": "player",
                     "action_target": target_id or "iron_chest",
                 },
             }
         )
+        if loot_result.get("pending_events"):
+            working_state = {
+                **previous_state,
+                **loot_result,
+            }
+            event_patch = event_drain_node(working_state)
+            if event_patch:
+                merged_journal = list(loot_result.get("journal_events") or [])
+                merged_journal.extend(list(event_patch.get("journal_events") or []))
+                loot_result = {
+                    **loot_result,
+                    **event_patch,
+                    "journal_events": merged_journal,
+                }
 
+        persist_payload: Dict[str, Any] = {
+            "entities": loot_result.get("entities", entities),
+            "environment_objects": loot_result.get("environment_objects", environment_objects),
+            "player_inventory": loot_result.get("player_inventory", player_inventory),
+            "journal_events": loot_result.get("journal_events", []),
+        }
+        for key in (
+            "pending_events",
+            "flags",
+            "actor_runtime_state",
+            "messages",
+            "speaker_responses",
+            "reflection_queue",
+            "combat_phase",
+            "combat_active",
+            "initiative_order",
+            "current_turn_index",
+            "turn_resources",
+        ):
+            if key in loot_result:
+                persist_payload[key] = loot_result[key]
         try:
             await graph.aupdate_state(
                 config,
-                {
-                    "entities": loot_result.get("entities", entities),
-                    "environment_objects": loot_result.get("environment_objects", environment_objects),
-                    "player_inventory": loot_result.get("player_inventory", player_inventory),
-                    "journal_events": loot_result.get("journal_events", []),
-                },
+                persist_payload,
                 as_node=START,
             )
         except Exception as exc:

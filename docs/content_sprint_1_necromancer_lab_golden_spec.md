@@ -221,41 +221,49 @@ Status: landed in Thread D（case 文件：`evals/golden/necromancer_lab_act3_re
 
 ## 3.6 `necromancer_lab_act4_loot_key_and_escape`
 
+Status: landed in Thread E（case 文件：`evals/golden/necromancer_lab_act4_loot_key_and_escape.yaml`）。
+
 ### Initial State
-- `gribbo.status=dead`
-- `gribbo.inventory.heavy_iron_key=1`
+- `session.map_id=necromancer_lab`
+- 可通过 flag 将 Gribbo 标记为已击败后进入可搜刮状态（deterministic）
 - `heavy_oak_door_1.is_open=false`
 - `demo_cleared=false`
 
 ### Input Steps
-1. 玩家输入：`搜刮 Gribbo 的尸体，拿钥匙。`
-2. 玩家输入：`用 heavy_iron_key 打开 heavy_oak_door_1。`
-3. 队友战后一句反思/banter（用于 runtime + event_drain 验证）
+1. 设置 `world_necromancer_lab_gribbo_defeated=true`
+2. `ui_action_loot` 搜刮 `gribbo`（角色 `player`）
+3. 玩家输入触发战后 party banter（`CHAT + party turn runtime`）
+4. 移动到门前
+5. 使用 `heavy_iron_key` 交互 `heavy_oak_door_1`
 
 ### Mock LLM Output
 - `dm`:
-  - step1 映射到 `LOOT` 或等价 transaction 触发
-  - step2 映射到 `INTERACT`（门）
-  - step3 触发 companion runtime 回应
+  - step3 deterministic override 到 `CHAT`，responders=`astarion/shadowheart/laezel`
+  - step4 映射到 `MOVE`
+  - step5 映射到 `INTERACT`
+- `generation`:
+  - step4/step5 narration 使用脚本化文本，保证回放稳定
 
 ### Mock Dice / Random
-- 固定 `randint` 保证开门/交互结果稳定
+- 固定 `randint/choice/random`，保证 move/interact/party-turn 顺序稳定
 
 ### Assertions
 - state:
-  - `player_inventory.heavy_iron_key >= 1`
-  - `gribbo.inventory.heavy_iron_key == 0`
+  - `player_inventory.heavy_iron_key == 1`（不重复）
+  - `gribbo` 可搜刮并失去 `heavy_iron_key`
   - `heavy_oak_door_1.is_open=true`
   - `demo_cleared=true`
+  - `flags.necromancer_lab_escape_complete=true`
+  - `flags.content_sprint_1_complete=true`
 - memory:
-  - 至少一名 companion 写入战后反思记忆
+  - Astarion/Shadowheart/Lae'zel 至少一条战后 actor-private 记忆写入
 - visibility:
-  - 私密战后情绪不应在其他 actor prompt 中泄露
+  - 不泄露其他 actor 的 private memory path
 - event_drain:
-  - 键物品转移由 DomainEvent/EventDrain 落地（而非 runtime 直接改 state）
-  - telemetry 存在 `event_drain` 且 event_count 符合步骤规模
+  - 键物品转移由 `actor_item_transaction_requested -> event_drain` 落地
+  - telemetry 含 `transaction_event_count=1`
 - routing/telemetry:
-  - loot/door 路径 marker 清晰；runtime 步骤 marker 正常
+  - 战后 banter 步骤存在 `actor_invocation_reason=party_turn_runtime_multi`
 
 ## 4. Suggested Rollout Plan (Next Thread)
 - 先落 Act 3 两个 case（已与 Party Turn 能力最贴合，回归价值最高）。

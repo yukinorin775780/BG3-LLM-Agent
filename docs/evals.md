@@ -60,6 +60,18 @@ artifacts/evals/<run_id>/
 - 避免外部网络和在线模型波动导致假失败。
 - 控制 CI 成本和时延。
 
+## Content Sprint 1 Baseline 约束
+
+- `necromancer_lab` 的 Content Sprint 1 golden cases 是 playable demo baseline 的正式组成部分。
+- 不允许将以下四幕主线 case 降级为 smoke：
+  - `necromancer_lab_act1_trap_perception`
+  - `necromancer_lab_act2_diary_int_success`
+  - `necromancer_lab_act2_diary_int_failure`
+  - `necromancer_lab_act3_side_with_astarion`
+  - `necromancer_lab_act3_rebuke_astarion`
+  - `necromancer_lab_act4_loot_key_and_escape`
+- 若剧情机制调整影响上述 case，必须同步更新 deterministic 断言与回放脚本，不得删除验收维度。
+
 ## 什么时候补 Golden Case
 
 以下改动建议同步新增或更新 golden case：

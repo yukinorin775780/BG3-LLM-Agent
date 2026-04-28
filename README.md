@@ -219,6 +219,9 @@ player_inventory = {
 - V1.3 Party Turn Coordinator: `docs/v1_3_party_turn_coordinator.md`
 - V1.3 Actor Visibility Policy: `docs/v1_3_actor_visibility_policy.md`
 - V1.3 Capability Freeze: `docs/v1_3_capability_freeze.md`
+- Content Sprint 1 Story Bible: `docs/content_sprint_1_necromancer_lab_story_bible.md`
+- Content Sprint 1 Golden Spec: `docs/content_sprint_1_necromancer_lab_golden_spec.md`
+- Content Sprint 1 Playable Demo Freeze: `docs/content_sprint_1_playable_demo_freeze.md`
 
 ## Tech Stack
 
