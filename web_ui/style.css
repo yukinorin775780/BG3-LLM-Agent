@@ -2385,6 +2385,14 @@ textarea {
     overflow: hidden;
   }
 
+  .xray-panel {
+    flex-basis: 32vw;
+    width: 32vw;
+    min-width: 280px;
+    padding: 16px;
+    gap: 10px;
+  }
+
   .tactical-pause-overlay {
     align-items: stretch;
     overflow: auto;
@@ -2650,17 +2658,16 @@ textarea {
    ═══════════════════════════════════════════════════════ */
 .toast-container {
   position: absolute;
-  bottom: 80px;
-  left: 50%;
-  transform: translateX(-50%);
+  top: 112px;
+  right: 20px;
   z-index: 200;
   display: flex;
-  flex-direction: column-reverse;
-  align-items: center;
+  flex-direction: column;
+  align-items: flex-end;
   gap: 8px;
   pointer-events: none;
-  max-width: 420px;
-  width: 90%;
+  max-width: min(420px, 32vw);
+  width: min(420px, 32vw);
 }
 
 .hud-toast {
@@ -2713,9 +2720,9 @@ textarea {
    ═══════════════════════════════════════════════════════ */
 .dice-card-container {
   position: absolute;
-  top: 50%;
+  top: 18%;
   left: 50%;
-  transform: translate(-50%, -50%);
+  transform: translateX(-50%);
   z-index: 210;
   pointer-events: none;
   display: flex;
@@ -2927,5 +2934,14 @@ textarea {
     flex-basis: 80vw !important;
     width: 80vw !important;
     z-index: 250;
+  }
+  .toast-container {
+    top: 84px;
+    right: 12px;
+    max-width: min(340px, 72vw);
+    width: min(340px, 72vw);
+  }
+  .dice-card-container {
+    top: 14%;
   }
 }

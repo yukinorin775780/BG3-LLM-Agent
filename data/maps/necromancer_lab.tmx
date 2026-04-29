@@ -3,32 +3,43 @@
  <!--
    necromancer_lab.tmx - 死灵法师废弃实验室 (25x25)
 
-   动线设计:
-   Area A (门厅 y=13-18) → Area B (走廊 y=8-11) → [可选 Area C (书房)] → Area D (手术室 y=1-6) → 出口
+   动线设计: A (门厅) → B (走廊) → [可选 C (书房)] → D (手术室) → 出口
 
-   通道口:
-   - A→B: x=12, y=12 (门厅通往走廊)
-   - B→D: x=12, y=7 (走廊通往手术室)
-   - B↔C: x=20, y=8-11 (走廊与书房双向连通，宽度2格)
-   - D→出口: x=12-14, y=0 (沉重橡木门)
+   区域布局:
+   - Area A (y=15-22): 门厅，玩家出生点 P(x=4, y=18)
+   - Area B (y=9-11): 必经走廊，酸液+毒气陷阱
+   - Area C (x=21-22, y=9-11): 可选书房，日记+宝箱
+   - Area D (y=1-5): 主手术室，Gribbo+掩体+出口门
 
-   图层命名遵循前端 tiled-adapter.js 解析规则:
-   - collision → collision grid (墙壁碰撞)
-   - los_blockers → losBlockers grid (视线阻挡)
-   - triggers → narrative_trigger / trap 对象
-   - interactables → chest / door / readable / trap 对象
-   - spawns → npc / spawn 对象
+   通道口 (collision层中 x=通道位置):
+   - A→B: Row 14, x=12
+   - B→D: Row 06, x=12
+   - B↔C: Row 08-12, x=20-21 (宽度2格)
+   - 出口门: Row 00, x=12-14
+
+   collision层: 1=墙, 0=可通行
  -->
- <tileset firstgid="1" name="dungeon_tiles" tilewidth="32" tileheight="32" tilecount="8" columns="8">
-  <image source="../web_ui/assets/2D Pixel Dungeon Asset Pack/character and tileset/Dungeon_Tileset.png" width="256" height="32"/>
+ <tileset firstgid="1" name="dungeon_tiles" tilewidth="16" tileheight="16" tilecount="100" columns="10">
+  <image source="../web_ui/assets/2D Pixel Dungeon Asset Pack/character and tileset/Dungeon_Tileset.png" width="160" height="160"/>
  </tileset>
 
- <!-- Layer: collision - 墙壁碰撞层 -->
- <!-- 1=墙, 0=可通行 -->
- <!-- 关键通道口: (12,12), (12,7), (20-21,8-11), (12-14,0门位置) -->
+ <!-- Layer: collision - 墙壁碰撞层 (25x25) -->
+ <!--
+   Row 00: 北墙 + 门(x=12-14=0)
+   Row 01-05: Area D 内部
+   Row 06: D区南墙 + 通道(x=12=0)
+   Row 07: 过渡区
+   Row 08: B区北墙 + C区墙 + 通道(x=12=0, x=20-21=0)
+   Row 09-11: Area B+C 内部
+   Row 12: B区南墙 + C区墙 + 通道(x=12=0, x=20-21=0)
+   Row 13: 过渡区
+   Row 14: A区北墙 + 通道(x=12=0)
+   Row 15-22: Area A 内部
+   Row 23: 南墙
+ -->
  <layer id="1" name="collision" width="25" height="25">
   <data encoding="csv">
-1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+1,1,1,1,1,1,1,1,1,1,1,1,0,0,0,1,1,1,1,1,1,1,1,1,1,
 1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,
 1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,
 1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,
@@ -40,6 +51,8 @@
 1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,
 1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,
 1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,
+1,1,1,1,1,1,1,1,1,1,1,1,0,1,1,1,1,1,1,1,0,0,1,1,1,
+1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,
 1,1,1,1,1,1,1,1,1,1,1,1,0,1,1,1,1,1,1,1,1,1,1,1,1,
 1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,
 1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,
@@ -47,12 +60,14 @@
 1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,
 1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,
 1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,
-1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1
+1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,
+1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,
+1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
 </data>
  </layer>
 
  <!-- Layer: los_blockers - 视线阻挡层 (手术台/石柱) -->
- <!-- 1=阻挡视线, 0=不阻挡 -->
  <layer id="2" name="los_blockers" width="25" height="25">
   <data encoding="csv">
 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
@@ -74,12 +89,17 @@
 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
-0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
 </data>
  </layer>
 
  <!-- Layer: ground_types - 地面类型层 (酸液危险区) -->
- <!-- 2=酸液地面, 0=普通石板 -->
+ <!-- Area B 走廊 (x=1-8, y=9-11) 为酸液 -->
  <layer id="3" name="ground_types" width="25" height="25">
   <data encoding="csv">
 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
@@ -89,7 +109,7 @@
 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
-0,2,2,2,2,2,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
 0,2,2,2,2,2,2,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
 0,2,2,2,2,2,2,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
@@ -101,21 +121,26 @@
 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
-0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
 </data>
  </layer>
 
  <!-- ObjectGroup: triggers - 触发器层 -->
  <objectgroup id="4" name="triggers">
   <!-- 走廊感知区 - 进入 Area B 时触发 -->
-  <object id="1" name="corridor_approach" type="narrative_trigger" x="32" y="256" width="224" height="128">
+  <object id="1" name="corridor_approach" type="narrative_trigger" x="32" y="288" width="256" height="128">
    <properties>
     <property name="trigger_id" value="act1_corridor_approach"/>
-    <property name="trigger_text" value="空气中弥漫着刺鼻的酸臭味，破碎的玻璃罐散落各处。前方似乎有两条路..."/>
+    <property name="trigger_text" value="空气中弥漫着刺鼻的酸臭味，破碎的玻璃罐散落各处。前方有两条路..."/>
    </properties>
   </object>
   <!-- 毒气陷阱 1 - 走廊入口 -->
-  <object id="2" name="poison_trap_1" type="trap" x="64" y="288" width="32" height="32">
+  <object id="2" name="poison_trap_1" type="trap" x="160" y="320" width="32" height="32">
    <properties>
     <property name="detect_dc" value="13" type="int"/>
     <property name="disarm_dc" value="15" type="int"/>
@@ -127,7 +152,7 @@
    </properties>
   </object>
   <!-- 毒气陷阱 2 - 走廊中部 -->
-  <object id="3" name="poison_trap_2" type="trap" x="128" y="320" width="32" height="32">
+  <object id="3" name="poison_trap_2" type="trap" x="64" y="352" width="32" height="32">
    <properties>
     <property name="detect_dc" value="14" type="int"/>
     <property name="disarm_dc" value="16" type="int"/>
@@ -139,7 +164,7 @@
    </properties>
   </object>
   <!-- 毒气陷阱 3 - 走廊深处 -->
-  <object id="4" name="poison_trap_3" type="trap" x="192" y="352" width="32" height="32">
+  <object id="4" name="poison_trap_3" type="trap" x="224" y="320" width="32" height="32">
    <properties>
     <property name="detect_dc" value="15" type="int"/>
     <property name="disarm_dc" value="17" type="int"/>
@@ -151,7 +176,7 @@
    </properties>
   </object>
   <!-- 手术室进入触发 -->
-  <object id="5" name="operating_room_enter" type="narrative_trigger" x="0" y="0" width="384" height="192">
+  <object id="5" name="operating_room_enter" type="narrative_trigger" x="32" y="32" width="384" height="128">
    <properties>
     <property name="trigger_id" value="act1_operating_room"/>
     <property name="trigger_text" value="手术台上的血迹早已干涸，空气中残留着某种不自然的寂静。一个变异的身影在远处徘徊..."/>
@@ -161,8 +186,8 @@
 
  <!-- ObjectGroup: interactables - 可交互对象层 -->
  <objectgroup id="5" name="interactables">
-  <!-- 日记书桌 - Area C 书房 -->
-  <object id="6" name="necromancer_diary" type="readable" x="640" y="320" width="32" height="32">
+  <!-- 日记书桌 - Area C 书房 (x=21, y=10) -->
+  <object id="6" name="necromancer_diary" type="readable" x="672" y="320" width="32" height="32">
    <properties>
     <property name="lore_id" value="necromancer_diary_1"/>
     <property name="name" value="沾满血污的日记本"/>
@@ -172,8 +197,8 @@
     <property name="failure_text" value="字迹模糊难辨，你只能辨认出几个零散的词句。"/>
    </properties>
   </object>
-  <!-- 战利品木箱 - Area C 书房 -->
-  <object id="7" name="loot_chest_1" type="chest" x="640" y="384" width="32" height="32">
+  <!-- 战利品木箱 - Area C 书房 (x=21, y=11) -->
+  <object id="7" name="chest_1" type="chest" x="672" y="352" width="32" height="32">
    <properties>
     <property name="name" value="旧木箱"/>
     <property name="status" value="unlocked"/>
@@ -181,8 +206,8 @@
     <property name="inventory" value="gold_coin:15,healing_potion:1,heavy_iron_key:1"/>
    </properties>
   </object>
-  <!-- 出口门 - Area D 北墙 -->
-  <object id="8" name="heavy_oak_door" type="door" x="384" y="0" width="96" height="32">
+  <!-- 出口门 - Area D 北墙 (x=12-14, y=0) -->
+  <object id="8" name="heavy_oak_door_1" type="door" x="384" y="0" width="96" height="32">
    <properties>
     <property name="name" value="通往地表的沉重大门"/>
     <property name="is_open" value="false" type="bool"/>
@@ -196,15 +221,15 @@
 
  <!-- ObjectGroup: spawns - 实体生成点层 -->
  <objectgroup id="6" name="spawns">
-  <!-- 玩家出生点 - Area A 门厅 -->
-  <object id="1" name="player_start" type="spawn_point" x="128" y="544" width="32" height="32"/>
-  <!-- Gribbo - Area D 手术室 -->
+  <!-- 玩家出生点 - Area A 门厅 (x=4, y=18) -->
+  <object id="1" name="player_start" type="spawn_point" x="128" y="576" width="32" height="32"/>
+  <!-- Gribbo - Area D 手术室 (x=12, y=2) -->
   <object id="2" name="gribbo" type="npc" x="384" y="64" width="32" height="32">
    <properties>
     <property name="prefab" value="characters/gribbo.yaml"/>
     <property name="instance_id" value="gribbo"/>
-    <property name="faction" value="hostile"/>
-    <property name="ai_type" value="aggressive"/>
+    <property name="faction" value="neutral"/>
+    <property name="ai_type" value="negotiable"/>
     <property name="patrol_radius" value="3" type="int"/>
    </properties>
   </object>

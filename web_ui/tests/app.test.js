@@ -9,6 +9,7 @@ const UI_EVENT_ADAPTER_PATH = path.resolve(__dirname, "../ui-event-adapter.js");
 const DIRECTOR_TRACE_PATH = path.resolve(__dirname, "../director-trace.js");
 const INPUT_CONTROLLER_PATH = path.resolve(__dirname, "../input-controller.js");
 const HUD_RENDERERS_PATH = path.resolve(__dirname, "../hud-renderers.js");
+const REAL_MAP_JSON_PATH = path.resolve(__dirname, "../assets/maps/necromancer_lab.json");
 
 function extractBodyMarkup(htmlText) {
   const match = String(htmlText).match(/<body[^>]*>([\s\S]*?)<\/body>/i);
@@ -105,6 +106,7 @@ describe("web_ui/app.js UI bindings", () => {
     delete window.BG3DirectorTrace;
     delete window.BG3InputController;
     delete window.BG3HudRenderers;
+    delete window.__BG3_FORCE_REAL_MAP_LOAD__;
   });
 
   /* ═══════════════════════════════════════════
@@ -460,6 +462,83 @@ describe("web_ui/app.js UI bindings", () => {
     expect(result.spawns.length).toBe(1);
     expect(result.spawns[0].id).toBe("goblin_1");
     expect(result.spawns[0].faction).toBe("hostile");
+  });
+
+  test("test_real_map_json_contract_25x25_with_625_cells", () => {
+    const raw = fs.readFileSync(REAL_MAP_JSON_PATH, "utf8");
+    const map = JSON.parse(raw);
+    expect(map.width).toBe(25);
+    expect(map.height).toBe(25);
+
+    const collision = map.layers.find((layer) => layer.name === "collision");
+    const los = map.layers.find((layer) => layer.name === "los_blockers");
+    const ground = map.layers.find((layer) => layer.name === "ground_types");
+
+    expect(collision.data.length).toBe(625);
+    expect(los.data.length).toBe(625);
+    expect(ground.data.length).toBe(625);
+  });
+
+  test("test_real_map_json_entities_and_trigger_contract", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    await bootAppForTest();
+
+    const raw = fs.readFileSync(REAL_MAP_JSON_PATH, "utf8");
+    const map = JSON.parse(raw);
+    const result = window.BG3TiledAdapter.normalizeTiledMap(map);
+
+    expect(result.width).toBe(25);
+    expect(result.height).toBe(25);
+    expect(result.playerStart.x).toBe(4);
+    expect(result.playerStart.y).toBe(18);
+
+    const interactableIds = result.interactables.map((item) => item.id);
+    expect(interactableIds).toContain("gribbo");
+    expect(interactableIds).toContain("necromancer_diary");
+    expect(interactableIds).toContain("chest_1");
+    expect(interactableIds).toContain("heavy_oak_door_1");
+
+    const spawnIds = result.spawns.map((spawn) => spawn.id);
+    expect(spawnIds).toContain("gribbo");
+
+    const corridor = result.triggers.find((trigger) => trigger.id === "act1_corridor_approach");
+    expect(corridor).toBeDefined();
+
+    const poisonTrap = result.triggers.find((trigger) => trigger.id === "poison_trap_1");
+    expect(poisonTrap).toBeDefined();
+    expect(poisonTrap.data.alias_id).toBe("gas_trap_1");
+  });
+
+  test("test_load_map_by_id_fallback_is_observable", async () => {
+    spyOnFetch().mockRejectedValueOnce(new Error("offline"));
+    loadNewModules();
+    const result = await window.BG3TiledAdapter.loadMapById("necromancer_lab");
+    expect(result.source).toBe("fixture");
+    expect(result.reason).toBe("error");
+    expect(result.map.width).toBeGreaterThan(0);
+  });
+
+  test("test_app_marks_map_source_and_qa_warning_on_real_map_fallback", async () => {
+    window.__BG3_FORCE_REAL_MAP_LOAD__ = true;
+    const fetchSpy = spyOnFetch().mockImplementation((url) => {
+      if (String(url).includes("assets/maps/necromancer_lab.json")) {
+        return Promise.reject(new Error("offline"));
+      }
+      return mockResponse({});
+    });
+
+    await bootAppForTest("http://localhost/?qa_test=1&qa_force_map=1");
+    await flushAsync();
+
+    const host = document.getElementById("map-container");
+    expect(host.dataset.mapSource).toBe("fixture");
+    expect(host.dataset.mapFallbackReason).toBe("error");
+
+    const toastContainer = document.getElementById("toast-container");
+    const warningToast = Array.from(toastContainer.querySelectorAll(".hud-toast"))
+      .find((item) => item.textContent.includes("地图资产加载失败"));
+    expect(warningToast).toBeDefined();
+    expect(fetchSpy).toHaveBeenCalled();
   });
 
   test("test_session_id_from_url", async () => {

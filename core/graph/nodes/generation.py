@@ -58,6 +58,48 @@ logger = logging.getLogger(__name__)
 _CONSUME_ACTION_INTENTS = {"use_item", "consume"}
 
 
+def _is_generation_speaker_candidate(entity_id: str) -> bool:
+    normalized = str(entity_id or "").strip().lower()
+    if not normalized:
+        return False
+    return normalized not in {"player", "unknown"}
+
+
+def _resolve_generation_speaker_and_character(
+    state: GameState,
+    entities: Dict[str, Any],
+    requested_speaker: str,
+) -> tuple[str, Any]:
+    from characters.loader import load_character
+
+    raw_candidates: List[str] = [requested_speaker]
+    queue = state.get("speaker_queue")
+    if isinstance(queue, list):
+        raw_candidates.extend(str(item or "").strip() for item in queue)
+    raw_candidates.append(first_entity_id(entities))
+    raw_candidates.extend(str(entity_id or "").strip() for entity_id in entities.keys())
+
+    seen: set[str] = set()
+    for candidate in raw_candidates:
+        normalized = str(candidate or "").strip().lower()
+        if not _is_generation_speaker_candidate(normalized) or normalized in seen:
+            continue
+        seen.add(normalized)
+        try:
+            return normalized, load_character(normalized)
+        except (FileNotFoundError, OSError, ValueError, TypeError, KeyError) as exc:
+            logger.warning(
+                "Generation speaker '%s' is not loadable, trying next candidate: %s",
+                normalized,
+                exc,
+            )
+            continue
+
+    raise FileNotFoundError(
+        "No loadable NPC speaker found for generation node."
+    )
+
+
 def _player_message_suggests_item_offer(text: str) -> bool:
     """玩家是否在口头赠送/递物品（DM 常仍标为 CHAT，但必须走带工具的 Agent）。"""
     if not text or not str(text).strip():
@@ -1202,12 +1244,14 @@ def create_generation_node() -> Callable[[GameState], Coroutine[Any, Any, dict]]
         LLM 生成节点。
         根据 current_speaker 动态加载对应角色，从 state 提取 affection / flags / inventory 等。
         """
-        from characters.loader import load_character
-
         entities = merge_entities_with_defaults(state.get("entities"))
         fallback_speaker = first_entity_id(entities)
-        speaker = (state.get("current_speaker") or "").strip() or fallback_speaker
-        character = load_character(speaker)
+        requested_speaker = (state.get("current_speaker") or "").strip() or fallback_speaker
+        speaker, character = _resolve_generation_speaker_and_character(
+            state,
+            entities,
+            requested_speaker,
+        )
         memory_service = get_default_memory_service()
         actor_view = build_actor_view(
             state,

@@ -5,6 +5,9 @@
     height: 10,
     obstacles: [],
     grid: [],
+    collision: [],
+    los_blockers: [],
+    ground_types: [],
   };
 
   const FALLBACK_STATE = {
@@ -37,8 +40,11 @@
 
   const DEPTH_LAYERS = Object.freeze({
     floor: 0,
+    ambience: 0.35,
     environment: 1,
+    overlay: 1.6,
     actors: 2,
+    interactFx: 3,
   });
 
   const TILE_FRAMES = Object.freeze({
@@ -65,10 +71,39 @@
     hostile: [11, 12, 13, 25, 26, 27],
     neutral: [2, 3, 16, 17],
     object: [9, 10, 23, 24],
+    partyById: {
+      player: 1,
+      astarion: 12,
+      shadowheart: 16,
+      laezel: 18,
+      lae_zel: 18,
+      gribbo: 27,
+    },
     hostileById: {
       goblin_1: 11,
     },
   });
+
+  const ACTOR_TINTS = Object.freeze({
+    player: 0xf4e1b8,
+    astarion: 0xd29f93,
+    shadowheart: 0xc9b9f8,
+    laezel: 0x9fdcb2,
+    lae_zel: 0x9fdcb2,
+    gribbo: 0xa7d8bf,
+  });
+
+  const GROUND_TYPE_TINTS = Object.freeze({
+    default: 0xffffff,
+    toxic: 0x79d89f,
+  });
+
+  const REGION_THEMES = Object.freeze([
+    { key: "entrance_hall", x: 0, y: 14, w: 12, h: 11, color: 0x6f4f2e, alpha: 0.1 },
+    { key: "poison_corridor", x: 1, y: 8, w: 8, h: 6, color: 0x3d7d4d, alpha: 0.13 },
+    { key: "study", x: 18, y: 8, w: 7, h: 6, color: 0x5a4c80, alpha: 0.1 },
+    { key: "surgery_exit", x: 9, y: 0, w: 8, h: 6, color: 0x4e6a82, alpha: 0.12 },
+  ]);
 
   const controller = {
     game: null,
@@ -170,6 +205,14 @@
       if (!this.scene || typeof this.scene.clearLoSOverlay !== "function") return;
       this.scene.clearLoSOverlay();
     },
+    setInteractionFocus(interactable) {
+      if (!this.scene || typeof this.scene.setInteractionFocus !== "function") return;
+      this.scene.setInteractionFocus(interactable);
+    },
+    setTrapSenseMode(enabled) {
+      if (!this.scene || typeof this.scene.setTrapSenseMode !== "function") return;
+      this.scene.setTrapSenseMode(enabled);
+    },
     resize() {
       if (!this.game) return;
       const size = gameViewportSize();
@@ -227,21 +270,56 @@
     const parsedGrid = normalizeGridData(
       data.grid || data.map_grid || data.layout || data.tiles || data.rows,
     );
+    const parsedCollision = normalizeCollisionData(
+      data.collision || data.collision_grid || data.blocked_movement_grid || [],
+    );
+    const parsedLosBlockers = normalizeCollisionData(
+      data.los_blockers || data.losBlockers || data.los || [],
+    );
+    const parsedGroundTypes = normalizeNumericGridData(
+      data.ground_types || data.groundTypes || data.ground || data.terrain || [],
+    );
     const gridHeight = parsedGrid.length;
     const gridWidth = parsedGrid.reduce((max, row) => Math.max(max, row.length), 0);
+    const collisionHeight = parsedCollision.length;
+    const collisionWidth = parsedCollision.reduce((max, row) => Math.max(max, row.length), 0);
+    const losHeight = parsedLosBlockers.length;
+    const losWidth = parsedLosBlockers.reduce((max, row) => Math.max(max, row.length), 0);
+    const groundHeight = parsedGroundTypes.length;
+    const groundWidth = parsedGroundTypes.reduce((max, row) => Math.max(max, row.length), 0);
     const width = Math.max(
       1,
       Math.round(Number(data.width) || 0),
+      losWidth || 0,
+      groundWidth || 0,
+      collisionWidth || 0,
       gridWidth || DEFAULT_MAP_DATA.width,
     );
     const height = Math.max(
       1,
       Math.round(Number(data.height) || 0),
+      losHeight || 0,
+      groundHeight || 0,
+      collisionHeight || 0,
       gridHeight || DEFAULT_MAP_DATA.height,
     );
     const obstacles = Array.isArray(data.obstacles) ? data.obstacles : [];
-    const grid = normalizeGridShape(parsedGrid, width, height);
-    return { id, width, height, obstacles, grid };
+    const collision = normalizeCollisionShape(parsedCollision, width, height);
+    const losBlockers = normalizeCollisionShape(parsedLosBlockers, width, height);
+    const groundTypes = normalizeNumericGridShape(parsedGroundTypes, width, height);
+    const grid = parsedGrid.length
+      ? normalizeGridShape(parsedGrid, width, height)
+      : gridFromCollision(collision, width, height);
+    return {
+      id,
+      width,
+      height,
+      obstacles,
+      grid,
+      collision,
+      los_blockers: losBlockers,
+      ground_types: groundTypes,
+    };
   }
 
   function normalizeGridData(rawGrid) {
@@ -274,6 +352,67 @@
         normalized.push(value === "W" ? "W" : ".");
       }
       out.push(normalized);
+    }
+    return out;
+  }
+
+  function normalizeCollisionData(rawCollision) {
+    if (!Array.isArray(rawCollision)) return [];
+    if (rawCollision.every((row) => Array.isArray(row))) {
+      return rawCollision.map((row) => row.map((cell) => Boolean(cell)));
+    }
+    return [];
+  }
+
+  function normalizeNumericGridData(rawGrid) {
+    if (!Array.isArray(rawGrid)) return [];
+    if (rawGrid.every((row) => Array.isArray(row))) {
+      return rawGrid.map((row) => row.map((cell) => Number(cell) || 0));
+    }
+    return [];
+  }
+
+  function normalizeCollisionShape(parsedCollision, width, height) {
+    if (!Array.isArray(parsedCollision) || parsedCollision.length === 0) {
+      return [];
+    }
+    const out = [];
+    for (let y = 0; y < height; y += 1) {
+      const row = Array.isArray(parsedCollision[y]) ? parsedCollision[y] : [];
+      const normalized = [];
+      for (let x = 0; x < width; x += 1) {
+        normalized.push(Boolean(row[x]));
+      }
+      out.push(normalized);
+    }
+    return out;
+  }
+
+  function normalizeNumericGridShape(parsedGrid, width, height) {
+    if (!Array.isArray(parsedGrid) || parsedGrid.length === 0) {
+      return [];
+    }
+    const out = [];
+    for (let y = 0; y < height; y += 1) {
+      const row = Array.isArray(parsedGrid[y]) ? parsedGrid[y] : [];
+      const normalized = [];
+      for (let x = 0; x < width; x += 1) {
+        normalized.push(Number(row[x]) || 0);
+      }
+      out.push(normalized);
+    }
+    return out;
+  }
+
+  function gridFromCollision(collision, width, height) {
+    const out = [];
+    for (let y = 0; y < height; y += 1) {
+      const row = Array.isArray(collision[y]) ? collision[y] : [];
+      const next = [];
+      for (let x = 0; x < width; x += 1) {
+        next.push(Boolean(row[x]) ? "W" : ".");
+      }
+      out.push(next);
     }
     return out;
   }
@@ -447,14 +586,25 @@
     constructor() {
       super("MainScene");
       this.floorLayer = null;
+      this.ambienceLayer = null;
       this.environmentLayer = null;
+      this.overlayLayer = null;
       this.entityLayer = null;
       this.floorSprites = [];
+      this.ambientSprites = [];
+      this.toxicFogSprites = [];
+      this.losSprites = [];
       this.obstacleSprites = [];
       this.obstacleFxTweens = [];
+      this.overlayTweens = [];
+      this.interactionRing = null;
+      this.highlightedInteractableId = "";
+      this.trapSenseMode = false;
       this.mapData = DEFAULT_MAP_DATA;
       this.board = { x: 0, y: 0, width: 640, height: 640, cell: 64 };
       this.tokens = new Map();
+      this.highlightTween = null;
+      this.externalLosOverlaySprites = [];
       this.transitionOverlay = null;
       this.lastTransitionAt = -Infinity;
     }
@@ -472,8 +622,12 @@
 
     create() {
       this.floorLayer = this.add.layer().setDepth(DEPTH_LAYERS.floor);
+      this.ambienceLayer = this.add.layer().setDepth(DEPTH_LAYERS.ambience);
       this.environmentLayer = this.add.layer().setDepth(DEPTH_LAYERS.environment);
+      this.overlayLayer = this.add.layer().setDepth(DEPTH_LAYERS.overlay);
       this.entityLayer = this.add.layer().setDepth(DEPTH_LAYERS.actors);
+      this.interactionRing = this.add.graphics().setDepth(DEPTH_LAYERS.interactFx);
+      this.interactionRing.setVisible(false);
       this.transitionOverlay = this.add.rectangle(0, 0, 1, 1, 0x000000, 0)
         .setOrigin(0, 0)
         .setDepth(500)
@@ -510,6 +664,7 @@
           this.tokens.delete(id);
         }
       });
+      this.refreshInteractionHighlight();
       this.updateCameraFollow();
 
       if (options.mapChanged) {
@@ -534,12 +689,15 @@
       };
 
       this.drawFloorTiles();
+      this.drawAmbienceLayers();
       this.drawObstacleTiles();
+      this.drawLosBlockers();
       this.tokens.forEach((token) => {
         this.updateTokenScale(token);
         this.updateIdleTween(token, true);
       });
       this.positionAllTokens(false);
+      this.refreshInteractionHighlight();
       if (this.transitionOverlay) {
         this.transitionOverlay
           .setPosition(0, 0)
@@ -563,16 +721,31 @@
       this.destroySpriteList(this.floorSprites);
       const grid = Array.isArray(map.grid) ? map.grid : [];
       const hasGrid = grid.length > 0;
+      const collision = Array.isArray(map.collision) ? map.collision : [];
+      const groundTypes = Array.isArray(map.ground_types) ? map.ground_types : [];
 
       for (let y = 0; y < map.height; y += 1) {
         for (let x = 0; x < map.width; x += 1) {
           const cell = hasGrid ? String((grid[y] && grid[y][x]) || ".").toUpperCase() : ".";
-          const isWall = cell === "W";
-          const frame = isWall ? WALL_FRAME : FLOOR_FRAME;
+          const blocked = Boolean(collision[y] && collision[y][x]);
+          const isWall = cell === "W" || blocked;
+          const groundType = Number(groundTypes[y] && groundTypes[y][x]) || 0;
+          const isToxic = groundType >= 2 && !isWall;
+          const frame = isWall
+            ? pickFrame(TILE_FRAMES.wall, `wall:${x}:${y}`)
+            : pickFrame(TILE_FRAMES.floor, `floor:${x}:${y}`);
           const world = this.gridToWorld(x, y);
           const tile = this.add.image(world.x, world.y, SPRITE_KEYS.tiles, frame)
             .setScale(this.scaleForTile(1.02))
             .setDepth(isWall ? DEPTH_LAYERS.environment : DEPTH_LAYERS.floor);
+          if (isWall) {
+            tile.setTint(0xc9b8a0);
+          } else if (isToxic) {
+            tile.setTint(GROUND_TYPE_TINTS.toxic);
+            tile.setAlpha(0.95);
+          } else {
+            tile.setTint(GROUND_TYPE_TINTS.default);
+          }
           if (isWall) {
             this.environmentLayer.add(tile);
           } else {
@@ -581,6 +754,241 @@
           this.floorSprites.push(tile);
         }
       }
+    }
+
+    drawAmbienceLayers() {
+      this.destroySpriteList(this.ambientSprites);
+      this.destroySpriteList(this.toxicFogSprites);
+      this.destroySpriteList(this.losSprites);
+      this.overlayTweens.forEach((tween) => tween.stop());
+      this.overlayTweens = [];
+
+      const map = normalizeMapData(this.mapData);
+      REGION_THEMES.forEach((region) => {
+        if (region.x >= map.width || region.y >= map.height) return;
+        const width = Math.min(region.w, map.width - region.x) * this.board.cell;
+        const height = Math.min(region.h, map.height - region.y) * this.board.cell;
+        const center = this.gridToWorld(
+          region.x + Math.min(region.w, map.width - region.x) / 2 - 0.5,
+          region.y + Math.min(region.h, map.height - region.y) / 2 - 0.5,
+        );
+        const overlay = this.add.rectangle(center.x, center.y, width, height, region.color, region.alpha)
+          .setDepth(DEPTH_LAYERS.ambience);
+        this.ambienceLayer.add(overlay);
+        this.ambientSprites.push(overlay);
+      });
+
+      const ground = Array.isArray(map.ground_types) ? map.ground_types : [];
+      const collision = Array.isArray(map.collision) ? map.collision : [];
+      for (let y = 0; y < map.height; y += 1) {
+        for (let x = 0; x < map.width; x += 1) {
+          const groundType = Number(ground[y] && ground[y][x]) || 0;
+          if (groundType < 2 || Boolean(collision[y] && collision[y][x])) continue;
+          const world = this.gridToWorld(x, y);
+          const fog = this.add.ellipse(world.x, world.y, this.board.cell * 0.72, this.board.cell * 0.52, 0x65cf87, 0.18)
+            .setDepth(DEPTH_LAYERS.ambience);
+          this.ambienceLayer.add(fog);
+          this.toxicFogSprites.push(fog);
+          this.overlayTweens.push(
+            this.tweens.add({
+              targets: fog,
+              alpha: 0.34,
+              scaleX: 1.1,
+              scaleY: 1.1,
+              duration: 1200 + ((x + y) % 4) * 140,
+              yoyo: true,
+              repeat: -1,
+              ease: "Sine.easeInOut",
+            }),
+          );
+        }
+      }
+
+      const vignette = this.add.rectangle(
+        this.board.width * 0.5,
+        this.board.height * 0.5,
+        this.board.width,
+        this.board.height,
+        0x000000,
+        0.12,
+      ).setDepth(DEPTH_LAYERS.ambience);
+      this.ambienceLayer.add(vignette);
+      this.ambientSprites.push(vignette);
+
+      const exitGlow = this.add.ellipse(
+        this.board.width * 0.5,
+        this.board.cell * 1.35,
+        this.board.cell * 6.4,
+        this.board.cell * 2.4,
+        0x85a5be,
+        0.24,
+      ).setDepth(DEPTH_LAYERS.overlay);
+      this.overlayLayer.add(exitGlow);
+      this.ambientSprites.push(exitGlow);
+      this.overlayTweens.push(
+        this.tweens.add({
+          targets: exitGlow,
+          alpha: 0.42,
+          duration: 1800,
+          yoyo: true,
+          repeat: -1,
+          ease: "Sine.easeInOut",
+        }),
+      );
+
+      if (this.trapSenseMode) {
+        this.drawTrapSenseHints();
+      }
+    }
+
+    drawTrapSenseHints() {
+      const map = normalizeMapData(this.mapData);
+      const ground = Array.isArray(map.ground_types) ? map.ground_types : [];
+      for (let y = 0; y < map.height; y += 1) {
+        for (let x = 0; x < map.width; x += 1) {
+          const groundType = Number(ground[y] && ground[y][x]) || 0;
+          if (groundType < 2) continue;
+          const world = this.gridToWorld(x, y);
+          const hint = this.add.text(world.x, world.y - this.board.cell * 0.16, "!", {
+            fontFamily: "Georgia, serif",
+            fontSize: Math.max(10, this.board.cell * 0.24) + "px",
+            fontStyle: "bold",
+            color: "#9ce2b0",
+            stroke: "#0c1810",
+            strokeThickness: 2,
+          }).setOrigin(0.5).setDepth(DEPTH_LAYERS.overlay);
+          hint.setAlpha(0.24);
+          this.overlayLayer.add(hint);
+          this.ambientSprites.push(hint);
+          this.overlayTweens.push(
+            this.tweens.add({
+              targets: hint,
+              alpha: 0.58,
+              duration: 900 + ((x * 13 + y * 7) % 5) * 110,
+              yoyo: true,
+              repeat: -1,
+              ease: "Sine.easeInOut",
+            }),
+          );
+        }
+      }
+    }
+
+    drawLosBlockers() {
+      const map = normalizeMapData(this.mapData);
+      const blockers = Array.isArray(map.los_blockers) ? map.los_blockers : [];
+      for (let y = 0; y < map.height; y += 1) {
+        for (let x = 0; x < map.width; x += 1) {
+          if (!Boolean(blockers[y] && blockers[y][x])) continue;
+          const world = this.gridToWorld(x, y);
+          const shadow = this.add.rectangle(
+            world.x,
+            world.y - this.board.cell * 0.18,
+            this.board.cell * 0.9,
+            this.board.cell * 0.34,
+            0x0f1114,
+            0.48,
+          ).setDepth(DEPTH_LAYERS.environment + 0.05);
+          const edge = this.add.rectangle(
+            world.x,
+            world.y - this.board.cell * 0.32,
+            this.board.cell * 0.76,
+            this.board.cell * 0.08,
+            0x8da5b7,
+            0.34,
+          ).setDepth(DEPTH_LAYERS.environment + 0.06);
+          this.environmentLayer.add(shadow);
+          this.environmentLayer.add(edge);
+          this.losSprites.push(shadow, edge);
+        }
+      }
+    }
+
+    setTrapSenseMode(enabled) {
+      const nextValue = Boolean(enabled);
+      if (this.trapSenseMode === nextValue) return;
+      this.trapSenseMode = nextValue;
+      this.drawAmbienceLayers();
+      this.refreshInteractionHighlight();
+    }
+
+    setInteractionFocus(interactable) {
+      const target = safeObject(interactable);
+      this.highlightedInteractableId = normalizeId(target.id || "");
+      this.refreshInteractionHighlight();
+    }
+
+    resolveFocusWorldPoint(id) {
+      const key = normalizeId(id);
+      if (!key) return null;
+      const token = this.tokens.get(key);
+      if (token && token.container) {
+        return { x: token.container.x, y: token.container.y };
+      }
+      const entity = safeObject(
+        safeObject(controller.latestState.environmentObjects)[key]
+        || safeObject(controller.latestState.partyStatus)[key],
+      );
+      const x = Number(entity.x);
+      const y = Number(entity.y);
+      if (Number.isFinite(x) && Number.isFinite(y)) {
+        return this.gridToWorld(
+          gridCoord(x, 0, this.mapData.width || 1),
+          gridCoord(y, 0, this.mapData.height || 1),
+        );
+      }
+      return null;
+    }
+
+    refreshInteractionHighlight() {
+      if (!this.interactionRing) return;
+      if (this.highlightTween) {
+        this.highlightTween.stop();
+        this.highlightTween = null;
+      }
+      this.interactionRing.clear();
+      const point = this.resolveFocusWorldPoint(this.highlightedInteractableId);
+      if (!point) {
+        this.interactionRing.setVisible(false);
+        return;
+      }
+      const radius = this.board.cell * 0.46;
+      this.interactionRing
+        .lineStyle(3, 0xf0ca7b, 0.88)
+        .strokeCircle(point.x, point.y, radius)
+        .lineStyle(1, 0x61c7bc, 0.6)
+        .strokeCircle(point.x, point.y, radius * 0.72)
+        .setVisible(true)
+        .setAlpha(0.78);
+      this.highlightTween = this.tweens.add({
+        targets: this.interactionRing,
+        alpha: 0.28,
+        duration: 720,
+        yoyo: true,
+        repeat: -1,
+        ease: "Sine.easeInOut",
+      });
+    }
+
+    drawLoSOverlay(blockedTiles) {
+      this.clearLoSOverlay();
+      const tiles = Array.isArray(blockedTiles) ? blockedTiles : [];
+      tiles.forEach((cell) => {
+        const point = safeObject(cell);
+        const x = Number(point.x);
+        const y = Number(point.y);
+        if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+        const world = this.gridToWorld(gridCoord(x, 0, this.mapData.width || 1), gridCoord(y, 0, this.mapData.height || 1));
+        const mark = this.add.rectangle(world.x, world.y, this.board.cell * 0.88, this.board.cell * 0.88, 0xa11616, 0.32)
+          .setDepth(DEPTH_LAYERS.overlay + 0.2);
+        this.overlayLayer.add(mark);
+        this.externalLosOverlaySprites.push(mark);
+      });
+    }
+
+    clearLoSOverlay() {
+      this.externalLosOverlaySprites.forEach((sprite) => sprite.destroy());
+      this.externalLosOverlaySprites = [];
     }
 
     updateCameraBounds() {
@@ -1275,6 +1683,9 @@
       const id = normalizeId(entity.id);
       const data = safeObject(entity.data);
       const hint = normalizeId(data.name || data.type || data.kind || id);
+      if (ACTOR_FRAMES.partyById[id] !== undefined) {
+        return ACTOR_FRAMES.partyById[id];
+      }
       if (kind === "player") {
         return pickFrame(ACTOR_FRAMES.player, id || hint);
       }
@@ -1367,6 +1778,7 @@
     }
 
     applyStatusEffects(token, data) {
+      const actorId = normalizeId(safeObject(token.entity).id || "");
       const effects = normalizeStatusEffects(data);
       const isPoisoned = effects.includes("poisoned");
       const isProne = effects.includes("prone");
@@ -1379,12 +1791,13 @@
 
       if (isPoisoned) {
         token.sprite.setAlpha(0.9);
-        if (typeof token.sprite.setTint === "function") {
-          token.sprite.setTint(0xa2ff9e);
-        }
+        if (typeof token.sprite.setTint === "function") token.sprite.setTint(0xa2ff9e);
       } else {
         token.sprite.setAlpha(1);
-        if (typeof token.sprite.clearTint === "function") {
+        const baseTint = ACTOR_TINTS[actorId];
+        if (baseTint !== undefined && typeof token.sprite.setTint === "function") {
+          token.sprite.setTint(baseTint);
+        } else if (typeof token.sprite.clearTint === "function") {
           token.sprite.clearTint();
         }
       }

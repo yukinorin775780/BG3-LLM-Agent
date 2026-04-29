@@ -25,6 +25,9 @@
   function safeArr(v) {
     return Array.isArray(v) ? v : [];
   }
+  function normalizeKey(v) {
+    return String(v || "").trim().toLowerCase();
+  }
 
   function make2D(w, h, fill) {
     const grid = [];
@@ -34,6 +37,19 @@
       grid.push(row);
     }
     return grid;
+  }
+
+  function normalizeEntityId(rawId, rawType) {
+    const id = String(rawId || "").trim();
+    const type = normalizeKey(rawType);
+    const key = normalizeKey(id);
+    if (!id) return { id: "" };
+    if (key === "heavy_oak_door") return { id: "heavy_oak_door_1", source_id: id };
+    if (key === "loot_chest_1") return { id: "chest_1", source_id: id };
+    if (key.startsWith("poison_trap") || (type === "trap" && key.includes("poison"))) {
+      return { id, alias_id: "gas_trap_1" };
+    }
+    return { id };
   }
 
   /* ── Parse our YAML-style grid strings ── */
@@ -335,6 +351,7 @@
     const h = Number(raw.height) || 14;
     const collision = make2D(w, h, false);
     const losBlockers = make2D(w, h, false);
+    const groundTypes = make2D(w, h, 0);
     const triggers = [];
     const interactables = [];
     const spawns = [];
@@ -366,6 +383,13 @@
             }
           });
         }
+        if (name === "ground_types" || name === "ground" || name === "terrain") {
+          data.forEach((gid, i) => {
+            const x = i % w;
+            const y = Math.floor(i / w);
+            if (x < w && y < h) groundTypes[y][x] = Number(gid) || 0;
+          });
+        }
         return;
       }
 
@@ -389,6 +413,7 @@
       tileLayers: safeArr(raw.layers),
       collision,
       losBlockers,
+      groundTypes,
       triggers,
       interactables,
       spawns,
@@ -452,14 +477,26 @@
       objType === "narrative_trigger" ||
       layerName === "triggers" || layerName === "trigger"
     ) {
+      const preferredTriggerId =
+        props.trigger_id
+        || props.triggerId
+        || obj.name
+        || props.id
+        || "trigger_" + gx + "_" + gy;
+      const trapIdentity = normalizeEntityId(preferredTriggerId, objType || props.type);
       triggers.push({
-        id: obj.name || props.id || "trigger_" + gx + "_" + gy,
+        id: trapIdentity.id || preferredTriggerId,
         x: gx,
         y: gy,
         w: gw,
         h: gh,
         type: objType || "trigger",
-        data: { ...props, name: obj.name || "" },
+        data: {
+          ...props,
+          name: obj.name || "",
+          alias_id: trapIdentity.alias_id || "",
+          source_id: trapIdentity.source_id || "",
+        },
       });
       return;
     }
@@ -470,24 +507,29 @@
       layerName === "spawns" || layerName === "spawn"
     ) {
       const spawnId = obj.name || props.instance_id || props.id || "";
+      const normalizedSpawn = normalizeEntityId(spawnId, objType || props.type);
       spawns.push({
-        id: spawnId,
+        id: normalizedSpawn.id || spawnId,
         x: gx,
         y: gy,
         faction: props.faction || "neutral",
         prefab: props.prefab || "",
+        alias_id: normalizedSpawn.alias_id || "",
+        source_id: normalizedSpawn.source_id || "",
       });
       if (spawnId) {
         interactables.push({
-          id: spawnId,
+          id: normalizedSpawn.id || spawnId,
           x: gx,
           y: gy,
           type: "npc",
-          name: spawnId,
+          name: normalizedSpawn.id || spawnId,
           label:
             (window.BG3NecromancerMeta &&
-              window.BG3NecromancerMeta.OBJECT_LABELS[spawnId]) ||
-            spawnId,
+              window.BG3NecromancerMeta.OBJECT_LABELS[normalizedSpawn.id || spawnId]) ||
+            (normalizedSpawn.id || spawnId),
+          alias_id: normalizedSpawn.alias_id || "",
+          source_id: normalizedSpawn.source_id || "",
         });
       }
       return;
@@ -500,29 +542,36 @@
       layerName === "interactables" || layerName === "objects" ||
       layerName === "environment_objects"
     ) {
+      const rawId = obj.name || props.id || "";
+      const normalizedIdentity = normalizeEntityId(rawId, objType || props.type);
       interactables.push({
-        id: obj.name || props.id || "",
+        id: normalizedIdentity.id || rawId,
         x: gx,
         y: gy,
         type: objType || "object",
         name: obj.name || props.name || "",
         label:
           (window.BG3NecromancerMeta &&
-            window.BG3NecromancerMeta.OBJECT_LABELS[obj.name || props.id]) ||
+            window.BG3NecromancerMeta.OBJECT_LABELS[normalizedIdentity.id || rawId]) ||
           obj.name || props.name || "",
+        alias_id: normalizedIdentity.alias_id || "",
+        source_id: normalizedIdentity.source_id || "",
       });
       return;
     }
 
     /* ── Fallback: treat named objects in unknown layers as interactables ── */
     if (obj.name) {
+      const fallbackIdentity = normalizeEntityId(obj.name, objType || "");
       interactables.push({
-        id: obj.name,
+        id: fallbackIdentity.id || obj.name,
         x: gx,
         y: gy,
         type: objType || "object",
         name: obj.name,
         label: obj.name,
+        alias_id: fallbackIdentity.alias_id || "",
+        source_id: fallbackIdentity.source_id || "",
       });
     }
   }
@@ -547,9 +596,42 @@
     }
   }
 
+  async function loadMapById(mapId, options = {}) {
+    const targetMapId = String(mapId || "necromancer_lab").trim() || "necromancer_lab";
+    const assetPath = String(options.assetPath || "assets/maps/" + targetMapId + ".json");
+    const fallback = normalizeTiledMap(null);
+    if (typeof fetch !== "function") {
+      return { map: fallback, source: "fixture", reason: "fetch_unavailable", mapId: targetMapId, assetPath };
+    }
+    try {
+      const response = await fetch(assetPath, { cache: "no-store" });
+      if (!response.ok) {
+        return {
+          map: fallback,
+          source: "fixture",
+          reason: "http_" + response.status,
+          mapId: targetMapId,
+          assetPath,
+        };
+      }
+      const payload = await response.json();
+      const normalized = normalizeTiledMap(payload);
+      return { map: normalized, source: "json", mapId: targetMapId, assetPath };
+    } catch (error) {
+      return {
+        map: fallback,
+        source: "fixture",
+        reason: normalizeKey(error && error.name) || "load_error",
+        mapId: targetMapId,
+        assetPath,
+      };
+    }
+  }
+
   /* ── Public API ── */
   window.BG3TiledAdapter = Object.freeze({
     normalizeTiledMap,
+    loadMapById,
     NECROMANCER_LAB_FIXTURE,
   });
 })();

@@ -13,6 +13,7 @@
   let onNarrativeTrigger = null;
   let onInteraction = null;
   let onPlayerMoved = null;
+  let onHighlightChanged = null;
   let hintEl = null;
   let enabled = true;
   let currentHighlightedInteractable = null;
@@ -148,6 +149,7 @@
   function updateHint() {
     if (!hintEl) hintEl = document.getElementById("interaction-hint");
     if (!hintEl) return;
+    const previousId = currentHighlightedInteractable ? String(currentHighlightedInteractable.id || "") : "";
     const t = findNearbyInteractable();
     currentHighlightedInteractable = t;
     if (t) {
@@ -159,6 +161,10 @@
       currentHighlightedInteractable = null;
       hintEl.textContent = "";
       hintEl.classList.add("hint-hidden");
+    }
+    const nextId = currentHighlightedInteractable ? String(currentHighlightedInteractable.id || "") : "";
+    if (previousId !== nextId && typeof onHighlightChanged === "function") {
+      onHighlightChanged(currentHighlightedInteractable ? { ...currentHighlightedInteractable } : null);
     }
   }
 
@@ -198,6 +204,7 @@
     if (typeof o.onNarrativeTrigger === "function") onNarrativeTrigger = o.onNarrativeTrigger;
     if (typeof o.onInteraction === "function") onInteraction = o.onInteraction;
     if (typeof o.onPlayerMoved === "function") onPlayerMoved = o.onPlayerMoved;
+    if (typeof o.onHighlightChanged === "function") onHighlightChanged = o.onHighlightChanged;
     firedTriggerIds.clear();
     activeTriggerIds.clear();
     document.addEventListener("keydown", handleKeyDown);
@@ -216,6 +223,7 @@
     firedTriggerIds.clear();
     activeTriggerIds.clear();
     currentHighlightedInteractable = null;
+    onHighlightChanged = null;
   }
 
   window.BG3InputController = Object.freeze({

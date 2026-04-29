@@ -96,6 +96,24 @@ def test_evaluate_narrative_rules_applies_matching_overrides():
     assert result["action_type"] == "ATTACK"
 
 
+def test_evaluate_narrative_rules_player_target_no_exception():
+    analysis = {"action_type": "CHAT", "reason": "noop"}
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        mocked_loader = Mock(side_effect=AssertionError("player must not be loaded"))
+        monkeypatch.setattr(dm, "load_character", mocked_loader)
+        result = dm._evaluate_narrative_rules(dict(analysis), {}, target_npc="player")
+    assert result == analysis
+    mocked_loader.assert_not_called()
+
+
+def test_evaluate_narrative_rules_missing_yaml_no_exception():
+    analysis = {"action_type": "CHAT", "reason": "noop"}
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(dm, "load_character", Mock(side_effect=FileNotFoundError("missing")))
+        result = dm._evaluate_narrative_rules(dict(analysis), {}, target_npc="unknown_xxx")
+    assert result == analysis
+
+
 def test_importing_dm_does_not_initialize_openai_client_without_api_key(monkeypatch):
     sentinel = Mock(side_effect=AssertionError("OpenAI client must not initialize at import"))
 
@@ -552,3 +570,45 @@ def test_analyze_intent_uses_lazy_client_and_normalizes_response(monkeypatch):
     ]
     assert result["hp_changes"] == [{"target": "player", "amount": -3}]
     assert result["affection_changes"] == {"astarion": 2}
+
+
+def test_analyze_intent_no_npc_target_skips_player_character_load(monkeypatch):
+    fake_completion = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(
+                    content='{"action_type":"CHAT","difficulty_class":0,"reason":"ok","responders":["player"],"action_actor":"player","action_target":""}'
+                )
+            )
+        ]
+    )
+    fake_client = SimpleNamespace(
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(create=Mock(return_value=fake_completion))
+        )
+    )
+    observed_load_targets: list[str] = []
+
+    def _fake_load_character(name: str):
+        observed_load_targets.append(str(name))
+        return SimpleNamespace(data={"narrative_rules": []})
+
+    monkeypatch.setattr(dm.settings, "API_KEY", "test-key")
+    monkeypatch.setattr(
+        dm,
+        "load_dm_template",
+        Mock(return_value=SimpleNamespace(render=Mock(return_value="prompt"))),
+    )
+    monkeypatch.setattr(dm, "_get_openai_client", Mock(return_value=fake_client))
+    monkeypatch.setattr(dm, "load_character", Mock(side_effect=_fake_load_character))
+
+    result = dm.analyze_intent(
+        "随便聊聊",
+        available_npcs=["player", "shadowheart"],
+        available_targets=["player", "camp_fire"],
+    )
+
+    assert result["responders"] == ["shadowheart"]
+    assert result["action_actor"] == "player"
+    assert result["action_target"] == ""
+    assert "player" not in [target.lower() for target in observed_load_targets]

@@ -303,3 +303,76 @@ def test_generation_node_delegates_to_helpers_and_preserves_output_shape():
             }
         },
     }
+
+
+def test_generation_node_falls_back_when_current_speaker_is_player():
+    node = generation.create_generation_node()
+    state = {
+        "entities": {"player": {"hp": 20}, "shadowheart": {"hp": 10, "inventory": {}}},
+        "current_speaker": "player",
+        "speaker_queue": ["shadowheart"],
+        "user_input": "你好。",
+        "speaker_responses": [],
+        "messages": [],
+    }
+    fake_character = Mock()
+    helper_context = {
+        "entities": {"shadowheart": {"hp": 10, "inventory": {}}},
+        "speaker": "shadowheart",
+        "character": fake_character,
+        "user_input": "你好。",
+        "prev_responses": [],
+        "is_first_npc_of_player_turn": True,
+        "idle_banter": False,
+        "is_banter": False,
+        "dm_text": "",
+        "latest_roll": None,
+        "trigger_result": {"journal_entries": []},
+        "triggers_config": [],
+        "flags": {},
+        "player_inv_for_physics": {},
+        "current_env_objs": {},
+        "current_entities": {
+            "shadowheart": {"hp": 10, "affection": 0, "inventory": {}, "position": "camp_center"}
+        },
+        "history_dicts": [{"role": "user", "content": "你好。"}],
+    }
+    parsed_actions = {
+        "clean_text": "你好。",
+        "thought_process": "",
+        "tool_physics_events": [],
+        "state_changes_applied": False,
+        "idle_merged": None,
+    }
+    loaded_names: list[str] = []
+
+    def _fake_load_character(name: str):
+        loaded_names.append(name)
+        if name == "player":
+            raise AssertionError("generation must not load player.yaml")
+        return fake_character
+
+    with patch("characters.loader.load_character", side_effect=_fake_load_character), patch(
+        "core.graph.nodes.generation._prepare_generation_context",
+        return_value=helper_context,
+    ), patch(
+        "core.graph.nodes.generation._build_system_prompt",
+        return_value="SYSTEM PROMPT",
+    ), patch(
+        "core.graph.nodes.generation._build_lc_messages",
+        return_value=[HumanMessage(content="你好。")],
+    ), patch(
+        "core.graph.nodes.generation._create_llm_client",
+        return_value=SimpleNamespace(ainvoke=AsyncMock()),
+    ), patch(
+        "core.graph.nodes.generation._execute_llm_with_tools",
+        return_value=(AIMessage(content='{"reply":"你好。"}'), [HumanMessage(content="你好。")]),
+    ), patch(
+        "core.graph.nodes.generation._parse_and_apply_actions",
+        return_value=parsed_actions,
+    ):
+        result = asyncio.run(node(state))
+
+    assert result["speaker_responses"][0][0] == "shadowheart"
+    assert "player" not in loaded_names
+    assert "shadowheart" in loaded_names

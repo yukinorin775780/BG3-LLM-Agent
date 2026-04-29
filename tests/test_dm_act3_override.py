@@ -117,3 +117,33 @@ def test_dm_node_plain_chat_does_not_force_structured_dialogue_from_active_targe
     mocked_llm.assert_called_once()
     assert result["intent"] == "MOVE"
     assert result["intent_context"]["action_target"] == "13,11"
+
+
+def test_dm_node_structured_read_diary_never_uses_player_as_current_speaker():
+    state = _build_dm_state("")
+    state["intent"] = "READ"
+    state["target"] = "necromancer_diary"
+    state["source"] = "interaction"
+    state["active_dialogue_target"] = None
+    state["intent_context"] = {"action_target": "necromancer_diary", "source": "interaction"}
+    with patch("core.graph.nodes.dm.analyze_intent", side_effect=AssertionError("should not call llm")):
+        result = asyncio.run(dm_node(state))
+
+    assert result["intent"] == "READ"
+    assert result["current_speaker"] != "player"
+    assert result["intent_context"]["action_target"] == "necromancer_diary"
+
+
+def test_dm_node_structured_interact_door_never_uses_player_as_current_speaker():
+    state = _build_dm_state("打开门")
+    state["intent"] = "INTERACT"
+    state["target"] = "heavy_oak_door_1"
+    state["source"] = "interaction"
+    state["active_dialogue_target"] = None
+    state["intent_context"] = {"action_target": "heavy_oak_door_1", "source": "interaction"}
+    with patch("core.graph.nodes.dm.analyze_intent", side_effect=AssertionError("should not call llm")):
+        result = asyncio.run(dm_node(state))
+
+    assert result["intent"] == "INTERACT"
+    assert result["current_speaker"] != "player"
+    assert result["intent_context"]["action_target"] == "heavy_oak_door_1"

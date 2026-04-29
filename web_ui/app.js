@@ -86,6 +86,10 @@
     xrayTraceAnimatingUntil: 0,
     xrayNodeTimings: {},
     qaTraceStepMs: Math.max(120, Number(QA_PARAMS.get("qa_trace_step_ms")) || 240),
+    normalizedMap: null,
+    mapLoadSource: "fixture",
+    mapLoadReason: "",
+    trapSenseEnabled: false,
     speechRecognition: null,
     speechRecognitionSupported: Boolean(SpeechRecognition),
     isPttRecording: false,
@@ -1108,9 +1112,110 @@
     return wrap;
   }
 
+  function gridFromCollision(collision, width, height) {
+    const w = Math.max(1, Number(width) || 1);
+    const h = Math.max(1, Number(height) || 1);
+    const rows = safeArray(collision);
+    const grid = [];
+    for (let y = 0; y < h; y += 1) {
+      const srcRow = safeArray(rows[y]);
+      const row = [];
+      for (let x = 0; x < w; x += 1) {
+        row.push(Boolean(srcRow[x]) ? "W" : ".");
+      }
+      grid.push(row);
+    }
+    return grid;
+  }
+
+  function mapDataFromNormalized(normalizedMap) {
+    const map = safeObject(normalizedMap);
+    const width = Math.max(1, Number(map.width) || 1);
+    const height = Math.max(1, Number(map.height) || 1);
+    const collision = safeArray(map.collision).map((row) => safeArray(row).map(Boolean));
+    const losBlockers = safeArray(map.losBlockers).map((row) => safeArray(row).map(Boolean));
+    const groundTypes = safeArray(map.groundTypes).map((row) => safeArray(row).map((v) => Number(v) || 0));
+    return {
+      id: String(map.id || MAP_ID || "").trim(),
+      width,
+      height,
+      grid: gridFromCollision(collision, width, height),
+      collision,
+      los_blockers: losBlockers,
+      ground_types: groundTypes,
+      obstacles: [],
+    };
+  }
+
+  function mergeVisualMapData(runtimeMapData, normalizedMap) {
+    const runtime = safeObject(runtimeMapData);
+    const visual = mapDataFromNormalized(normalizedMap);
+    if (!Object.keys(visual).length) return runtime;
+    const merged = { ...visual, ...runtime };
+    const hasGrid = safeArray(runtime.grid).length > 0;
+    if (!hasGrid) merged.grid = visual.grid;
+    if (!safeArray(runtime.collision).length) merged.collision = visual.collision;
+    if (!safeArray(runtime.los_blockers).length) merged.los_blockers = visual.los_blockers;
+    if (!safeArray(runtime.ground_types).length) merged.ground_types = visual.ground_types;
+    if (!runtime.width) merged.width = visual.width;
+    if (!runtime.height) merged.height = visual.height;
+    if (!runtime.id) merged.id = visual.id;
+    return merged;
+  }
+
+  function updateMapSourceStatus(source, reason) {
+    state.mapLoadSource = source || "fixture";
+    state.mapLoadReason = reason || "";
+    if (els.mapContainer) {
+      els.mapContainer.dataset.mapSource = state.mapLoadSource;
+      if (state.mapLoadReason) {
+        els.mapContainer.dataset.mapFallbackReason = state.mapLoadReason;
+      } else {
+        delete els.mapContainer.dataset.mapFallbackReason;
+      }
+    }
+  }
+
+  function applyNormalizedMap(normalizedMap, meta = {}) {
+    const map = safeObject(normalizedMap);
+    if (!Object.keys(map).length) return;
+    state.normalizedMap = map;
+    state.mapData = mapDataFromNormalized(map);
+    updateMapSourceStatus(meta.source || "fixture", meta.reason || "");
+    if (window.BG3InputController && typeof window.BG3InputController.setMap === "function") {
+      window.BG3InputController.setMap(map);
+      const playerStart = safeObject(map.playerStart);
+      if (typeof window.BG3InputController.setPlayerPosition === "function") {
+        window.BG3InputController.setPlayerPosition(
+          Number(playerStart.x) || 0,
+          Number(playerStart.y) || 0,
+        );
+      }
+    }
+    if (window.BG3TacticalMap && typeof window.BG3TacticalMap.setTrapSenseMode === "function") {
+      window.BG3TacticalMap.setTrapSenseMode(state.trapSenseEnabled === true);
+    }
+  }
+
   function renderTacticalGrid(partyStatus, environmentObjects, mapData) {
+    const player = safeObject(safeObject(partyStatus).player);
+    if (window.BG3InputController && typeof window.BG3InputController.setPlayerPosition === "function") {
+      const px = Number(player.x);
+      const py = Number(player.y);
+      if (Number.isFinite(px) && Number.isFinite(py)) {
+        window.BG3InputController.setPlayerPosition(px, py);
+      }
+    }
     if (window.BG3TacticalMap && typeof window.BG3TacticalMap.update === "function") {
       window.BG3TacticalMap.update(partyStatus, environmentObjects, mapData);
+    }
+    if (
+      window.BG3InputController
+      && typeof window.BG3InputController.getCurrentHighlightedInteractable === "function"
+      && window.BG3TacticalMap
+      && typeof window.BG3TacticalMap.setInteractionFocus === "function"
+    ) {
+      window.BG3TacticalMap.setInteractionFocus(window.BG3InputController.getCurrentHighlightedInteractable());
     }
   }
 
@@ -2509,6 +2614,9 @@
       state.mapData = Object.keys(responseMapData).length
         ? responseMapData
         : safeObject(state.combatState.map_data);
+      if (state.normalizedMap) {
+        state.mapData = mergeVisualMapData(state.mapData, state.normalizedMap);
+      }
       updateDialogueOverlay(data);
 
       if (data.current_location) {
@@ -3000,6 +3108,7 @@
     let normalizedMap = null;
     if (window.BG3TiledAdapter) {
       normalizedMap = window.BG3TiledAdapter.normalizeTiledMap(null);
+      applyNormalizedMap(normalizedMap, { source: "fixture", reason: "boot_fixture" });
     }
 
     /* Initialize Input Controller for WASD */
@@ -3008,6 +3117,12 @@
         normalizedMap,
         playerStart: normalizedMap.playerStart,
         onNarrativeTrigger: (trigger) => {
+          if (normalizeId(trigger && trigger.id) === "act1_corridor_approach") {
+            state.trapSenseEnabled = true;
+            if (window.BG3TacticalMap && typeof window.BG3TacticalMap.setTrapSenseMode === "function") {
+              window.BG3TacticalMap.setTrapSenseMode(true);
+            }
+          }
           if (QA_NO_IDLE) return;
           const data = trigger && trigger.data ? trigger.data : {};
           const triggerId = (trigger && trigger.id) ? String(trigger.id) : "unknown";
@@ -3029,6 +3144,11 @@
             source: mapped.source || "interaction",
           });
         },
+        onHighlightChanged: (interactable) => {
+          if (window.BG3TacticalMap && typeof window.BG3TacticalMap.setInteractionFocus === "function") {
+            window.BG3TacticalMap.setInteractionFocus(interactable || null);
+          }
+        },
       });
     }
 
@@ -3038,6 +3158,34 @@
     }
 
     state.mapId = MAP_ID;
+    const shouldAutoLoadRealMap =
+      window.__BG3_ENABLE_TEST_API__ !== true || window.__BG3_FORCE_REAL_MAP_LOAD__ === true;
+    if (
+      shouldAutoLoadRealMap
+      && window.BG3TiledAdapter
+      && typeof window.BG3TiledAdapter.loadMapById === "function"
+    ) {
+      void window.BG3TiledAdapter.loadMapById(MAP_ID).then((result) => {
+        const record = safeObject(result);
+        const loadedMap = safeObject(record.map);
+        if (Object.keys(loadedMap).length) {
+          applyNormalizedMap(loadedMap, {
+            source: record.source || "fixture",
+            reason: record.reason || "",
+          });
+          renderTacticalGrid(state.partyStatus, state.environmentObjects, state.mapData);
+        }
+        const isFallback = normalizeId(record.source) !== "json";
+        if (IS_QA_MODE && isFallback && window.BG3HudRenderers && typeof window.BG3HudRenderers.showToast === "function") {
+          window.BG3HudRenderers.showToast("warning", "⚠ 地图资产加载失败，已回退 fixture", 2800);
+        }
+      }).catch(() => {
+        updateMapSourceStatus("fixture", "load_error");
+        if (IS_QA_MODE && window.BG3HudRenderers && typeof window.BG3HudRenderers.showToast === "function") {
+          window.BG3HudRenderers.showToast("warning", "⚠ 地图资产加载失败，已回退 fixture", 2800);
+        }
+      });
+    }
   }
 
   /**

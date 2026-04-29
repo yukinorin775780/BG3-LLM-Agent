@@ -132,6 +132,17 @@ def _is_necromancer_lab(state: GameState) -> bool:
     return map_id == "necromancer_lab"
 
 
+def _first_non_player_speaker(entities: dict, fallback_speaker: str) -> str:
+    fallback = str(fallback_speaker or "").strip().lower()
+    if fallback and fallback not in {"player", "unknown"}:
+        return fallback
+    for entity_id in entities.keys():
+        normalized = str(entity_id or "").strip().lower()
+        if normalized and normalized not in {"player", "unknown"}:
+            return normalized
+    return ""
+
+
 def _looks_like_door_attack(user_input: str) -> bool:
     text = str(user_input or "").strip()
     lowered = text.lower()
@@ -210,10 +221,11 @@ def _build_structured_client_analysis(
             action_target = "heavy_oak_door_1"
 
     responders = []
+    structured_fallback_speaker = _first_non_player_speaker(entities, fallback_speaker)
     if action_target and action_target in entities and action_target != "player":
         responders = [action_target]
-    elif fallback_speaker and fallback_speaker != "unknown":
-        responders = [fallback_speaker]
+    elif structured_fallback_speaker:
+        responders = [structured_fallback_speaker]
 
     return {
         "action_type": action_type,

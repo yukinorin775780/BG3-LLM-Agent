@@ -356,13 +356,123 @@ def _evaluate_rule_condition(condition: str, context: Mapping[str, Any]) -> bool
         return False
 
 
+def _is_reserved_non_npc(name: str) -> bool:
+    normalized = str(name or "").strip().lower()
+    if not normalized:
+        return True
+    return normalized in {"player", "unknown"} or normalized.startswith("unknown")
+
+
+def _load_character_if_exists(name: str):
+    normalized = str(name or "").strip().lower()
+    if _is_reserved_non_npc(normalized):
+        return None
+    try:
+        return load_character(normalized)
+    except (FileNotFoundError, OSError, ValueError, TypeError, KeyError) as exc:
+        logger.warning(
+            "Skip narrative rule character loading for '%s': %s",
+            normalized,
+            exc,
+        )
+        return None
+
+
+def _is_loadable_npc(name: str) -> bool:
+    return _load_character_if_exists(name) is not None
+
+
+def _pick_narrative_rule_target(
+    analysis: Dict[str, Any],
+    *,
+    available_npcs: Optional[List[str]] = None,
+) -> Optional[str]:
+    available_npcs_set = {
+        str(npc or "").strip().lower()
+        for npc in (available_npcs or [])
+        if str(npc or "").strip()
+    }
+    candidates: List[str] = []
+    action_target = str(analysis.get("action_target", "") or "").strip().lower()
+    if action_target:
+        candidates.append(action_target)
+
+    responders = analysis.get("responders")
+    if isinstance(responders, list):
+        for responder in responders:
+            normalized = str(responder or "").strip().lower()
+            if normalized:
+                candidates.append(normalized)
+
+    action_actor = str(analysis.get("action_actor", "") or "").strip().lower()
+    if action_actor:
+        candidates.append(action_actor)
+
+    if available_npcs:
+        candidates.extend(
+            str(npc or "").strip().lower()
+            for npc in available_npcs
+            if str(npc or "").strip()
+        )
+
+    seen = set()
+    for candidate in candidates:
+        if not candidate or candidate in seen or _is_reserved_non_npc(candidate):
+            continue
+        if available_npcs_set and candidate not in available_npcs_set:
+            continue
+        seen.add(candidate)
+        if _is_loadable_npc(candidate):
+            return candidate
+    return None
+
+
+def _normalize_safe_responders(
+    responders: Any,
+    *,
+    available_npcs: List[str],
+) -> List[str]:
+    normalized_available = [
+        str(npc).strip().lower()
+        for npc in available_npcs
+        if str(npc).strip()
+    ]
+    available_safe = [
+        npc for npc in normalized_available if not _is_reserved_non_npc(npc)
+    ]
+
+    candidate_raw = responders
+    if not isinstance(candidate_raw, list) or len(candidate_raw) == 0:
+        candidate_raw = available_safe[:1] or [DEFAULT_TARGET_NPC]
+
+    candidate_responders = [
+        str(responder).strip().lower()
+        for responder in candidate_raw
+        if str(responder).strip()
+    ]
+    candidate_responders = [
+        responder
+        for responder in candidate_responders
+        if responder in normalized_available and not _is_reserved_non_npc(responder)
+    ]
+    if not candidate_responders:
+        candidate_responders = available_safe[:1] or [DEFAULT_TARGET_NPC]
+    return candidate_responders[:1]
+
+
 def _evaluate_narrative_rules(
     analysis: Dict[str, Any],
     flags: Dict[str, Any],
     target_npc: str = DEFAULT_TARGET_NPC,
 ) -> Dict[str, Any]:
     """数据驱动的规则引擎：安全解析条件表达式，动态覆盖 DM 判定结果。"""
-    char = load_character(target_npc)
+    char = _load_character_if_exists(target_npc)
+    if char is None:
+        logger.warning(
+            "Narrative rules skipped: target_npc '%s' is not loadable NPC.",
+            str(target_npc or "").strip(),
+        )
+        return analysis
     rules = char.data.get("narrative_rules", [])
     if not rules:
         return analysis
@@ -568,17 +678,15 @@ def _build_responders(actor_id: str, available_npcs: List[str]) -> List[str]:
     responders = [npc for npc in normalized_npcs if npc != actor_id]
     if actor_id != "player" and actor_id in normalized_npcs:
         responders = [actor_id] + [npc for npc in responders if npc != actor_id]
-    if not responders:
-        responders = normalized_npcs[:1] or [DEFAULT_TARGET_NPC]
-    return responders[:1]
+    return _normalize_safe_responders(responders, available_npcs=available_npcs)
 
 
 def _build_dialogue_responders(target_id: str, available_npcs: List[str]) -> List[str]:
     normalized_target = str(target_id or "").strip().lower()
     normalized_npcs = [str(npc).strip().lower() for npc in available_npcs if str(npc).strip()]
     if normalized_target and normalized_target in normalized_npcs:
-        return [normalized_target]
-    return normalized_npcs[:1] or [DEFAULT_TARGET_NPC]
+        return _normalize_safe_responders([normalized_target], available_npcs=available_npcs)
+    return _normalize_safe_responders(normalized_npcs[:1], available_npcs=available_npcs)
 
 
 def _is_physical_action_input(user_input: str) -> bool:
@@ -1542,12 +1650,10 @@ def analyze_intent(
         intent_data['is_probing_secret'] = bool(intent_data.get('is_probing_secret', False))
 
         # 多人发言队列：responders（DM 决定的发言顺序）
-        responders = intent_data.get("responders", [DEFAULT_TARGET_NPC])
-        if not isinstance(responders, list) or len(responders) == 0:
-            responders = [DEFAULT_TARGET_NPC]
-        responders = [str(r).strip().lower() for r in responders if str(r).strip().lower() in available_npcs]
-        if not responders:
-            responders = [available_npcs[0]] if available_npcs else [DEFAULT_TARGET_NPC]
+        responders = _normalize_safe_responders(
+            intent_data.get("responders", [DEFAULT_TARGET_NPC]),
+            available_npcs=available_npcs,
+        )
         intent_data["responders"] = responders
 
         # 剧情标志位变更：安全提取并过滤
@@ -1595,10 +1701,14 @@ def analyze_intent(
             filtered[npc_id] = int(v)
         intent_data["affection_changes"] = filtered
 
+        narrative_rule_target = _pick_narrative_rule_target(
+            intent_data,
+            available_npcs=available_npcs,
+        )
         return _evaluate_narrative_rules(
             intent_data,
             flags,
-            responders[0] if responders else DEFAULT_TARGET_NPC,
+            narrative_rule_target or "",
         )
 
     except Exception as exc:
@@ -1617,7 +1727,10 @@ def analyze_intent(
         if "API Key" in error_text or "API_KEY" in error_text or "DASHSCOPE_API_KEY" in error_text:
             raise RuntimeError(error_text)
         logger.warning("DM intent analysis timed out/failed, fallback to IDLE: %s", exc)
-        responders = available_npcs[:1] or [DEFAULT_TARGET_NPC]
+        responders = _normalize_safe_responders(
+            available_npcs[:1] or [DEFAULT_TARGET_NPC],
+            available_npcs=available_npcs,
+        )
         fallback_target = str(responders[0] if responders else DEFAULT_TARGET_NPC).strip().lower()
         return {
             "action_type": "IDLE",
