@@ -751,4 +751,198 @@ describe("web_ui/app.js UI bindings", () => {
     expect(payload.target).toBe("gribbo");
     expect(payload.source).toBe("dialogue_input");
   });
+
+  test("test_interaction_hint_target_matches_e_payload_target", async () => {
+    const fetchSpy = spyOnFetch().mockResolvedValue(
+      mockResponse({
+        responses: [],
+        journal_events: [],
+        current_location: "测试场景",
+        party_status: {},
+        environment_objects: {},
+        player_inventory: {},
+        combat_state: {},
+      })
+    );
+    await bootAppForTest();
+    fetchSpy.mockClear();
+
+    const baseMap = {
+      width: 20,
+      height: 14,
+      collision: Array.from({ length: 14 }, () => Array(20).fill(false)),
+      losBlockers: Array.from({ length: 14 }, () => Array(20).fill(false)),
+      triggers: [],
+      spawns: [],
+      interactables: [],
+    };
+
+    window.BG3InputController.setMap({
+      ...baseMap,
+      interactables: [{ id: "heavy_oak_door_1", type: "door", x: 3, y: 2, name: "大门" }],
+    });
+    window.BG3InputController.setPlayerPosition(2, 2);
+    window.BG3InputController.updateHint();
+
+    const hintText = String(document.getElementById("interaction-hint").textContent || "");
+    expect(hintText).toContain("heavy_oak_door_1");
+
+    window.BG3InputController.interact();
+    await flushAsync();
+
+    const chatCall = fetchSpy.mock.calls.find(([url]) => String(url).includes("/api/chat"));
+    const payload = JSON.parse(chatCall[1].body);
+    expect(payload.intent).toBe("INTERACT");
+    expect(payload.target).toBe("heavy_oak_door_1");
+  });
+
+  test("test_hidden_trap_does_not_steal_e_interaction_target", async () => {
+    const fetchSpy = spyOnFetch().mockResolvedValue(
+      mockResponse({
+        responses: [],
+        journal_events: [],
+        current_location: "测试场景",
+        party_status: {},
+        environment_objects: {},
+        player_inventory: {},
+        combat_state: {},
+      })
+    );
+    await bootAppForTest();
+    fetchSpy.mockClear();
+
+    const baseMap = {
+      width: 20,
+      height: 14,
+      collision: Array.from({ length: 14 }, () => Array(20).fill(false)),
+      losBlockers: Array.from({ length: 14 }, () => Array(20).fill(false)),
+      triggers: [],
+      spawns: [],
+      interactables: [],
+    };
+
+    window.BG3InputController.setMap({
+      ...baseMap,
+      interactables: [
+        { id: "gas_trap_1", type: "trap", x: 3, y: 2, name: "毒气陷阱", is_hidden: true },
+        { id: "chest_1", type: "chest", x: 2, y: 3, name: "箱子" },
+      ],
+    });
+    window.BG3InputController.setPlayerPosition(2, 2);
+    window.BG3InputController.interact();
+    await flushAsync();
+
+    const chatCall = fetchSpy.mock.calls.find(([url]) => String(url).includes("/api/chat"));
+    const payload = JSON.parse(chatCall[1].body);
+    expect(payload.intent).toBe("ui_action_loot");
+    expect(payload.target).toBe("chest_1");
+
+    fetchSpy.mockClear();
+    window.BG3InputController.setMap({
+      ...baseMap,
+      interactables: [{ id: "gas_trap_1", type: "trap", x: 3, y: 2, name: "毒气陷阱", is_hidden: true }],
+    });
+    window.BG3InputController.setPlayerPosition(2, 2);
+    window.BG3InputController.interact();
+    await flushAsync();
+
+    const callsAfterHiddenTrapOnly = fetchSpy.mock.calls.filter(([url]) => String(url).includes("/api/chat"));
+    expect(callsAfterHiddenTrapOnly.length).toBe(0);
+  });
+
+  test("test_door_natural_language_normalizes_to_interact_target", async () => {
+    const fetchSpy = spyOnFetch().mockResolvedValue(
+      mockResponse({
+        responses: [],
+        journal_events: [],
+        current_location: "测试场景",
+        party_status: {},
+        environment_objects: {},
+        player_inventory: {},
+        combat_state: {},
+      })
+    );
+    const api = await bootAppForTest();
+    fetchSpy.mockClear();
+
+    const commands = [
+      "打开门",
+      "开门",
+      "使用钥匙打开门",
+      "用 heavy_iron_key 打开门",
+      "检查 heavy_oak_door_1",
+    ];
+
+    for (const command of commands) {
+      await api.sendMessage(command, null);
+    }
+    await flushAsync();
+
+    const payloads = fetchSpy.mock.calls
+      .filter(([url]) => String(url).includes("/api/chat"))
+      .map(([, req]) => JSON.parse(req.body));
+    expect(payloads.length).toBe(commands.length);
+    payloads.forEach((payload) => {
+      expect(payload.intent).toBe("INTERACT");
+      expect(payload.target).toBe("heavy_oak_door_1");
+    });
+  });
+
+  test("test_text_input_open_door_payload_normalizes_to_interact_target", async () => {
+    const fetchSpy = spyOnFetch().mockResolvedValue(
+      mockResponse({
+        responses: [],
+        journal_events: [],
+        current_location: "测试场景",
+        party_status: {},
+        environment_objects: {
+          heavy_oak_door_1: { id: "heavy_oak_door_1", type: "door", status: "closed" },
+        },
+        player_inventory: {},
+        combat_state: {},
+      })
+    );
+    const api = await bootAppForTest();
+    fetchSpy.mockClear();
+
+    api.els.userInput.value = "打开门";
+    api.els.sendBtn.click();
+    await flushAsync();
+
+    const chatCall = fetchSpy.mock.calls.find(([url]) => String(url).includes("/api/chat"));
+    expect(chatCall).toBeDefined();
+    const payload = JSON.parse(chatCall[1].body);
+    expect(payload.source).toBe("text_input");
+    expect(payload.intent).toBe("INTERACT");
+    expect(payload.target).toBe("heavy_oak_door_1");
+  });
+
+  test("test_text_input_open_door_with_key_payload_normalizes_to_interact_target", async () => {
+    const fetchSpy = spyOnFetch().mockResolvedValue(
+      mockResponse({
+        responses: [],
+        journal_events: [],
+        current_location: "测试场景",
+        party_status: {},
+        environment_objects: {
+          heavy_oak_door_1: { id: "heavy_oak_door_1", type: "door", status: "closed" },
+        },
+        player_inventory: {},
+        combat_state: {},
+      })
+    );
+    const api = await bootAppForTest();
+    fetchSpy.mockClear();
+
+    api.els.userInput.value = "使用钥匙打开门";
+    api.els.sendBtn.click();
+    await flushAsync();
+
+    const chatCall = fetchSpy.mock.calls.find(([url]) => String(url).includes("/api/chat"));
+    expect(chatCall).toBeDefined();
+    const payload = JSON.parse(chatCall[1].body);
+    expect(payload.source).toBe("text_input");
+    expect(payload.intent).toBe("INTERACT");
+    expect(payload.target).toBe("heavy_oak_door_1");
+  });
 });

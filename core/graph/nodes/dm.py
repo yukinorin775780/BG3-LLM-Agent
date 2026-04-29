@@ -25,7 +25,16 @@ from core.utils.text_processor import format_history_message
 
 LLM_TIMEOUT_SECONDS = 4.5
 _DOOR_ATTACK_MARKERS = ("攻击门", "砸门", "打门", "破门", "attack door", "smash door")
-_DOOR_INTERACT_MARKERS = ("开门", "打开门", "使用钥匙", "heavy_iron_key", "heavy_oak_door_1", "check heavy_oak_door_1")
+_DOOR_INTERACT_MARKERS = (
+    "开门",
+    "打开门",
+    "使用钥匙",
+    "用钥匙开门",
+    "heavy_iron_key",
+    "heavy_oak_door_1",
+    "打开 heavy_oak_door_1",
+    "check heavy_oak_door_1",
+)
 
 
 def _apply_act3_necromancer_lab_override(*, state: GameState, analysis: dict) -> dict:
@@ -142,6 +151,25 @@ def _looks_like_door_interact(user_input: str) -> bool:
     return any(marker in text or marker in lowered for marker in _DOOR_INTERACT_MARKERS)
 
 
+def _apply_necromancer_door_target_fallback(*, state: GameState, analysis: dict) -> dict:
+    if not _is_necromancer_lab(state):
+        return analysis
+    out = dict(analysis or {})
+    user_input = str(state.get("user_input") or "")
+    if _looks_like_door_attack(user_input):
+        return out
+    if not _looks_like_door_interact(user_input):
+        return out
+
+    action_type = str(out.get("action_type") or "").strip().upper()
+    action_target = str(out.get("action_target") or "").strip().lower()
+    if action_type in {"", "CHAT", "INTERACT", "START_DIALOGUE", "DIALOGUE_REPLY"}:
+        out["action_type"] = "INTERACT"
+    if not action_target:
+        out["action_target"] = "heavy_oak_door_1"
+    return out
+
+
 def _build_structured_client_analysis(
     *,
     state: GameState,
@@ -175,6 +203,11 @@ def _build_structured_client_analysis(
     if _is_necromancer_lab(state) and action_target == "heavy_oak_door_1":
         if not _looks_like_door_attack(str(state.get("user_input") or "")):
             action_type = "INTERACT"
+    elif _is_necromancer_lab(state) and client_intent == "INTERACT" and not action_target:
+        if _looks_like_door_interact(str(state.get("user_input") or "")) and not _looks_like_door_attack(
+            str(state.get("user_input") or "")
+        ):
+            action_target = "heavy_oak_door_1"
 
     responders = []
     if action_target and action_target in entities and action_target != "player":
@@ -286,6 +319,10 @@ async def dm_node(state: GameState) -> dict:
         fallback_speaker=fallback_speaker,
     )
     if isinstance(structured_analysis, dict):
+        structured_analysis = _apply_necromancer_door_target_fallback(
+            state=state,
+            analysis=structured_analysis,
+        )
         structured_analysis = _apply_act3_necromancer_lab_override(
             state=state,
             analysis=structured_analysis,
@@ -340,6 +377,10 @@ async def dm_node(state: GameState) -> dict:
             analysis=analysis if isinstance(analysis, dict) else {},
         )
         analysis = _apply_act4_necromancer_lab_override(
+            state=state,
+            analysis=analysis if isinstance(analysis, dict) else {},
+        )
+        analysis = _apply_necromancer_door_target_fallback(
             state=state,
             analysis=analysis if isinstance(analysis, dict) else {},
         )

@@ -123,7 +123,9 @@
     "打开门",
     "开门",
     "使用钥匙打开门",
+    "用钥匙开门",
     "用 heavy_iron_key 打开门",
+    "打开 heavy_oak_door_1",
     "检查 heavy_oak_door_1",
     "open heavy_oak_door_1",
     "check heavy_oak_door_1",
@@ -503,6 +505,48 @@
     return false;
   }
 
+  function resolveDoorTargetFromWorldContext(userLine) {
+    const raw = String(userLine || "").trim();
+    const normalized = raw.toLowerCase();
+    if (!raw) return "";
+    if (normalized.includes("heavy_oak_door_1")) {
+      return "heavy_oak_door_1";
+    }
+
+    const fromCurrent = normalizeId(state.currentInteractable);
+    if (fromCurrent === "heavy_oak_door_1") {
+      return "heavy_oak_door_1";
+    }
+
+    const inputController = window.BG3InputController;
+    if (inputController && typeof inputController.getCurrentHighlightedInteractable === "function") {
+      const highlighted = safeObject(inputController.getCurrentHighlightedInteractable());
+      if (normalizeId(highlighted.id) === "heavy_oak_door_1") {
+        return "heavy_oak_door_1";
+      }
+    }
+    if (inputController && typeof inputController.findNearbyInteractable === "function") {
+      const nearby = safeObject(inputController.findNearbyInteractable());
+      if (normalizeId(nearby.id) === "heavy_oak_door_1") {
+        return "heavy_oak_door_1";
+      }
+    }
+
+    const worldDoor = safeObject(safeObject(state.environmentObjects).heavy_oak_door_1);
+    if (Object.keys(worldDoor).length > 0) {
+      const status = normalizeId(worldDoor.status || "");
+      const isHidden = Boolean(
+        worldDoor.is_hidden === true
+        || worldDoor.isHidden === true
+        || status === "hidden"
+      );
+      if (!isHidden) {
+        return "heavy_oak_door_1";
+      }
+    }
+    return "";
+  }
+
   function clearTransientInteractionContext(options = {}) {
     const opts = options && typeof options === "object" ? options : {};
     state.currentInteractable = "";
@@ -537,14 +581,24 @@
     let resolvedTarget = explicitTarget;
     let resolvedSource = explicitSource;
     const activeMapId = String(MAP_ID || "").trim().toLowerCase();
+    const normalizedIntent = String(resolvedIntent || "").trim().toUpperCase();
+    const hasDoorOpenSemantics = shouldRouteDoorInteractText(userLine);
+    const shouldBackfillDoorTarget =
+      activeMapId === "necromancer_lab"
+      && hasDoorOpenSemantics
+      && !isDoorAttackText(userLine);
+    const resolvedDoorTarget = shouldBackfillDoorTarget
+      ? resolveDoorTargetFromWorldContext(userLine)
+      : "";
 
     if (
-      activeMapId === "necromancer_lab"
-      && !resolvedIntent
-      && shouldRouteDoorInteractText(userLine)
+      shouldBackfillDoorTarget
+      && (!resolvedIntent || normalizedIntent === "INTERACT")
     ) {
       resolvedIntent = "INTERACT";
-      resolvedTarget = "heavy_oak_door_1";
+      if (!String(resolvedTarget || "").trim()) {
+        resolvedTarget = resolvedDoorTarget || "heavy_oak_door_1";
+      }
       resolvedSource = resolvedSource || "text_input";
     }
 
