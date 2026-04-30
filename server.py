@@ -2,6 +2,9 @@
 BG3 LLM Agent — FastAPI 后端，供 Web UI 调用。
 """
 
+import argparse
+import os
+import socket
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -21,6 +24,8 @@ from core.application.game_service import (
 
 BASE_DIR = Path(__file__).resolve().parent
 WEB_UI_DIR = BASE_DIR / "web_ui"
+DEFAULT_HOST = "127.0.0.1"
+DEFAULT_PORT = 8000
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -86,6 +91,11 @@ class ChatResponse(BaseModel):
     demo_cleared: Optional[bool] = None
 
 
+class ResetRequest(BaseModel):
+    session_id: str = "test_consume_003"
+    map_id: Optional[str] = None
+
+
 @app.get("/", include_in_schema=False)
 async def root() -> RedirectResponse:
     if WEB_UI_DIR.exists():
@@ -115,7 +125,63 @@ async def state_endpoint(
     return await game_service.get_state_snapshot(session_id=session_id, map_id=map_id)
 
 
-if __name__ == "__main__":
+@app.post("/api/reset", response_model=ChatResponse, response_model_exclude_none=True)
+async def reset_endpoint(req: ResetRequest) -> ChatResponse:
+    result = await game_service.reset_session(
+        session_id=req.session_id,
+        map_id=req.map_id,
+    )
+    return ChatResponse(**result)
+
+
+def _parse_server_cli_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="BG3 LLM Agent API server")
+    parser.add_argument("--host", type=str, default=None)
+    parser.add_argument("--port", type=int, default=None)
+    return parser.parse_args(argv)
+
+
+def _resolve_server_bind(argv: Optional[List[str]] = None) -> tuple[str, int]:
+    args = _parse_server_cli_args(argv)
+    env_host = str(os.getenv("BG3_HOST") or "").strip()
+    env_port_raw = str(os.getenv("BG3_PORT") or "").strip()
+
+    host = str(args.host or env_host or DEFAULT_HOST).strip() or DEFAULT_HOST
+    port = DEFAULT_PORT
+    if env_port_raw:
+        try:
+            port = int(env_port_raw)
+        except ValueError:
+            port = DEFAULT_PORT
+    if args.port is not None:
+        port = int(args.port)
+    return host, port
+
+
+def _check_port_available(host: str, port: int) -> Optional[str]:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind((host, port))
+        except OSError as exc:
+            return str(exc)
+    return None
+
+
+def run_server(argv: Optional[List[str]] = None) -> None:
     import uvicorn
 
-    uvicorn.run(app, host="127.0.0.1", port=8010)
+    host, port = _resolve_server_bind(argv)
+    bind_error = _check_port_available(host, port)
+    if bind_error is not None:
+        print(f"❌ 端口不可用：{host}:{port} ({bind_error})")
+        print("请改用其它端口，例如：")
+        print("  BG3_PORT=8010 python server.py")
+        print(f"  BG3_HOST={host} BG3_PORT=8010 python server.py")
+        print(f"  python server.py --host {host} --port 8010")
+        raise SystemExit(1)
+    uvicorn.run(app, host=host, port=port)
+
+
+if __name__ == "__main__":
+    run_server()

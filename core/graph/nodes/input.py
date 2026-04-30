@@ -186,7 +186,8 @@ def input_node(state: GameState) -> dict:
         # Partial resets leave combat resources and player entities stale in checkpoints.
         from core.systems.world_init import get_initial_world_state
 
-        fresh_state = get_initial_world_state()
+        current_map_id = str((state.get("map_data") or {}).get("id") or "").strip()
+        fresh_state = get_initial_world_state(map_id=current_map_id or "goblin_camp")
         current_messages = state.get("messages", [])
         delete_msgs = []
         for m in current_messages:

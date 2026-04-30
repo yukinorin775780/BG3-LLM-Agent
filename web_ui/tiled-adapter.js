@@ -5,8 +5,8 @@
  *
  * normalizeTiledMap(rawJson) → {
  *   id, width, height, tileLayers,
- *   collision[][], losBlockers[][],
- *   triggers[], interactables[], spawns[]
+ *   collision[][], losBlockers[][], groundTypes[][],
+ *   triggers[], interactables[], spawns[], rooms[]
  * }
  *
  * Currently uses a built-in NECROMANCER_LAB_FIXTURE derived
@@ -39,13 +39,23 @@
     return grid;
   }
 
-  function normalizeEntityId(rawId, rawType) {
+  function normalizeEntityId(rawId, rawType, rawProps) {
     const id = String(rawId || "").trim();
     const type = normalizeKey(rawType);
+    const props = safeObj(rawProps);
+    const alias = String(props.alias_id || props.aliasId || "").trim();
+    if (alias) {
+      return {
+        id: alias,
+        source_id: id || alias,
+      };
+    }
     const key = normalizeKey(id);
     if (!id) return { id: "" };
     if (key === "heavy_oak_door") return { id: "heavy_oak_door_1", source_id: id };
     if (key === "loot_chest_1") return { id: "chest_1", source_id: id };
+    if (key === "study_chest") return { id: "chest_1", source_id: id };
+    if (key === "exit_door") return { id: "heavy_oak_door_1", source_id: id };
     if (key.startsWith("poison_trap") || (type === "trap" && key.includes("poison"))) {
       return { id, alias_id: "gas_trap_1" };
     }
@@ -355,6 +365,7 @@
     const triggers = [];
     const interactables = [];
     const spawns = [];
+    const rooms = [];
     let playerStart = { x: 0, y: 0 };
 
     safeArr(raw.layers).forEach((layer) => {
@@ -398,11 +409,15 @@
         l.objects.forEach((rawObj) => {
           const obj = safeObj(rawObj);
           parseObjectGroupItem(obj, name, tw, th, w, h,
-            collision, losBlockers, triggers, interactables, spawns,
+            collision, losBlockers, triggers, interactables, spawns, rooms,
             (ps) => { playerStart = ps; });
         });
       }
     });
+
+    assignRoomMembership(triggers, rooms);
+    assignRoomMembership(interactables, rooms);
+    assignRoomMembership(spawns, rooms);
 
     return {
       id: raw.map_id || raw.id || "",
@@ -417,6 +432,7 @@
       triggers,
       interactables,
       spawns,
+      rooms,
     };
   }
 
@@ -430,7 +446,7 @@
    */
   function parseObjectGroupItem(
     obj, layerName, tw, th, mapW, mapH,
-    collision, losBlockers, triggers, interactables, spawns,
+    collision, losBlockers, triggers, interactables, spawns, rooms,
     playerStartSetter
   ) {
     const objType = String(obj.type || obj["class"] || "").toLowerCase();
@@ -442,6 +458,17 @@
     const gy = Math.floor(Number(obj.y || 0) / th);
     const gw = Math.max(1, Math.floor(Number(obj.width || tw) / tw));
     const gh = Math.max(1, Math.floor(Number(obj.height || th) / th));
+
+    if (objType === "room" || layerName === "rooms") {
+      rooms.push({
+        id: String(obj.name || props.id || "room_" + gx + "_" + gy).trim(),
+        x: gx,
+        y: gy,
+        w: gw,
+        h: gh,
+      });
+      return;
+    }
 
     /* ── player_start / spawn_point ── */
     if (
@@ -483,7 +510,7 @@
         || obj.name
         || props.id
         || "trigger_" + gx + "_" + gy;
-      const trapIdentity = normalizeEntityId(preferredTriggerId, objType || props.type);
+      const trapIdentity = normalizeEntityId(preferredTriggerId, objType || props.type, props);
       triggers.push({
         id: trapIdentity.id || preferredTriggerId,
         x: gx,
@@ -507,7 +534,7 @@
       layerName === "spawns" || layerName === "spawn"
     ) {
       const spawnId = obj.name || props.instance_id || props.id || "";
-      const normalizedSpawn = normalizeEntityId(spawnId, objType || props.type);
+      const normalizedSpawn = normalizeEntityId(spawnId, objType || props.type, props);
       spawns.push({
         id: normalizedSpawn.id || spawnId,
         x: gx,
@@ -516,6 +543,11 @@
         prefab: props.prefab || "",
         alias_id: normalizedSpawn.alias_id || "",
         source_id: normalizedSpawn.source_id || "",
+        data: {
+          ...props,
+          name: obj.name || "",
+          type: obj.type || "",
+        },
       });
       if (spawnId) {
         interactables.push({
@@ -530,6 +562,11 @@
             (normalizedSpawn.id || spawnId),
           alias_id: normalizedSpawn.alias_id || "",
           source_id: normalizedSpawn.source_id || "",
+          data: {
+            ...props,
+            name: obj.name || "",
+            type: obj.type || "",
+          },
         });
       }
       return;
@@ -543,7 +580,7 @@
       layerName === "environment_objects"
     ) {
       const rawId = obj.name || props.id || "";
-      const normalizedIdentity = normalizeEntityId(rawId, objType || props.type);
+      const normalizedIdentity = normalizeEntityId(rawId, objType || props.type, props);
       interactables.push({
         id: normalizedIdentity.id || rawId,
         x: gx,
@@ -556,13 +593,18 @@
           obj.name || props.name || "",
         alias_id: normalizedIdentity.alias_id || "",
         source_id: normalizedIdentity.source_id || "",
+        data: {
+          ...props,
+          name: obj.name || props.name || "",
+          type: objType || "object",
+        },
       });
       return;
     }
 
     /* ── Fallback: treat named objects in unknown layers as interactables ── */
     if (obj.name) {
-      const fallbackIdentity = normalizeEntityId(obj.name, objType || "");
+      const fallbackIdentity = normalizeEntityId(obj.name, objType || "", props);
       interactables.push({
         id: fallbackIdentity.id || obj.name,
         x: gx,
@@ -572,8 +614,46 @@
         label: obj.name,
         alias_id: fallbackIdentity.alias_id || "",
         source_id: fallbackIdentity.source_id || "",
+        data: {
+          ...props,
+          name: obj.name,
+          type: objType || "object",
+        },
       });
     }
+  }
+
+  function pointInRoom(x, y, room) {
+    const r = safeObj(room);
+    return (
+      Number(x) >= Number(r.x)
+      && Number(x) < Number(r.x) + Number(r.w || 1)
+      && Number(y) >= Number(r.y)
+      && Number(y) < Number(r.y) + Number(r.h || 1)
+    );
+  }
+
+  function assignRoomMembership(records, rooms) {
+    const roomList = safeArr(rooms);
+    safeArr(records).forEach((item) => {
+      const rec = safeObj(item);
+      const data = safeObj(rec.data);
+      if (data.room_id || data.roomId) {
+        rec.room_id = String(data.room_id || data.roomId);
+        return;
+      }
+      if (data.connects_from || data.connects_to) {
+        rec.connects_from = String(data.connects_from || "");
+        rec.connects_to = String(data.connects_to || "");
+      }
+      const x = Number(rec.x);
+      const y = Number(rec.y);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+      const room = roomList.find((candidate) => pointInRoom(x, y, candidate));
+      if (room) {
+        rec.room_id = String(room.id || "");
+      }
+    });
   }
 
   /** Flatten Tiled custom properties [{name, value, type}] → {key: value} */

@@ -1,15 +1,7 @@
 {
   "compressionlevel": -1,
   "height": 25,
-  "width": 25,
   "infinite": 0,
-  "orientation": "orthogonal",
-  "renderorder": "right-down",
-  "tiledversion": "1.11.0",
-  "tileheight": 32,
-  "tilewidth": 32,
-  "type": "map",
-  "version": "1.5",
   "layers": [
     {
       "data": [
@@ -25,9 +17,7 @@
         1,
         1,
         1,
-        0,
-        0,
-        0,
+        1,
         1,
         1,
         1,
@@ -39,6 +29,8 @@
         1,
         1,
         1,
+        1,
+        1,
         0,
         0,
         0,
@@ -161,34 +153,9 @@
         0,
         0,
         0,
-        0,
-        1,
-        1,
-        1,
-        1,
-        1,
-        1,
-        1,
-        1,
-        1,
-        1,
-        1,
-        1,
-        1,
         0,
-        1,
-        1,
-        1,
-        1,
-        1,
-        1,
-        1,
-        1,
         1,
         1,
-        1,
-        1,
-        1,
         0,
         0,
         0,
@@ -224,7 +191,7 @@
         1,
         1,
         1,
-        1,
+        0,
         0,
         1,
         1,
@@ -233,16 +200,12 @@
         1,
         1,
         1,
-        0,
-        0,
         1,
         1,
         1,
         1,
-        0,
-        0,
-        0,
-        0,
+        1,
+        1,
         0,
         0,
         0,
@@ -251,8 +214,12 @@
         0,
         0,
         0,
+        1,
+        1,
         0,
         0,
+        1,
+        1,
         0,
         0,
         0,
@@ -264,8 +231,6 @@
         0,
         1,
         1,
-        0,
-        0,
         0,
         0,
         0,
@@ -274,10 +239,12 @@
         0,
         0,
         0,
-        0,
-        0,
+        1,
+        1,
         0,
         0,
+        1,
+        1,
         0,
         0,
         0,
@@ -289,10 +256,6 @@
         0,
         1,
         1,
-        0,
-        0,
-        0,
-        0,
         0,
         0,
         0,
@@ -301,48 +264,23 @@
         0,
         0,
         0,
-        0,
-        0,
-        0,
+        1,
+        1,
         0,
         0,
+        1,
+        1,
         0,
         0,
         0,
         0,
         0,
         0,
-        1,
-        1,
-        1,
-        1,
-        1,
-        1,
-        1,
-        1,
-        1,
-        1,
-        1,
-        1,
-        1,
         0,
-        1,
-        1,
-        1,
-        1,
-        1,
-        1,
-        1,
         0,
         0,
-        1,
         1,
         1,
-        1,
-        0,
-        0,
-        0,
-        0,
         0,
         0,
         0,
@@ -351,8 +289,12 @@
         0,
         0,
         0,
+        1,
+        1,
         0,
         0,
+        1,
+        1,
         0,
         0,
         0,
@@ -362,25 +304,25 @@
         0,
         0,
         0,
-        1,
         1,
         1,
         1,
         1,
         1,
-        1,
-        1,
+        0,
+        0,
         1,
         1,
         1,
         1,
         1,
-        0,
         1,
         1,
         1,
         1,
         1,
+        0,
+        0,
         1,
         1,
         1,
@@ -587,6 +529,56 @@
         0,
         0,
         0,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
         1,
         1,
         1,
@@ -642,9 +634,9 @@
       "height": 25,
       "id": 1,
       "name": "collision",
-      "opacity": 1,
+      "opacity": 1.0,
       "type": "tilelayer",
-      "visible": true,
+      "visible": 1,
       "width": 25,
       "x": 0,
       "y": 0
@@ -706,38 +698,11 @@
         0,
         0,
         0,
-        0,
         1,
         0,
         0,
         0,
         0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        1,
         0,
         0,
         0,
@@ -778,13 +743,6 @@
         0,
         0,
         0,
-        1,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
         0,
         0,
         1,
@@ -795,7 +753,41 @@
         0,
         0,
         0,
+        0,
+        0,
+        0,
         1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
         0,
         0,
         0,
@@ -1280,9 +1272,9 @@
       "height": 25,
       "id": 2,
       "name": "los_blockers",
-      "opacity": 1,
+      "opacity": 1.0,
       "type": "tilelayer",
-      "visible": true,
+      "visible": 1,
       "width": 25,
       "x": 0,
       "y": 0
@@ -1490,14 +1482,14 @@
         0,
         0,
         0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
         0,
         0,
         0,
@@ -1918,9 +1910,9 @@
       "height": 25,
       "id": 3,
       "name": "ground_types",
-      "opacity": 1,
+      "opacity": 1.0,
       "type": "tilelayer",
-      "visible": true,
+      "visible": 1,
       "width": 25,
       "x": 0,
       "y": 0
@@ -1933,13 +1925,13 @@
         {
           "id": 1,
           "name": "corridor_approach",
+          "rotation": 0.0,
           "type": "narrative_trigger",
+          "visible": 1,
           "x": 32,
-          "y": 288,
+          "y": 256,
           "width": 256,
-          "height": 128,
-          "rotation": 0,
-          "visible": true,
+          "height": 160,
           "properties": [
             {
               "name": "trigger_id",
@@ -1949,20 +1941,20 @@
             {
               "name": "trigger_text",
               "type": "string",
-              "value": "空气中弥漫着刺鼻的酸臭味，破碎的玻璃罐散落各处。前方有两条路..."
+              "value": "空气中弥漫着刺鼻的酸臭味，破碎的玻璃罐散落各处。脚下的地面泛着不自然的绿色光泽..."
             }
           ]
         },
         {
           "id": 2,
           "name": "poison_trap_1",
+          "rotation": 0.0,
           "type": "trap",
-          "x": 160,
+          "visible": 1,
+          "x": 96,
           "y": 320,
           "width": 32,
           "height": 32,
-          "rotation": 0,
-          "visible": true,
           "properties": [
             {
               "name": "detect_dc",
@@ -1998,67 +1990,24 @@
               "name": "is_hidden",
               "type": "bool",
               "value": true
+            },
+            {
+              "name": "trap_type",
+              "type": "string",
+              "value": "poison_gas"
             }
           ]
         },
         {
           "id": 3,
           "name": "poison_trap_2",
+          "rotation": 0.0,
           "type": "trap",
-          "x": 64,
-          "y": 352,
-          "width": 32,
-          "height": 32,
-          "rotation": 0,
-          "visible": true,
-          "properties": [
-            {
-              "name": "detect_dc",
-              "type": "int",
-              "value": 14
-            },
-            {
-              "name": "disarm_dc",
-              "type": "int",
-              "value": 16
-            },
-            {
-              "name": "damage",
-              "type": "string",
-              "value": "2d6"
-            },
-            {
-              "name": "damage_type",
-              "type": "string",
-              "value": "poison"
-            },
-            {
-              "name": "save_dc",
-              "type": "int",
-              "value": 14
-            },
-            {
-              "name": "save_type",
-              "type": "string",
-              "value": "dex"
-            },
-            {
-              "name": "is_hidden",
-              "type": "bool",
-              "value": true
-            }
-          ]
-        },
-        {
-          "id": 4,
-          "name": "poison_trap_3",
-          "type": "trap",
+          "visible": 1,
           "x": 224,
           "y": 320,
           "width": 32,
           "height": 32,
-          "rotation": 0,
-          "visible": true,
           "properties": [
             {
               "name": "detect_dc",
@@ -2094,19 +2043,24 @@
               "name": "is_hidden",
               "type": "bool",
               "value": true
+            },
+            {
+              "name": "trap_type",
+              "type": "string",
+              "value": "poison_gas"
             }
           ]
         },
         {
-          "id": 5,
+          "id": 4,
           "name": "operating_room_enter",
+          "rotation": 0.0,
           "type": "narrative_trigger",
+          "visible": 1,
           "x": 32,
           "y": 32,
-          "width": 384,
-          "height": 128,
-          "rotation": 0,
-          "visible": true,
+          "width": 736,
+          "height": 192,
           "properties": [
             {
               "name": "trigger_id",
@@ -2121,9 +2075,9 @@
           ]
         }
       ],
-      "opacity": 1,
+      "opacity": 1.0,
       "type": "objectgroup",
-      "visible": true,
+      "visible": 1,
       "x": 0,
       "y": 0
     },
@@ -2133,96 +2087,126 @@
       "name": "interactables",
       "objects": [
         {
-          "id": 6,
-          "name": "necromancer_diary",
-          "type": "readable",
-          "x": 672,
-          "y": 320,
-          "width": 32,
+          "id": 5,
+          "name": "door_a_to_b",
+          "rotation": 0.0,
+          "type": "door",
+          "visible": 1,
+          "x": 128,
+          "y": 384,
+          "width": 64,
           "height": 32,
-          "rotation": 0,
-          "visible": true,
           "properties": [
-            {
-              "name": "lore_id",
-              "type": "string",
-              "value": "necromancer_diary_1"
-            },
             {
               "name": "name",
               "type": "string",
-              "value": "沾满血污的日记本"
+              "value": "通往走廊的铁门"
+            },
+            {
+              "name": "is_open",
+              "type": "bool",
+              "value": false
+            },
+            {
+              "name": "is_locked",
+              "type": "bool",
+              "value": false
             },
             {
               "name": "description",
               "type": "string",
-              "value": "一本皮革封面的日记，上面沾满了干涸的血迹。"
+              "value": "一扇锈迹斑斑的铁门，门把手似乎还能转动。"
             },
             {
-              "name": "intelligence_dc",
+              "name": "connects_from",
+              "type": "string",
+              "value": "room_a_spawn"
+            },
+            {
+              "name": "connects_to",
+              "type": "string",
+              "value": "room_b_corridor"
+            }
+          ]
+        },
+        {
+          "id": 6,
+          "name": "door_b_to_c",
+          "rotation": 0.0,
+          "type": "door",
+          "visible": 1,
+          "x": 512,
+          "y": 384,
+          "width": 64,
+          "height": 32,
+          "properties": [
+            {
+              "name": "name",
+              "type": "string",
+              "value": "书房侧门"
+            },
+            {
+              "name": "is_open",
+              "type": "bool",
+              "value": false
+            },
+            {
+              "name": "is_locked",
+              "type": "bool",
+              "value": false
+            },
+            {
+              "name": "description",
+              "type": "string",
+              "value": "一扇旧木门，门上没有锁。"
+            },
+            {
+              "name": "connects_from",
+              "type": "string",
+              "value": "room_b_corridor"
+            },
+            {
+              "name": "connects_to",
+              "type": "string",
+              "value": "room_c_secret_study"
+            },
+            {
+              "name": "is_secret",
+              "type": "bool",
+              "value": true
+            },
+            {
+              "name": "detect_dc",
               "type": "int",
-              "value": 12
+              "value": 14
             },
             {
-              "name": "success_text",
-              "type": "string",
-              "value": "你辨认出这是死灵法师的实验记录..."
+              "name": "is_hidden",
+              "type": "bool",
+              "value": true
             },
             {
-              "name": "failure_text",
-              "type": "string",
-              "value": "字迹模糊难辨，你只能辨认出几个零散的词句。"
+              "name": "is_revealed",
+              "type": "bool",
+              "value": false
             }
           ]
         },
         {
           "id": 7,
-          "name": "chest_1",
-          "type": "chest",
-          "x": 672,
-          "y": 352,
-          "width": 32,
-          "height": 32,
-          "rotation": 0,
-          "visible": true,
-          "properties": [
-            {
-              "name": "name",
-              "type": "string",
-              "value": "旧木箱"
-            },
-            {
-              "name": "status",
-              "type": "string",
-              "value": "unlocked"
-            },
-            {
-              "name": "description",
-              "type": "string",
-              "value": "一个朴素的旧木箱，箱盖微微松动。"
-            },
-            {
-              "name": "inventory",
-              "type": "string",
-              "value": "gold_coin:15,healing_potion:1,heavy_iron_key:1"
-            }
-          ]
-        },
-        {
-          "id": 8,
-          "name": "heavy_oak_door_1",
+          "name": "door_b_to_d",
+          "rotation": 0.0,
           "type": "door",
-          "x": 384,
-          "y": 0,
-          "width": 96,
+          "visible": 1,
+          "x": 352,
+          "y": 224,
+          "width": 64,
           "height": 32,
-          "rotation": 0,
-          "visible": true,
           "properties": [
             {
               "name": "name",
               "type": "string",
-              "value": "通往地表的沉重大门"
+              "value": "手术室大门"
             },
             {
               "name": "is_open",
@@ -2237,24 +2221,188 @@
             {
               "name": "key_required",
               "type": "string",
-              "value": "heavy_iron_key"
+              "value": "lab_key"
             },
             {
-              "name": "strength_dc",
+              "name": "lockpick_dc",
               "type": "int",
-              "value": 18
+              "value": 15
             },
             {
               "name": "description",
               "type": "string",
-              "value": "一扇沉重的橡木门，门上镶嵌着铁制铆钉。"
+              "value": "一扇厚重的橡木门，门上有一个复杂的锁芯。"
+            },
+            {
+              "name": "alternate_unlock_text",
+              "type": "string",
+              "value": "你也可以尝试撬锁..."
+            },
+            {
+              "name": "connects_from",
+              "type": "string",
+              "value": "room_b_corridor"
+            },
+            {
+              "name": "connects_to",
+              "type": "string",
+              "value": "room_d_lab"
+            }
+          ]
+        },
+        {
+          "id": 8,
+          "name": "exit_door",
+          "rotation": 0.0,
+          "type": "door",
+          "visible": 1,
+          "x": 352,
+          "y": 0,
+          "width": 96,
+          "height": 32,
+          "properties": [
+            {
+              "name": "name",
+              "type": "string",
+              "value": "通往地表的出口"
+            },
+            {
+              "name": "is_open",
+              "type": "bool",
+              "value": false
+            },
+            {
+              "name": "is_locked",
+              "type": "bool",
+              "value": true
+            },
+            {
+              "name": "description",
+              "type": "string",
+              "value": "通往外面的沉重大门，门后传来微弱的光线。"
+            },
+            {
+              "name": "is_exit",
+              "type": "bool",
+              "value": true
+            },
+            {
+              "name": "alias_id",
+              "type": "string",
+              "value": "heavy_oak_door_1"
+            },
+            {
+              "name": "key_required",
+              "type": "string",
+              "value": "heavy_iron_key"
+            },
+            {
+              "name": "requires_flag",
+              "type": "string",
+              "value": "world_necromancer_lab_gribbo_defeated"
+            },
+            {
+              "name": "connects_from",
+              "type": "string",
+              "value": "room_d_lab"
+            },
+            {
+              "name": "connects_to",
+              "type": "string",
+              "value": "room_exit"
+            }
+          ]
+        },
+        {
+          "id": 9,
+          "name": "necromancer_diary",
+          "rotation": 0.0,
+          "type": "readable",
+          "visible": 1,
+          "x": 576,
+          "y": 288,
+          "width": 32,
+          "height": 32,
+          "properties": [
+            {
+              "name": "name",
+              "type": "string",
+              "value": "死灵法师的实验日志"
+            },
+            {
+              "name": "lore_id",
+              "type": "string",
+              "value": "necromancer_diary_1"
+            },
+            {
+              "name": "description",
+              "type": "string",
+              "value": "一本皮革封面的日志，记录着某种禁忌实验的过程..."
+            },
+            {
+              "name": "intelligence_dc",
+              "type": "int",
+              "value": 10
+            },
+            {
+              "name": "success_text",
+              "type": "string",
+              "value": "你阅读了日志，了解到这位死灵法师曾试图复活某种生物..."
+            },
+            {
+              "name": "failure_text",
+              "type": "string",
+              "value": "字迹潦草难以辨认，只能看出一些零散的词句。"
+            },
+            {
+              "name": "alias_id",
+              "type": "string",
+              "value": "necromancer_diary"
+            }
+          ]
+        },
+        {
+          "id": 10,
+          "name": "study_chest",
+          "rotation": 0.0,
+          "type": "chest",
+          "visible": 1,
+          "x": 576,
+          "y": 352,
+          "width": 32,
+          "height": 32,
+          "properties": [
+            {
+              "name": "name",
+              "type": "string",
+              "value": "旧木箱"
+            },
+            {
+              "name": "is_locked",
+              "type": "bool",
+              "value": false
+            },
+            {
+              "name": "description",
+              "type": "string",
+              "value": "一个朴素的旧木箱，箱盖微微松动。"
+            },
+            {
+              "name": "inventory",
+              "type": "string",
+              "value": "lab_key:1,gold_coin:25,scroll_healing:1"
+            },
+            {
+              "name": "alias_id",
+              "type": "string",
+              "value": "chest_1"
             }
           ]
         }
       ],
-      "opacity": 1,
+      "opacity": 1.0,
       "type": "objectgroup",
-      "visible": true,
+      "visible": 1,
       "x": 0,
       "y": 0
     },
@@ -2264,27 +2412,26 @@
       "name": "spawns",
       "objects": [
         {
-          "id": 1,
+          "id": 11,
           "name": "player_start",
+          "rotation": 0.0,
           "type": "spawn_point",
+          "visible": 1,
           "x": 128,
           "y": 576,
           "width": 32,
-          "height": 32,
-          "rotation": 0,
-          "visible": true,
-          "properties": []
+          "height": 32
         },
         {
-          "id": 2,
+          "id": 12,
           "name": "gribbo",
+          "rotation": 0.0,
           "type": "npc",
+          "visible": 1,
           "x": 384,
           "y": 64,
           "width": 32,
           "height": 32,
-          "rotation": 0,
-          "visible": true,
           "properties": [
             {
               "name": "prefab",
@@ -2314,26 +2461,103 @@
           ]
         }
       ],
-      "opacity": 1,
+      "opacity": 1.0,
       "type": "objectgroup",
-      "visible": true,
+      "visible": 1,
+      "x": 0,
+      "y": 0
+    },
+    {
+      "draworder": "topdown",
+      "id": 7,
+      "name": "rooms",
+      "objects": [
+        {
+          "id": 13,
+          "name": "room_a_spawn",
+          "rotation": 0.0,
+          "type": "room",
+          "visible": 1,
+          "x": 32,
+          "y": 416,
+          "width": 256,
+          "height": 192
+        },
+        {
+          "id": 14,
+          "name": "room_b_corridor",
+          "rotation": 0.0,
+          "type": "room",
+          "visible": 1,
+          "x": 32,
+          "y": 256,
+          "width": 256,
+          "height": 160
+        },
+        {
+          "id": 15,
+          "name": "room_c_secret_study",
+          "rotation": 0.0,
+          "type": "room",
+          "visible": 1,
+          "x": 512,
+          "y": 256,
+          "width": 256,
+          "height": 160
+        },
+        {
+          "id": 16,
+          "name": "room_d_lab",
+          "rotation": 0.0,
+          "type": "room",
+          "visible": 1,
+          "x": 32,
+          "y": 32,
+          "width": 736,
+          "height": 192
+        },
+        {
+          "id": 17,
+          "name": "room_exit",
+          "rotation": 0.0,
+          "type": "room",
+          "visible": 1,
+          "x": 320,
+          "y": 0,
+          "width": 160,
+          "height": 64
+        }
+      ],
+      "opacity": 1.0,
+      "type": "objectgroup",
+      "visible": 1,
       "x": 0,
       "y": 0
     }
   ],
+  "nextlayerid": 8,
+  "nextobjectid": 18,
+  "orientation": "orthogonal",
+  "renderorder": "right-down",
+  "tiledversion": "1.11.0",
+  "tileheight": 32,
   "tilesets": [
     {
-      "firstgid": 1,
       "columns": 10,
+      "firstgid": 1,
       "image": "../web_ui/assets/2D Pixel Dungeon Asset Pack/character and tileset/Dungeon_Tileset.png",
-      "imageheight": 160,
-      "imagewidth": 160,
+      "imageheight": 320,
+      "imagewidth": 320,
       "margin": 0,
       "name": "dungeon_tiles",
       "spacing": 0,
       "tilecount": 100,
-      "tileheight": 16,
-      "tilewidth": 16
+      "tileheight": 32,
+      "tilewidth": 32
     }
-  ]
+  ],
+  "tilewidth": 32,
+  "type": "map",
+  "version": "1.5",
+  "width": 25
 }

@@ -54,3 +54,44 @@ def test_input_node_keeps_read_with_explicit_target():
 
     assert patch["intent"] == "READ"
     assert patch["target"] == "necromancer_diary"
+
+
+def test_input_node_reset_keeps_current_map_id(monkeypatch):
+    state = {
+        **_base_state(),
+        "user_input": "/reset",
+        "messages": [],
+        "map_data": {"id": "necromancer_lab"},
+    }
+    observed = {}
+
+    def _fake_initial_world_state(map_id="goblin_camp"):
+        observed["map_id"] = map_id
+        return {
+            "entities": {},
+            "map_data": {"id": map_id},
+            "player_inventory": {},
+            "turn_count": 0,
+            "combat_phase": "OUT_OF_COMBAT",
+            "combat_active": False,
+            "initiative_order": [],
+            "current_turn_index": 0,
+            "turn_resources": {},
+            "recent_barks": [],
+            "active_dialogue_target": None,
+            "demo_cleared": False,
+            "time_of_day": "晨曦 (Morning)",
+            "flags": {},
+            "messages": [],
+            "journal_events": [],
+            "current_location": "死灵法师的废弃实验室",
+            "environment_objects": {},
+        }
+
+    monkeypatch.setattr(
+        "core.systems.world_init.get_initial_world_state",
+        _fake_initial_world_state,
+    )
+    patch = input_node(state)
+    assert observed["map_id"] == "necromancer_lab"
+    assert patch["map_data"]["id"] == "necromancer_lab"

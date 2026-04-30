@@ -14,7 +14,7 @@
 - 请求示例：
 
 ```bash
-curl -X POST http://127.0.0.1:8010/api/chat \
+curl -X POST http://127.0.0.1:8000/api/chat \
   -H "Content-Type: application/json" \
   -d '{
     "session_id": "demo_freeze_smoke",

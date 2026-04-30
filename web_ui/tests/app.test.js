@@ -10,6 +10,7 @@ const DIRECTOR_TRACE_PATH = path.resolve(__dirname, "../director-trace.js");
 const INPUT_CONTROLLER_PATH = path.resolve(__dirname, "../input-controller.js");
 const HUD_RENDERERS_PATH = path.resolve(__dirname, "../hud-renderers.js");
 const REAL_MAP_JSON_PATH = path.resolve(__dirname, "../assets/maps/necromancer_lab.json");
+const REAL_MAP_TMX_PATH = path.resolve(__dirname, "../../data/maps/necromancer_lab.tmx");
 
 function extractBodyMarkup(htmlText) {
   const match = String(htmlText).match(/<body[^>]*>([\s\S]*?)<\/body>/i);
@@ -82,6 +83,25 @@ function spyOnFetch() {
     globalThis.fetch = () => Promise.reject(new Error("unmocked fetch"));
   }
   return jest.spyOn(globalThis, "fetch");
+}
+
+function extractObjectNamesByLayerFromTmx(xmlText) {
+  const text = String(xmlText || "");
+  const result = {};
+  const groupRe = /<objectgroup[^>]*name=\"([^\"]+)\"[^>]*>([\s\S]*?)<\/objectgroup>/g;
+  let groupMatch;
+  while ((groupMatch = groupRe.exec(text))) {
+    const layerName = groupMatch[1];
+    const body = groupMatch[2];
+    const names = [];
+    const objectRe = /<object[^>]*name=\"([^\"]+)\"[^>]*>/g;
+    let objectMatch;
+    while ((objectMatch = objectRe.exec(body))) {
+      names.push(objectMatch[1]);
+    }
+    result[layerName] = names;
+  }
+  return result;
 }
 
 describe("web_ui/app.js UI bindings", () => {
@@ -509,6 +529,146 @@ describe("web_ui/app.js UI bindings", () => {
     expect(poisonTrap.data.alias_id).toBe("gas_trap_1");
   });
 
+  test("test_tmx_json_object_layers_are_aligned", () => {
+    const tmxText = fs.readFileSync(REAL_MAP_TMX_PATH, "utf8");
+    const jsonText = fs.readFileSync(REAL_MAP_JSON_PATH, "utf8");
+    const map = JSON.parse(jsonText);
+    const tmxLayers = extractObjectNamesByLayerFromTmx(tmxText);
+    const jsonLayers = {};
+    map.layers
+      .filter((layer) => layer.type === "objectgroup")
+      .forEach((layer) => {
+        jsonLayers[layer.name] = (layer.objects || []).map((obj) => obj.name);
+      });
+
+    ["triggers", "interactables", "spawns", "rooms"].forEach((layerName) => {
+      expect(jsonLayers[layerName]).toBeDefined();
+      const tmxNames = tmxLayers[layerName] || [];
+      const jsonNames = jsonLayers[layerName] || [];
+      tmxNames.forEach((name) => {
+        expect(jsonNames).toContain(name);
+      });
+    });
+  });
+
+  test("test_rooms_and_doors_metadata_contract", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    await bootAppForTest();
+    const map = JSON.parse(fs.readFileSync(REAL_MAP_JSON_PATH, "utf8"));
+    const result = window.BG3TiledAdapter.normalizeTiledMap(map);
+
+    const roomIds = result.rooms.map((room) => room.id);
+    expect(roomIds).toEqual(expect.arrayContaining([
+      "room_a_spawn",
+      "room_b_corridor",
+      "room_c_secret_study",
+      "room_d_lab",
+      "room_exit",
+    ]));
+
+    const doorA = result.interactables.find((it) => it.id === "door_a_to_b");
+    const doorC = result.interactables.find((it) => it.id === "door_b_to_c");
+    const doorD = result.interactables.find((it) => it.id === "door_b_to_d");
+    const exitDoor = result.interactables.find((it) => it.id === "heavy_oak_door_1");
+    expect(doorA.data.connects_from).toBe("room_a_spawn");
+    expect(doorA.data.connects_to).toBe("room_b_corridor");
+    expect(doorC.data.is_secret).toBe(true);
+    expect(Number(doorC.data.detect_dc)).toBe(14);
+    expect(doorD.data.key_required).toBe("lab_key");
+    expect(Number(doorD.data.lockpick_dc)).toBe(15);
+    expect(exitDoor.data.key_required).toBe("heavy_iron_key");
+    expect(exitDoor.data.requires_flag).toBe("world_necromancer_lab_gribbo_defeated");
+    expect(exitDoor.source_id).toBe("exit_door");
+  });
+
+  test("test_room_visibility_initial_only_a_and_progressive_reveal", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    const api = await bootAppForTest();
+    const map = JSON.parse(fs.readFileSync(REAL_MAP_JSON_PATH, "utf8"));
+    const normalized = window.BG3TiledAdapter.normalizeTiledMap(map);
+    api.applyNormalizedMap(normalized, { source: "json" });
+
+    expect(Array.from(api.state.roomVisibleIds)).toEqual(["room_a_spawn"]);
+
+    const initialInteractableIds = api.state.normalizedMap.interactables.map((it) => it.id);
+    expect(initialInteractableIds).toContain("door_a_to_b");
+    expect(initialInteractableIds).not.toContain("door_b_to_d");
+    expect(initialInteractableIds).not.toContain("door_b_to_c");
+    expect(initialInteractableIds).not.toContain("necromancer_diary");
+    expect(initialInteractableIds).not.toContain("chest_1");
+
+    expect(api.revealRoomByDoorTarget("door_a_to_b")).toBe(true);
+    api.refreshVisibilityProjection();
+    expect(api.state.roomVisibleIds.has("room_b_corridor")).toBe(true);
+
+    const afterAB = api.state.normalizedMap.interactables.map((it) => it.id);
+    expect(afterAB).toContain("door_b_to_d");
+    expect(afterAB).not.toContain("door_b_to_c");
+    expect(afterAB).not.toContain("necromancer_diary");
+  });
+
+  test("test_secret_door_and_room_c_visibility_gate", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    const api = await bootAppForTest();
+    const map = JSON.parse(fs.readFileSync(REAL_MAP_JSON_PATH, "utf8"));
+    const normalized = window.BG3TiledAdapter.normalizeTiledMap(map);
+    api.applyNormalizedMap(normalized, { source: "json" });
+
+    api.revealRoomByDoorTarget("door_a_to_b");
+    api.refreshVisibilityProjection();
+    let ids = api.state.normalizedMap.interactables.map((it) => it.id);
+    expect(ids).not.toContain("door_b_to_c");
+    expect(ids).not.toContain("necromancer_diary");
+    expect(ids).not.toContain("chest_1");
+
+    api.discoverSecretDoor("door_b_to_c");
+    api.refreshVisibilityProjection();
+    ids = api.state.normalizedMap.interactables.map((it) => it.id);
+    expect(ids).toContain("door_b_to_c");
+    expect(ids).not.toContain("necromancer_diary");
+    expect(ids).not.toContain("chest_1");
+
+    api.revealRoomByDoorTarget("door_b_to_c");
+    api.refreshVisibilityProjection();
+    ids = api.state.normalizedMap.interactables.map((it) => it.id);
+    expect(ids).toContain("necromancer_diary");
+    expect(ids).toContain("chest_1");
+  });
+
+  test("test_tactical_projection_uses_player_start_when_backend_player_in_hidden_room", async () => {
+    const fetchSpy = spyOnFetch().mockResolvedValue(
+      mockResponse({
+        responses: [],
+        journal_events: [],
+        current_location: "死灵法师的废弃实验室",
+        party_status: {
+          player: { name: "玩家", faction: "player", x: 2, y: 2 },
+        },
+        environment_objects: {},
+        player_inventory: {},
+        combat_state: {},
+      })
+    );
+    const api = await bootAppForTest();
+    fetchSpy.mockClear();
+
+    const map = JSON.parse(fs.readFileSync(REAL_MAP_JSON_PATH, "utf8"));
+    const normalized = window.BG3TiledAdapter.normalizeTiledMap(map);
+    api.applyNormalizedMap(normalized, { source: "json" });
+    window.BG3TacticalMap.update.mockClear();
+
+    await api.sendMessage("查看当前位置", "chat");
+    await flushAsync();
+
+    const lastCall = window.BG3TacticalMap.update.mock.calls.at(-1);
+    expect(lastCall).toBeDefined();
+    const projectedParty = lastCall[0] || {};
+    expect(projectedParty.player.x).toBe(4);
+    expect(projectedParty.player.y).toBe(18);
+    expect(api.state.partyStatus.player.x).toBe(2);
+    expect(api.state.partyStatus.player.y).toBe(2);
+  });
+
   test("test_load_map_by_id_fallback_is_observable", async () => {
     spyOnFetch().mockRejectedValueOnce(new Error("offline"));
     loadNewModules();
@@ -546,6 +706,36 @@ describe("web_ui/app.js UI bindings", () => {
     const api = await bootAppForTest();
     /* Default session_id when no URL param is set (qa_test=1 doesn't set session_id) */
     expect(api.SESSION_ID).toBe("necromancer_lab_demo");
+  });
+
+  test("test_new_timeline_generates_new_session_and_init_sync_without_idle_chatter", async () => {
+    const fetchSpy = spyOnFetch().mockResolvedValue(
+      mockResponse({
+        responses: [],
+        journal_events: [],
+        current_location: "死灵法师的废弃实验室",
+        party_status: {},
+        environment_objects: {},
+        player_inventory: {},
+        combat_state: {},
+      })
+    );
+    const api = await bootAppForTest("http://localhost/?qa_test=1&qa_no_idle=1");
+    fetchSpy.mockClear();
+    await api.startNewTimeline();
+    await flushAsync();
+
+    const chatCalls = fetchSpy.mock.calls
+      .filter(([url]) => String(url).includes("/api/chat"))
+      .map(([, req]) => JSON.parse(req.body));
+    expect(chatCalls.length).toBe(1);
+    expect(chatCalls[0].intent).toBe("init_sync");
+    expect(chatCalls[0].session_id).toMatch(/^necromancer_lab_demo_\d+$/);
+    expect(chatCalls[0].session_id).not.toBe("necromancer_lab_demo");
+    expect(api.SESSION_ID).toBe(chatCalls[0].session_id);
+    const currentSessionInUrl = new URL(window.location.href).searchParams.get("session_id");
+    expect(currentSessionInUrl).toBe(chatCalls[0].session_id);
+    expect(chatCalls.some((payload) => payload.intent === "trigger_idle_banter")).toBe(false);
   });
 
   test("test_trigger_once_dedup", async () => {

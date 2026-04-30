@@ -257,13 +257,19 @@ python main.py
 运行 API：
 
 ```bash
-python -m uvicorn server:app --host 127.0.0.1 --port 8010
+python server.py
+```
+
+环境变量覆盖（可选）：
+
+```bash
+BG3_HOST=127.0.0.1 BG3_PORT=8010 python server.py
 ```
 
 默认服务地址：
 
 ```text
-POST http://127.0.0.1:8010/api/chat
+POST http://127.0.0.1:8000/api/chat
 ```
 
 请求示例：

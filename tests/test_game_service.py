@@ -9,7 +9,7 @@ from unittest.mock import Mock
 
 from langgraph.graph import START
 
-from core.application.game_service import process_chat_turn
+from core.application.game_service import GameService, process_chat_turn
 
 
 class _AsyncContextManager:
@@ -360,6 +360,39 @@ def test_process_chat_turn_init_sync_without_map_id_keeps_default_goblin_camp():
     persisted = fake_graph.aupdate_state_calls[0]["payload"]
     assert persisted["map_data"]["id"] == "goblin_camp"
     assert result["current_location"] == "地精营地"
+
+
+def test_reset_session_preserves_existing_map_and_returns_quiet_delta():
+    existing_state = {
+        "entities": {"player": {"hp": 10}},
+        "map_data": {"id": "necromancer_lab"},
+        "journal_events": ["旧事件"],
+    }
+    reset_state = {
+        "entities": {"player": {"hp": 20}},
+        "map_data": {"id": "necromancer_lab"},
+        "journal_events": ["开场剧情", "更多日志"],
+        "current_location": "死灵法师的废弃实验室",
+        "environment_objects": {},
+        "player_inventory": {"healing_potion": 2},
+    }
+    fake_graph = _FakeGraph(
+        snapshots=[existing_state, reset_state],
+        invoke_result={},
+    )
+    service = GameService(
+        saver_factory=Mock(return_value=_AsyncContextManager(value=object())),
+        graph_builder=Mock(return_value=fake_graph),
+        initial_state_factory=Mock(return_value=reset_state),
+    )
+
+    result = asyncio.run(service.reset_session(session_id="session-reset", map_id=None))
+
+    persisted_payload = fake_graph.aupdate_state_calls[0]["payload"]
+    assert persisted_payload["map_data"]["id"] == "necromancer_lab"
+    assert result["journal_events"] == []
+    assert result["responses"] == []
+    assert result["current_location"] == "死灵法师的废弃实验室"
 
 
 def test_process_chat_turn_init_sync_returns_current_state_without_invoking_graph():

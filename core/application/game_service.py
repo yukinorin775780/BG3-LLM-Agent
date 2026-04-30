@@ -312,6 +312,35 @@ class GameService:
                 state = await self._initialize_world_state(graph, config, map_id=map_id)
             return state
 
+    async def reset_session(
+        self,
+        *,
+        session_id: str,
+        map_id: Optional[str] = None,
+    ) -> ChatTurnResult:
+        """Reinitialize one session checkpoint without deleting global DB artifacts."""
+        config = {"configurable": {"thread_id": session_id}}
+        async with self._saver_factory(self._db_path) as saver:
+            graph = self._graph_builder(checkpointer=saver)
+            existing_state = await self._load_checkpoint_state(graph, config)
+            resolved_map_id = str(map_id or "").strip()
+            if not resolved_map_id:
+                resolved_map_id = str(
+                    (existing_state.get("map_data") or {}).get("id") or ""
+                ).strip()
+            result_state = await self._initialize_world_state(
+                graph,
+                config,
+                map_id=resolved_map_id or None,
+            )
+            chat_result = self._build_chat_result(
+                result_state,
+                previous_journal_len=len(result_state.get("journal_events") or []),
+            )
+            chat_result["responses"] = []
+            chat_result["journal_events"] = []
+            return chat_result
+
     async def get_state_snapshot(
         self,
         *,

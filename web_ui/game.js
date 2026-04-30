@@ -8,6 +8,8 @@
     collision: [],
     los_blockers: [],
     ground_types: [],
+    rooms: [],
+    visible_rooms: [],
   };
 
   const FALLBACK_STATE = {
@@ -279,6 +281,19 @@
     const parsedGroundTypes = normalizeNumericGridData(
       data.ground_types || data.groundTypes || data.ground || data.terrain || [],
     );
+    const parsedRooms = safeArray(data.rooms).map((room) => {
+      const record = safeObject(room);
+      return {
+        id: String(record.id || "").trim(),
+        x: Math.max(0, Math.round(Number(record.x) || 0)),
+        y: Math.max(0, Math.round(Number(record.y) || 0)),
+        w: Math.max(1, Math.round(Number(record.w) || 1)),
+        h: Math.max(1, Math.round(Number(record.h) || 1)),
+      };
+    });
+    const parsedVisibleRooms = safeArray(data.visible_rooms || data.visibleRooms)
+      .map((roomId) => String(roomId || "").trim())
+      .filter(Boolean);
     const gridHeight = parsedGrid.length;
     const gridWidth = parsedGrid.reduce((max, row) => Math.max(max, row.length), 0);
     const collisionHeight = parsedCollision.length;
@@ -319,6 +334,8 @@
       collision,
       los_blockers: losBlockers,
       ground_types: groundTypes,
+      rooms: parsedRooms,
+      visible_rooms: parsedVisibleRooms,
     };
   }
 
@@ -594,6 +611,7 @@
       this.ambientSprites = [];
       this.toxicFogSprites = [];
       this.losSprites = [];
+      this.roomFogSprites = [];
       this.obstacleSprites = [];
       this.obstacleFxTweens = [];
       this.overlayTweens = [];
@@ -690,6 +708,7 @@
 
       this.drawFloorTiles();
       this.drawAmbienceLayers();
+      this.drawRoomVisibilityMask();
       this.drawObstacleTiles();
       this.drawLosBlockers();
       this.tokens.forEach((token) => {
@@ -839,6 +858,47 @@
       if (this.trapSenseMode) {
         this.drawTrapSenseHints();
       }
+    }
+
+    drawRoomVisibilityMask() {
+      this.destroySpriteList(this.roomFogSprites);
+      const map = normalizeMapData(this.mapData);
+      const rooms = Array.isArray(map.rooms) ? map.rooms : [];
+      if (!rooms.length) return;
+      const visibleRoomIds = new Set(
+        (Array.isArray(map.visible_rooms) ? map.visible_rooms : []).map((roomId) => normalizeId(roomId)),
+      );
+      rooms.forEach((room) => {
+        const record = safeObject(room);
+        const roomId = normalizeId(record.id);
+        if (roomId && visibleRoomIds.has(roomId)) return;
+        const widthCells = Math.max(1, Number(record.w) || 1);
+        const heightCells = Math.max(1, Number(record.h) || 1);
+        const center = this.gridToWorld(
+          Number(record.x) + widthCells / 2 - 0.5,
+          Number(record.y) + heightCells / 2 - 0.5,
+        );
+        const fog = this.add.rectangle(
+          center.x,
+          center.y,
+          widthCells * this.board.cell,
+          heightCells * this.board.cell,
+          0x05060a,
+          0.86,
+        ).setDepth(DEPTH_LAYERS.overlay + 0.02);
+        const rim = this.add.rectangle(
+          center.x,
+          center.y,
+          widthCells * this.board.cell,
+          heightCells * this.board.cell,
+        )
+          .setFillStyle(0x000000, 0)
+          .setStrokeStyle(2, 0x1a1f2b, 0.8)
+          .setDepth(DEPTH_LAYERS.overlay + 0.03);
+        this.overlayLayer.add(fog);
+        this.overlayLayer.add(rim);
+        this.roomFogSprites.push(fog, rim);
+      });
     }
 
     drawTrapSenseHints() {

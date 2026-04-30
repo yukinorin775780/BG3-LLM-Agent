@@ -1,9 +1,10 @@
 (() => {
   const API_URL = "/api/chat";
   const STATE_URL = "/api/state";
-  const SESSION_ID =
+  const DEFAULT_SESSION_ID =
     new URLSearchParams(window.location.search).get("session_id") ||
     "necromancer_lab_demo";
+  let currentSessionId = DEFAULT_SESSION_ID;
   const IDLE_MS = 30000;
   const DIALOGUE_POLL_MS = 1800;
   const BACKEND_REQUEST_TIMEOUT_MS = 5000;
@@ -60,6 +61,13 @@
     iron_chest: "铁箱",
   }, _necroMeta.LOCATION_LABEL_EXTENSIONS || {});
 
+  const ROOM_A = "room_a_spawn";
+  const ROOM_B = "room_b_corridor";
+  const ROOM_C = "room_c_secret_study";
+  const ROOM_D = "room_d_lab";
+  const ROOM_EXIT = "room_exit";
+  const SECRET_DOOR_ID = "door_b_to_c";
+
   const state = {
     partyStatus: {},
     environmentObjects: {},
@@ -87,9 +95,14 @@
     xrayNodeTimings: {},
     qaTraceStepMs: Math.max(120, Number(QA_PARAMS.get("qa_trace_step_ms")) || 240),
     normalizedMap: null,
+    fullNormalizedMap: null,
     mapLoadSource: "fixture",
     mapLoadReason: "",
     trapSenseEnabled: false,
+    roomVisibleIds: new Set(),
+    discoveredSecretDoorIds: new Set(),
+    discoveredTrapIds: new Set(),
+    act1PerceptionResolved: false,
     speechRecognition: null,
     speechRecognitionSupported: Boolean(SpeechRecognition),
     isPttRecording: false,
@@ -196,6 +209,7 @@
     restControls: document.getElementById("rest-controls"),
     shortRestBtn: document.getElementById("short-rest-btn"),
     longRestBtn: document.getElementById("long-rest-btn"),
+    newTimelineBtn: document.getElementById("new-timeline-btn"),
     dialogueOverlay: document.getElementById("dialogue-overlay"),
     dialogueNpcName: document.getElementById("dialogue-npc-name"),
     dialogueText: document.getElementById("dialogue-text"),
@@ -309,6 +323,24 @@
 
   function normalizeId(id) {
     return String(id || "").trim().toLowerCase();
+  }
+
+  function getSessionId() {
+    return String(currentSessionId || "").trim() || DEFAULT_SESSION_ID;
+  }
+
+  function setSessionId(nextSessionId) {
+    const normalized = String(nextSessionId || "").trim();
+    if (!normalized) return getSessionId();
+    currentSessionId = normalized;
+    const nextUrl = new URL(window.location.href);
+    nextUrl.searchParams.set("session_id", normalized);
+    window.history.replaceState({}, "", nextUrl.toString());
+    return normalized;
+  }
+
+  function buildTimelineSessionId() {
+    return "necromancer_lab_demo_" + Date.now();
   }
 
   function prettifyId(id) {
@@ -446,11 +478,12 @@
         source: "interaction",
       };
     }
-    if (targetId === "heavy_oak_door_1" || targetType === "door") {
+    if (targetType === "door" || targetId === "heavy_oak_door_1" || targetId === "exit_door") {
+      const doorTarget = targetId === "exit_door" ? "heavy_oak_door_1" : targetId;
       return {
         text: "",
         intent: "INTERACT",
-        target: "heavy_oak_door_1",
+        target: doorTarget || "heavy_oak_door_1",
         source: "interaction",
       };
     }
@@ -645,7 +678,7 @@
       intent: routed.intentValue,
       target: routed.target,
       source: routed.source,
-      session_id: SESSION_ID,
+      session_id: getSessionId(),
       map_id: MAP_ID,
     };
     if (characterId) {
@@ -1135,6 +1168,17 @@
     const collision = safeArray(map.collision).map((row) => safeArray(row).map(Boolean));
     const losBlockers = safeArray(map.losBlockers).map((row) => safeArray(row).map(Boolean));
     const groundTypes = safeArray(map.groundTypes).map((row) => safeArray(row).map((v) => Number(v) || 0));
+    const rooms = safeArray(map.rooms).map((room) => {
+      const record = safeObject(room);
+      return {
+        id: String(record.id || "").trim(),
+        x: Number(record.x) || 0,
+        y: Number(record.y) || 0,
+        w: Math.max(1, Number(record.w) || 1),
+        h: Math.max(1, Number(record.h) || 1),
+      };
+    });
+    const visibleRooms = safeArray(map.visibleRooms || map.visible_rooms).map((roomId) => String(roomId || "").trim()).filter(Boolean);
     return {
       id: String(map.id || MAP_ID || "").trim(),
       width,
@@ -1143,7 +1187,156 @@
       collision,
       los_blockers: losBlockers,
       ground_types: groundTypes,
+      rooms,
+      visible_rooms: visibleRooms,
       obstacles: [],
+    };
+  }
+
+  function boolish(value) {
+    if (typeof value === "boolean") return value;
+    const normalized = normalizeId(value);
+    return normalized === "true" || normalized === "yes" || normalized === "1";
+  }
+
+  function roomAtPosition(rooms, x, y) {
+    const rx = Number(x);
+    const ry = Number(y);
+    if (!Number.isFinite(rx) || !Number.isFinite(ry)) return null;
+    return safeArray(rooms).find((room) => {
+      const r = safeObject(room);
+      const sx = Number(r.x) || 0;
+      const sy = Number(r.y) || 0;
+      const sw = Math.max(1, Number(r.w) || 1);
+      const sh = Math.max(1, Number(r.h) || 1);
+      return rx >= sx && rx < sx + sw && ry >= sy && ry < sy + sh;
+    }) || null;
+  }
+
+  function findMapInteractableById(map, targetId) {
+    const key = normalizeId(targetId);
+    return safeArray(safeObject(map).interactables).find((item) => {
+      const record = safeObject(item);
+      const data = safeObject(record.data);
+      return normalizeId(record.id) === key
+        || normalizeId(record.source_id) === key
+        || normalizeId(record.alias_id) === key
+        || normalizeId(data.alias_id) === key;
+    }) || null;
+  }
+
+  function resetRoomVisibility(map) {
+    const rooms = safeArray(safeObject(map).rooms);
+    state.roomVisibleIds = new Set();
+    if (!rooms.length) return;
+    const roomIds = rooms.map((room) => String(safeObject(room).id || "").trim()).filter(Boolean);
+    if (roomIds.includes(ROOM_A)) {
+      state.roomVisibleIds.add(ROOM_A);
+    } else {
+      roomIds.forEach((roomId) => state.roomVisibleIds.add(roomId));
+    }
+  }
+
+  function revealRoom(roomId) {
+    const key = String(roomId || "").trim();
+    if (!key) return false;
+    if (state.roomVisibleIds.has(key)) return false;
+    state.roomVisibleIds.add(key);
+    return true;
+  }
+
+  function discoverTrap(trapId) {
+    const key = normalizeId(trapId);
+    if (!key) return false;
+    if (state.discoveredTrapIds.has(key)) return false;
+    state.discoveredTrapIds.add(key);
+    return true;
+  }
+
+  function discoverSecretDoor(doorId) {
+    const key = normalizeId(doorId);
+    if (!key) return false;
+    if (state.discoveredSecretDoorIds.has(key)) return false;
+    state.discoveredSecretDoorIds.add(key);
+    return true;
+  }
+
+  function resolveRecordRoomId(record, rooms) {
+    const entity = safeObject(record);
+    const data = safeObject(entity.data);
+    const explicit = String(entity.room_id || data.room_id || data.roomId || "").trim();
+    if (explicit) return explicit;
+    const room = roomAtPosition(rooms, entity.x, entity.y);
+    return room ? String(room.id || "") : "";
+  }
+
+  function deriveVisibleNormalizedMap(baseMap) {
+    const map = safeObject(baseMap);
+    const rooms = safeArray(map.rooms).map((room) => ({ ...safeObject(room) }));
+    const roomAware = rooms.length > 0;
+    const visibleRoomIds = state.roomVisibleIds;
+
+    const isRoomVisible = (roomId) => {
+      if (!roomAware) return true;
+      const key = String(roomId || "").trim();
+      if (!key) return false;
+      return visibleRoomIds.has(key);
+    };
+
+    const visibleInteractables = safeArray(map.interactables)
+      .map((item) => ({ ...safeObject(item), data: { ...safeObject(safeObject(item).data) } }))
+      .filter((item) => {
+        const type = normalizeId(item.type || safeObject(item.data).type);
+        const id = normalizeId(item.id);
+        const roomId = resolveRecordRoomId(item, rooms);
+        const fromRoom = String(item.connects_from || safeObject(item.data).connects_from || "").trim();
+        const toRoom = String(item.connects_to || safeObject(item.data).connects_to || "").trim();
+        const isSecretDoor = type === "door" && boolish(safeObject(item.data).is_secret);
+        if (isSecretDoor && !state.discoveredSecretDoorIds.has(id)) {
+          return false;
+        }
+        if (type === "door" && (fromRoom || toRoom)) {
+          return isRoomVisible(fromRoom) || isRoomVisible(toRoom);
+        }
+        return isRoomVisible(roomId);
+      })
+      .map((item) => {
+        const id = normalizeId(item.id);
+        const type = normalizeId(item.type || safeObject(item.data).type);
+        if (type === "trap" || id.includes("trap")) {
+          const discovered = state.discoveredTrapIds.has(id) || state.discoveredTrapIds.has(normalizeId(item.alias_id));
+          item.discovered = discovered;
+          item.is_revealed = discovered;
+          item.is_hidden = !discovered;
+          item.data.discovered = discovered;
+          item.data.is_revealed = discovered;
+          item.data.is_hidden = !discovered;
+          item.status = discovered ? "revealed" : "hidden";
+        }
+        return item;
+      });
+
+    const visibleTriggers = safeArray(map.triggers)
+      .map((item) => ({ ...safeObject(item), data: { ...safeObject(safeObject(item).data) } }))
+      .filter((item) => {
+        const roomId = resolveRecordRoomId(item, rooms);
+        return isRoomVisible(roomId);
+      });
+
+    const visibleSpawns = safeArray(map.spawns)
+      .map((item) => ({ ...safeObject(item), data: { ...safeObject(safeObject(item).data) } }))
+      .filter((item) => {
+        const roomId = resolveRecordRoomId(item, rooms);
+        return isRoomVisible(roomId);
+      });
+
+    return {
+      ...map,
+      rooms,
+      visibleRooms: Array.from(visibleRoomIds),
+      triggers: visibleTriggers,
+      interactables: visibleInteractables,
+      spawns: visibleSpawns,
     };
   }
 
@@ -1179,11 +1372,17 @@
   function applyNormalizedMap(normalizedMap, meta = {}) {
     const map = safeObject(normalizedMap);
     if (!Object.keys(map).length) return;
-    state.normalizedMap = map;
-    state.mapData = mapDataFromNormalized(map);
+    state.fullNormalizedMap = map;
+    state.trapSenseEnabled = false;
+    state.act1PerceptionResolved = false;
+    state.discoveredTrapIds = new Set();
+    state.discoveredSecretDoorIds = new Set();
+    resetRoomVisibility(map);
+    state.normalizedMap = deriveVisibleNormalizedMap(map);
+    state.mapData = mapDataFromNormalized({ ...map, visibleRooms: Array.from(state.roomVisibleIds) });
     updateMapSourceStatus(meta.source || "fixture", meta.reason || "");
     if (window.BG3InputController && typeof window.BG3InputController.setMap === "function") {
-      window.BG3InputController.setMap(map);
+      window.BG3InputController.setMap(state.normalizedMap);
       const playerStart = safeObject(map.playerStart);
       if (typeof window.BG3InputController.setPlayerPosition === "function") {
         window.BG3InputController.setPlayerPosition(
@@ -1197,8 +1396,135 @@
     }
   }
 
+  function refreshVisibilityProjection() {
+    const fullMap = safeObject(state.fullNormalizedMap);
+    if (!Object.keys(fullMap).length) return;
+    state.normalizedMap = deriveVisibleNormalizedMap(fullMap);
+    const visualMapData = mapDataFromNormalized({
+      ...fullMap,
+      visibleRooms: Array.from(state.roomVisibleIds),
+    });
+    state.mapData = {
+      ...safeObject(state.mapData),
+      ...visualMapData,
+    };
+    if (window.BG3InputController && typeof window.BG3InputController.setMap === "function") {
+      window.BG3InputController.setMap(state.normalizedMap);
+    }
+  }
+
+  function revealRoomByDoorTarget(targetId) {
+    const key = normalizeId(targetId);
+    if (!key) return false;
+    if (key === "door_a_to_b") return revealRoom(ROOM_B);
+    if (key === "door_b_to_d") return revealRoom(ROOM_D);
+    if (key === "door_b_to_c") return revealRoom(ROOM_C);
+    if (key === "exit_door" || key === "heavy_oak_door_1") return revealRoom(ROOM_EXIT);
+    return false;
+  }
+
+  function resolveAct1Perception() {
+    if (state.act1PerceptionResolved) return;
+    state.act1PerceptionResolved = true;
+    const roll = Math.floor(Math.random() * 20) + 1;
+    const trapSuccess = roll >= 13;
+    if (trapSuccess) {
+      discoverTrap("poison_trap_1");
+      discoverTrap("poison_trap_2");
+      discoverTrap("gas_trap_1");
+      if (window.BG3HudRenderers && typeof window.BG3HudRenderers.showToast === "function") {
+        window.BG3HudRenderers.showToast("narration", "Astarion 察觉到毒气陷阱。", 2300);
+      }
+    } else if (window.BG3HudRenderers && typeof window.BG3HudRenderers.showToast === "function") {
+      window.BG3HudRenderers.showToast("warning", "感知检定失败，陷阱仍然隐藏。", 2200);
+    }
+
+    const secretDoorRoll = Math.floor(Math.random() * 20) + 1;
+    if (secretDoorRoll >= 14 && discoverSecretDoor(SECRET_DOOR_ID)) {
+      if (window.BG3HudRenderers && typeof window.BG3HudRenderers.showToast === "function") {
+        window.BG3HudRenderers.showToast("narration", "你发现了通往书房的暗门。", 2300);
+      }
+    }
+    refreshVisibilityProjection();
+  }
+
+  function filterEnvironmentObjectsForTactical(environmentObjects) {
+    const env = safeObject(environmentObjects);
+    const fullMap = safeObject(state.fullNormalizedMap);
+    const rooms = safeArray(fullMap.rooms);
+    if (!rooms.length) return env;
+    const out = {};
+    Object.entries(env).forEach(([id, raw]) => {
+      const entity = safeObject(raw);
+      const x = Number(entity.x);
+      const y = Number(entity.y);
+      const mapInteractable = findMapInteractableById(fullMap, id);
+      const roomIdFromMap = mapInteractable
+        ? resolveRecordRoomId(mapInteractable, rooms)
+        : (roomAtPosition(rooms, x, y) || {}).id;
+      if (!roomIdFromMap || state.roomVisibleIds.has(String(roomIdFromMap))) {
+        const copy = { ...entity };
+        const isTrapEntity = normalizeId(entity.type || entity.kind || "").includes("trap") || normalizeId(id).includes("trap");
+        if (isTrapEntity) {
+          const discovered = state.discoveredTrapIds.has(normalizeId(id)) || state.discoveredTrapIds.has("gas_trap_1");
+          copy.discovered = discovered;
+          copy.is_revealed = discovered;
+          copy.is_hidden = !discovered;
+        }
+        out[id] = copy;
+      }
+    });
+    return out;
+  }
+
+  function resolveTacticalPlayerCoordinates(player) {
+    const source = safeObject(player);
+    const backendX = Number(source.x);
+    const backendY = Number(source.y);
+    const map = safeObject(state.fullNormalizedMap);
+    const rooms = safeArray(map.rooms);
+    const playerStart = safeObject(map.playerStart);
+    const startX = Number(playerStart.x);
+    const startY = Number(playerStart.y);
+    const hasStart = Number.isFinite(startX) && Number.isFinite(startY);
+    const hasBackend = Number.isFinite(backendX) && Number.isFinite(backendY);
+    if (!hasBackend) {
+      return hasStart ? { x: startX, y: startY } : null;
+    }
+    const isRealMapSource = normalizeId(state.mapLoadSource) === "json";
+    if (!isRealMapSource || !rooms.length || state.roomVisibleIds.size === 0) {
+      return { x: backendX, y: backendY };
+    }
+    const room = roomAtPosition(rooms, backendX, backendY);
+    const roomId = room ? String(safeObject(room).id || "").trim() : "";
+    if (!roomId || state.roomVisibleIds.has(roomId)) {
+      return { x: backendX, y: backendY };
+    }
+    if (hasStart) {
+      return { x: startX, y: startY };
+    }
+    return { x: backendX, y: backendY };
+  }
+
+  function projectPartyStatusForTactical(partyStatus) {
+    const party = safeObject(partyStatus);
+    const projected = { ...party };
+    const rawPlayer = safeObject(party.player);
+    const coords = resolveTacticalPlayerCoordinates(rawPlayer);
+    if (!coords) return projected;
+    projected.player = {
+      ...rawPlayer,
+      x: coords.x,
+      y: coords.y,
+      name: rawPlayer.name || "玩家",
+      faction: rawPlayer.faction || "player",
+    };
+    return projected;
+  }
+
   function renderTacticalGrid(partyStatus, environmentObjects, mapData) {
-    const player = safeObject(safeObject(partyStatus).player);
+    const projectedPartyStatus = projectPartyStatusForTactical(partyStatus);
+    const player = safeObject(projectedPartyStatus.player);
     if (window.BG3InputController && typeof window.BG3InputController.setPlayerPosition === "function") {
       const px = Number(player.x);
       const py = Number(player.y);
@@ -1206,8 +1532,9 @@
         window.BG3InputController.setPlayerPosition(px, py);
       }
     }
+    const visibleEnvironment = filterEnvironmentObjectsForTactical(environmentObjects);
     if (window.BG3TacticalMap && typeof window.BG3TacticalMap.update === "function") {
-      window.BG3TacticalMap.update(partyStatus, environmentObjects, mapData);
+      window.BG3TacticalMap.update(projectedPartyStatus, visibleEnvironment, mapData);
     }
     if (
       window.BG3InputController
@@ -2617,6 +2944,16 @@
       if (state.normalizedMap) {
         state.mapData = mergeVisualMapData(state.mapData, state.normalizedMap);
       }
+      const actionIntent = normalizeId(payload.intent);
+      const actionTarget = normalizeId(payload.target || routed.target);
+      if (actionIntent === "interact") {
+        if (actionTarget === "door_b_to_c" && !state.discoveredSecretDoorIds.has("door_b_to_c")) {
+          discoverSecretDoor("door_b_to_c");
+        }
+        if (revealRoomByDoorTarget(actionTarget)) {
+          refreshVisibilityProjection();
+        }
+      }
       updateDialogueOverlay(data);
 
       if (data.current_location) {
@@ -2675,7 +3012,9 @@
         clearTransientInteractionContext({ keepDialogueTarget: true });
       }
       setLoading(false);
-      resetIdleTimer();
+      if (opts.skipIdleReset !== true) {
+        resetIdleTimer();
+      }
     }
   }
 
@@ -2932,6 +3271,11 @@
 
     document.querySelector(".shortcut-bar").addEventListener("click", handleShortcutClick);
     els.restControls.addEventListener("click", handleRestClick);
+    if (els.newTimelineBtn) {
+      els.newTimelineBtn.addEventListener("click", () => {
+        void startNewTimeline();
+      });
+    }
     if (els.pttMicBtn) {
       els.pttMicBtn.addEventListener("mousedown", handlePttPressStart);
       els.pttMicBtn.addEventListener("touchstart", handlePttPressStart, { passive: false });
@@ -3041,7 +3385,7 @@
     if (state.isLoading) return;
     try {
       const response = await fetchWithTimeout(
-        STATE_URL + "?session_id=" + encodeURIComponent(SESSION_ID),
+        STATE_URL + "?session_id=" + encodeURIComponent(getSessionId()),
         {},
         BACKEND_REQUEST_TIMEOUT_MS,
       );
@@ -3084,6 +3428,33 @@
     sendMessage(text, null, null, { source: "dock_input" });
   }
 
+  async function startNewTimeline() {
+    if (state.isLoading) return;
+    window.clearTimeout(state.idleTimer);
+    const newSessionId = setSessionId(buildTimelineSessionId());
+    clearTransientInteractionContext();
+    state.seenLootTargets.clear();
+    state.currentLootTargetId = "";
+    state.turnCount = 0;
+    if (els.turnCounter) {
+      els.turnCounter.textContent = padTurn(state.turnCount);
+    }
+    if (els.worldLog) {
+      els.worldLog.innerHTML = "";
+    }
+    appendLogEntry("system", "新时间线", "已创建新会话：" + newSessionId + "，开始同步干净状态。", {
+      color: "#73c6c3",
+      sigil: "◎",
+      logType: "system",
+    });
+    await sendMessage("", "init_sync", null, {
+      source: "ui_click",
+      incrementTurn: false,
+      skipLogUpdate: true,
+      skipIdleReset: true,
+    });
+  }
+
   function bindDockEvents() {
     if (els.dockInput) {
       els.dockInput.addEventListener("keydown", (event) => {
@@ -3117,21 +3488,29 @@
         normalizedMap,
         playerStart: normalizedMap.playerStart,
         onNarrativeTrigger: (trigger) => {
-          if (normalizeId(trigger && trigger.id) === "act1_corridor_approach") {
+          const triggerId = normalizeId(trigger && trigger.id);
+          const triggerType = normalizeId(trigger && trigger.type);
+          if (triggerId === "act1_corridor_approach") {
             state.trapSenseEnabled = true;
             if (window.BG3TacticalMap && typeof window.BG3TacticalMap.setTrapSenseMode === "function") {
               window.BG3TacticalMap.setTrapSenseMode(true);
             }
+            resolveAct1Perception();
+          }
+          if (triggerType === "trap" || triggerId.includes("trap")) {
+            if (window.BG3HudRenderers && typeof window.BG3HudRenderers.showToast === "function") {
+              window.BG3HudRenderers.showToast("warning", "你踩中了陷阱触发区。", 2000);
+            }
           }
           if (QA_NO_IDLE) return;
           const data = trigger && trigger.data ? trigger.data : {};
-          const triggerId = (trigger && trigger.id) ? String(trigger.id) : "unknown";
+          const triggerEventId = (trigger && trigger.id) ? String(trigger.id) : "unknown";
           sendMessage(
-            "我踩到了一个触发区域: " + triggerId,
+            "我踩到了一个触发区域: " + triggerEventId,
             "trigger_zone",
             null,
             {
-              target: triggerId,
+              target: triggerEventId,
               source: "trigger_zone",
             }
           );
@@ -3139,10 +3518,17 @@
         onInteraction: (interactable) => {
           const mapped = mapInteractableToStructuredAction(interactable);
           if (!mapped) return;
+          const interactionTarget = normalizeId(mapped.target);
+          if (interactionTarget === "door_b_to_c" && !state.discoveredSecretDoorIds.has("door_b_to_c")) {
+            discoverSecretDoor("door_b_to_c");
+          }
           sendMessage(mapped.text || "", mapped.intent || null, mapped.character || null, {
             target: mapped.target || "",
             source: mapped.source || "interaction",
           });
+          if (revealRoomByDoorTarget(interactionTarget)) {
+            refreshVisibilityProjection();
+          }
         },
         onHighlightChanged: (interactable) => {
           if (window.BG3TacticalMap && typeof window.BG3TacticalMap.setInteractionFocus === "function") {
@@ -3292,6 +3678,7 @@
       boot,
       sendMessage,
       sendStructuredAction,
+      startNewTimeline,
       buildChatPayload,
       pollDialogueState,
       updateDialogueOverlay,
@@ -3301,10 +3688,17 @@
       normalizeNodeName,
       isNarrativeRequest,
       dispatchUIEventsFromResponse,
+      applyNormalizedMap,
+      refreshVisibilityProjection,
+      revealRoomByDoorTarget,
+      resolveAct1Perception,
+      discoverSecretDoor,
       state,
       els,
       MAP_ID,
-      SESSION_ID,
+      get SESSION_ID() {
+        return getSessionId();
+      },
       ITEM_META,
     };
   }

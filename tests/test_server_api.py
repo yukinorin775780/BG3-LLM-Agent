@@ -150,3 +150,48 @@ def test_chat_endpoint_forwards_target_and_source_to_game_service():
         target="heavy_oak_door_1",
         source="interaction",
     )
+
+
+def test_reset_endpoint_reinitializes_session_with_map_id():
+    expected_payload = {
+        "responses": [],
+        "journal_events": [],
+        "current_location": "死灵法师的废弃实验室",
+        "environment_objects": {},
+        "party_status": {"player": {"hp": 20}},
+        "player_inventory": {"healing_potion": 2},
+        "combat_state": {
+            "combat_active": False,
+            "initiative_order": [],
+            "current_turn_index": 0,
+            "turn_resources": {},
+        },
+    }
+    original_service = server.game_service
+    mock_service = AsyncMock()
+    mock_service.reset_session.return_value = expected_payload
+    server.game_service = mock_service
+
+    try:
+        client = TestClient(server.app)
+        response = client.post(
+            "/api/reset",
+            json={"session_id": "session-reset", "map_id": "necromancer_lab"},
+        )
+    finally:
+        server.game_service = original_service
+
+    assert response.status_code == 200
+    assert response.json() == expected_payload
+    mock_service.reset_session.assert_awaited_once_with(
+        session_id="session-reset",
+        map_id="necromancer_lab",
+    )
+
+
+def test_server_bind_prefers_environment_port(monkeypatch):
+    monkeypatch.delenv("BG3_HOST", raising=False)
+    monkeypatch.setenv("BG3_PORT", "8123")
+    host, port = server._resolve_server_bind([])
+    assert host == "127.0.0.1"
+    assert port == 8123

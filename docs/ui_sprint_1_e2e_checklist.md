@@ -3,7 +3,13 @@
 ## 1. Server Startup (统一命令)
 
 ```bash
-python -m uvicorn server:app --host 127.0.0.1 --port 8010
+python server.py
+```
+
+如需并行跑隔离测试会话，可切换到 8010：
+
+```bash
+BG3_PORT=8010 python server.py
 ```
 
 ## 2. Browser QA Session
@@ -11,7 +17,7 @@ python -m uvicorn server:app --host 127.0.0.1 --port 8010
 使用全新会话并启用静默参数：
 
 ```text
-http://127.0.0.1:8010/web_ui/?session_id=ui_sprint1_e2e_01&qa_no_idle=1
+http://127.0.0.1:8000/web_ui/?session_id=ui_sprint1_e2e_01&qa_no_idle=1
 ```
 
 确认点：
