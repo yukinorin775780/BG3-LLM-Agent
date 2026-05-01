@@ -19,8 +19,10 @@
   /* ── state ── */
   let currentState = "idle"; // idle | pending | active
   let traceTimers = [];
+  let idleTimer = null;
   let animatingUntil = 0;
   let nodeTimings = {};
+  let transitionToken = 0;
   const TRACE_STEP_MS = 240;
 
   /* ── demo-audience-friendly labels ── */
@@ -118,13 +120,30 @@
     animatingUntil = 0;
   }
 
+  function clearIdleTimer() {
+    if (idleTimer) {
+      window.clearTimeout(idleTimer);
+      idleTimer = null;
+    }
+  }
+
+  function scheduleAutoIdle(token, delayMs) {
+    clearIdleTimer();
+    idleTimer = window.setTimeout(() => {
+      if (token !== transitionToken) return;
+      setIdle();
+    }, Math.max(360, Number(delayMs) || 900));
+  }
+
   /* ══════════════════════════════════════════════════════
    *  Public API
    * ══════════════════════════════════════════════════════ */
 
   /** Called after every local WASD move. Keeps panel silent. */
   function setIdle() {
+    transitionToken += 1;
     if (currentState === "idle") return;
+    clearIdleTimer();
     currentState = "idle";
     clearTraceAnimation();
     clearAllNodeStates();
@@ -133,7 +152,9 @@
 
   /** Called when a narrative request is about to be sent. */
   function setPending() {
+    transitionToken += 1;
     currentState = "pending";
+    clearIdleTimer();
     clearTraceAnimation();
     clearAllNodeStates();
     updateStateIndicator("Director Processing…", "pending");
@@ -146,11 +167,14 @@
       .map(normalizeNodeName)
       .filter(Boolean);
 
+    transitionToken += 1;
+    const token = transitionToken;
     currentState = "active";
     updateStateIndicator("Director Active", "active");
 
     if (!normalized.length) {
       applyNodeClasses([], "");
+      scheduleAutoIdle(token, 900);
       return;
     }
 
@@ -159,6 +183,7 @@
 
     if (!animate || normalized.length === 1) {
       applyNodeClasses(normalized, normalized[normalized.length - 1] || "");
+      scheduleAutoIdle(token, 1100);
       return;
     }
 
@@ -173,9 +198,11 @@
     });
 
     const finalTimer = window.setTimeout(() => {
+      if (token !== transitionToken) return;
       applyNodeClasses(normalized, normalized[normalized.length - 1] || "");
       traceTimers = [];
       animatingUntil = 0;
+      scheduleAutoIdle(token, 820);
     }, normalized.length * stepMs + 20);
     traceTimers.push(finalTimer);
   }

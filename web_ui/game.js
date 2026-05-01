@@ -155,6 +155,14 @@
         yOffset: -0.92,
       });
     },
+    playTrapDiscoveryHighlight(trapIds) {
+      if (!this.scene || typeof this.scene.playTrapDiscoveryHighlight !== "function") return;
+      this.scene.playTrapDiscoveryHighlight(trapIds);
+    },
+    playTrapHazardPulse(trigger) {
+      if (!this.scene || typeof this.scene.playTrapHazardPulse !== "function") return;
+      this.scene.playTrapHazardPulse(trigger);
+    },
     playVictoryBanner() {
       if (!this.scene) return;
       this.scene.playVictoryBanner();
@@ -896,9 +904,17 @@
           center.y,
           widthCells * this.board.cell,
           heightCells * this.board.cell,
-          0x05060a,
-          0.86,
+          0x0a1015,
+          0.62,
         ).setDepth(DEPTH_LAYERS.overlay + 0.02);
+        const fogInner = this.add.rectangle(
+          center.x,
+          center.y,
+          widthCells * this.board.cell * 0.92,
+          heightCells * this.board.cell * 0.92,
+          0x111923,
+          0.32,
+        ).setDepth(DEPTH_LAYERS.overlay + 0.021);
         const rim = this.add.rectangle(
           center.x,
           center.y,
@@ -906,11 +922,21 @@
           heightCells * this.board.cell,
         )
           .setFillStyle(0x000000, 0)
-          .setStrokeStyle(2, 0x1a1f2b, 0.8)
+          .setStrokeStyle(2, 0x2f3f4f, 0.64)
           .setDepth(DEPTH_LAYERS.overlay + 0.03);
+        const haze = this.add.ellipse(
+          center.x,
+          center.y,
+          widthCells * this.board.cell * 0.76,
+          heightCells * this.board.cell * 0.66,
+          0x1f2b37,
+          0.18,
+        ).setDepth(DEPTH_LAYERS.overlay + 0.025);
         this.overlayLayer.add(fog);
+        this.overlayLayer.add(fogInner);
+        this.overlayLayer.add(haze);
         this.overlayLayer.add(rim);
-        this.roomFogSprites.push(fog, rim);
+        this.roomFogSprites.push(fog, fogInner, haze, rim);
       });
     }
 
@@ -945,6 +971,90 @@
           );
         }
       }
+    }
+
+    playTrapDiscoveryHighlight(trapIds) {
+      const map = normalizeMapData(this.mapData);
+      const ids = new Set((Array.isArray(trapIds) ? trapIds : []).map((id) => normalizeId(id)));
+      const entities = safeObject(controller.latestState.environmentObjects);
+      const points = [];
+      Object.entries(entities).forEach(([id, raw]) => {
+        const entity = safeObject(raw);
+        const key = normalizeId(id || entity.id);
+        const isTrap = normalizeId(entity.type || entity.kind).includes("trap") || key.includes("trap");
+        if (!isTrap) return;
+        if (ids.size && !ids.has(key) && !ids.has(normalizeId(entity.alias_id))) return;
+        const x = Number(entity.x);
+        const y = Number(entity.y);
+        if (Number.isFinite(x) && Number.isFinite(y)) points.push({ x, y });
+      });
+
+      if (!points.length) {
+        const ground = Array.isArray(map.ground_types) ? map.ground_types : [];
+        for (let y = 0; y < map.height; y += 1) {
+          for (let x = 0; x < map.width; x += 1) {
+            const groundType = Number(ground[y] && ground[y][x]) || 0;
+            if (groundType >= 2) points.push({ x, y });
+          }
+        }
+      }
+
+      points.forEach((point) => {
+        const world = this.gridToWorld(point.x, point.y);
+        const mark = this.add.rectangle(
+          world.x,
+          world.y,
+          this.board.cell * 0.92,
+          this.board.cell * 0.92,
+          0x71cf83,
+          0.18,
+        ).setDepth(DEPTH_LAYERS.overlay + 0.28);
+        this.overlayLayer.add(mark);
+        this.overlayTweens.push(this.tweens.add({
+          targets: mark,
+          alpha: 0.58,
+          duration: 360,
+          yoyo: true,
+          repeat: 1,
+          ease: "Sine.easeInOut",
+          onComplete: () => mark.destroy(),
+        }));
+      });
+    }
+
+    playTrapHazardPulse(trigger) {
+      const t = safeObject(trigger);
+      const x0 = Number(t.x);
+      const y0 = Number(t.y);
+      const w = Math.max(1, Number(t.w) || 1);
+      const h = Math.max(1, Number(t.h) || 1);
+      const points = [];
+      for (let yy = 0; yy < h; yy += 1) {
+        for (let xx = 0; xx < w; xx += 1) {
+          points.push({ x: x0 + xx, y: y0 + yy });
+        }
+      }
+      points.forEach((point) => {
+        const world = this.gridToWorld(point.x, point.y);
+        const mark = this.add.rectangle(
+          world.x,
+          world.y,
+          this.board.cell * 0.96,
+          this.board.cell * 0.96,
+          0xaa2a2a,
+          0.24,
+        ).setDepth(DEPTH_LAYERS.overlay + 0.34);
+        this.overlayLayer.add(mark);
+        this.overlayTweens.push(this.tweens.add({
+          targets: mark,
+          alpha: 0.72,
+          duration: 140,
+          yoyo: true,
+          repeat: 3,
+          ease: "Sine.easeInOut",
+          onComplete: () => mark.destroy(),
+        }));
+      });
     }
 
     drawLosBlockers() {

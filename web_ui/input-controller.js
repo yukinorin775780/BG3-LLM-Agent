@@ -14,6 +14,7 @@
   let onInteraction = null;
   let onPlayerMoved = null;
   let onHighlightChanged = null;
+  let formatInteractionHint = null;
   let hintEl = null;
   let enabled = true;
   let currentHighlightedInteractable = null;
@@ -29,6 +30,8 @@
   const firedTriggerIds = new Set();
 
   function safeArr(v) { return Array.isArray(v) ? v : []; }
+  function safeObj(v) { return v && typeof v === "object" ? v : {}; }
+  function normalizeId(v) { return String(v || "").trim().toLowerCase(); }
 
   function isBlocked(x, y) {
     if (!normalizedMap) return true;
@@ -86,15 +89,15 @@
   }
 
   function isTrapInteractable(interactable) {
-    const it = interactable && typeof interactable === "object" ? interactable : {};
-    const id = String(it.id || "").toLowerCase();
-    const type = String(it.type || "").toLowerCase();
+    const it = safeObj(interactable);
+    const id = normalizeId(it.id);
+    const type = normalizeId(it.type || safeObj(it.data).type);
     return type === "trap" || id.includes("trap");
   }
 
   function isTrapVisible(interactable) {
-    const it = interactable && typeof interactable === "object" ? interactable : {};
-    const status = String(it.status || "").toLowerCase();
+    const it = safeObj(interactable);
+    const status = normalizeId(it.status);
     const isHidden = Boolean(it.isHidden === true || it.is_hidden === true || status === "hidden");
     const revealed = Boolean(
       it.revealed === true
@@ -107,16 +110,75 @@
     return !isHidden || revealed;
   }
 
+  function resolvePlayerRoomId() {
+    const map = safeObj(normalizedMap);
+    const rooms = safeArr(map.rooms);
+    if (!rooms.length) return "";
+    const px = Number(playerPos.x);
+    const py = Number(playerPos.y);
+    const room = rooms.find((candidate) => {
+      const r = safeObj(candidate);
+      const rx = Number(r.x) || 0;
+      const ry = Number(r.y) || 0;
+      const rw = Math.max(1, Number(r.w) || 1);
+      const rh = Math.max(1, Number(r.h) || 1);
+      return px >= rx && px < rx + rw && py >= ry && py < ry + rh;
+    });
+    return room ? String(safeObj(room).id || "") : "";
+  }
+
+  function resolveInteractableRoomId(interactable) {
+    const it = safeObj(interactable);
+    const data = safeObj(it.data);
+    return String(it.room_id || data.room_id || data.roomId || "").trim();
+  }
+
+  function isExitDoor(interactable) {
+    const it = safeObj(interactable);
+    const id = normalizeId(it.id);
+    return id === "heavy_oak_door_1" || id === "exit_door";
+  }
+
   function getInteractablePriority(interactable) {
-    const it = interactable && typeof interactable === "object" ? interactable : {};
-    const type = String(it.type || "").toLowerCase();
-    const id = String(it.id || "").toLowerCase();
+    const it = safeObj(interactable);
+    const type = normalizeId(it.type || safeObj(it.data).type);
+    const id = normalizeId(it.id);
+    const playerRoomId = normalizeId(resolvePlayerRoomId());
+    const targetRoomId = normalizeId(resolveInteractableRoomId(it));
+
+    if (isTrapInteractable(it)) return 20;
+
+    if (playerRoomId === "room_c_secret_study" || targetRoomId === "room_c_secret_study") {
+      if (id === "necromancer_diary" || type === "readable") return 0;
+      if (id === "study_chest" || id === "chest_1" || type === "chest" || type === "container") return 1;
+    }
+
+    if (playerRoomId === "room_d_lab" || targetRoomId === "room_d_lab") {
+      if (id === "gribbo" || type === "npc" || type === "character") return 0;
+      if (isExitDoor(it)) return 1;
+    }
+
     if (type === "door" || id.includes("door")) return 0;
     if (type === "readable" || id === "necromancer_diary") return 1;
     if (type === "npc" || type === "character") return 2;
     if (type === "loot" || type === "chest" || type === "corpse" || type === "container") return 3;
-    if (isTrapInteractable(it)) return 5;
     return 4;
+  }
+
+  function findNearbyDiscoveredTrap() {
+    if (!normalizedMap) return null;
+    const candidates = safeArr(normalizedMap.interactables)
+      .filter((it) => isTrapInteractable(it) && isTrapVisible(it))
+      .map((it, index) => {
+        const distance = Math.abs(Number(it.x) - playerPos.x) + Math.abs(Number(it.y) - playerPos.y);
+        return { it, index, distance };
+      })
+      .filter(({ distance }) => distance <= 1)
+      .sort((left, right) => {
+        if (left.distance !== right.distance) return left.distance - right.distance;
+        return left.index - right.index;
+      });
+    return candidates.length ? candidates[0].it : null;
   }
 
   function findNearbyInteractable() {
@@ -153,14 +215,29 @@
     const t = findNearbyInteractable();
     currentHighlightedInteractable = t;
     if (t) {
-      const label = t.label || t.name || t.id;
-      const targetId = t.id || "";
-      hintEl.textContent = "按 E 键交互 — " + label + (targetId ? " (" + targetId + ")" : "");
+      const fallbackText = "E 交互：" + (t.label || t.name || t.id || "未知目标") + " [" + (t.id || "") + "]";
+      const formatter = typeof formatInteractionHint === "function"
+        ? formatInteractionHint
+        : null;
+      hintEl.textContent = String(
+        formatter ? formatter({ ...safeObj(t) }, { x: playerPos.x, y: playerPos.y }) : fallbackText
+      );
+      hintEl.classList.toggle("hint-danger", isTrapInteractable(t));
       hintEl.classList.remove("hint-hidden");
     } else {
       currentHighlightedInteractable = null;
-      hintEl.textContent = "";
-      hintEl.classList.add("hint-hidden");
+      const nearbyTrap = findNearbyDiscoveredTrap();
+      if (nearbyTrap) {
+        const label = nearbyTrap.label || nearbyTrap.name || "危险陷阱";
+        const trapId = nearbyTrap.id || "";
+        hintEl.textContent = "危险：" + label + (trapId ? " [" + trapId + "]" : "");
+        hintEl.classList.add("hint-danger");
+        hintEl.classList.remove("hint-hidden");
+      } else {
+        hintEl.textContent = "";
+        hintEl.classList.add("hint-hidden");
+        hintEl.classList.remove("hint-danger");
+      }
     }
     const nextId = currentHighlightedInteractable ? String(currentHighlightedInteractable.id || "") : "";
     if (previousId !== nextId && typeof onHighlightChanged === "function") {
@@ -205,6 +282,7 @@
     if (typeof o.onInteraction === "function") onInteraction = o.onInteraction;
     if (typeof o.onPlayerMoved === "function") onPlayerMoved = o.onPlayerMoved;
     if (typeof o.onHighlightChanged === "function") onHighlightChanged = o.onHighlightChanged;
+    if (typeof o.formatInteractionHint === "function") formatInteractionHint = o.formatInteractionHint;
     firedTriggerIds.clear();
     activeTriggerIds.clear();
     document.addEventListener("keydown", handleKeyDown);
@@ -218,16 +296,19 @@
     return currentHighlightedInteractable ? { ...currentHighlightedInteractable } : null;
   }
   function setEnabled(v) { enabled = Boolean(v); }
+  function setHintFormatter(fn) { formatInteractionHint = typeof fn === "function" ? fn : null; updateHint(); }
   function destroy() {
     document.removeEventListener("keydown", handleKeyDown);
     firedTriggerIds.clear();
     activeTriggerIds.clear();
     currentHighlightedInteractable = null;
     onHighlightChanged = null;
+    formatInteractionHint = null;
   }
 
   window.BG3InputController = Object.freeze({
     init, setMap, setPlayerPosition, getPlayerPosition, setEnabled,
-    movePlayer, interact, findNearbyInteractable, getCurrentHighlightedInteractable, updateHint, destroy,
+    movePlayer, interact, findNearbyInteractable, getCurrentHighlightedInteractable,
+    updateHint, setHintFormatter, destroy,
   });
 })();

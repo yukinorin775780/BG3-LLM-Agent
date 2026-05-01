@@ -68,6 +68,13 @@
   const ROOM_D = "room_d_lab";
   const ROOM_EXIT = "room_exit";
   const SECRET_DOOR_ID = "door_b_to_c";
+  const ROOM_LABELS = Object.freeze({
+    room_a_spawn: "A 区",
+    room_b_corridor: "毒气走廊",
+    room_c_secret_study: "暗室书房",
+    room_d_lab: "实验室",
+    room_exit: "出口区",
+  });
 
   const state = {
     partyStatus: {},
@@ -111,6 +118,7 @@
     mapDebugSnapshot: null,
     mapDebugLastFetch: null,
     mapDebugLastMapLoad: null,
+    mapSourceBadge: null,
   };
 
   const INTERACTION_SOURCES = new Set([
@@ -567,6 +575,10 @@
     const raw = String(userLine || "").trim();
     const normalized = raw.toLowerCase();
     if (!raw) return "";
+    if (normalized.includes("door_a_to_b")) return "door_a_to_b";
+    if (normalized.includes("door_b_to_c")) return "door_b_to_c";
+    if (normalized.includes("door_b_to_d")) return "door_b_to_d";
+    if (normalized.includes("exit_door")) return "heavy_oak_door_1";
     if (normalized.includes("heavy_oak_door_1")) {
       return "heavy_oak_door_1";
     }
@@ -1273,6 +1285,18 @@
     return chip;
   }
 
+  function ensureMapSourceBadge() {
+    if (!IS_QA_MODE) return null;
+    if (state.mapSourceBadge && document.body.contains(state.mapSourceBadge)) return state.mapSourceBadge;
+    const badge = document.createElement("div");
+    badge.id = "qa-map-source-badge";
+    badge.className = "qa-map-source-badge is-hidden";
+    badge.textContent = "mapSource=json";
+    document.body.appendChild(badge);
+    state.mapSourceBadge = badge;
+    return badge;
+  }
+
   function collectMapDebugSnapshot(reason = "") {
     const fullMap = safeObject(state.fullNormalizedMap);
     const mapData = safeObject(state.mapData);
@@ -1363,6 +1387,70 @@
         || normalizeId(record.alias_id) === key
         || normalizeId(data.alias_id) === key;
     }) || null;
+  }
+
+  function getMapInteractableMetadata(targetId) {
+    const full = findMapInteractableById(state.fullNormalizedMap, targetId);
+    if (full) return full;
+    return findMapInteractableById(state.normalizedMap, targetId);
+  }
+
+  function describeDoorHint(interactable, mapRecord) {
+    const target = safeObject(interactable);
+    const record = safeObject(mapRecord);
+    const data = safeObject(record.data);
+    const id = normalizeId(target.id || record.id);
+    const fromRoom = String(record.connects_from || data.connects_from || "").trim();
+    const toRoom = String(record.connects_to || data.connects_to || "").trim();
+    const fromLabel = ROOM_LABELS[fromRoom] || fromRoom;
+    const toLabel = ROOM_LABELS[toRoom] || toRoom;
+    const detectDc = Number(data.detect_dc) || 0;
+    const keyRequired = String(data.key_required || "").trim();
+    const lockpickDc = Number(data.lockpick_dc) || 0;
+
+    if (id === "door_b_to_c" && detectDc > 0) {
+      return "E 检查暗门：DC " + detectDc;
+    }
+    if (id === "door_b_to_d" && keyRequired && lockpickDc > 0) {
+      return "E 打开实验室门：需要 " + keyRequired + " 或 DC " + lockpickDc + " 撬锁";
+    }
+    if (id === "door_a_to_b" && fromLabel && toLabel) {
+      return "E 打开门：" + fromLabel + "通往" + toLabel;
+    }
+    if ((id === "heavy_oak_door_1" || id === "exit_door") && keyRequired) {
+      return "E 打开出口门：需要 " + keyRequired;
+    }
+    const label = target.label || target.name || data.name || target.id || "门";
+    return "E 打开门：" + label;
+  }
+
+  function formatInteractionHint(interactable) {
+    const target = safeObject(interactable);
+    const idRaw = String(target.id || "").trim();
+    const id = normalizeId(idRaw);
+    if (!idRaw) return "";
+    const type = normalizeId(target.type || safeObject(target.data).type);
+    const mapRecord = safeObject(getMapInteractableMetadata(idRaw));
+    const data = safeObject(mapRecord.data);
+    const targetName = String(target.label || target.name || data.name || idRaw || "未知目标");
+    let coreText = "E 交互：" + targetName;
+
+    if (type === "door" || id.includes("door")) {
+      coreText = describeDoorHint(target, mapRecord);
+    } else if (id === "necromancer_diary" || type === "readable") {
+      coreText = "E 阅读：血污日记";
+    } else if (id === "gribbo" || type === "npc" || type === "character") {
+      coreText = "E 对话：" + targetName;
+    } else if (type === "chest" || type === "loot" || type === "container" || id === "study_chest" || id === "chest_1") {
+      coreText = "E 搜刮：" + targetName;
+    } else if (type === "trap" || id.includes("trap")) {
+      const detectDc = Number(data.detect_dc) || 0;
+      coreText = detectDc > 0
+        ? "危险：" + targetName + " · E 检查陷阱：DC " + detectDc
+        : "危险：" + targetName + " · E 检查陷阱";
+    }
+
+    return coreText + " [" + idRaw + "]";
   }
 
   function resetRoomVisibility(map) {
@@ -1521,6 +1609,12 @@
         delete els.mapContainer.dataset.mapFallbackReason;
       }
     }
+    const badge = ensureMapSourceBadge();
+    if (badge) {
+      const isJson = normalizeId(state.mapLoadSource) === "json";
+      badge.classList.toggle("is-hidden", !isJson);
+      badge.textContent = "mapSource=" + state.mapLoadSource + (state.mapLoadReason ? " (" + state.mapLoadReason + ")" : "");
+    }
   }
 
   function applyNormalizedMap(normalizedMap, meta = {}) {
@@ -1583,10 +1677,33 @@
     state.act1PerceptionResolved = true;
     const roll = Math.floor(Math.random() * 20) + 1;
     const trapSuccess = roll >= 13;
+    if (window.BG3HudRenderers && typeof window.BG3HudRenderers.dispatchUIEvents === "function") {
+      window.BG3HudRenderers.dispatchUIEvents([{
+        type: "roll_result",
+        actor: "Astarion",
+        skill: "Perception",
+        dc: 13,
+        roll,
+        success: trapSuccess,
+        text: "毒气陷阱感知检定",
+      }]);
+    }
     if (trapSuccess) {
       discoverTrap("poison_trap_1");
       discoverTrap("poison_trap_2");
       discoverTrap("gas_trap_1");
+      discoverSecretDoor(SECRET_DOOR_ID);
+      if (window.BG3HudRenderers && typeof window.BG3HudRenderers.dispatchUIEvents === "function") {
+        window.BG3HudRenderers.dispatchUIEvents([{
+          type: "trap_discovered",
+          actor: "Astarion",
+          text: "Astarion 察觉到毒气陷阱，并指出了暗门轮廓。",
+          trap_ids: ["poison_trap_1", "poison_trap_2", "gas_trap_1"],
+        }]);
+      }
+      if (window.BG3TacticalMap && typeof window.BG3TacticalMap.playTrapDiscoveryHighlight === "function") {
+        window.BG3TacticalMap.playTrapDiscoveryHighlight(["poison_trap_1", "poison_trap_2", "gas_trap_1"]);
+      }
       if (window.BG3HudRenderers && typeof window.BG3HudRenderers.showToast === "function") {
         window.BG3HudRenderers.showToast("narration", "Astarion 察觉到毒气陷阱。", 2300);
       }
@@ -1594,11 +1711,15 @@
       window.BG3HudRenderers.showToast("warning", "感知检定失败，陷阱仍然隐藏。", 2200);
     }
 
-    const secretDoorRoll = Math.floor(Math.random() * 20) + 1;
-    if (secretDoorRoll >= 14 && discoverSecretDoor(SECRET_DOOR_ID)) {
-      if (window.BG3HudRenderers && typeof window.BG3HudRenderers.showToast === "function") {
-        window.BG3HudRenderers.showToast("narration", "你发现了通往书房的暗门。", 2300);
+    if (!trapSuccess) {
+      const secretDoorRoll = Math.floor(Math.random() * 20) + 1;
+      if (secretDoorRoll >= 14 && discoverSecretDoor(SECRET_DOOR_ID)) {
+        if (window.BG3HudRenderers && typeof window.BG3HudRenderers.showToast === "function") {
+          window.BG3HudRenderers.showToast("narration", "你发现了通往书房的暗门。", 2300);
+        }
       }
+    } else if (window.BG3HudRenderers && typeof window.BG3HudRenderers.showToast === "function") {
+      window.BG3HudRenderers.showToast("narration", "你发现了通往书房的暗门。", 2300);
     }
     refreshVisibilityProjection();
   }
@@ -3107,6 +3228,14 @@
     const text = descriptor.text;
     const intent = descriptor.intent;
     const character = descriptor.character;
+    const rawText = String(text == null ? "" : text).trim();
+    if (IS_QA_MODE && rawText.toLowerCase().startsWith("qa_")) {
+      const qaLocalHandled = handleQaLocalCommand(rawText, "qa_local");
+      if (qaLocalHandled) {
+        return { ok: true, qa_local: true };
+      }
+    }
+
     const built = buildChatPayload(text, intent, character, opts);
     const payload = built.payload;
     const routed = built.routed;
@@ -3115,6 +3244,11 @@
 
     if (!userLine && !intentValue) {
       return;
+    }
+
+    const qaLocalHandled = handleQaLocalCommand(userLine, intentValue);
+    if (qaLocalHandled) {
+      return { ok: true, qa_local: true };
     }
 
     setLoading(true);
@@ -3230,6 +3364,83 @@
         resetIdleTimer();
       }
     }
+  }
+
+  function handleQaLocalCommand(userLine, intentValue) {
+    if (!IS_QA_MODE) return false;
+    if (intentValue && normalizeId(intentValue) !== "qa_local") return false;
+    const text = String(userLine || "").trim();
+    if (!text) return false;
+    if (!text.toLowerCase().startsWith("qa_")) return false;
+
+    const parts = text.split(/\s+/).filter(Boolean);
+    const command = normalizeId(parts[0]);
+    const arg1 = parts[1] || "";
+    const arg2 = parts[2] || "";
+    const defaultRoomSpawn = {
+      room_a_spawn: { x: 4, y: 18 },
+      room_b_corridor: { x: 8, y: 18 },
+      room_c_secret_study: { x: 12, y: 16 },
+      room_d_lab: { x: 17, y: 14 },
+      room_exit: { x: 21, y: 12 },
+    };
+
+    const applyLocalRender = () => {
+      refreshVisibilityProjection();
+      renderTacticalGrid(state.partyStatus, state.environmentObjects, state.mapData);
+      updateMapDebug("qa_local");
+    };
+
+    const setLocalPlayer = (x, y) => {
+      if (
+        window.BG3InputController
+        && typeof window.BG3InputController.setPlayerPosition === "function"
+        && Number.isFinite(Number(x))
+        && Number.isFinite(Number(y))
+      ) {
+        window.BG3InputController.setPlayerPosition(Number(x), Number(y));
+      }
+    };
+
+    if (command === "qa_open" || command === "qa_reveal") {
+      const target = normalizeId(arg1);
+      if (!target) return false;
+      if (target === "door_b_to_c") {
+        discoverSecretDoor("door_b_to_c");
+      }
+      if (revealRoomByDoorTarget(target)) {
+        if (target === "door_a_to_b") setLocalPlayer(defaultRoomSpawn.room_b_corridor.x, defaultRoomSpawn.room_b_corridor.y);
+        if (target === "door_b_to_c") setLocalPlayer(defaultRoomSpawn.room_c_secret_study.x, defaultRoomSpawn.room_c_secret_study.y);
+        if (target === "door_b_to_d") setLocalPlayer(defaultRoomSpawn.room_d_lab.x, defaultRoomSpawn.room_d_lab.y);
+        if (target === "exit_door" || target === "heavy_oak_door_1") setLocalPlayer(defaultRoomSpawn.room_exit.x, defaultRoomSpawn.room_exit.y);
+        applyLocalRender();
+        return true;
+      }
+      if (defaultRoomSpawn[target]) {
+        revealRoom(target);
+        setLocalPlayer(defaultRoomSpawn[target].x, defaultRoomSpawn[target].y);
+        applyLocalRender();
+        return true;
+      }
+      return false;
+    }
+
+    if (command === "qa_perception") {
+      resolveAct1Perception();
+      applyLocalRender();
+      return true;
+    }
+
+    if (command === "qa_move") {
+      const x = Number(arg1);
+      const y = Number(arg2);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
+      setLocalPlayer(x, y);
+      applyLocalRender();
+      return true;
+    }
+
+    return false;
   }
 
   async function sendMessage(text, intent, character, options = {}) {
@@ -3720,6 +3931,15 @@
             resolveAct1Perception();
           }
           if (triggerType === "trap" || triggerId.includes("trap")) {
+            if (window.BG3TacticalMap && typeof window.BG3TacticalMap.playTrapHazardPulse === "function") {
+              window.BG3TacticalMap.playTrapHazardPulse(trigger);
+            }
+            if (window.BG3HudRenderers && typeof window.BG3HudRenderers.dispatchUIEvents === "function") {
+              window.BG3HudRenderers.dispatchUIEvents([{
+                type: "trap_triggered",
+                text: "毒雾骤然喷发，队伍受到伤害。",
+              }]);
+            }
             if (window.BG3HudRenderers && typeof window.BG3HudRenderers.showToast === "function") {
               window.BG3HudRenderers.showToast("warning", "你踩中了陷阱触发区。", 2000);
             }
@@ -3757,6 +3977,7 @@
             window.BG3TacticalMap.setInteractionFocus(interactable || null);
           }
         },
+        formatInteractionHint,
       });
     }
 
@@ -3849,22 +4070,26 @@
    */
   function isNarrativeRequest(intent, text, source) {
     const i = String(intent || "").toLowerCase().trim();
-    const t = String(text || "").trim();
     const s = String(source || "").toLowerCase().trim();
+    const n = String(intent || "").trim().toUpperCase();
 
-    /* Explicit non-narrative intents */
-    const NON_NARRATIVE = ["init_sync", "trigger_idle_banter", "ui_action_loot"];
-    if (NON_NARRATIVE.includes(i)) return false;
+    const NON_NARRATIVE = new Set([
+      "init_sync",
+      "trigger_idle_banter",
+      "ui_action_loot",
+      "short_rest",
+      "long_rest",
+      "state_poll",
+    ]);
+    if (NON_NARRATIVE.has(i)) return false;
 
-    /* Known narrative sources */
-    if (s === "interaction" || s === "trigger_zone") return true;
-    if (i === "trigger_zone" || i === "companion_interrupt") return true;
+    if (s === "trigger_zone" || i === "trigger_zone") return true;
+    if (s === "interaction") return true;
+    if (i === "companion_interrupt") return true;
+    if (s === "dialogue_input") return true;
+
+    if (n === "READ" || n === "INTERACT" || n === "CHAT") return true;
     if (/dialogue|choice|talk|speak|converse/i.test(i)) return true;
-
-    /* User typed something meaningful */
-    if (t.length > 0 && !i) return true;
-    if (t.length > 0 && i) return true;
-
     return false;
   }
 

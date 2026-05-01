@@ -58,6 +58,10 @@ async function bootAppForTest(url = "http://localhost/?qa_test=1") {
     getPlayerGridPosition: jest.fn().mockReturnValue({ x: 2, y: 2 }),
     drawLoSBlockerOverlay: jest.fn(),
     clearLoSBlockerOverlay: jest.fn(),
+    playTrapDiscoveryHighlight: jest.fn(),
+    playTrapHazardPulse: jest.fn(),
+    setInteractionFocus: jest.fn(),
+    setTrapSenseMode: jest.fn(),
   };
   if (typeof window.requestAnimationFrame !== "function") {
     window.requestAnimationFrame = (cb) => setTimeout(cb, 0);
@@ -253,6 +257,9 @@ describe("web_ui/app.js UI bindings", () => {
       ([url]) => String(url).includes("/api/chat")
     );
     expect(chatCalls.length).toBe(0);
+    if (window.BG3DirectorTrace) {
+      expect(window.BG3DirectorTrace.getState()).toBe("idle");
+    }
   });
 
   test("test_map_id_in_payload", async () => {
@@ -366,9 +373,10 @@ describe("web_ui/app.js UI bindings", () => {
 
     /* isNarrativeRequest should return true for narrative intents */
     expect(api.isNarrativeRequest("trigger_zone", "", "")).toBe(true);
-    expect(api.isNarrativeRequest("", "我检查箱子", "")).toBe(true);
+    expect(api.isNarrativeRequest("", "我检查箱子", "")).toBe(false);
     expect(api.isNarrativeRequest("dialogue", "", "interaction")).toBe(true);
     expect(api.isNarrativeRequest("companion_interrupt", "", "")).toBe(true);
+    expect(api.isNarrativeRequest("INTERACT", "", "text_input")).toBe(true);
   });
 
   test("test_blocked_by_creates_los_event", async () => {
@@ -605,6 +613,17 @@ describe("web_ui/app.js UI bindings", () => {
     expect(afterAB).toContain("door_b_to_d");
     expect(afterAB).not.toContain("door_b_to_c");
     expect(afterAB).not.toContain("necromancer_diary");
+
+    expect(api.revealRoomByDoorTarget("door_b_to_d")).toBe(true);
+    api.refreshVisibilityProjection();
+    expect(api.state.roomVisibleIds.has("room_d_lab")).toBe(true);
+    const afterBD = api.state.normalizedMap.interactables.map((it) => it.id);
+    expect(afterBD).toContain("gribbo");
+    expect(afterBD).toContain("heavy_oak_door_1");
+
+    expect(api.revealRoomByDoorTarget("heavy_oak_door_1")).toBe(true);
+    api.refreshVisibilityProjection();
+    expect(api.state.roomVisibleIds.has("room_exit")).toBe(true);
   });
 
   test("test_secret_door_and_room_c_visibility_gate", async () => {
@@ -723,6 +742,22 @@ describe("web_ui/app.js UI bindings", () => {
     expect(text).toContain("mapSource=");
     expect(text).toContain("roomVisibleIds=");
     expect(text).toContain("backendPlayer=");
+  });
+
+  test("test_qa_map_source_badge_only_visible_for_json_source", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    const api = await bootAppForTest("http://localhost/?qa_test=1");
+    const map = JSON.parse(fs.readFileSync(REAL_MAP_JSON_PATH, "utf8"));
+    const normalized = window.BG3TiledAdapter.normalizeTiledMap(map);
+    api.applyNormalizedMap(normalized, { source: "json" });
+
+    const badge = document.getElementById("qa-map-source-badge");
+    expect(badge).not.toBeNull();
+    expect(badge.classList.contains("is-hidden")).toBe(false);
+    expect(String(badge.textContent || "")).toContain("mapSource=json");
+
+    api.applyNormalizedMap(normalized, { source: "fixture", reason: "unit_test" });
+    expect(badge.classList.contains("is-hidden")).toBe(true);
   });
 
   test("test_fetch_with_timeout_fallback_records_error_diagnostics", async () => {
@@ -1125,7 +1160,8 @@ describe("web_ui/app.js UI bindings", () => {
     window.BG3InputController.updateHint();
 
     const hintText = String(document.getElementById("interaction-hint").textContent || "");
-    expect(hintText).toContain("heavy_oak_door_1");
+    expect(hintText).toContain("E 打开门");
+    expect(hintText).toContain("[heavy_oak_door_1]");
 
     window.BG3InputController.interact();
     await flushAsync();
@@ -1190,6 +1226,154 @@ describe("web_ui/app.js UI bindings", () => {
     expect(callsAfterHiddenTrapOnly.length).toBe(0);
   });
 
+  test("test_hidden_secret_door_not_in_interaction_candidates_until_discovered", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    const api = await bootAppForTest();
+    const map = JSON.parse(fs.readFileSync(REAL_MAP_JSON_PATH, "utf8"));
+    const normalized = window.BG3TiledAdapter.normalizeTiledMap(map);
+    api.applyNormalizedMap(normalized, { source: "json" });
+    api.revealRoomByDoorTarget("door_a_to_b");
+    api.refreshVisibilityProjection();
+
+    const idsBefore = api.state.normalizedMap.interactables.map((it) => it.id);
+    expect(idsBefore).not.toContain("door_b_to_c");
+
+    api.discoverSecretDoor("door_b_to_c");
+    api.refreshVisibilityProjection();
+    const idsAfter = api.state.normalizedMap.interactables.map((it) => it.id);
+    expect(idsAfter).toContain("door_b_to_c");
+  });
+
+  test("test_discovered_trap_renders_danger_hint_without_overriding_interactable", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    await bootAppForTest();
+
+    const baseMap = {
+      width: 20,
+      height: 14,
+      collision: Array.from({ length: 14 }, () => Array(20).fill(false)),
+      losBlockers: Array.from({ length: 14 }, () => Array(20).fill(false)),
+      triggers: [],
+      spawns: [],
+      interactables: [],
+      rooms: [],
+    };
+
+    window.BG3InputController.setMap({
+      ...baseMap,
+      interactables: [{ id: "gas_trap_1", type: "trap", x: 3, y: 2, name: "毒气陷阱", is_hidden: false, is_revealed: true }],
+    });
+    window.BG3InputController.setPlayerPosition(2, 2);
+    window.BG3InputController.updateHint();
+    const dangerOnlyText = String(document.getElementById("interaction-hint").textContent || "");
+    expect(dangerOnlyText).toContain("危险：");
+    expect(dangerOnlyText).toContain("gas_trap_1");
+
+    window.BG3InputController.setMap({
+      ...baseMap,
+      interactables: [
+        { id: "gas_trap_1", type: "trap", x: 3, y: 2, name: "毒气陷阱", is_hidden: false, is_revealed: true },
+        { id: "chest_1", type: "chest", x: 2, y: 3, name: "箱子" },
+      ],
+    });
+    window.BG3InputController.setPlayerPosition(2, 2);
+    window.BG3InputController.updateHint();
+    const withChestText = String(document.getElementById("interaction-hint").textContent || "");
+    expect(withChestText).toContain("E 搜刮");
+    expect(withChestText).toContain("[chest_1]");
+  });
+
+  test("test_hidden_room_objects_do_not_claim_e_hint", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    const api = await bootAppForTest();
+    const map = JSON.parse(fs.readFileSync(REAL_MAP_JSON_PATH, "utf8"));
+    const normalized = window.BG3TiledAdapter.normalizeTiledMap(map);
+    api.applyNormalizedMap(normalized, { source: "json" });
+
+    const chest = api.state.fullNormalizedMap.interactables.find((it) => it.id === "chest_1");
+    expect(chest).toBeDefined();
+    window.BG3InputController.setMap(api.state.normalizedMap);
+    window.BG3InputController.setPlayerPosition(Number(chest.x), Number(chest.y));
+    window.BG3InputController.updateHint();
+
+    const text = String(document.getElementById("interaction-hint").textContent || "");
+    expect(text).toBe("");
+  });
+
+  test("test_narrative_interactions_activate_director_trace_state_machine", async () => {
+    const fetchSpy = spyOnFetch().mockResolvedValue(
+      mockResponse({
+        responses: ["叙事回应"],
+        journal_events: [],
+        party_status: {},
+        environment_objects: {},
+        player_inventory: {},
+        combat_state: {},
+      })
+    );
+    const api = await bootAppForTest();
+    fetchSpy.mockClear();
+
+    await api.sendStructuredAction({
+      text: "",
+      intent: "INTERACT",
+      options: { target: "door_a_to_b", source: "interaction" },
+    });
+    await flushAsync();
+    if (window.BG3DirectorTrace) {
+      expect(["active", "idle"]).toContain(window.BG3DirectorTrace.getState());
+    }
+
+    await api.sendStructuredAction({
+      text: "阅读日记",
+      intent: "READ",
+      options: { target: "necromancer_diary", source: "interaction" },
+    });
+    await flushAsync();
+    if (window.BG3DirectorTrace) {
+      expect(["active", "idle"]).toContain(window.BG3DirectorTrace.getState());
+    }
+
+    await api.sendStructuredAction({
+      text: "",
+      intent: "CHAT",
+      options: { target: "gribbo", source: "dialogue_input" },
+    });
+    await flushAsync();
+    if (window.BG3DirectorTrace) {
+      expect(["active", "idle"]).toContain(window.BG3DirectorTrace.getState());
+    }
+  });
+
+  test("test_reset_demo_button_visible_and_starts_new_session", async () => {
+    const fetchSpy = spyOnFetch().mockResolvedValue(
+      mockResponse({
+        responses: [],
+        journal_events: [],
+        current_location: "死灵法师的废弃实验室",
+        party_status: {},
+        environment_objects: {},
+        player_inventory: {},
+        combat_state: {},
+      })
+    );
+    const api = await bootAppForTest("http://localhost/?qa_test=1&qa_no_idle=1");
+    const resetBtn = document.getElementById("new-timeline-btn");
+    expect(resetBtn).not.toBeNull();
+    expect(resetBtn.textContent).toContain("Reset Demo");
+    expect(document.getElementById("rest-controls").classList.contains("is-hidden")).toBe(false);
+    fetchSpy.mockClear();
+    resetBtn.click();
+    await flushAsync();
+
+    const chatCalls = fetchSpy.mock.calls
+      .filter(([url]) => String(url).includes("/api/chat"))
+      .map(([, req]) => JSON.parse(req.body));
+    expect(chatCalls.length).toBe(1);
+    expect(chatCalls[0].intent).toBe("init_sync");
+    expect(chatCalls[0].session_id).toMatch(/^necromancer_lab_demo_\d+$/);
+  });
+
   test("test_door_natural_language_normalizes_to_interact_target", async () => {
     const fetchSpy = spyOnFetch().mockResolvedValue(
       mockResponse({
@@ -1226,6 +1410,32 @@ describe("web_ui/app.js UI bindings", () => {
       expect(payload.intent).toBe("INTERACT");
       expect(payload.target).toBe("heavy_oak_door_1");
     });
+  });
+
+  test("test_text_input_explicit_door_ids_route_to_matching_targets", async () => {
+    const fetchSpy = spyOnFetch().mockResolvedValue(
+      mockResponse({
+        responses: [],
+        journal_events: [],
+        current_location: "测试场景",
+        party_status: {},
+        environment_objects: {},
+        player_inventory: {},
+        combat_state: {},
+      })
+    );
+    const api = await bootAppForTest();
+    fetchSpy.mockClear();
+
+    await api.sendMessage("打开门 door_a_to_b", "INTERACT");
+    await api.sendMessage("打开门 door_b_to_d", "INTERACT");
+    await flushAsync();
+
+    const payloads = fetchSpy.mock.calls
+      .filter(([url]) => String(url).includes("/api/chat"))
+      .map(([, req]) => JSON.parse(req.body));
+    expect(payloads[0].target).toBe("door_a_to_b");
+    expect(payloads[1].target).toBe("door_b_to_d");
   });
 
   test("test_text_input_open_door_payload_normalizes_to_interact_target", async () => {

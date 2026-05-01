@@ -7,6 +7,8 @@
   "use strict";
 
   let toastContainer = null;
+  let chipContainer = null;
+  let inventoryHintContainer = null;
   let actProgressEl = null;
   let actTitleEl = null;
   let actSummaryEl = null;
@@ -16,6 +18,30 @@
   function getToastContainer() {
     if (!toastContainer) toastContainer = document.getElementById("toast-container");
     return toastContainer;
+  }
+
+  function getChipContainer() {
+    if (chipContainer) return chipContainer;
+    chipContainer = document.getElementById("companion-chip-container");
+    if (!chipContainer) {
+      chipContainer = document.createElement("div");
+      chipContainer.id = "companion-chip-container";
+      chipContainer.className = "companion-chip-container";
+      document.body.appendChild(chipContainer);
+    }
+    return chipContainer;
+  }
+
+  function getInventoryHintContainer() {
+    if (inventoryHintContainer) return inventoryHintContainer;
+    inventoryHintContainer = document.getElementById("inventory-hint-container");
+    if (!inventoryHintContainer) {
+      inventoryHintContainer = document.createElement("div");
+      inventoryHintContainer.id = "inventory-hint-container";
+      inventoryHintContainer.className = "inventory-hint-container";
+      document.body.appendChild(inventoryHintContainer);
+    }
+    return inventoryHintContainer;
   }
 
   /* ── Toast System ── */
@@ -62,6 +88,9 @@
 
     const info = document.createElement("div");
     info.className = "dice-card-info";
+    const actor = document.createElement("span");
+    actor.className = "dice-card-actor";
+    actor.textContent = e.actor || "player";
     const skill = document.createElement("span");
     skill.className = "dice-card-skill";
     skill.textContent = e.skill || e.text || "检定";
@@ -72,6 +101,7 @@
     result.className = "dice-card-result";
     result.textContent = e.success ? "✓ 成功" : "✗ 失败";
 
+    info.appendChild(actor);
     info.appendChild(skill);
     if (e.dc) info.appendChild(dc);
     info.appendChild(result);
@@ -94,9 +124,24 @@
     const delta = Number(e.delta) || 0;
     if (delta === 0) return;
     const sign = delta > 0 ? "+" : "";
-    const label = (e.character || "队友") + " 好感度 " + sign + delta;
-    const type = delta > 0 ? "success" : "warning";
-    showToast(type, label, 3000);
+    const actor = String(e.character || "Companion")
+      .replace(/_/g, " ")
+      .replace(/\b\w/g, (c) => c.toUpperCase());
+    const host = getChipContainer();
+    if (!host) return;
+    const chip = document.createElement("div");
+    chip.className = "companion-chip " + (delta > 0 ? "companion-chip--up" : "companion-chip--down");
+    chip.textContent = actor + " " + sign + delta;
+    host.appendChild(chip);
+    void chip.offsetWidth;
+    chip.classList.add("companion-chip--visible");
+    window.setTimeout(() => {
+      chip.classList.remove("companion-chip--visible");
+      chip.classList.add("companion-chip--exit");
+      window.setTimeout(() => {
+        if (chip.parentNode) chip.parentNode.removeChild(chip);
+      }, 220);
+    }, 1800);
   }
 
   /* ── Status Badge ── */
@@ -143,6 +188,32 @@
     const label = e.label || e.item || "物品";
     const text = icon + " " + label + " — 已入包";
     showToast("item", text, 3000);
+    const host = getInventoryHintContainer();
+    if (host) {
+      const card = document.createElement("div");
+      card.className = "inventory-hint";
+      card.textContent = "背包 +" + label;
+      host.appendChild(card);
+      void card.offsetWidth;
+      card.classList.add("inventory-hint--visible");
+      window.setTimeout(() => {
+        card.classList.remove("inventory-hint--visible");
+        card.classList.add("inventory-hint--exit");
+        window.setTimeout(() => {
+          if (card.parentNode) card.parentNode.removeChild(card);
+        }, 240);
+      }, 1500);
+    }
+  }
+
+  function showTrapDiscovered(event) {
+    const e = event && typeof event === "object" ? event : {};
+    showToast("warning", e.text || "你发现了隐藏陷阱。", 2300);
+  }
+
+  function showTrapTriggered(event) {
+    const e = event && typeof event === "object" ? event : {};
+    showToast("warning", e.text || "陷阱被触发，队伍受伤。", 2200);
   }
 
   /* ── LoS Blocked Indicator ── */
@@ -204,6 +275,8 @@
         case "item_gained": showItemGainedToast(ev); break;
         case "line_of_sight_blocked": showLoSBlockedOverlay(ev); break;
         case "act_progress": updateActProgress(ev.act, ev.objective); break;
+        case "trap_discovered": showTrapDiscovered(ev); break;
+        case "trap_triggered": showTrapTriggered(ev); break;
         case "demo_cleared": showDemoClearedBanner(); break;
         default: break;
       }
@@ -213,6 +286,7 @@
   window.BG3HudRenderers = Object.freeze({
     showToast, showDiceCard, showAffectionDelta, showStatusBadge,
     showMemoryCard, showItemGainedToast, showLoSBlockedOverlay,
-    updateActProgress, showDemoClearedBanner, dispatchUIEvents,
+    updateActProgress, showDemoClearedBanner, showTrapDiscovered,
+    showTrapTriggered, dispatchUIEvents,
   });
 })();

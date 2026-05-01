@@ -23,6 +23,7 @@
   /* ── 追加物品元数据 ── */
   const ITEM_META_EXTENSIONS = {
     heavy_iron_key: { label: "沉重铁钥匙", icon: "🗝" },
+    lab_key: { label: "实验室钥匙", icon: "🗝" },
     necromancer_diary: { label: "死灵法师日记", icon: "📓" },
     antidote_formula: { label: "解毒配方残页", icon: "📜" },
   };
@@ -37,12 +38,12 @@
     gas_trap_1: "毒气陷阱",
     poison_trap_1: "毒气陷阱 I",
     poison_trap_2: "毒气陷阱 II",
-    door_a_to_b: "通往走廊的铁门",
+    door_a_to_b: "A 区通往毒气走廊",
     door_b_to_c: "隐藏书房侧门",
     door_b_to_d: "手术室大门",
     exit_door: "出口门",
     heavy_oak_door_1: "通往地表的沉重大门",
-    necromancer_diary: "沾满血污的日记本",
+    necromancer_diary: "血污日记",
     study_chest: "旧木箱",
     chest_1: "死灵法师的战利品箱",
   };

@@ -32,6 +32,10 @@
   const RE_MEMORY = /\[记忆\]|\[记忆沉淀\]|memory.*added|记忆沉淀/i;
   const RE_DEMO_CLEARED =
     /demo.*clear|通关|逃出|escape.*complete|任务完成/i;
+  const RE_TRAP_DISCOVERED =
+    /发现.*陷阱|察觉.*陷阱|trap.*discovered|trap.*revealed/i;
+  const RE_TRAP_TRIGGERED =
+    /踩中.*陷阱|陷阱.*触发|poison.*damage|毒雾.*喷发|trap.*trigger/i;
 
   /* ══════════════════════════════════════════════════════
    *  normalizeRollEvent(raw)
@@ -212,6 +216,20 @@
         type: "memory_added",
         character: "",
         text: memText || text,
+      });
+    }
+
+    if (RE_TRAP_DISCOVERED.test(text)) {
+      events.push({
+        type: "trap_discovered",
+        text,
+      });
+    }
+
+    if (RE_TRAP_TRIGGERED.test(text)) {
+      events.push({
+        type: "trap_triggered",
+        text,
       });
     }
 
