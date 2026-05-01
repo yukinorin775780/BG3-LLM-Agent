@@ -5,13 +5,14 @@
     new URLSearchParams(window.location.search).get("session_id") ||
     "necromancer_lab_demo";
   let currentSessionId = DEFAULT_SESSION_ID;
-  const IDLE_MS = 30000;
-  const DIALOGUE_POLL_MS = 1800;
-  const BACKEND_REQUEST_TIMEOUT_MS = 5000;
-  const SILENT_FALLBACK_TEXT = "📖 [环境] 一阵阴冷的穿堂风吹过，你暂时失去了对周围环境的感知。";
   const QA_PARAMS = new URLSearchParams(window.location.search);
   const IS_QA_MODE = Array.from(QA_PARAMS.keys()).some((key) => key.startsWith("qa_"));
   const QA_NO_IDLE = QA_PARAMS.get("qa_no_idle") === "1" || window.__BG3_QA_NO_IDLE__ === true;
+  const QA_MAP_DEBUG = QA_PARAMS.get("qa_map_debug") === "1" || window.__BG3_QA_MAP_DEBUG__ === true;
+  const IDLE_MS = 30000;
+  const DIALOGUE_POLL_MS = 1800;
+  const BACKEND_REQUEST_TIMEOUT_MS = Math.max(5000, Number(QA_PARAMS.get("qa_backend_timeout_ms")) || 12000);
+  const SILENT_FALLBACK_TEXT = "📖 [环境] 一阵阴冷的穿堂风吹过，你暂时失去了对周围环境的感知。";
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 
   /* Merge necromancer-meta extensions if loaded */
@@ -106,6 +107,10 @@
     speechRecognition: null,
     speechRecognitionSupported: Boolean(SpeechRecognition),
     isPttRecording: false,
+    mapDebugChip: null,
+    mapDebugSnapshot: null,
+    mapDebugLastFetch: null,
+    mapDebugLastMapLoad: null,
   };
 
   const INTERACTION_SOURCES = new Set([
@@ -323,6 +328,22 @@
 
   function normalizeId(id) {
     return String(id || "").trim().toLowerCase();
+  }
+
+  function isFiniteGridCoord(x, y) {
+    return Number.isFinite(Number(x)) && Number.isFinite(Number(y));
+  }
+
+  function isWithinMapBounds(coord, mapLike) {
+    const point = safeObject(coord);
+    const map = safeObject(mapLike);
+    const x = Number(point.x);
+    const y = Number(point.y);
+    const width = Number(map.width);
+    const height = Number(map.height);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return false;
+    return x >= 0 && x < width && y >= 0 && y < height;
   }
 
   function getSessionId() {
@@ -1193,6 +1214,125 @@
     };
   }
 
+  function isCoordInsideVisibleRooms(coord, normalizedMap) {
+    const point = safeObject(coord);
+    const map = safeObject(normalizedMap);
+    const rooms = safeArray(map.rooms);
+    if (!rooms.length) return true;
+    const room = roomAtPosition(rooms, point.x, point.y);
+    if (!room) return false;
+    const roomId = String(safeObject(room).id || "").trim();
+    if (!roomId) return false;
+    return state.roomVisibleIds.has(roomId);
+  }
+
+  function getInputControllerPosition() {
+    if (!window.BG3InputController || typeof window.BG3InputController.getPlayerPosition !== "function") {
+      return null;
+    }
+    return safeObject(window.BG3InputController.getPlayerPosition());
+  }
+
+  function getTacticalPlayerPosition() {
+    if (!window.BG3TacticalMap || typeof window.BG3TacticalMap.getPlayerGridPosition !== "function") {
+      return null;
+    }
+    return safeObject(window.BG3TacticalMap.getPlayerGridPosition());
+  }
+
+  function getCameraFollowTarget() {
+    if (!window.BG3TacticalMap || typeof window.BG3TacticalMap.getCameraFollowTarget !== "function") {
+      return null;
+    }
+    return safeObject(window.BG3TacticalMap.getCameraFollowTarget());
+  }
+
+  function ensureMapDebugChip() {
+    if (!QA_MAP_DEBUG) return null;
+    if (state.mapDebugChip && document.body.contains(state.mapDebugChip)) return state.mapDebugChip;
+    const chip = document.createElement("div");
+    chip.id = "qa-map-debug-chip";
+    chip.style.position = "fixed";
+    chip.style.left = "12px";
+    chip.style.bottom = "12px";
+    chip.style.zIndex = "9999";
+    chip.style.maxWidth = "420px";
+    chip.style.maxHeight = "46vh";
+    chip.style.overflow = "auto";
+    chip.style.padding = "8px 10px";
+    chip.style.border = "1px solid rgba(255,198,109,0.45)";
+    chip.style.borderRadius = "8px";
+    chip.style.background = "rgba(10,8,14,0.82)";
+    chip.style.color = "#f6d39a";
+    chip.style.fontSize = "11px";
+    chip.style.lineHeight = "1.35";
+    chip.style.whiteSpace = "pre-wrap";
+    chip.style.pointerEvents = "none";
+    document.body.appendChild(chip);
+    state.mapDebugChip = chip;
+    return chip;
+  }
+
+  function collectMapDebugSnapshot(reason = "") {
+    const fullMap = safeObject(state.fullNormalizedMap);
+    const mapData = safeObject(state.mapData);
+    const backendPlayer = safeObject(safeObject(state.partyStatus).player);
+    const snapshot = {
+      reason: reason || "",
+      mapLoadSource: state.mapLoadSource || "",
+      mapLoadReason: state.mapLoadReason || "",
+      fullNormalizedMap: {
+        width: Number(fullMap.width) || 0,
+        height: Number(fullMap.height) || 0,
+        playerStart: safeObject(fullMap.playerStart),
+      },
+      mapData: {
+        width: Number(mapData.width) || 0,
+        height: Number(mapData.height) || 0,
+        visible_rooms: safeArray(mapData.visible_rooms),
+      },
+      roomVisibleIds: Array.from(state.roomVisibleIds),
+      backendPlayer: {
+        x: Number(backendPlayer.x),
+        y: Number(backendPlayer.y),
+      },
+      inputControllerPlayer: getInputControllerPosition(),
+      tacticalPlayer: getTacticalPlayerPosition(),
+      cameraFollowTarget: getCameraFollowTarget(),
+      lastFetch: safeObject(state.mapDebugLastFetch),
+      lastMapLoad: safeObject(state.mapDebugLastMapLoad),
+    };
+    return snapshot;
+  }
+
+  function updateMapDebug(reason = "") {
+    if (!QA_MAP_DEBUG) return;
+    const snapshot = collectMapDebugSnapshot(reason);
+    state.mapDebugSnapshot = snapshot;
+    const chip = ensureMapDebugChip();
+    if (chip) {
+      chip.textContent = [
+        "[qa_map_debug]",
+        "reason=" + (snapshot.reason || "n/a"),
+        "mapSource=" + snapshot.mapLoadSource + " reason=" + snapshot.mapLoadReason,
+        "fullMap=" + snapshot.fullNormalizedMap.width + "x" + snapshot.fullNormalizedMap.height
+          + " start=(" + Number(snapshot.fullNormalizedMap.playerStart.x || 0) + "," + Number(snapshot.fullNormalizedMap.playerStart.y || 0) + ")",
+        "mapData=" + snapshot.mapData.width + "x" + snapshot.mapData.height
+          + " visibleRooms=" + JSON.stringify(snapshot.mapData.visible_rooms || []),
+        "roomVisibleIds=" + JSON.stringify(snapshot.roomVisibleIds || []),
+        "backendPlayer=(" + snapshot.backendPlayer.x + "," + snapshot.backendPlayer.y + ")",
+        "inputPlayer=" + JSON.stringify(snapshot.inputControllerPlayer || null),
+        "tacticalPlayer=" + JSON.stringify(snapshot.tacticalPlayer || null),
+        "cameraFollow=" + JSON.stringify(snapshot.cameraFollowTarget || null),
+        "lastMapLoad=" + JSON.stringify(snapshot.lastMapLoad || null),
+        "lastFetch=" + JSON.stringify(snapshot.lastFetch || null),
+      ].join("\n");
+    }
+    if (typeof console !== "undefined" && typeof console.info === "function") {
+      console.info("[qa_map_debug]", snapshot);
+    }
+  }
+
   function boolish(value) {
     if (typeof value === "boolean") return value;
     const normalized = normalizeId(value);
@@ -1344,7 +1484,21 @@
     const runtime = safeObject(runtimeMapData);
     const visual = mapDataFromNormalized(normalizedMap);
     if (!Object.keys(visual).length) return runtime;
-    const merged = { ...visual, ...runtime };
+    const useVisualAsTruth = normalizeId(state.mapLoadSource) === "json";
+    const merged = useVisualAsTruth ? { ...runtime, ...visual } : { ...visual, ...runtime };
+    if (useVisualAsTruth) {
+      merged.id = visual.id;
+      merged.width = visual.width;
+      merged.height = visual.height;
+      merged.grid = visual.grid;
+      merged.collision = visual.collision;
+      merged.los_blockers = visual.los_blockers;
+      merged.ground_types = visual.ground_types;
+      merged.rooms = visual.rooms;
+      merged.visible_rooms = visual.visible_rooms;
+      merged.obstacles = visual.obstacles;
+      return merged;
+    }
     const hasGrid = safeArray(runtime.grid).length > 0;
     if (!hasGrid) merged.grid = visual.grid;
     if (!safeArray(runtime.collision).length) merged.collision = visual.collision;
@@ -1394,6 +1548,7 @@
     if (window.BG3TacticalMap && typeof window.BG3TacticalMap.setTrapSenseMode === "function") {
       window.BG3TacticalMap.setTrapSenseMode(state.trapSenseEnabled === true);
     }
+    updateMapDebug("applyNormalizedMap");
   }
 
   function refreshVisibilityProjection() {
@@ -1482,28 +1637,48 @@
     const backendX = Number(source.x);
     const backendY = Number(source.y);
     const map = safeObject(state.fullNormalizedMap);
-    const rooms = safeArray(map.rooms);
+    const fullMapData = mapDataFromNormalized({
+      ...map,
+      visibleRooms: Array.from(state.roomVisibleIds),
+    });
     const playerStart = safeObject(map.playerStart);
     const startX = Number(playerStart.x);
     const startY = Number(playerStart.y);
     const hasStart = Number.isFinite(startX) && Number.isFinite(startY);
-    const hasBackend = Number.isFinite(backendX) && Number.isFinite(backendY);
-    if (!hasBackend) {
-      return hasStart ? { x: startX, y: startY } : null;
-    }
+    const inputPosition = safeObject(getInputControllerPosition());
+    const localX = Number(inputPosition.x);
+    const localY = Number(inputPosition.y);
+    const hasBackend = isFiniteGridCoord(backendX, backendY);
+    const hasLocal = isFiniteGridCoord(localX, localY);
+    const backendCoord = { x: backendX, y: backendY };
+    const localCoord = { x: localX, y: localY };
+    const startCoord = hasStart ? { x: startX, y: startY } : null;
+    const canUseBackend = hasBackend
+      && isWithinMapBounds(backendCoord, fullMapData)
+      && isCoordInsideVisibleRooms(backendCoord, state.normalizedMap);
+    const canUseLocal = hasLocal
+      && isWithinMapBounds(localCoord, fullMapData)
+      && isCoordInsideVisibleRooms(localCoord, state.normalizedMap);
+
+    if (canUseBackend) return { x: backendX, y: backendY, source: "backend" };
     const isRealMapSource = normalizeId(state.mapLoadSource) === "json";
-    if (!isRealMapSource || !rooms.length || state.roomVisibleIds.size === 0) {
-      return { x: backendX, y: backendY };
+    if (!isRealMapSource) {
+      if (hasBackend && isWithinMapBounds(backendCoord, fullMapData)) {
+        return { x: backendX, y: backendY, source: "backend" };
+      }
+      if (canUseLocal) return { x: localX, y: localY, source: "input_local" };
+      return hasStart ? { x: startX, y: startY, source: "visual_start" } : null;
     }
-    const room = roomAtPosition(rooms, backendX, backendY);
-    const roomId = room ? String(safeObject(room).id || "").trim() : "";
-    if (!roomId || state.roomVisibleIds.has(roomId)) {
-      return { x: backendX, y: backendY };
+    if (canUseLocal) {
+      return { x: localX, y: localY, source: "input_local" };
     }
     if (hasStart) {
-      return { x: startX, y: startY };
+      return { x: startX, y: startY, source: "visual_start" };
     }
-    return { x: backendX, y: backendY };
+    if (hasBackend && isWithinMapBounds(backendCoord, fullMapData)) {
+      return { x: backendX, y: backendY, source: "backend" };
+    }
+    return null;
   }
 
   function projectPartyStatusForTactical(partyStatus) {
@@ -1518,6 +1693,7 @@
       y: coords.y,
       name: rawPlayer.name || "玩家",
       faction: rawPlayer.faction || "player",
+      _projection_source: coords.source || "backend",
     };
     return projected;
   }
@@ -1528,7 +1704,12 @@
     if (window.BG3InputController && typeof window.BG3InputController.setPlayerPosition === "function") {
       const px = Number(player.x);
       const py = Number(player.y);
-      if (Number.isFinite(px) && Number.isFinite(py)) {
+      const projectionSource = String(player._projection_source || "");
+      const shouldApplyToInput =
+        projectionSource === "backend"
+        || projectionSource === "visual_start"
+        || !isFiniteGridCoord(Number(safeObject(getInputControllerPosition()).x), Number(safeObject(getInputControllerPosition()).y));
+      if (shouldApplyToInput && Number.isFinite(px) && Number.isFinite(py)) {
         window.BG3InputController.setPlayerPosition(px, py);
       }
     }
@@ -1544,6 +1725,7 @@
     ) {
       window.BG3TacticalMap.setInteractionFocus(window.BG3InputController.getCurrentHighlightedInteractable());
     }
+    updateMapDebug("renderTacticalGrid");
   }
 
   function getTacticalEntities() {
@@ -2811,11 +2993,42 @@
   }
 
   async function fetchWithTimeout(url, options = {}, timeoutMs = BACKEND_REQUEST_TIMEOUT_MS) {
+    const startedAt = (typeof performance !== "undefined" && typeof performance.now === "function")
+      ? performance.now()
+      : Date.now();
     const controller = new AbortController();
     const timerId = window.setTimeout(() => controller.abort(), Math.max(0, Number(timeoutMs) || 0));
     try {
       const requestOptions = { ...(options || {}), signal: controller.signal };
-      return await fetch(url, requestOptions);
+      const response = await fetch(url, requestOptions);
+      const endedAt = (typeof performance !== "undefined" && typeof performance.now === "function")
+        ? performance.now()
+        : Date.now();
+      state.mapDebugLastFetch = {
+        url: String(url || ""),
+        duration_ms: Math.round(Math.max(0, endedAt - startedAt)),
+        status: Number(response.status) || 0,
+        ok: response.ok === true,
+        error: null,
+      };
+      updateMapDebug("fetch:ok");
+      return response;
+    } catch (error) {
+      const endedAt = (typeof performance !== "undefined" && typeof performance.now === "function")
+        ? performance.now()
+        : Date.now();
+      state.mapDebugLastFetch = {
+        url: String(url || ""),
+        duration_ms: Math.round(Math.max(0, endedAt - startedAt)),
+        status: 0,
+        ok: false,
+        error: {
+          name: String(error && error.name || ""),
+          message: String(error && error.message || ""),
+        },
+      };
+      updateMapDebug("fetch:error");
+      throw error;
     } finally {
       window.clearTimeout(timerId);
     }
@@ -2944,6 +3157,7 @@
       if (state.normalizedMap) {
         state.mapData = mergeVisualMapData(state.mapData, state.normalizedMap);
       }
+      updateMapDebug("sendStructuredAction:response");
       const actionIntent = normalizeId(payload.intent);
       const actionTarget = normalizeId(payload.target || routed.target);
       if (actionIntent === "interact") {
@@ -3398,9 +3612,17 @@
       if (Object.keys(partyStatus).length) state.partyStatus = partyStatus;
       if (Object.keys(environmentObjects).length) state.environmentObjects = environmentObjects;
       state.combatState = combatState;
+      const pollMapData = safeObject(data.map_data);
+      if (Object.keys(pollMapData).length) {
+        state.mapData = state.normalizedMap
+          ? mergeVisualMapData(pollMapData, state.normalizedMap)
+          : pollMapData;
+      }
       updateDialogueOverlay(data);
       updateRestControls(state.combatState);
       updateXrayPanel(data);
+      renderTacticalGrid(state.partyStatus, state.environmentObjects, state.mapData);
+      updateMapDebug("pollDialogueState");
       /* P1-1: dispatch HUD events from state polling too */
       dispatchUIEventsFromResponse(data, { party_status: prevPollParty });
     } catch (error) {
@@ -3552,21 +3774,55 @@
       && typeof window.BG3TiledAdapter.loadMapById === "function"
     ) {
       void window.BG3TiledAdapter.loadMapById(MAP_ID).then((result) => {
-        const record = safeObject(result);
-        const loadedMap = safeObject(record.map);
-        if (Object.keys(loadedMap).length) {
-          applyNormalizedMap(loadedMap, {
-            source: record.source || "fixture",
-            reason: record.reason || "",
-          });
-          renderTacticalGrid(state.partyStatus, state.environmentObjects, state.mapData);
+        try {
+          const record = safeObject(result);
+          state.mapDebugLastMapLoad = {
+            source: String(record.source || ""),
+            reason: String(record.reason || ""),
+            assetPath: String(record.assetPath || ""),
+            mapId: String(record.mapId || MAP_ID || ""),
+          };
+          const loadedMap = safeObject(record.map);
+          if (Object.keys(loadedMap).length) {
+            applyNormalizedMap(loadedMap, {
+              source: record.source || "fixture",
+              reason: record.reason || "",
+            });
+            renderTacticalGrid(state.partyStatus, state.environmentObjects, state.mapData);
+            updateMapDebug("loadMapById:resolved");
+          }
+          const isFallback = normalizeId(record.source) !== "json";
+          if (IS_QA_MODE && isFallback && window.BG3HudRenderers && typeof window.BG3HudRenderers.showToast === "function") {
+            window.BG3HudRenderers.showToast("warning", "⚠ 地图资产加载失败，已回退 fixture", 2800);
+          }
+        } catch (error) {
+          const reason = normalizeId(error && error.name) || "map_apply_error";
+          state.mapDebugLastMapLoad = {
+            source: state.mapLoadSource || "fixture",
+            reason,
+            assetPath: "/web_ui/assets/maps/" + MAP_ID + ".json",
+            mapId: MAP_ID,
+            error: {
+              name: String(error && error.name || ""),
+              message: String(error && error.message || ""),
+            },
+          };
+          updateMapDebug("loadMapById:apply_error");
         }
-        const isFallback = normalizeId(record.source) !== "json";
-        if (IS_QA_MODE && isFallback && window.BG3HudRenderers && typeof window.BG3HudRenderers.showToast === "function") {
-          window.BG3HudRenderers.showToast("warning", "⚠ 地图资产加载失败，已回退 fixture", 2800);
-        }
-      }).catch(() => {
-        updateMapSourceStatus("fixture", "load_error");
+      }).catch((error) => {
+        const reason = normalizeId(error && error.name) || "load_error";
+        state.mapDebugLastMapLoad = {
+          source: "fixture",
+          reason,
+          assetPath: "/web_ui/assets/maps/" + MAP_ID + ".json",
+          mapId: MAP_ID,
+          error: {
+            name: String(error && error.name || ""),
+            message: String(error && error.message || ""),
+          },
+        };
+        updateMapSourceStatus("fixture", reason);
+        updateMapDebug("loadMapById:rejected");
         if (IS_QA_MODE && window.BG3HudRenderers && typeof window.BG3HudRenderers.showToast === "function") {
           window.BG3HudRenderers.showToast("warning", "⚠ 地图资产加载失败，已回退 fixture", 2800);
         }
@@ -3693,6 +3949,8 @@
       revealRoomByDoorTarget,
       resolveAct1Perception,
       discoverSecretDoor,
+      updateMapDebug,
+      collectMapDebugSnapshot,
       state,
       els,
       MAP_ID,

@@ -678,7 +678,7 @@
 
   async function loadMapById(mapId, options = {}) {
     const targetMapId = String(mapId || "necromancer_lab").trim() || "necromancer_lab";
-    const assetPath = String(options.assetPath || "assets/maps/" + targetMapId + ".json");
+    const assetPath = String(options.assetPath || "/web_ui/assets/maps/" + targetMapId + ".json");
     const fallback = normalizeTiledMap(null);
     if (typeof fetch !== "function") {
       return { map: fallback, source: "fixture", reason: "fetch_unavailable", mapId: targetMapId, assetPath };

@@ -197,6 +197,15 @@
       if (!token) return { x: 0, y: 0 };
       return { x: token.entity.x, y: token.entity.y };
     },
+    getCameraFollowTarget() {
+      if (!this.scene || !this.scene.cameras || !this.scene.cameras.main) return null;
+      const followed = this.scene.cameras.main._follow;
+      if (!followed) return null;
+      return {
+        x: Number(followed.x),
+        y: Number(followed.y),
+      };
+    },
     /** Draw red overlay on LoS-blocked tiles */
     drawLoSBlockerOverlay(blockedTiles) {
       if (!this.scene || typeof this.scene.drawLoSOverlay !== "function") return;
@@ -229,6 +238,10 @@
 
   function safeObject(value) {
     return value && typeof value === "object" ? value : {};
+  }
+
+  function safeArray(value) {
+    return Array.isArray(value) ? value : [];
   }
 
   function normalizeId(id) {

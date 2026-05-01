@@ -669,6 +669,77 @@ describe("web_ui/app.js UI bindings", () => {
     expect(api.state.partyStatus.player.y).toBe(2);
   });
 
+  test("test_json_visual_map_structure_is_not_overridden_by_runtime_map_data", async () => {
+    const fetchSpy = spyOnFetch().mockResolvedValue(
+      mockResponse({
+        responses: [],
+        journal_events: [],
+        current_location: "死灵法师的废弃实验室",
+        party_status: {
+          player: { name: "玩家", faction: "player", x: 4, y: 18 },
+        },
+        environment_objects: {},
+        player_inventory: {},
+        combat_state: {},
+        map_data: {
+          id: "necromancer_lab",
+          width: 20,
+          height: 14,
+          grid: Array.from({ length: 14 }, () => Array(20).fill(".")),
+          collision: Array.from({ length: 14 }, () => Array(20).fill(false)),
+          los_blockers: Array.from({ length: 14 }, () => Array(20).fill(false)),
+          ground_types: Array.from({ length: 14 }, () => Array(20).fill(0)),
+          rooms: [],
+          visible_rooms: [],
+        },
+      })
+    );
+    const api = await bootAppForTest();
+    const map = JSON.parse(fs.readFileSync(REAL_MAP_JSON_PATH, "utf8"));
+    const normalized = window.BG3TiledAdapter.normalizeTiledMap(map);
+    api.applyNormalizedMap(normalized, { source: "json" });
+    fetchSpy.mockClear();
+
+    await api.sendMessage("检查地图结构", "chat");
+    await flushAsync();
+
+    expect(api.state.mapLoadSource).toBe("json");
+    expect(api.state.mapData.width).toBe(25);
+    expect(api.state.mapData.height).toBe(25);
+    expect(api.state.mapData.visible_rooms).toContain("room_a_spawn");
+    expect(api.state.mapData.rooms.length).toBeGreaterThanOrEqual(5);
+  });
+
+  test("test_qa_map_debug_chip_outputs_source_and_positions", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    const api = await bootAppForTest("http://localhost/?qa_test=1&qa_map_debug=1");
+    api.updateMapDebug("unit_test");
+    await flushAsync();
+
+    const chip = document.getElementById("qa-map-debug-chip");
+    expect(chip).not.toBeNull();
+    const text = String(chip.textContent || "");
+    expect(text).toContain("[qa_map_debug]");
+    expect(text).toContain("mapSource=");
+    expect(text).toContain("roomVisibleIds=");
+    expect(text).toContain("backendPlayer=");
+  });
+
+  test("test_fetch_with_timeout_fallback_records_error_diagnostics", async () => {
+    const fetchSpy = spyOnFetch().mockRejectedValue(new Error("synthetic_network_error"));
+    const api = await bootAppForTest("http://localhost/?qa_test=1&qa_map_debug=1");
+    fetchSpy.mockClear();
+
+    await api.sendMessage("测试网络降级", "chat");
+    await flushAsync();
+
+    const lastFetch = api.state.mapDebugLastFetch;
+    expect(lastFetch).toBeDefined();
+    expect(lastFetch.url).toContain("/api/chat");
+    expect(lastFetch.ok).toBe(false);
+    expect(String(lastFetch.error && lastFetch.error.message || "")).toContain("synthetic_network_error");
+  });
+
   test("test_load_map_by_id_fallback_is_observable", async () => {
     spyOnFetch().mockRejectedValueOnce(new Error("offline"));
     loadNewModules();
