@@ -1,0 +1,301 @@
+/**
+ * state-diff-renderer.js
+ * Targeted world-state diff renderer for showcase mode.
+ * Exposed on window.BG3StateDiffRenderer.
+ */
+(() => {
+  "use strict";
+
+  const AUTO_COLLAPSE_MS = 4200;
+  let panel = null;
+  let body = null;
+  let badge = null;
+  let toggle = null;
+  let autoTimer = null;
+  let latestDiffs = [];
+
+  function safeObj(value) {
+    return value && typeof value === "object" ? value : {};
+  }
+
+  function safeArr(value) {
+    return Array.isArray(value) ? value : [];
+  }
+
+  function normalizeId(value) {
+    return String(value || "").trim().toLowerCase();
+  }
+
+  function clone(value) {
+    try {
+      return JSON.parse(JSON.stringify(value == null ? null : value));
+    } catch (_err) {
+      return value;
+    }
+  }
+
+  function flagValue(raw) {
+    const value = safeObj(raw).value;
+    if (Object.prototype.hasOwnProperty.call(safeObj(raw), "value")) return value;
+    return raw;
+  }
+
+  function valuesEqual(left, right) {
+    return JSON.stringify(left) === JSON.stringify(right);
+  }
+
+  function setFrom(value) {
+    if (value instanceof Set) return new Set(Array.from(value).map(String));
+    return new Set(safeArr(value).map(String).filter(Boolean));
+  }
+
+  function inventoryMap(value) {
+    const out = {};
+    Object.entries(safeObj(value)).forEach(([key, raw]) => {
+      const count = Number(raw) || 0;
+      if (count !== 0) out[key] = count;
+    });
+    return out;
+  }
+
+  function normalizeActorMemories(actorState) {
+    const actor = safeObj(actorState);
+    const notes = [];
+    safeArr(actor.memory_notes).forEach((item) => notes.push(String(item || "")));
+    safeArr(actor.memories).forEach((item) => {
+      if (typeof item === "string") notes.push(item);
+      else if (safeObj(item).text) notes.push(String(safeObj(item).text));
+      else if (safeObj(item).note) notes.push(String(safeObj(item).note));
+    });
+    return notes.filter(Boolean);
+  }
+
+  function normalizeSnapshot(raw) {
+    const src = safeObj(raw);
+    const gameState = safeObj(src.game_state || src.gameState || src.state || {});
+    const appState = safeObj(src.app_state || src.appState || {});
+    const normalizedMap = safeObj(src.normalizedMap || appState.normalizedMap || {});
+    const mapData = safeObj(src.map_data || src.mapData || appState.mapData || {});
+    const roomVisibleIds = src.roomVisibleIds || appState.roomVisibleIds;
+    const party = safeObj(src.party_status || src.partyStatus || gameState.party_status || gameState.entities || {});
+    const env = safeObj(src.environment_objects || src.environmentObjects || gameState.environment_objects || gameState.entities || {});
+    const actorRuntime = safeObj(src.actor_runtime_state || gameState.actor_runtime_state || {});
+    const flags = safeObj(src.flags || gameState.flags || {});
+    const inventory = inventoryMap(src.player_inventory || src.playerInventory || gameState.player_inventory || {});
+    const combat = safeObj(src.combat_state || src.combatState || gameState.combat_state || {
+      combat_active: src.combat_active || gameState.combat_active,
+      initiative_order: src.initiative_order || gameState.initiative_order,
+    });
+
+    const visibleRooms = setFrom(
+      roomVisibleIds || normalizedMap.visibleRooms || normalizedMap.visible_rooms || mapData.visible_rooms || mapData.visibleRooms
+    );
+
+    const actors = {};
+    Object.entries({ ...env, ...party }).forEach(([id, value]) => {
+      const actor = safeObj(value);
+      actors[normalizeId(id)] = {
+        id: normalizeId(id),
+        name: actor.name || id,
+        affection: Number(actor.affection),
+        faction: normalizeId(actor.faction),
+        status: actor.status,
+        status_effects: safeArr(actor.status_effects || actor.statusEffects).map(String),
+        inventory: inventoryMap(actor.inventory),
+      };
+    });
+
+    const memories = {};
+    Object.entries(actorRuntime).forEach(([id, runtime]) => {
+      const notes = normalizeActorMemories(runtime);
+      if (notes.length) memories[normalizeId(id)] = notes;
+    });
+
+    return {
+      visibleRooms,
+      flags: clone(flags) || {},
+      inventory,
+      actors,
+      combat: clone(combat) || {},
+      memories,
+      demo_cleared: src.demo_cleared === true || gameState.demo_cleared === true,
+    };
+  }
+
+  function actorLabel(id, actor) {
+    const raw = String(safeObj(actor).name || id || "actor");
+    if (normalizeId(raw) === "astarion") return "Astarion";
+    if (normalizeId(raw) === "shadowheart") return "Shadowheart";
+    if (normalizeId(raw) === "laezel") return "Lae'zel";
+    if (normalizeId(raw) === "gribbo") return "Gribbo";
+    return raw.replace(/_/g, " ").replace(/\b\w/g, (ch) => ch.toUpperCase());
+  }
+
+  function shortMemory(text) {
+    const raw = String(text || "").trim();
+    if (!raw) return "memory_note";
+    return "memory_note";
+  }
+
+  function pushDiff(out, type, label, detail) {
+    out.push({ type, label, detail: detail || "" });
+  }
+
+  function diffSnapshots(previousRaw, nextRaw) {
+    const prev = normalizeSnapshot(previousRaw);
+    const next = normalizeSnapshot(nextRaw);
+    const out = [];
+
+    next.visibleRooms.forEach((roomId) => {
+      if (!prev.visibleRooms.has(roomId)) pushDiff(out, "visibleRooms", "visibleRooms += " + roomId);
+    });
+
+    Object.entries(next.flags).forEach(([key, raw]) => {
+      const before = flagValue(prev.flags[key]);
+      const after = flagValue(raw);
+      if (!valuesEqual(before, after)) {
+        pushDiff(out, "flags", "flags." + key + " = " + JSON.stringify(after));
+      }
+    });
+
+    Object.entries(next.inventory).forEach(([itemId, count]) => {
+      const prevCount = Number(prev.inventory[itemId]) || 0;
+      const delta = Number(count) - prevCount;
+      if (delta > 0) pushDiff(out, "inventory", "player.inventory += " + itemId + (delta > 1 ? " x" + delta : ""));
+      if (delta < 0) pushDiff(out, "inventory", "player.inventory -= " + itemId + (delta < -1 ? " x" + Math.abs(delta) : ""));
+    });
+
+    Object.entries(next.actors).forEach(([id, actor]) => {
+      const before = safeObj(prev.actors[id]);
+      const label = actorLabel(id, actor);
+      const prevAff = Number(before.affection);
+      const nextAff = Number(actor.affection);
+      if (Number.isFinite(prevAff) && Number.isFinite(nextAff) && prevAff !== nextAff) {
+        const delta = nextAff - prevAff;
+        pushDiff(out, "affection", label + ".affection " + (delta > 0 ? "+" : "") + delta);
+      }
+
+      const prevStatus = String(before.status || "").trim();
+      const nextStatus = String(actor.status || "").trim();
+      if (nextStatus && nextStatus !== prevStatus) {
+        pushDiff(out, "status", label + ".status += " + nextStatus);
+      }
+
+      const prevEffects = new Set(safeArr(before.status_effects).map(String));
+      safeArr(actor.status_effects).forEach((effect) => {
+        if (!prevEffects.has(effect)) pushDiff(out, "status", label + ".status += " + effect);
+      });
+
+      const prevFaction = String(before.faction || "");
+      if (actor.faction && prevFaction && actor.faction !== prevFaction) {
+        pushDiff(out, "hostility", label + ".hostility = " + actor.faction);
+      }
+    });
+
+    Object.entries(next.memories).forEach(([actorId, notes]) => {
+      const before = new Set(safeArr(prev.memories[actorId]).map(String));
+      notes.forEach((note) => {
+        if (!before.has(note)) {
+          pushDiff(out, "memory", "actor_private:" + actorId + " += " + shortMemory(note), note);
+        }
+      });
+    });
+
+    const prevCombat = safeObj(prev.combat);
+    const nextCombat = safeObj(next.combat);
+    if (prevCombat.combat_active !== nextCombat.combat_active && nextCombat.combat_active === true) {
+      pushDiff(out, "combat", "combat.active = true");
+    }
+    const prevOrder = safeArr(prevCombat.initiative_order).join(",");
+    const nextOrder = safeArr(nextCombat.initiative_order).join(",");
+    if (nextOrder && prevOrder !== nextOrder) {
+      pushDiff(out, "combat", "combat.initiative_order = " + nextOrder);
+    }
+
+    if (prev.demo_cleared !== next.demo_cleared && next.demo_cleared === true) {
+      pushDiff(out, "completion", "demo_cleared = true");
+    }
+
+    return out;
+  }
+
+  function ensurePanel() {
+    if (panel && document.body.contains(panel)) return panel;
+    const host = document.getElementById("director-trace-panel") || document.body;
+    panel = document.createElement("section");
+    panel.id = "world-state-diff-panel";
+    panel.className = "world-diff-panel is-collapsed";
+    panel.innerHTML =
+      '<button type="button" id="world-state-diff-toggle" class="world-diff-toggle" aria-expanded="false">' +
+      '<span>World State Diff</span><strong id="world-state-diff-badge" class="world-diff-badge">0</strong></button>' +
+      '<div id="world-state-diff-body" class="world-diff-body" aria-live="polite"></div>';
+    host.appendChild(panel);
+    body = panel.querySelector("#world-state-diff-body");
+    badge = panel.querySelector("#world-state-diff-badge");
+    toggle = panel.querySelector("#world-state-diff-toggle");
+    toggle.addEventListener("click", () => setCollapsed(!panel.classList.contains("is-collapsed")));
+    return panel;
+  }
+
+  function setCollapsed(collapsed) {
+    ensurePanel();
+    panel.classList.toggle("is-collapsed", Boolean(collapsed));
+    if (toggle) toggle.setAttribute("aria-expanded", String(!collapsed));
+  }
+
+  function renderDiffs(diffs, options = {}) {
+    ensurePanel();
+    latestDiffs = safeArr(diffs);
+    if (badge) {
+      badge.textContent = String(latestDiffs.length);
+      badge.classList.toggle("has-changes", latestDiffs.length > 0);
+    }
+    if (body) {
+      body.innerHTML = "";
+      if (!latestDiffs.length) {
+        const empty = document.createElement("p");
+        empty.className = "world-diff-empty";
+        empty.textContent = "No tracked technical state changes.";
+        body.appendChild(empty);
+      } else {
+        latestDiffs.forEach((entry) => {
+          const row = document.createElement("div");
+          row.className = "world-diff-row world-diff-row--" + normalizeId(entry.type || "change");
+          const sigil = document.createElement("span");
+          sigil.className = "world-diff-sigil";
+          sigil.textContent = "◆";
+          const label = document.createElement("code");
+          label.textContent = entry.label || "state changed";
+          row.appendChild(sigil);
+          row.appendChild(label);
+          body.appendChild(row);
+        });
+      }
+    }
+
+    if (latestDiffs.length && options.autoExpand !== false) {
+      setCollapsed(false);
+      window.clearTimeout(autoTimer);
+      autoTimer = window.setTimeout(() => setCollapsed(true), Number(options.collapseAfterMs) || AUTO_COLLAPSE_MS);
+    }
+    return latestDiffs;
+  }
+
+  function update(previous, next, options = {}) {
+    return renderDiffs(diffSnapshots(previous, next), options);
+  }
+
+  function getLatestDiffs() {
+    return latestDiffs.slice();
+  }
+
+  window.BG3StateDiffRenderer = Object.freeze({
+    normalizeSnapshot,
+    diffSnapshots,
+    ensurePanel,
+    renderDiffs,
+    update,
+    setCollapsed,
+    getLatestDiffs,
+  });
+})();

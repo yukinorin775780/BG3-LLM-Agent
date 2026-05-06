@@ -1,25 +1,30 @@
 map_id: "necromancer_lab"
 name: "死灵法师的废弃实验室"
-dimensions: [20, 14]
 player_start: [2, 2]
-
 grid:
   - "W W W W W W W W W W W W W W W W W W W W"
-  - "W . . . . . W W W W W . . . . . . . . W"
-  - "W . . . . . W W W W W . . . . . . . . W"
   - "W . . . . . . . . . . . . . . . . . . W"
-  - "W . . . . . W W W W W . . . . . . . . W"
-  - "W W W W . W W W W W W W W W W . W W W W"
-  - "W W W W . W W W W W W W W W W . W W W W"
-  - "W . . . . . . . W W . . . . . . . . . W"
-  - "W . . . . . . . W W . . . . . . . . . W"
-  - "W . . . . . . . W W . . . . . . . . . W"
-  - "W W W W W W W W W W . W W W W W W W W W"
-  - "W . . . . . . . . . . . . . . W W W W W"
-  - "W . . . . . . . . . . W W W W W W W W W"
+  - "W . . . . . . . . . . . . . . . . . . W"
+  - "W . . . . . . . . . . . . . . . . . . W"
+  - "W . . . . . . . . . . . . . . . . . . W"
+  - "W . . . . . . . . . . . . . . . . . . W"
+  - "W . . . . . . . . . . . . . . . . . . W"
+  - "W . . . . . . . . . . . . . . . . . . W"
+  - "W . . . . . . . . . . . . . . . . . . W"
+  - "W . . . . . . . . . . . . . . . . . . W"
+  - "W . . . . . . . . . . . . . . . . . . W"
+  - "W . . . . . . . . . . . . . . . . . . W"
+  - "W . . . . . . . . . . . . . . . . . . W"
   - "W W W W W W W W W W W W W W W W W W W W"
-
 environment_objects:
+  - id: "heavy_oak_door_1"
+    type: "door"
+    name: "通往地表的出口"
+    position: [14, 11]
+    is_open: false
+    is_locked: true
+    key_required: "heavy_iron_key"
+    alias_ids: ["exit_door"]
   - id: "gas_trap_1"
     type: "trap"
     name: "毒气陷阱"
@@ -31,26 +36,22 @@ environment_objects:
     damage_type: "poison"
     save_dc: 13
     trigger_radius: 0
+    alias_ids: ["poison_trap_1", "poison_trap_2"]
   - id: "chest_1"
-    type: "chest"
+    type: "locked_chest"
     name: "死灵法师的战利品箱"
-    status: "open"
-    description: "箱盖虚掩，里面散落着钥匙与杂物。"
     position: [16, 2]
+    is_locked: true
+    unlock_dc: 14
     inventory:
       heavy_iron_key: 1
-      gold_coin: 12
+      gold_coin: 25
+    alias_ids: ["study_chest"]
   - id: "necromancer_diary"
     type: "readable"
     name: "沾满血污的日记本"
-    position: [15, 3]
+    position: [3, 3]
     lore_id: "necromancer_diary_1"
-  - id: "heavy_oak_door_1"
-    type: "door"
-    name: "通往地表的沉重大门"
-    position: [14, 11]
-    is_open: false
-
 spawns:
   - prefab: "characters/gribbo.yaml"
     instance_id: "gribbo"

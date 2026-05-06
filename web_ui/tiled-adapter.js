@@ -9,9 +9,8 @@
  *   triggers[], interactables[], spawns[], rooms[]
  * }
  *
- * Currently uses a built-in NECROMANCER_LAB_FIXTURE derived
- * from data/maps/necromancer_lab.yaml.  When a real Tiled JSON
- * export is available, the parser path will handle it transparently.
+ * Currently uses a built-in NECROMANCER_LAB_FIXTURE.
+ * Real Tiled JSON exports are loaded from web_ui/assets/maps/*.json.
  *
  * Exposed on window.BG3TiledAdapter.
  */
@@ -202,7 +201,7 @@
 
   /* ══════════════════════════════════════════════════════
    *  NECROMANCER_LAB_FIXTURE
-   *  Derived from data/maps/necromancer_lab.yaml
+   *  Fallback map data when JSON export not loaded
    * ══════════════════════════════════════════════════════ */
   const NECROMANCER_LAB_FIXTURE = Object.freeze({
     map_id: "necromancer_lab",

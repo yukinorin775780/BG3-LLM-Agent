@@ -2,6 +2,30 @@ from core.systems.maps import get_map_data, load_maps
 from core.systems.world_init import get_initial_world_state
 
 
+def test_world_init_necromancer_lab_uses_requested_map_id():
+    state = get_initial_world_state(map_id="necromancer_lab")
+    assert state["map_data"]["id"] == "necromancer_lab"
+
+
+def test_necromancer_lab_current_location_not_goblin_camp():
+    state = get_initial_world_state(map_id="necromancer_lab")
+    current_location = str(state.get("current_location") or "")
+    assert "地精营地边缘" not in current_location
+    assert "地精营地" not in current_location
+
+
+def test_necromancer_lab_entities_include_gribbo_and_exit_door_alias():
+    state = get_initial_world_state(map_id="necromancer_lab")
+    entities = state["entities"]
+    map_data = state["map_data"]
+    env = map_data.get("environment_objects") or {}
+    door_meta = env.get("heavy_oak_door_1") or {}
+
+    assert "gribbo" in entities
+    assert "heavy_oak_door_1" in entities
+    assert "exit_door" in (door_meta.get("alias_ids") or [])
+
+
 def test_necromancer_lab_map_instance_is_loaded_from_maps_directory():
     load_maps(force_reload=True)
     map_data = get_map_data("necromancer_lab")

@@ -9,6 +9,7 @@
   const IS_QA_MODE = Array.from(QA_PARAMS.keys()).some((key) => key.startsWith("qa_"));
   const QA_NO_IDLE = QA_PARAMS.get("qa_no_idle") === "1" || window.__BG3_QA_NO_IDLE__ === true;
   const QA_MAP_DEBUG = QA_PARAMS.get("qa_map_debug") === "1" || window.__BG3_QA_MAP_DEBUG__ === true;
+  const QA_SHOWCASE = QA_PARAMS.get("qa_showcase") === "1" || window.__BG3_QA_SHOWCASE__ === true;
   const IDLE_MS = 30000;
   const DIALOGUE_POLL_MS = 1800;
   const BACKEND_REQUEST_TIMEOUT_MS = Math.max(5000, Number(QA_PARAMS.get("qa_backend_timeout_ms")) || 12000);
@@ -119,6 +120,9 @@
     mapDebugLastFetch: null,
     mapDebugLastMapLoad: null,
     mapSourceBadge: null,
+    lastShowcaseSnapshot: null,
+    demoScriptRunner: null,
+    demoScriptControls: null,
   };
 
   const INTERACTION_SOURCES = new Set([
@@ -1357,6 +1361,61 @@
     }
   }
 
+  function buildShowcaseSnapshot(extra = {}) {
+    const data = safeObject(extra);
+    const gameState = safeObject(data.game_state || {});
+    return {
+      ...data,
+      app_state: {
+        partyStatus: state.partyStatus,
+        environmentObjects: state.environmentObjects,
+        playerInventory: state.playerInventory,
+        combatState: state.combatState,
+        mapData: state.mapData,
+        normalizedMap: state.normalizedMap,
+        roomVisibleIds: Array.from(state.roomVisibleIds),
+      },
+      roomVisibleIds: Array.from(state.roomVisibleIds),
+      party_status: data.party_status || state.partyStatus,
+      environment_objects: data.environment_objects || state.environmentObjects,
+      player_inventory: data.player_inventory || state.playerInventory,
+      combat_state: data.combat_state || state.combatState,
+      map_data: data.map_data || state.mapData,
+      flags: data.flags || gameState.flags || safeObject(state.lastShowcaseSnapshot).flags || {},
+      actor_runtime_state: data.actor_runtime_state || gameState.actor_runtime_state || {},
+      demo_cleared: data.demo_cleared === true || gameState.demo_cleared === true,
+    };
+  }
+
+  function updateWorldStateDiff(previousSnapshot, nextSnapshot, options = {}) {
+    if (!window.BG3StateDiffRenderer || typeof window.BG3StateDiffRenderer.update !== "function") return [];
+    const diffs = window.BG3StateDiffRenderer.update(previousSnapshot || {}, nextSnapshot || {}, options);
+    state.lastShowcaseSnapshot = nextSnapshot || buildShowcaseSnapshot();
+    return diffs;
+  }
+
+  function recordShowcaseBaseline(extra = {}) {
+    state.lastShowcaseSnapshot = buildShowcaseSnapshot(extra);
+    if (window.BG3StateDiffRenderer && typeof window.BG3StateDiffRenderer.ensurePanel === "function") {
+      window.BG3StateDiffRenderer.ensurePanel();
+    }
+    return state.lastShowcaseSnapshot;
+  }
+
+  async function fetchShowcaseStateSnapshot() {
+    if (!QA_SHOWCASE) return null;
+    try {
+      const url = STATE_URL
+        + "?session_id=" + encodeURIComponent(getSessionId())
+        + "&map_id=" + encodeURIComponent(MAP_ID);
+      const response = await fetchWithTimeout(url, {}, BACKEND_REQUEST_TIMEOUT_MS);
+      if (!response.ok) return null;
+      return safeObject(await response.json());
+    } catch (_error) {
+      return null;
+    }
+  }
+
   function boolish(value) {
     if (typeof value === "boolean") return value;
     const normalized = normalizeId(value);
@@ -2311,11 +2370,20 @@
   function normalizeNodeName(nodeName) {
     const node = normalizeId(nodeName);
     const aliases = {
-      input_node: "input_processing",
-      dm_node: "dm_analysis",
-      mechanics_node: "mechanics_processing",
-      dialogue_node: "dialogue_processing",
-      generation_node: "generation",
+      input_node: "player_input",
+      input_processing: "player_input",
+      dm_node: "dm_router",
+      dm_analysis: "dm_router",
+      mechanics_node: "domain_event",
+      mechanics_processing: "domain_event",
+      dialogue_node: "actor_runtime",
+      dialogue_processing: "actor_runtime",
+      generation_node: "ui_events",
+      generation: "ui_events",
+      actor_view: "actor_view_filter",
+      party_coordinator: "actor_runtime",
+      party_turn_coordinator: "actor_runtime",
+      eventdrain: "event_drain",
     };
     return aliases[node] || node;
   }
@@ -2455,22 +2523,28 @@
   }
 
   function inferNodeTrace(data, userLine, intent) {
+    if (window.BG3DirectorTrace && typeof window.BG3DirectorTrace.buildTraceNodes === "function") {
+      return window.BG3DirectorTrace.buildTraceNodes(data, {
+        userLine,
+        intent,
+      });
+    }
     const payload = safeObject(data);
     const gameState = safeObject(payload.game_state);
     const explicit = normalizeNodeName(payload.last_node || gameState.last_node || gameState.current_node);
     if (explicit) {
-      const trace = ["input_processing", "dm_analysis"];
-      if (explicit === "mechanics_processing") trace.push("mechanics_processing");
-      if (explicit === "dialogue_processing") trace.push("dialogue_processing");
-      if (explicit === "generation") {
+      const trace = ["player_input", "dm_router"];
+      if (explicit === "domain_event") trace.push("domain_event", "event_drain");
+      if (explicit === "actor_runtime") trace.push("actor_runtime");
+      if (explicit === "ui_events") {
         const combined = [userLine, intent, extractEventLines(data).join(" "), JSON.stringify(gameState.intent_context || {})].join(" ");
         if (/检定|掷骰|潜行|攻击|推击|法术|装备|卸下|搜刮|开锁|解除陷阱|短休|长休|移动|交互/.test(combined)) {
-          trace.push("mechanics_processing");
+          trace.push("domain_event", "event_drain");
         }
         if (/对话|交涉|台词|说|回复|dialogue/i.test(combined)) {
-          trace.push("dialogue_processing");
+          trace.push("actor_runtime");
         }
-        trace.push("generation");
+        trace.push("ui_events");
       } else {
         trace.push(explicit);
       }
@@ -2478,14 +2552,14 @@
     }
 
     const text = [userLine, intent, extractEventLines(data).join(" ")].join(" ");
-    const trace = ["input_processing", "dm_analysis"];
+    const trace = ["player_input", "dm_router", "actor_view_filter"];
     if (/检定|掷骰|潜行|攻击|推击|法术|装备|卸下|搜刮|开锁|解除陷阱|短休|长休|移动|交互/.test(text)) {
-      trace.push("mechanics_processing");
+      trace.push("domain_event", "event_drain");
     }
     if (/对话|交涉|台词|说|回复|dialogue/i.test(text)) {
-      trace.push("dialogue_processing");
+      trace.push("actor_runtime");
     }
-    trace.push("generation");
+    trace.push("ui_events");
     return Array.from(new Set(trace));
   }
 
@@ -3157,11 +3231,12 @@
 
   function buildSilentFallbackPayload(userLine, intentValue) {
     const location = String((els.currentLocation && els.currentLocation.textContent) || "未知区域").trim() || "未知区域";
-    const fallbackTrace = ["input_processing", "dm_analysis", "generation"];
+    const fallbackTrace = ["player_input", "dm_router", "actor_view_filter", "ui_events"];
     const fallbackTimings = {
-      input_processing: 0,
-      dm_analysis: BACKEND_REQUEST_TIMEOUT_MS,
-      generation: 0,
+      player_input: 0,
+      dm_router: BACKEND_REQUEST_TIMEOUT_MS,
+      actor_view_filter: 0,
+      ui_events: 0,
     };
     return {
       responses: [],
@@ -3258,8 +3333,9 @@
     /* Activate Director Trace only for narrative requests */
     const _isNarrative = isNarrativeRequest(intentValue, userLine, routed.source);
     if (_isNarrative && window.BG3DirectorTrace && typeof window.BG3DirectorTrace.setPending === "function") {
-      window.BG3DirectorTrace.setPending();
+      window.BG3DirectorTrace.setPending({ userLine, intent: intentValue });
     }
+    const previousShowcaseSnapshot = buildShowcaseSnapshot();
     rememberTransientInteractionContext(intentValue, routed.target, routed.source);
     const shouldClearReadContext = normalizeId(intentValue) === "read";
 
@@ -3318,6 +3394,9 @@
       renderTacticalGrid(state.partyStatus, state.environmentObjects, state.mapData);
       renderInitiativeTracker(state.combatState, wasCombatActive);
       updateRestControls(state.combatState);
+      const uiEvents = window.BG3UIEventAdapter
+        ? window.BG3UIEventAdapter.extractUIEvents(data, { party_status: prevPartySnapshot })
+        : [];
       const trace = inferNodeTrace(data, userLine, intentValue);
       updateXrayPanel(data, {
         userLine,
@@ -3328,12 +3407,38 @@
 
       /* Director Trace lifecycle: activateTrace on narrative response */
       if (_isNarrative && window.BG3DirectorTrace && typeof window.BG3DirectorTrace.activateTrace === "function") {
-        window.BG3DirectorTrace.activateTrace(trace, { animate: true });
+        window.BG3DirectorTrace.activateTrace(trace, {
+          animate: true,
+          data,
+          userLine,
+          intent: intentValue,
+          uiEvents,
+          timings: resolveNodeTimings(data, safeObject(data.game_state)),
+        });
+      }
+
+      if (window.BG3StateDiffRenderer && typeof window.BG3StateDiffRenderer.update === "function") {
+        let diffData = data;
+        if (QA_SHOWCASE) {
+          const liveState = await fetchShowcaseStateSnapshot();
+          if (liveState) {
+            diffData = {
+              ...data,
+              game_state: liveState,
+              flags: liveState.flags,
+              actor_runtime_state: liveState.actor_runtime_state,
+              demo_cleared: data.demo_cleared === true || liveState.demo_cleared === true,
+            };
+          }
+        }
+        updateWorldStateDiff(previousShowcaseSnapshot, buildShowcaseSnapshot(diffData), {
+          autoExpand: _isNarrative || normalizeId(intentValue) === "ui_action_loot",
+        });
       }
 
       /* Dispatch HUD UI events from response (#1) */
       if (intentValue.toLowerCase() !== "init_sync") {
-        dispatchUIEventsFromResponse(data, { party_status: prevPartySnapshot });
+        dispatchUIEventsFromResponse(data, { party_status: prevPartySnapshot }, uiEvents);
       }
 
       if (!opts.skipLogUpdate) {
@@ -3441,6 +3546,129 @@
     }
 
     return false;
+  }
+
+  function runShowcaseLocalStep(commandText, options = {}) {
+    if (!QA_SHOWCASE && !QA_MAP_DEBUG) return false;
+    const before = buildShowcaseSnapshot();
+    const handled = handleQaLocalCommand(commandText, "qa_local");
+    if (!handled) return false;
+    const after = buildShowcaseSnapshot({
+      journal_events: [String(safeObject(options).title || commandText || "showcase local step")],
+    });
+    updateWorldStateDiff(before, after, { autoExpand: true });
+    if (window.BG3DirectorTrace && typeof window.BG3DirectorTrace.activateTrace === "function") {
+      const text = String(commandText || "");
+      const localData = {
+        journal_events: [
+          text.includes("qa_perception")
+            ? "trap discovered via local showcase perception"
+            : "visibleRooms reveal via local showcase command",
+        ],
+      };
+      const nodes = window.BG3DirectorTrace.buildTraceNodes(localData, {
+        userLine: text,
+        intent: "qa_local",
+      });
+      window.BG3DirectorTrace.activateTrace(nodes, {
+        data: localData,
+        userLine: text,
+        intent: "qa_local",
+        animate: true,
+      });
+    }
+    return true;
+  }
+
+  function completeShowcaseLocally(reason = "frontend_showcase_completion") {
+    if (!QA_SHOWCASE && !QA_MAP_DEBUG) return false;
+    const before = buildShowcaseSnapshot();
+    const completionData = {
+      demo_cleared: true,
+      journal_events: ["DEMO CLEARED · " + String(reason || "showcase")],
+    };
+    if (window.BG3HudRenderers && typeof window.BG3HudRenderers.dispatchUIEvents === "function") {
+      window.BG3HudRenderers.dispatchUIEvents([{ type: "demo_cleared" }]);
+    }
+    updateWorldStateDiff(before, buildShowcaseSnapshot(completionData), { autoExpand: true, collapseAfterMs: 8000 });
+    if (window.BG3DirectorTrace && typeof window.BG3DirectorTrace.activateTrace === "function") {
+      const nodes = ["player_input", "dm_router", "actor_view_filter", "domain_event", "event_drain", "ui_events"];
+      window.BG3DirectorTrace.activateTrace(nodes, {
+        data: completionData,
+        userLine: "open exit_door",
+        intent: "INTERACT",
+        uiEvents: [{ type: "demo_cleared" }],
+        animate: true,
+        autoIdleMs: 7000,
+      });
+    }
+    return true;
+  }
+
+  function ensureShowcaseControls() {
+    if (!QA_SHOWCASE && !QA_MAP_DEBUG) return null;
+    if (state.demoScriptControls && document.body.contains(state.demoScriptControls)) return state.demoScriptControls;
+    const host = document.getElementById("game-viewport") || document.body;
+    const wrap = document.createElement("div");
+    wrap.id = "showcase-controls";
+    wrap.className = "showcase-controls";
+    wrap.innerHTML =
+      '<div class="showcase-controls-title">Demo Showcase</div>' +
+      '<button type="button" id="run-demo-script-btn" class="showcase-btn showcase-btn--run">Run Demo Script</button>' +
+      '<button type="button" id="stop-demo-script-btn" class="showcase-btn showcase-btn--stop" disabled>Stop</button>' +
+      '<span id="demo-script-status" class="showcase-status">ready</span>';
+    host.appendChild(wrap);
+    state.demoScriptControls = wrap;
+    return wrap;
+  }
+
+  function initShowcaseMode() {
+    if (window.BG3StateDiffRenderer && typeof window.BG3StateDiffRenderer.ensurePanel === "function") {
+      window.BG3StateDiffRenderer.ensurePanel();
+    }
+    recordShowcaseBaseline();
+    if (!QA_SHOWCASE && !QA_MAP_DEBUG) return;
+    const controls = ensureShowcaseControls();
+    if (!controls || !window.BG3DemoScriptRunner) return;
+    const runBtn = controls.querySelector("#run-demo-script-btn");
+    const stopBtn = controls.querySelector("#stop-demo-script-btn");
+    const statusEl = controls.querySelector("#demo-script-status");
+    const setStatus = (text) => {
+      if (statusEl) statusEl.textContent = text;
+    };
+    state.demoScriptRunner = window.BG3DemoScriptRunner.createRunner(window.__BG3_APP_TEST_API__ || {
+      sendMessage,
+      startNewTimeline,
+      runShowcaseLocalStep,
+      completeShowcaseLocally,
+    }, {
+      delayMs: Math.max(800, Math.min(1500, readQaNumber("qa_showcase_step_ms", 1050))),
+      onStep: (step, index) => {
+        setStatus("step " + (index + 1) + ": " + step.id);
+        if (runBtn) runBtn.disabled = true;
+        if (stopBtn) stopBtn.disabled = false;
+      },
+      onDone: (result) => {
+        setStatus(result.stopped ? "stopped" : "complete");
+        if (runBtn) runBtn.disabled = false;
+        if (stopBtn) stopBtn.disabled = true;
+      },
+      onStop: () => {
+        setStatus("stopping");
+        if (runBtn) runBtn.disabled = false;
+        if (stopBtn) stopBtn.disabled = true;
+      },
+    });
+    if (runBtn) {
+      runBtn.addEventListener("click", () => {
+        if (state.demoScriptRunner) void state.demoScriptRunner.run();
+      });
+    }
+    if (stopBtn) {
+      stopBtn.addEventListener("click", () => {
+        if (state.demoScriptRunner) state.demoScriptRunner.stop();
+      });
+    }
   }
 
   async function sendMessage(text, intent, character, options = {}) {
@@ -3886,6 +4114,7 @@
       skipLogUpdate: true,
       skipIdleReset: true,
     });
+    recordShowcaseBaseline();
   }
 
   function bindDockEvents() {
@@ -4093,10 +4322,13 @@
     return false;
   }
 
-  function dispatchUIEventsFromResponse(data, previousState) {
+  function dispatchUIEventsFromResponse(data, previousState, providedEvents) {
     if (!window.BG3UIEventAdapter || !window.BG3HudRenderers) return;
-    const events = window.BG3UIEventAdapter.extractUIEvents(data, previousState);
+    const events = Array.isArray(providedEvents)
+      ? providedEvents
+      : window.BG3UIEventAdapter.extractUIEvents(data, previousState);
     window.BG3HudRenderers.dispatchUIEvents(events);
+    return events;
   }
 
   async function boot() {
@@ -4105,6 +4337,7 @@
     bindEvents();
     bindDockEvents();
     initNewModules();
+    initShowcaseMode();
     setTacticalOverlay(false);
     renderChrome(LOCATION_LABELS[MAP_ID] || "废弃死灵实验室");
     renderPartyRoster();
@@ -4169,6 +4402,10 @@
       normalizeNodeName,
       isNarrativeRequest,
       dispatchUIEventsFromResponse,
+      buildShowcaseSnapshot,
+      updateWorldStateDiff,
+      recordShowcaseBaseline,
+      runShowcaseLocalStep,
       applyNormalizedMap,
       refreshVisibilityProjection,
       revealRoomByDoorTarget,
@@ -4176,6 +4413,9 @@
       discoverSecretDoor,
       updateMapDebug,
       collectMapDebugSnapshot,
+      get demoScriptRunner() {
+        return state.demoScriptRunner;
+      },
       state,
       els,
       MAP_ID,

@@ -118,7 +118,7 @@
 
     /* Fast path: backend provides ui_events directly */
     if (Array.isArray(data.ui_events) && data.ui_events.length > 0) {
-      return data.ui_events.map((e) => safeObj(e));
+      return data.ui_events.map(normalizeDirectUIEvent);
     }
 
     /* Inference path */
@@ -147,6 +147,16 @@
       safeObj(data.party_status),
       events
     );
+    inferInventoryDeltas(
+      safeObj(prev.player_inventory),
+      safeObj(data.player_inventory),
+      events
+    );
+    inferMemoryDeltas(
+      safeObj(prev.actor_runtime_state || safeObj(prev.game_state).actor_runtime_state),
+      safeObj(data.actor_runtime_state || safeObj(data.game_state).actor_runtime_state),
+      events
+    );
 
     /* Demo cleared detection */
     if (data.demo_cleared === true || RE_DEMO_CLEARED.test(journal.join(" "))) {
@@ -154,6 +164,39 @@
     }
 
     return events;
+  }
+
+  function normalizeDirectUIEvent(raw) {
+    const e = safeObj(raw);
+    const type = String(e.type || e.event_type || "").trim().toLowerCase();
+    if (type === "item_transfer" || type === "actor_item_transaction_requested") {
+      const tx = safeObj(e.transaction || safeObj(e.payload).transaction);
+      const item = e.item || e.item_id || tx.item || tx.item_id;
+      return {
+        type: "item_gained",
+        item,
+        label: e.label || item,
+        icon: e.icon || "◻",
+        count: Number(e.count || tx.count) || 1,
+      };
+    }
+    if (type === "memory_update" || type === "memory_added") {
+      return {
+        type: "memory_added",
+        character: e.character || e.actor || e.actor_id || "",
+        text: e.text || e.note || e.memory || "",
+      };
+    }
+    if (type === "affection" || type === "affection_delta") {
+      return {
+        type: "affection_delta",
+        character: e.character || e.actor || e.actor_id || "",
+        delta: Number(e.delta) || 0,
+        newValue: e.newValue ?? e.new_value ?? null,
+        reason: e.reason || "",
+      };
+    }
+    return e;
   }
 
   function inferFromLine(text, events) {
@@ -275,6 +318,53 @@
           reason: "",
         });
       }
+    });
+  }
+
+  function inferInventoryDeltas(prevInventory, currInventory, events) {
+    Object.keys(currInventory).forEach((id) => {
+      const prevCount = Number(prevInventory[id]) || 0;
+      const currCount = Number(currInventory[id]) || 0;
+      const delta = currCount - prevCount;
+      if (delta <= 0) return;
+      const meta =
+        window.BG3NecromancerMeta &&
+        window.BG3NecromancerMeta.ITEM_META_EXTENSIONS[
+          String(id || "").toLowerCase().replace(/\s+/g, "_")
+        ];
+      events.push({
+        type: "item_gained",
+        item: id,
+        label: meta ? meta.label : id,
+        icon: meta ? meta.icon : "◻",
+        count: delta,
+      });
+    });
+  }
+
+  function memoryNotesFromActor(actor) {
+    const record = safeObj(actor);
+    const notes = [];
+    safeArr(record.memory_notes).forEach((note) => notes.push(String(note || "")));
+    safeArr(record.memories).forEach((item) => {
+      if (typeof item === "string") notes.push(item);
+      else if (safeObj(item).text) notes.push(String(safeObj(item).text));
+      else if (safeObj(item).note) notes.push(String(safeObj(item).note));
+    });
+    return notes.filter(Boolean);
+  }
+
+  function inferMemoryDeltas(prevRuntime, currRuntime, events) {
+    Object.keys(currRuntime).forEach((actorId) => {
+      const prevNotes = new Set(memoryNotesFromActor(prevRuntime[actorId]));
+      memoryNotesFromActor(currRuntime[actorId]).forEach((note) => {
+        if (prevNotes.has(note)) return;
+        events.push({
+          type: "memory_added",
+          character: actorId,
+          text: note,
+        });
+      });
     });
   }
 

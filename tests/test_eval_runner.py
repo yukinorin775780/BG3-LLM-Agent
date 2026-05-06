@@ -194,6 +194,36 @@ def test_eval_runner_passes_session_map_id_to_game_service(tmp_path):
     assert all(call["map_id"] == "necromancer_lab" for call in _FakeEvalGameService.snapshot_calls)
 
 
+def test_eval_runner_passes_necromancer_lab_map_id_into_init(tmp_path):
+    _FakeEvalGameService.process_calls.clear()
+    _FakeEvalGameService.snapshot_calls.clear()
+    eval_dir = tmp_path / "evals" / "golden"
+    output_root = tmp_path / "artifacts"
+    _write_case(
+        eval_dir / "runner_map_necromancer.yaml",
+        {
+            "session": {"id": "runner_map_necromancer", "map_id": "necromancer_lab"},
+            "determinism": {"strict": False},
+            "steps": [{"id": "s1", "intent": "init_sync", "user_input": ""}],
+            "expected": {},
+        },
+    )
+
+    with patch("core.eval.runner.GameService", new=_FakeEvalGameService):
+        result = run_eval_suite_sync(
+            suite="golden",
+            eval_dir=eval_dir,
+            case_selector=None,
+            output_root=str(output_root),
+        )
+
+    assert result["ok"] is True
+    assert _FakeEvalGameService.process_calls
+    assert _FakeEvalGameService.snapshot_calls
+    assert all(call["map_id"] == "necromancer_lab" for call in _FakeEvalGameService.process_calls)
+    assert all(call["map_id"] == "necromancer_lab" for call in _FakeEvalGameService.snapshot_calls)
+
+
 def test_eval_runner_llm_specs_patch_dm_narration_generate_dialogue():
     specs = _build_eval_llm_specs()
     targets = {spec.target: spec.channel for spec in specs}

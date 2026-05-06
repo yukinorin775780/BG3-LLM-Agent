@@ -7,6 +7,8 @@ const NECRO_META_PATH = path.resolve(__dirname, "../necromancer-meta.js");
 const TILED_ADAPTER_PATH = path.resolve(__dirname, "../tiled-adapter.js");
 const UI_EVENT_ADAPTER_PATH = path.resolve(__dirname, "../ui-event-adapter.js");
 const DIRECTOR_TRACE_PATH = path.resolve(__dirname, "../director-trace.js");
+const STATE_DIFF_RENDERER_PATH = path.resolve(__dirname, "../state-diff-renderer.js");
+const DEMO_SCRIPT_RUNNER_PATH = path.resolve(__dirname, "../demo-script-runner.js");
 const INPUT_CONTROLLER_PATH = path.resolve(__dirname, "../input-controller.js");
 const HUD_RENDERERS_PATH = path.resolve(__dirname, "../hud-renderers.js");
 const REAL_MAP_JSON_PATH = path.resolve(__dirname, "../assets/maps/necromancer_lab.json");
@@ -44,6 +46,8 @@ function loadNewModules() {
   jest.isolateModules(() => { require(TILED_ADAPTER_PATH); });
   jest.isolateModules(() => { require(UI_EVENT_ADAPTER_PATH); });
   jest.isolateModules(() => { require(DIRECTOR_TRACE_PATH); });
+  jest.isolateModules(() => { require(STATE_DIFF_RENDERER_PATH); });
+  jest.isolateModules(() => { require(DEMO_SCRIPT_RUNNER_PATH); });
   jest.isolateModules(() => { require(INPUT_CONTROLLER_PATH); });
   jest.isolateModules(() => { require(HUD_RENDERERS_PATH); });
 }
@@ -115,6 +119,8 @@ describe("web_ui/app.js UI bindings", () => {
     delete window.BG3TiledAdapter;
     delete window.BG3UIEventAdapter;
     delete window.BG3DirectorTrace;
+    delete window.BG3StateDiffRenderer;
+    delete window.BG3DemoScriptRunner;
     delete window.BG3InputController;
     delete window.BG3HudRenderers;
     mountIndexBody();
@@ -128,6 +134,8 @@ describe("web_ui/app.js UI bindings", () => {
     delete window.BG3TiledAdapter;
     delete window.BG3UIEventAdapter;
     delete window.BG3DirectorTrace;
+    delete window.BG3StateDiffRenderer;
+    delete window.BG3DemoScriptRunner;
     delete window.BG3InputController;
     delete window.BG3HudRenderers;
     delete window.__BG3_FORCE_REAL_MAP_LOAD__;
@@ -158,7 +166,7 @@ describe("web_ui/app.js UI bindings", () => {
     const api = await bootAppForTest();
     await api.pollDialogueState();
 
-    const dmNode = document.querySelector('li[data-node="dm_analysis"]');
+    const dmNode = document.querySelector('li[data-node="dm_router"]');
     expect(dmNode).not.toBeNull();
     expect(dmNode.classList.contains("is-active")).toBe(true);
 
@@ -1494,5 +1502,141 @@ describe("web_ui/app.js UI bindings", () => {
     expect(payload.source).toBe("text_input");
     expect(payload.intent).toBe("INTERACT");
     expect(payload.target).toBe("heavy_oak_door_1");
+  });
+
+  test("test_qa_showcase_shows_run_demo_script", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    await bootAppForTest("http://localhost/?qa_test=1&qa_showcase=1");
+    expect(document.getElementById("run-demo-script-btn")).not.toBeNull();
+  });
+
+  test("test_normal_url_hides_run_demo_script", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    await bootAppForTest("http://localhost/?qa_test=1");
+    expect(document.getElementById("run-demo-script-btn")).toBeNull();
+  });
+
+  test("test_wasd_and_hover_do_not_activate_director_trace", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    await bootAppForTest("http://localhost/?qa_test=1");
+    if (window.BG3InputController) {
+      window.BG3InputController.movePlayer(1, 0);
+    }
+    document.getElementById("map-container").dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+    await flushAsync();
+    expect(window.BG3DirectorTrace.getState()).toBe("idle");
+  });
+
+  test("test_diary_event_constructs_memory_eventdrain_trace_nodes", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    await bootAppForTest();
+    const nodes = window.BG3DirectorTrace.buildTraceNodes({
+      journal_events: ["[记忆] actor_private:astarion += memory_note", "EventDrain committed memory_update x2"],
+      game_state: { actor_runtime_state: { astarion: { memory_notes: ["diary"] } } },
+    }, { userLine: "read necromancer_diary", intent: "READ" });
+    expect(nodes).toEqual(expect.arrayContaining(["actor_view_filter", "domain_event", "event_drain", "ui_events"]));
+  });
+
+  test("test_gribbo_branch_constructs_party_coordinator_affection_trace_nodes", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    await bootAppForTest();
+    const nodes = window.BG3DirectorTrace.buildTraceNodes({
+      journal_events: ["Astarion affection +2", "Party Coordinator selected side_with_astarion", "combat_active true"],
+    }, { userLine: "side_with_astarion", intent: "CHAT" });
+    const details = window.BG3DirectorTrace.buildTraceDetails({
+      journal_events: ["Astarion affection +2", "Party Coordinator selected side_with_astarion"],
+    }, { nodes, userLine: "side_with_astarion", intent: "CHAT" });
+    expect(nodes).toEqual(expect.arrayContaining(["actor_runtime", "domain_event", "event_drain"]));
+    expect(details.actor_runtime.output).toContain("Party Coordinator");
+    expect(details.domain_event.output).toContain("affection +2");
+  });
+
+  test("test_item_transfer_constructs_domainevent_eventdrain_item_toast_trace", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    await bootAppForTest();
+    const events = window.BG3UIEventAdapter.extractUIEvents(
+      { player_inventory: { lab_key: 1 }, journal_events: ["EventDrain item_transfer lab_key"] },
+      { player_inventory: {} }
+    );
+    const nodes = window.BG3DirectorTrace.buildTraceNodes({
+      journal_events: ["DomainEvent actor_item_transaction_requested", "EventDrain item_transfer lab_key"],
+    }, { userLine: "loot study_chest", intent: "ui_action_loot", uiEvents: events });
+    const details = window.BG3DirectorTrace.buildTraceDetails({}, { nodes, uiEvents: events, userLine: "loot study_chest" });
+    expect(nodes).toEqual(expect.arrayContaining(["domain_event", "event_drain", "ui_events"]));
+    expect(events.some((event) => event.type === "item_gained" && event.item === "lab_key")).toBe(true);
+    expect(details.ui_events.output).toContain("Item Toast");
+  });
+
+  test("test_state_diff_detects_visibleRooms_added", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    await bootAppForTest();
+    const diffs = window.BG3StateDiffRenderer.diffSnapshots(
+      { roomVisibleIds: ["room_a_spawn"] },
+      { roomVisibleIds: ["room_a_spawn", "room_b_corridor"] }
+    );
+    expect(diffs.map((d) => d.label)).toContain("visibleRooms += room_b_corridor");
+  });
+
+  test("test_state_diff_detects_inventory_added", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    await bootAppForTest();
+    const diffs = window.BG3StateDiffRenderer.diffSnapshots(
+      { player_inventory: {} },
+      { player_inventory: { lab_key: 1 } }
+    );
+    expect(diffs.map((d) => d.label)).toContain("player.inventory += lab_key");
+  });
+
+  test("test_state_diff_detects_affection_change", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    await bootAppForTest();
+    const diffs = window.BG3StateDiffRenderer.diffSnapshots(
+      { party_status: { astarion: { name: "Astarion", affection: 0 } } },
+      { party_status: { astarion: { name: "Astarion", affection: 2 } } }
+    );
+    expect(diffs.map((d) => d.label)).toContain("Astarion.affection +2");
+  });
+
+  test("test_state_diff_detects_memory_note_added", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    await bootAppForTest();
+    const diffs = window.BG3StateDiffRenderer.diffSnapshots(
+      { actor_runtime_state: { astarion: { memory_notes: [] } } },
+      { actor_runtime_state: { astarion: { memory_notes: ["玩家与我一起嘲笑了 Gribbo，这种默契让我满意。"] } } }
+    );
+    expect(diffs.map((d) => d.label)).toContain("actor_private:astarion += memory_note");
+  });
+
+  test("test_demo_script_runner_advances_and_supports_stop", async () => {
+    loadNewModules();
+    jest.useFakeTimers();
+    const calls = [];
+    const runner = window.BG3DemoScriptRunner.createRunner({
+      startNewTimeline: jest.fn(async () => calls.push("new")),
+      runShowcaseLocalStep: jest.fn((cmd) => calls.push(cmd)),
+      sendMessage: jest.fn(async (text) => calls.push(text)),
+    }, { delayMs: 10 });
+    const promise = runner.run();
+    await Promise.resolve();
+    expect(runner.isRunning()).toBe(true);
+    runner.stop();
+    jest.runOnlyPendingTimers();
+    const result = await promise;
+    expect(result.stopped).toBe(true);
+    expect(calls.length).toBeGreaterThanOrEqual(1);
+    jest.useRealTimers();
+  });
+
+  test("test_fallback_reason_is_highlighted_in_trace", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    await bootAppForTest();
+    window.BG3DirectorTrace.activateTrace(["player_input", "dm_router", "ui_events"], {
+      animate: false,
+      data: { game_state: { intent_context: { fallback_reason: "network_timeout_or_unavailable" } } },
+    });
+    const fallback = document.getElementById("director-fallback-reason");
+    expect(fallback).not.toBeNull();
+    expect(fallback.classList.contains("is-hidden")).toBe(false);
+    expect(fallback.textContent).toContain("network_timeout_or_unavailable");
   });
 });

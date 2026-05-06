@@ -245,6 +245,39 @@ def test_process_chat_turn_init_sync_initializes_empty_checkpoint_with_map_id():
     assert result["current_location"] == "死灵法师的废弃实验室"
 
 
+def test_game_service_empty_session_initializes_necromancer_lab():
+    initial_world_state = {
+        "entities": {"gribbo": {"hp": 18}},
+        "player_inventory": {"healing_potion": 2},
+        "journal_events": [],
+        "map_data": {"id": "necromancer_lab"},
+        "current_location": "死灵法师的废弃实验室",
+        "environment_objects": {},
+    }
+    fake_graph = _FakeGraph(
+        snapshots=[{}, initial_world_state],
+        invoke_result={},
+    )
+    initial_state_factory = Mock(return_value=initial_world_state)
+
+    result = asyncio.run(
+        process_chat_turn(
+            user_input="",
+            intent="init_sync",
+            session_id="session-empty-necromancer-lab",
+            character=None,
+            map_id="necromancer_lab",
+            saver_factory=Mock(return_value=_AsyncContextManager(value=object())),
+            graph_builder=Mock(return_value=fake_graph),
+            initial_state_factory=initial_state_factory,
+        )
+    )
+
+    initial_state_factory.assert_called_once_with(map_id="necromancer_lab")
+    assert result["current_location"] == "死灵法师的废弃实验室"
+    assert result["combat_state"]["combat_active"] is False
+
+
 def test_process_chat_turn_init_sync_applies_necromancer_lab_intro_awareness_once():
     initial_world_state = {
         "entities": {
