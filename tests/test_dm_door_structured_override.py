@@ -27,6 +27,7 @@ def test_dm_node_prefers_interact_for_necromancer_door_target():
         result = asyncio.run(dm_node(state))
 
     assert result["intent"] == "INTERACT"
+    assert result["current_speaker"] != "heavy_oak_door_1"
     assert result["intent_context"]["action_target"] == "heavy_oak_door_1"
 
 

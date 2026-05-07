@@ -146,4 +146,5 @@ def test_dm_node_structured_interact_door_never_uses_player_as_current_speaker()
 
     assert result["intent"] == "INTERACT"
     assert result["current_speaker"] != "player"
+    assert result["current_speaker"] != "heavy_oak_door_1"
     assert result["intent_context"]["action_target"] == "heavy_oak_door_1"

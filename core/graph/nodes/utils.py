@@ -319,6 +319,7 @@ def load_default_entities() -> Dict[str, Dict[str, Any]]:
 
 # 模块加载时构建默认实体（从 YAML 驱动）
 default_entities = load_default_entities()
+PARTY_CORE_ENTITY_IDS = frozenset({"player", "shadowheart", "astarion", "laezel"})
 
 
 def merge_entities_with_defaults(raw_entities: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -332,9 +333,9 @@ def merge_entities_with_defaults(raw_entities: Optional[Dict[str, Any]]) -> Dict
         entities = copy.deepcopy(raw_entities)
     if not isinstance(entities, dict):
         return copy.deepcopy(default_entities)
-    for npc_id, default_data in default_entities.items():
-        if npc_id not in entities:
-            entities[npc_id] = copy.deepcopy(default_data)
+    for npc_id in PARTY_CORE_ENTITY_IDS:
+        if npc_id not in entities and npc_id in default_entities:
+            entities[npc_id] = copy.deepcopy(default_entities[npc_id])
     # 旧存档缺战斗字段时补默认值，避免 UI 与 mechanics 在旧状态上缺关键键。
     for npc_id, ent in list(entities.items()):
         if not isinstance(ent, dict):

@@ -65,6 +65,27 @@ def _is_generation_speaker_candidate(entity_id: str) -> bool:
     return normalized not in {"player", "unknown"}
 
 
+def _is_speakable_generation_entity(entity_id: str, entity: Any) -> bool:
+    if not _is_generation_speaker_candidate(entity_id):
+        return False
+    if not isinstance(entity, dict):
+        return True
+    entity_kind = str(entity.get("entity_type") or entity.get("type") or "").strip().lower()
+    if entity_kind in {
+        "door",
+        "trap",
+        "readable",
+        "locked_chest",
+        "transition_zone",
+        "powder_barrel",
+        "loot_drop",
+        "container",
+        "object",
+    }:
+        return False
+    return True
+
+
 def _resolve_generation_speaker_and_character(
     state: GameState,
     entities: Dict[str, Any],
@@ -82,7 +103,8 @@ def _resolve_generation_speaker_and_character(
     seen: set[str] = set()
     for candidate in raw_candidates:
         normalized = str(candidate or "").strip().lower()
-        if not _is_generation_speaker_candidate(normalized) or normalized in seen:
+        candidate_entity = entities.get(normalized)
+        if not _is_speakable_generation_entity(normalized, candidate_entity) or normalized in seen:
             continue
         seen.add(normalized)
         try:

@@ -62,10 +62,11 @@ def input_node(state: GameState) -> dict:
         entities = copy.deepcopy(default_entities)
     else:
         entities = copy.deepcopy(raw_entities)
-    # 热更新：把 YAML 新增的 NPC 合并进旧存档（SQLite checkpoint）里的 entities
-    for npc_id, default_data in default_entities.items():
-        if npc_id not in entities:
-            entities[npc_id] = copy.deepcopy(default_data)
+    # 热更新：仅补齐核心队伍角色，避免将默认敌对单位注入到非目标地图会话。
+    for npc_id in ("player", "shadowheart", "astarion", "laezel"):
+        if npc_id in entities or npc_id not in default_entities:
+            continue
+        entities[npc_id] = copy.deepcopy(default_entities[npc_id])
     incoming_intent = str(state.get("intent") or "").strip()
     incoming_intent_key = incoming_intent.lower()
     incoming_target = str(state.get("target") or "").strip()

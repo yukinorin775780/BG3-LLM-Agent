@@ -135,7 +135,7 @@ class GameService:
                 previous_state = await self._load_checkpoint_state(graph, config)
                 previous_journal_len = len(previous_state.get("journal_events") or [])
 
-                if not previous_state.get("entities"):
+                if self._requires_state_reinitialization(previous_state, map_id=map_id):
                     previous_state = await self._initialize_world_state(
                         graph,
                         config,
@@ -308,7 +308,7 @@ class GameService:
         async with self._saver_factory(self._db_path) as saver:
             graph = self._graph_builder(checkpointer=saver)
             state = await self._load_checkpoint_state(graph, config)
-            if initialize_if_missing and not state.get("entities"):
+            if initialize_if_missing and self._requires_state_reinitialization(state, map_id=map_id):
                 state = await self._initialize_world_state(graph, config, map_id=map_id)
             return state
 
@@ -403,6 +403,31 @@ class GameService:
                 )
                 return self._initial_state_factory()
             raise
+
+    def _requires_state_reinitialization(
+        self,
+        state: Dict[str, Any],
+        *,
+        map_id: Optional[str],
+    ) -> bool:
+        entities = state.get("entities")
+        if not isinstance(entities, dict) or not entities:
+            return True
+
+        requested_map_id = str(map_id or "").strip().lower()
+        if not requested_map_id:
+            return False
+
+        state_map_id = str((state.get("map_data") or {}).get("id") or "").strip().lower()
+        if state_map_id and state_map_id != requested_map_id:
+            logger.info(
+                "Session map mismatch detected: state_map_id=%s requested_map_id=%s; reinitializing.",
+                state_map_id,
+                requested_map_id,
+            )
+            return True
+
+        return False
 
     async def _drain_pending_events_if_needed(
         self,

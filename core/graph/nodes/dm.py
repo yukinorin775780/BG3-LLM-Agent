@@ -134,13 +134,36 @@ def _is_necromancer_lab(state: GameState) -> bool:
 
 def _first_non_player_speaker(entities: dict, fallback_speaker: str) -> str:
     fallback = str(fallback_speaker or "").strip().lower()
-    if fallback and fallback not in {"player", "unknown"}:
+    fallback_entity = entities.get(fallback) if isinstance(entities, dict) else None
+    if fallback and _is_valid_responder_candidate(fallback, fallback_entity):
         return fallback
-    for entity_id in entities.keys():
+    for entity_id, entity in entities.items():
         normalized = str(entity_id or "").strip().lower()
-        if normalized and normalized not in {"player", "unknown"}:
+        if _is_valid_responder_candidate(normalized, entity):
             return normalized
     return ""
+
+
+def _is_valid_responder_candidate(entity_id: str, entity: Optional[dict]) -> bool:
+    normalized_id = str(entity_id or "").strip().lower()
+    if not normalized_id or normalized_id in {"player", "unknown"}:
+        return False
+    if not isinstance(entity, dict):
+        return True
+    entity_kind = str(entity.get("entity_type") or entity.get("type") or "").strip().lower()
+    if entity_kind in {
+        "door",
+        "trap",
+        "readable",
+        "locked_chest",
+        "transition_zone",
+        "powder_barrel",
+        "loot_drop",
+        "container",
+        "object",
+    }:
+        return False
+    return True
 
 
 def _looks_like_door_attack(user_input: str) -> bool:
@@ -222,7 +245,11 @@ def _build_structured_client_analysis(
 
     responders = []
     structured_fallback_speaker = _first_non_player_speaker(entities, fallback_speaker)
-    if action_target and action_target in entities and action_target != "player":
+    if (
+        action_target
+        and action_target in entities
+        and _is_valid_responder_candidate(action_target, entities.get(action_target))
+    ):
         responders = [action_target]
     elif structured_fallback_speaker:
         responders = [structured_fallback_speaker]

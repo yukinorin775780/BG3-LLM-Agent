@@ -40,7 +40,7 @@
     poison_trap_2: "毒气陷阱 II",
     door_a_to_b: "A 区通往毒气走廊",
     door_b_to_c: "隐藏书房侧门",
-    door_b_to_d: "手术室大门",
+    door_b_to_d: "实验室重门",
     exit_door: "出口门",
     heavy_oak_door_1: "通往地表的沉重大门",
     necromancer_diary: "血污日记",

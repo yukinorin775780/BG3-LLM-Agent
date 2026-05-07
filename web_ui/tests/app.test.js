@@ -112,6 +112,58 @@ function extractObjectNamesByLayerFromTmx(xmlText) {
   return result;
 }
 
+function extractTileLayersFromTmx(xmlText) {
+  const text = String(xmlText || "");
+  const mapMatch = text.match(/<map[^>]*\bwidth="(\d+)"[^>]*\bheight="(\d+)"/);
+  const result = {
+    width: mapMatch ? Number(mapMatch[1]) : 0,
+    height: mapMatch ? Number(mapMatch[2]) : 0,
+    layers: {},
+  };
+  const layerRe = /<layer[^>]*\bname="([^"]+)"[^>]*\bwidth="(\d+)"[^>]*\bheight="(\d+)"[^>]*>[\s\S]*?<data[^>]*>([\s\S]*?)<\/data>[\s\S]*?<\/layer>/g;
+  let layerMatch;
+  while ((layerMatch = layerRe.exec(text))) {
+    result.layers[layerMatch[1]] = {
+      width: Number(layerMatch[2]),
+      height: Number(layerMatch[3]),
+      cells: layerMatch[4]
+        .split(",")
+        .map((cell) => cell.trim())
+        .filter((cell) => cell.length > 0),
+    };
+  }
+  return result;
+}
+
+function getMapLayer(map, layerName) {
+  return (map.layers || []).find((layer) => layer.name === layerName);
+}
+
+function getMapObject(map, layerName, objectName) {
+  const layer = getMapLayer(map, layerName);
+  return ((layer && layer.objects) || []).find((object) => object.name === objectName);
+}
+
+function flattenTiledProps(object) {
+  return ((object && object.properties) || []).reduce((out, prop) => {
+    out[prop.name] = prop.value;
+    return out;
+  }, {});
+}
+
+function pointInRect(point, rect) {
+  return (
+    point.x >= rect.x &&
+    point.x < rect.x + rect.w &&
+    point.y >= rect.y &&
+    point.y < rect.y + rect.h
+  );
+}
+
+function roomById(rooms, roomId) {
+  return rooms.find((room) => room.id === roomId);
+}
+
 describe("web_ui/app.js UI bindings", () => {
   beforeEach(() => {
     jest.resetModules();
@@ -506,13 +558,15 @@ describe("web_ui/app.js UI bindings", () => {
     expect(map.width).toBe(25);
     expect(map.height).toBe(25);
 
+    const ground = map.layers.find((layer) => layer.name === "ground");
     const collision = map.layers.find((layer) => layer.name === "collision");
     const los = map.layers.find((layer) => layer.name === "los_blockers");
-    const ground = map.layers.find((layer) => layer.name === "ground_types");
+    const groundTypes = map.layers.find((layer) => layer.name === "ground_types");
 
+    expect(ground.data.length).toBe(625);
     expect(collision.data.length).toBe(625);
     expect(los.data.length).toBe(625);
-    expect(ground.data.length).toBe(625);
+    expect(groundTypes.data.length).toBe(625);
   });
 
   test("test_real_map_json_entities_and_trigger_contract", async () => {
@@ -525,8 +579,8 @@ describe("web_ui/app.js UI bindings", () => {
 
     expect(result.width).toBe(25);
     expect(result.height).toBe(25);
-    expect(result.playerStart.x).toBe(4);
-    expect(result.playerStart.y).toBe(18);
+    expect(result.playerStart.x).toBe(5);
+    expect(result.playerStart.y).toBe(19);
 
     const interactableIds = result.interactables.map((item) => item.id);
     expect(interactableIds).toContain("gribbo");
@@ -543,6 +597,89 @@ describe("web_ui/app.js UI bindings", () => {
     const poisonTrap = result.triggers.find((trigger) => trigger.id === "poison_trap_1");
     expect(poisonTrap).toBeDefined();
     expect(poisonTrap.data.alias_id).toBe("gas_trap_1");
+  });
+
+  test("test_necromancer_lab_v2_level_design_alignment_contract", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    await bootAppForTest();
+
+    const map = JSON.parse(fs.readFileSync(REAL_MAP_JSON_PATH, "utf8"));
+    const tmx = extractTileLayersFromTmx(fs.readFileSync(REAL_MAP_TMX_PATH, "utf8"));
+    const expectedCells = map.width * map.height;
+    expect(tmx.width).toBe(map.width);
+    expect(tmx.height).toBe(map.height);
+    ["ground", "collision", "los_blockers", "ground_types"].forEach((layerName) => {
+      const layer = getMapLayer(map, layerName);
+      expect(layer).toBeDefined();
+      expect(layer.type).toBe("tilelayer");
+      expect(layer.data.length).toBe(expectedCells);
+      expect(tmx.layers[layerName]).toBeDefined();
+      expect(tmx.layers[layerName].width).toBe(map.width);
+      expect(tmx.layers[layerName].height).toBe(map.height);
+      expect(tmx.layers[layerName].cells.length).toBe(expectedCells);
+    });
+
+    const normalized = window.BG3TiledAdapter.normalizeTiledMap(map);
+    const rooms = normalized.rooms;
+    const roomIds = rooms.map((room) => room.id);
+    expect(roomIds).toEqual(expect.arrayContaining([
+      "room_a_spawn",
+      "room_b_corridor",
+      "room_c_secret_study",
+      "room_d_lab",
+      "room_exit",
+    ]));
+
+    const corridor = roomById(rooms, "room_b_corridor");
+    expect(corridor).toBeDefined();
+    expect(Math.max(corridor.w, corridor.h) / Math.min(corridor.w, corridor.h)).toBeGreaterThanOrEqual(2.5);
+
+    const rawSecretDoor = getMapObject(map, "interactables", "door_b_to_c");
+    const secretDoorProps = flattenTiledProps(rawSecretDoor);
+    expect(secretDoorProps.is_secret).toBe(true);
+    expect(Number(secretDoorProps.detect_dc)).toBe(14);
+    expect(secretDoorProps.connects_from).toBe("room_b_corridor");
+    expect(secretDoorProps.connects_to).toBe("room_c_secret_study");
+
+    const rawLabDoor = getMapObject(map, "interactables", "door_b_to_d");
+    const labDoorProps = flattenTiledProps(rawLabDoor);
+    expect(labDoorProps.key_required).toBe("lab_key");
+    expect(Number(labDoorProps.lockpick_dc)).toBe(15);
+    expect(labDoorProps.connects_from).toBe("room_b_corridor");
+    expect(labDoorProps.connects_to).toBe("room_d_lab");
+
+    const rawExitDoor = getMapObject(map, "interactables", "exit_door");
+    const exitDoorProps = flattenTiledProps(rawExitDoor);
+    expect(exitDoorProps.alias_id).toBe("heavy_oak_door_1");
+    expect(exitDoorProps.key_required).toBe("heavy_iron_key");
+    expect(exitDoorProps.requires_flag).toBe("world_necromancer_lab_gribbo_defeated");
+
+    const studyRoom = roomById(rooms, "room_c_secret_study");
+    const diary = normalized.interactables.find((item) => item.id === "necromancer_diary");
+    const chest = normalized.interactables.find((item) => item.id === "chest_1");
+    expect(diary).toBeDefined();
+    expect(chest).toBeDefined();
+    expect(diary.source_id).toBe("necromancer_diary");
+    expect(chest.source_id).toBe("study_chest");
+    expect(pointInRect(diary, studyRoom)).toBe(true);
+    expect(pointInRect(chest, studyRoom)).toBe(true);
+
+    const labRoom = roomById(rooms, "room_d_lab");
+    const gribbo = normalized.spawns.find((spawn) => spawn.id === "gribbo");
+    expect(gribbo).toBeDefined();
+    expect(pointInRect(gribbo, labRoom)).toBe(true);
+
+    const doorA = normalized.interactables.find((item) => item.id === "door_a_to_b");
+    ["poison_trap_1", "poison_trap_2"].forEach((trapId) => {
+      const trap = normalized.triggers.find((item) => item.id === trapId);
+      expect(trap).toBeDefined();
+      expect(pointInRect(trap, corridor)).toBe(true);
+      const distanceFromDoorA = Math.abs(trap.x - doorA.x) + Math.abs(trap.y - doorA.y);
+      expect(distanceFromDoorA).toBeGreaterThanOrEqual(5);
+    });
+
+    const spawnRoom = roomById(rooms, "room_a_spawn");
+    expect(pointInRect(normalized.playerStart, spawnRoom)).toBe(true);
   });
 
   test("test_tmx_json_object_layers_are_aligned", () => {
@@ -690,8 +827,8 @@ describe("web_ui/app.js UI bindings", () => {
     const lastCall = window.BG3TacticalMap.update.mock.calls.at(-1);
     expect(lastCall).toBeDefined();
     const projectedParty = lastCall[0] || {};
-    expect(projectedParty.player.x).toBe(4);
-    expect(projectedParty.player.y).toBe(18);
+    expect(projectedParty.player.x).toBe(5);
+    expect(projectedParty.player.y).toBe(19);
     expect(api.state.partyStatus.player.x).toBe(2);
     expect(api.state.partyStatus.player.y).toBe(2);
   });
@@ -1507,6 +1644,18 @@ describe("web_ui/app.js UI bindings", () => {
   test("test_qa_showcase_shows_run_demo_script", async () => {
     spyOnFetch().mockResolvedValue(mockResponse({}));
     await bootAppForTest("http://localhost/?qa_test=1&qa_showcase=1");
+    expect(document.getElementById("run-demo-script-btn")).not.toBeNull();
+  });
+
+  test("test_qa_map_debug_only_hides_run_demo_script", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    await bootAppForTest("http://localhost/?qa_test=1&qa_map_debug=1");
+    expect(document.getElementById("run-demo-script-btn")).toBeNull();
+  });
+
+  test("test_qa_showcase_and_map_debug_shows_run_demo_script", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    await bootAppForTest("http://localhost/?qa_test=1&qa_showcase=1&qa_map_debug=1");
     expect(document.getElementById("run-demo-script-btn")).not.toBeNull();
   });
 

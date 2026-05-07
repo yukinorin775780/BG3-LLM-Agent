@@ -278,6 +278,83 @@ def test_game_service_empty_session_initializes_necromancer_lab():
     assert result["combat_state"]["combat_active"] is False
 
 
+def test_game_service_necromancer_lab_snapshot_from_empty_session_has_no_goblin_enemies():
+    clean_state = {
+        "entities": {
+            "player": {"hp": 20},
+            "gribbo": {"hp": 18},
+            "heavy_oak_door_1": {"entity_type": "door"},
+            "necromancer_diary": {"entity_type": "readable"},
+            "chest_1": {"entity_type": "locked_chest"},
+            "gas_trap_1": {"entity_type": "trap"},
+        },
+        "journal_events": [],
+        "map_data": {"id": "necromancer_lab"},
+        "current_location": "死灵法师的废弃实验室",
+        "environment_objects": {},
+    }
+    fake_graph = _FakeGraph(
+        snapshots=[{}, clean_state],
+        invoke_result={},
+    )
+    initial_state_factory = Mock(return_value=clean_state)
+    service = GameService(
+        saver_factory=Mock(return_value=_AsyncContextManager(value=object())),
+        graph_builder=Mock(return_value=fake_graph),
+        initial_state_factory=initial_state_factory,
+    )
+
+    snapshot = asyncio.run(
+        service.get_state_snapshot(
+            session_id="session-necromancer-lab-residue",
+            map_id="necromancer_lab",
+        )
+    )
+
+    initial_state_factory.assert_called_once_with(map_id="necromancer_lab")
+    assert "goblin_1" not in snapshot["party_status"]
+    assert "goblin_archer" not in snapshot["party_status"]
+    assert "goblin_shaman" not in snapshot["party_status"]
+    assert snapshot["game_state"]["map_data"]["id"] == "necromancer_lab"
+
+
+def test_game_service_reinitializes_when_requested_map_id_differs_from_checkpoint():
+    goblin_state = {
+        "entities": {"player": {"hp": 20}, "goblin_1": {"hp": 7}},
+        "journal_events": [],
+        "map_data": {"id": "goblin_camp"},
+        "current_location": "地精营地边缘",
+        "environment_objects": {},
+    }
+    necro_state = {
+        "entities": {"player": {"hp": 20}, "gribbo": {"hp": 18}},
+        "journal_events": [],
+        "map_data": {"id": "necromancer_lab"},
+        "current_location": "死灵法师的废弃实验室",
+        "environment_objects": {},
+    }
+    fake_graph = _FakeGraph(
+        snapshots=[goblin_state, necro_state],
+        invoke_result={},
+    )
+    initial_state_factory = Mock(return_value=necro_state)
+    service = GameService(
+        saver_factory=Mock(return_value=_AsyncContextManager(value=object())),
+        graph_builder=Mock(return_value=fake_graph),
+        initial_state_factory=initial_state_factory,
+    )
+
+    snapshot = asyncio.run(
+        service.get_state_snapshot(
+            session_id="session-map-reinit",
+            map_id="necromancer_lab",
+        )
+    )
+
+    initial_state_factory.assert_called_once_with(map_id="necromancer_lab")
+    assert snapshot["game_state"]["map_data"]["id"] == "necromancer_lab"
+
+
 def test_process_chat_turn_init_sync_applies_necromancer_lab_intro_awareness_once():
     initial_world_state = {
         "entities": {

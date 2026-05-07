@@ -66,3 +66,19 @@ def test_world_init_builds_entities_from_prefab_spawns():
 
     assert gas_trap_1["entity_type"] == "trap"
     assert gas_trap_1["x"] == 4 and gas_trap_1["y"] == 6
+
+
+def test_necromancer_lab_state_does_not_include_goblin_camp_enemies():
+    state = get_initial_world_state(map_id="necromancer_lab")
+    entities = state["entities"]
+    assert "goblin_1" not in entities
+    assert "goblin_archer" not in entities
+    assert "goblin_shaman" not in entities
+
+
+def test_goblin_camp_default_still_includes_goblin_enemies():
+    state = get_initial_world_state()
+    entities = state["entities"]
+    assert "goblin_1" in entities
+    assert "goblin_archer" in entities
+    assert "goblin_shaman" in entities

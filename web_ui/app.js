@@ -3549,7 +3549,7 @@
   }
 
   function runShowcaseLocalStep(commandText, options = {}) {
-    if (!QA_SHOWCASE && !QA_MAP_DEBUG) return false;
+    if (!QA_SHOWCASE) return false;
     const before = buildShowcaseSnapshot();
     const handled = handleQaLocalCommand(commandText, "qa_local");
     if (!handled) return false;
@@ -3581,7 +3581,7 @@
   }
 
   function completeShowcaseLocally(reason = "frontend_showcase_completion") {
-    if (!QA_SHOWCASE && !QA_MAP_DEBUG) return false;
+    if (!QA_SHOWCASE) return false;
     const before = buildShowcaseSnapshot();
     const completionData = {
       demo_cleared: true,
@@ -3606,7 +3606,7 @@
   }
 
   function ensureShowcaseControls() {
-    if (!QA_SHOWCASE && !QA_MAP_DEBUG) return null;
+    if (!QA_SHOWCASE) return null;
     if (state.demoScriptControls && document.body.contains(state.demoScriptControls)) return state.demoScriptControls;
     const host = document.getElementById("game-viewport") || document.body;
     const wrap = document.createElement("div");
@@ -3627,7 +3627,7 @@
       window.BG3StateDiffRenderer.ensurePanel();
     }
     recordShowcaseBaseline();
-    if (!QA_SHOWCASE && !QA_MAP_DEBUG) return;
+    if (!QA_SHOWCASE) return;
     const controls = ensureShowcaseControls();
     if (!controls || !window.BG3DemoScriptRunner) return;
     const runBtn = controls.querySelector("#run-demo-script-btn");
