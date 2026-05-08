@@ -223,7 +223,7 @@ data/chroma_db/
 *.sqlite
 
 # Eval / local run artifacts
-artifacts/evals/
+artifacts/
 memory.db
 *.sqlite
 *.sqlite3
