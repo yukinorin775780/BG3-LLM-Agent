@@ -1,246 +1,164 @@
-# BG3 Multi-Agent Narrative Engine
+# BG3 LLM Agent
 
-> A LangGraph-powered CRPG narrative engine that combines LLM-driven roleplay with hard-rule state transitions.
-> 基于 LangGraph 的多角色跑团叙事引擎：LLM 负责感知与表达，规则/物理系统负责真实状态落地。
+A playable AI CRPG vertical slice and LangGraph-powered agentic narrative engine.
+
+LLMs handle intent and character expression. Deterministic systems handle state mutation,
+memory isolation, event consistency, regression testing, and performance visibility.
 
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
 ![LangGraph](https://img.shields.io/badge/LangGraph-State_Machine-orange)
-![SQLite](https://img.shields.io/badge/SQLite-Checkpoint-lightgrey)
 ![FastAPI](https://img.shields.io/badge/API-FastAPI-green)
-![YAML](https://img.shields.io/badge/Data-YAML-yellow)
+![Golden Eval](https://img.shields.io/badge/Eval-Golden_Replay-purple)
+![Benchmark](https://img.shields.io/badge/Benchmark-Real_LLM-violet)
 
-## Project Overview
+BG3_LLM_Agent is a playable AI CRPG vertical slice and an agentic narrative engine infrastructure prototype.
 
-`BG3_LLM_Agent` 是一个以《博德之门 3》式队伍互动为目标的 AI 跑团引擎。项目重点不是“让模型自由聊天”，而是把 LLM 放进一套可追踪、可持久化、可验证的游戏状态机中：
+Core positioning:
 
-- DM 节点识别玩家意图、检定难度、参与回应的 NPC。
-- Mechanics 节点执行 D20 检定，产出客观成功/失败结果。
-- Physics 系统负责物品、HP、环境交互、移动等硬状态变更。
-- Generation 节点根据角色 YAML、历史、检定、背包和环境生成台词。
-- SQLite Checkpoint 保存跨回合状态，ChromaDB 保存长期语义记忆。
+> A LangGraph-powered AI CRPG narrative engine where LLMs handle intent and expression,
+> while deterministic game systems own state mutation, memory isolation, event consistency,
+> testing, and performance visibility.
 
-当前架构已经引入 `GameService` 应用服务层。CLI 和 FastAPI 都只是前端适配器，真正的“单回合编排”统一由 `core/application/game_service.py` 管理。
+## What This Project Demonstrates
 
-## Current Architecture
+- Multi-agent companion dialogue with isolated actor views.
+- Deterministic physical actions through DomainEvent and EventDrain.
+- Skill checks, traps, hidden lore, item transfer, and party reactions in one shared runtime.
+- Golden replay evals for regression safety without real LLM calls.
+- Real LLM benchmark coverage with architecture comparison and prompt budget estimates.
+- A playable Necromancer Lab V2 browser demo with Showcase Mode overlays.
+- FastAPI and CLI frontends sharing one GameService orchestration layer.
 
-```text
-Frontend / Transport
-├── main.py                 # Rich CLI：输入循环、流式节点渲染、记忆沉淀
-├── server.py               # FastAPI：HTTP 参数适配、异常映射、响应模型
-└── web_ui/index.html       # 浏览器 UI 原型
+## Playable Vertical Slice: Necromancer Lab V2
 
-Application Service
-└── core/application/game_service.py
-    ├── 加载 / 初始化 session checkpoint
-    ├── 空存档 Genesis
-    ├── 特殊 UI intent 分发，如 ui_action_loot
-    ├── 调用 graph.ainvoke / graph.astream
-    └── 整形 ChatTurnResult
-
-Graph Engine
-├── core/graph/graph_state.py       # GameState 状态契约
-├── core/graph/graph_builder.py     # LangGraph 构建与节点连接
-├── core/graph/graph_routers.py     # 条件路由
-└── core/graph/nodes/
-    ├── input.py                    # slash command、输入预处理、world tick
-    ├── dm.py                       # DM 意图分析、旁白、speaker 推进
-    ├── mechanics.py                # 技能检定节点
-    └── generation.py               # NPC 台词、tool loop、physical_action 解析
-
-Domain Systems
-├── core/systems/mechanics.py       # D20 检定、属性/关系修正、dialogue triggers
-├── core/engine/physics.py          # 物品流转、HP、环境交互、loot、move
-├── core/systems/inventory.py       # ItemRegistry 与背包领域对象
-├── core/systems/world_init.py      # 初始世界状态
-└── core/systems/memory_rag.py      # ChromaDB 长期记忆
-
-Data / Prompt
-├── characters/*.yaml               # 角色卡、动态状态、剧情规则、触发器
-├── characters/persona_template.j2  # 角色提示词模板
-├── core/llm/prompts/*.j2           # DM / narration / system rules / banter prompts
-├── config/items.yaml               # 物品静态真相源
-└── data/player.json                # 玩家初始数据
-```
-
-## Turn Lifecycle
-
-一次玩家输入的主流程如下：
+The current public demo is a compact AI CRPG vertical slice:
 
 ```text
-main.py / server.py
-  -> GameService.process_chat_turn(...)
-    -> load checkpoint by session_id
-    -> run Genesis if entities missing
-    -> handle ui_action_loot directly when requested
-    -> graph.ainvoke(...) or graph.astream(...)
-      -> input_processing
-      -> world_tick
-      -> dm_analysis
-      -> mechanics_processing when needed
-      -> narration or generation
-      -> advance_speaker -> generation while speaker_queue is not empty
-    -> build ChatTurnResult
+A -> B -> C -> D -> Exit
+safe room -> poison corridor -> hidden study -> Gribbo lab -> final exit
 ```
 
-`ChatTurnResult` 是 CLI/API 共用的应用层输出：
+It is intentionally small, but it exercises the backend in ways that matter:
 
-```python
-{
-    "responses": [{"speaker": "astarion", "text": "..."}],
-    "journal_events": ["Skill Check | ..."],
-    "current_location": "幽暗地域营地 (Underdark Camp)",
-    "environment_objects": {...},
-    "party_status": {...},
-}
+- perception and trap awareness on entry
+- hidden lore and diary reading branches
+- companion agenda, disagreement, and party banter
+- item transactions and key-gated escape flow
+- state diff and director trace overlays in Showcase Mode
+
+In practice, the slice covers the path implied by the shipped golden cases:
+
+- Act 1: trap perception and lab intro awareness
+- Act 2: necromancer diary success and failure branches
+- Act 3: Gribbo negotiation, siding with or rebuking Astarion
+- Act 4: key retrieval, door opening, and escape resolution
+
+## Architecture Overview
+
+```text
+Web UI / CLI / FastAPI
+        |
+        v
+GameService
+        |
+        v
+LangGraph State Machine
+  input -> dm_router -> mechanics/physics -> actor_runtime/generation -> event_drain
+        |
+        v
+GameState Checkpoint + Memory + Eval Telemetry
 ```
 
-## Core Design Principles
+`GameService` is the application entrypoint. It owns session lifecycle, Genesis/reset flow, state snapshotting, mode-specific orchestration, and transport-neutral response shaping.
 
-### 1. GameService owns application orchestration
+LangGraph owns runtime routing. The current graph includes dedicated paths for input, DM routing, dialogue/lore handling, mechanics, actor invocation, event draining, narration, and generation. This means the backend is no longer a single prompt loop; it is a deterministic state machine with LLM-assisted branches.
 
-`main.py` 和 `server.py` 不再直接管理 Graph checkpoint、Genesis 或状态整形。后续如果要扩展 API、SSE、回放、存档列表、多人 session，应优先扩展 `GameService`，而不是把编排逻辑重新塞回入口文件。
+`ActorView` constrains what each NPC can see. Actors do not read raw global state directly. They receive a scoped view with filtered flags, visible entities, visible history, visible environment objects, and actor-scoped memory snippets.
 
-### 2. GameState is the state contract
+`DomainEvent` and `EventDrain` own state write-back. LLMs and ActorRuntime can propose actions, but inventory changes, memory updates, affection deltas, negotiation outcomes, and world flags are committed through the event pipeline.
 
-`GameState` 是 LangGraph 节点之间传递的唯一状态总线：
+Golden Eval and the real benchmark both reuse the same service layer and core graph contracts. That is the main backend value of the repository: gameplay, replay safety, and benchmark visibility all sit on the same architecture rather than separate demo-only code paths.
 
-- `messages` 使用 LangGraph `add_messages` reducer 追加历史。
-- `journal_events` 使用 `merge_events` reducer 累积事件日志。
-- `entities` 保存多角色 ECS 状态，包括 HP、buff、好感、背包、位置和角色专属动态状态。
-- `latest_roll` 保存最近一次检定，用于 UI 骰子动画与后续叙事约束。
-- `speaker_queue` / `current_speaker` / `speaker_responses` 支撑多 NPC 顺序发言。
+## Backend Infrastructure Highlights
 
-### 3. LLM can suggest actions; physics executes them
+### ActorView / Visibility
 
-Generation 节点可以让 LLM 输出 `physical_action`，但真实状态修改必须落到 `core/engine/physics.py`：
+- NPCs do not consume unrestricted global state.
+- Each actor receives a scoped `ActorView` with `self_state`, public peer views, filtered flags, visible history, public events, and actor-scoped memory snippets.
+- Visibility policy is a backend contract, not a prompt convention.
 
-- `transfer_item` 处理物品流转。
-- `consume` / `use_item` 处理消耗。
-- `interact_object` 处理环境对象状态。
-- `move_to` 更新语义位置。
-- `loot` 从环境容器转移物品到角色背包。
+### MemoryService
 
-不要只在台词里描述“拿走了”“喝下了”“打开了”，却不写回 state。
+- Memory is separated into actor-private, party-shared, and world retrieval scopes.
+- `MemoryService.retrieve_for_actor(...)` and `retrieve_for_director(...)` keep actor isolation explicit.
+- This provides a backend-ready base for future RAG expansion without collapsing private memory boundaries.
 
-### 4. Mechanics decides success; generation expresses it
+### ActorRuntime
 
-`core/systems/mechanics.py` 是检定真相源。DM 可以估计 `difficulty_class`，但是否成功由 D20 结果决定。Generation 节点应基于 `latest_roll` 表达结果，不能推翻 Mechanics。
+- `ActorRuntime` can emit deterministic companion responses and event decisions without always paying for a large generation prompt.
+- It is a good fit for gift acceptance or rejection, relationship reactions, private memory updates, party choice commentary, and other structured companion behavior.
+- This keeps simple companion logic cheap, testable, and replayable.
 
-### 5. Characters and items are data-driven
+### DomainEvent / EventDrain
 
-新增角色优先写 `characters/<id>.yaml`，而不是加硬编码分支。新增物品优先写 `config/items.yaml`，并通过 `ItemRegistry` 查询名称、类型、效果和堆叠规则。
+- LLMs may suggest actions, but world state changes land through the event pipeline.
+- Item transfers, affection updates, memory writes, negotiation outcomes, combat flags, and public logs all converge on `DomainEvent` and `event_drain`.
+- This is the main consistency boundary for the backend.
 
-## Main Modules
+### Golden Eval
 
-### Application Layer
+- Golden Eval is deterministic replay, not a real-LLM smoke test.
+- It exists to protect routing, event application, actor visibility, memory isolation, and scenario regressions.
+- The runner lives in `core/eval/runner.py` and uses cases under `evals/golden/`.
 
-- `core/application/game_service.py`
-  - `process_chat_turn(...)`：单回合入口。
-  - `get_session_state(...)`：读取当前 session 状态，可自动 Genesis。
-  - `_process_loot_action(...)`：处理 UI 直连拾取。
-  - `_build_chat_result(...)`：把 Graph state 转为稳定 API/CLI 输出。
+### Real LLM Benchmark
 
-### Graph Layer
+- Real benchmark runs are manual and opt-in.
+- They are designed to measure real provider latency, graph routing behavior, action success, and prompt-budget deltas against a naive monolithic baseline.
+- See [BENCHMARK.md](BENCHMARK.md) for the latest report.
 
-- `core/graph/graph_builder.py`
-  - 构建 LangGraph 节点和路由。
-  - 节点顺序：Input -> World Tick -> DM -> Mechanics -> Narration/Generation。
-- `core/graph/graph_routers.py`
-  - `route_after_dm`：动作类意图或秘密刺探进入 Mechanics。
-  - `route_after_mechanics`：社交结果交给 NPC，环境/战斗结果交给 DM 旁白。
-  - `route_after_narration`：根据掷骰结果和概率决定是否触发队友吐槽。
-- `core/graph/nodes/generation.py`
-  - 当前最复杂节点，负责角色 prompt、tool 调用、JSON 解析、physical action 和多角色发言合并。
+## Runtime Modes
 
-### LLM / Prompt Layer
+| Mode | Purpose | Uses Real LLM | Deterministic | Entry |
+| --- | --- | --- | --- | --- |
+| Playable | Real gameplay runtime | yes | no | Web UI / CLI / API |
+| Showcase | Technical demo overlays and guided presentation | optional | no | `qa_showcase=1` |
+| Golden Eval | Regression replay baseline | no | yes | `python -m core.eval.runner --suite golden` |
+| Benchmark | Real LLM performance report | yes | no | `python scripts/generate_benchmark.py` |
 
-- `core/llm/dm.py`
-  - 懒加载 OpenAI 客户端，避免仅导入模块就要求 API key。
-  - 使用受限 AST 安全求值 YAML `narrative_rules`，不再直接 `eval`。
-  - 解析 DM JSON 后做字段规范化、responders 过滤、flags/hp/items 安全提取。
-- `core/utils/text_processor.py`
-  - `parse_llm_json` 支持 Markdown fenced block、正文嵌入 JSON、非法正号前缀清洗。
-  - `clean_npc_dialogue` 清理模型输出里的多余说话人前缀。
-  - `format_history_message` 统一历史消息归因，降低 NPC 身份幻觉。
+Notes:
 
-## Data Model Notes
+- Showcase Mode may include frontend-guided continuity helpers for presentation. It should not be treated as proof that the backend alone completed the full loop.
+- Benchmark mode is not a default CI gate.
+- Golden Eval is the regression truth source for deterministic backend behavior.
 
-### Entity shape
+## Benchmark v2 Summary
 
-运行时实体大致形态：
+See [BENCHMARK.md](BENCHMARK.md) for the latest full run.
 
-```python
-entities = {
-    "shadowheart": {
-        "hp": 10,
-        "active_buffs": [],
-        "affection": 50,
-        "inventory": {"healing_potion": 1},
-        "position": "camp_center",
-        "shar_faith": 90,
-        "memory_awakening": 10,
-    }
-}
-```
+Current baseline highlights:
 
-### Inventory shape
+- physics core node: about `1 ms`
+- generation LLM node: about `1461 ms`
+- first graph node update: about `45 ms` average
+- estimated scoped prompt reduction: about `95.7%`
+- action success: `100.0%` on the benchmark suite
 
-Graph state 内背包统一用 `Dict[str, int]`：
+Important interpretation notes:
 
-```python
-player_inventory = {
-    "healing_potion": 2,
-    "gold_coin": 50,
-}
-```
+- Provider token usage was unavailable in the referenced run, so prompt-token comparisons are estimated rather than provider-billed totals.
+- Naive monolithic latency is an architecture comparison estimate, not a second live billing run.
+- Token-level TTFT is still unavailable in the current node-update stream path and is reported as `N/A`.
 
-物品的中文名、效果、类型和堆叠规则来自 `config/items.yaml`。
+## Quick Start
 
-## Development Guide For LLMs
-
-给后续 LLM 继续开发时，请遵守这些边界：
-
-- 新增请求入口或 session 级逻辑：优先改 `GameService`。
-- 新增 API 字段：优先扩展 `ChatTurnResult` 和 `server.py` 的 Pydantic response。
-- 新增回合内流程：改 `core/graph/graph_builder.py` 和 `graph_routers.py`。
-- 新增状态字段：先更新 `GameState`，再确保 Genesis / overlay / API 输出一致。
-- 新增检定规则：改 `core/systems/mechanics.py`。
-- 新增物理状态变更：改 `core/engine/physics.py`。
-- 新增角色、剧情状态、触发器：优先改 `characters/*.yaml`。
-- 新增物品：改 `config/items.yaml` 并通过 `ItemRegistry` 使用。
-- 不要让 UI/API 层直接修改业务状态，除非通过 `GameService` 封装成明确应用用例。
-
-## Governance Docs
-
-- V1 Contract Freeze: `docs/v1_contract_freeze.md`
-- V1.1 Runtime Registry Governance: `docs/v1_1_runtime_registry.md`
-- V1.1 Runtime NPC SOP (Frozen): `docs/v1_1_runtime_npc_sop.md`
-- V1.3 Social Action / Item Transactions: `docs/v1_3_social_item_transactions.md`
-- V1.3 Party Turn Coordinator: `docs/v1_3_party_turn_coordinator.md`
-- V1.3 Actor Visibility Policy: `docs/v1_3_actor_visibility_policy.md`
-- V1.3 Capability Freeze: `docs/v1_3_capability_freeze.md`
-- Content Sprint 1 Story Bible: `docs/content_sprint_1_necromancer_lab_story_bible.md`
-- Content Sprint 1 Golden Spec: `docs/content_sprint_1_necromancer_lab_golden_spec.md`
-- Content Sprint 1 Playable Demo Freeze: `docs/content_sprint_1_playable_demo_freeze.md`
-
-## Tech Stack
-
-- Python 3.10+
-- LangGraph / LangChain Core / LangChain OpenAI
-- FastAPI
-- Rich
-- SQLite checkpoint via `langgraph-checkpoint-sqlite`
-- ChromaDB for episodic memory
-- Jinja2 prompt templates
-- YAML data configuration
-
-## Getting Started
+Install dependencies:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-配置 `.env`：
+Configure `.env`:
 
 ```bash
 BAILIAN_API_KEY=...
@@ -248,88 +166,118 @@ DASHSCOPE_API_BASE=...
 MODEL_NAME=qwen-plus
 ```
 
-运行 CLI：
-
-```bash
-python main.py
-```
-
-运行 API：
+Start the API and web UI:
 
 ```bash
 python server.py
 ```
 
-环境变量覆盖（可选）：
-
-```bash
-BG3_HOST=127.0.0.1 BG3_PORT=8010 python server.py
-```
-
-默认服务地址：
+Open the playable demo:
 
 ```text
-POST http://127.0.0.1:8000/api/chat
+http://127.0.0.1:8000/web_ui/?map_id=necromancer_lab
 ```
 
-请求示例：
+Open Showcase Mode:
 
-```json
-{
-  "session_id": "demo_save_01",
-  "user_input": "影心，你觉得这个铁箱子里有什么？"
-}
+```text
+http://127.0.0.1:8000/web_ui/?map_id=necromancer_lab&qa_showcase=1&qa_no_idle=1
 ```
 
-UI 直连拾取示例：
-
-```json
-{
-  "session_id": "demo_save_01",
-  "intent": "ui_action_loot",
-  "character": "shadowheart"
-}
-```
-
-## Testing
-
-项目已有隔离测试覆盖若干关键边界：
-
-- `tests/test_text_processor.py`：LLM JSON 解析与文本清洗。
-- `tests/test_v2_architecture.py`：物理黑洞防御、工具参数、失败拒绝倾向。
-- `tests/test_tools_llm.py`：工具循环行为桩测试。
-
-运行：
+Run the CLI:
 
 ```bash
-pytest
+python main.py
 ```
 
-## Eval / Checks
+## Testing / Eval / Benchmark
 
-本地检查：
+Frontend tests:
+
+```bash
+npm test -- --runInBand
+```
+
+Python tests:
+
+```bash
+pytest -q
+```
+
+Golden replay:
+
+```bash
+python -m core.eval.runner --suite golden
+```
+
+Unified local check:
 
 ```bash
 make check
 ```
 
-只跑单元测试：
+Benchmark dry run:
 
 ```bash
-make test
+python scripts/generate_benchmark.py --dry-run --max-cases 4
 ```
 
-只跑 Golden Eval：
+Real benchmark run:
 
 ```bash
-make eval
+python scripts/generate_benchmark.py --max-cases 4
 ```
 
-详细说明见 `docs/evals.md`。
+Benchmark guidance:
 
-## Current Caveats
+- Real benchmark requires an API key and incurs provider cost.
+- Do not treat benchmark output as a deterministic CI gate.
+- Use Golden Eval for replay-safe regression protection.
 
-- `core/graph/nodes/generation.py` 仍是职责最重的节点，后续扩展复杂行为时应优先拆分，而不是继续堆逻辑。
-- `core/engine/__init__.py` 仍保留对 `archive/v1_legacy/engine.py` 的兼容 re-export。
-- `DEBUG_ALWAYS_PASS_CHECKS` 当前在 `core/engine/physics.py` 中为开发测试开关，真实规则验收前应检查其值。
-- `memory.db` 是本地 checkpoint 文件，不应作为代码逻辑依赖。
+## Repository Map
+
+```text
+core/application/      GameService orchestration
+core/graph/            LangGraph state machine, nodes, and subgraphs
+core/actors/           ActorView, ActorRuntime, registry, visibility contracts
+core/events/           DomainEvent models, apply path, and event store
+core/memory/           Memory scopes, retrieval, distillation, and service layer
+core/eval/             Golden replay runner, assertions, telemetry, reporting
+scripts/               Benchmark and simulation tooling
+evals/golden/          deterministic regression cases
+evals/benchmark/       real LLM performance cases
+web_ui/                browser demo and Showcase Mode UI
+data/maps/             YAML backend maps and TMX visual maps
+characters/            YAML character definitions and prompts
+docs/                  governance, freeze contracts, and design records
+```
+
+## Governance / Freeze Docs
+
+- [Backend / Infra Freeze](docs/backend_infra_freeze.md)
+- [Real LLM Benchmark](BENCHMARK.md)
+- [V1 Contract Freeze](docs/v1_contract_freeze.md)
+- [V1.3 Capability Freeze](docs/v1_3_capability_freeze.md)
+- [Content Sprint 1 Playable Demo Freeze](docs/content_sprint_1_playable_demo_freeze.md)
+
+More governance docs are under [`docs/`](docs/).
+
+## Current Scope / Non-goals
+
+This is not a full CRPG. It is a vertical slice focused on agentic narrative infrastructure.
+
+Frozen backend contracts:
+
+- GameService API
+- ActorView, MemoryService, and ActorRuntime
+- DomainEvent and EventDrain
+- Golden Eval runner
+- Benchmark report schema
+
+Known future work:
+
+- token-level TTFT via generation streaming
+- provider token usage extraction when available
+- richer combat presentation
+- more content encounters driven by agentic narrative design
+- optional tighter YAML/TMX map synchronization

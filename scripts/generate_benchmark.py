@@ -23,6 +23,7 @@ from core.eval.assertions import AssertionReport, assert_eval_expectations
 from core.eval.init import discover_golden_eval_cases
 from core.eval.models import EvalCase, EvalStep
 from core.eval.telemetry import JsonlTelemetrySink, emit_telemetry, normalize_token_usage, telemetry_scope
+from core.eval.token_estimator import estimate_payload_tokens, estimate_text_tokens
 
 
 REQUIRED_CONFIG_ERROR = "Real LLM benchmark requires API_KEY, BASE_URL, and MODEL_NAME."
@@ -42,6 +43,11 @@ class BenchmarkOptions:
     max_cases: int | None = None
     fail_on_eval_failure: bool = False
     dry_run: bool = False
+    naive_llm_latency_ms: int = 2500
+    latency_penalty_ms_per_1k_tokens: float = 150.0
+    token_estimator: str = "char_heuristic"
+    naive_comparison: bool = True
+    estimated_tokens: bool = True
 
 
 @dataclass
@@ -55,6 +61,16 @@ class StepMetric:
     action_success: bool = False
     action_unknown: bool = False
     error: str | None = None
+    duration_ms: float | None = None
+    llm_call_count: int = 0
+    provider_prompt_tokens: int = 0
+    provider_completion_tokens: int = 0
+    provider_total_tokens: int = 0
+    estimated_prompt_tokens: int | None = None
+    estimated_completion_tokens: int | None = None
+    estimated_total_tokens: int | None = None
+    naive_prompt_tokens: int | None = None
+    path_class: str = "unknown"
 
 
 @dataclass
@@ -79,6 +95,7 @@ class BenchmarkResult:
     steps: List[StepMetric]
     telemetry_events: List[Dict[str, Any]]
     missing_token_usage_calls: int = 0
+    options: BenchmarkOptions = field(default_factory=BenchmarkOptions)
 
     @property
     def case_count(self) -> int:
@@ -250,6 +267,114 @@ def collect_token_economy(
         "zero_usage_call_count": zero_usage_call_count,
         "usage_available": total_tokens > 0,
     }
+
+
+def _llm_usage_from_events(events: Sequence[Mapping[str, Any]]) -> Dict[str, int]:
+    usage_totals = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    for event in events:
+        if event.get("event_name") != "llm_call":
+            continue
+        usage = normalize_token_usage(_payload(event).get("token_usage") or {})
+        usage_totals["prompt_tokens"] += usage["prompt_tokens"]
+        usage_totals["completion_tokens"] += usage["completion_tokens"]
+        usage_totals["total_tokens"] += usage["total_tokens"]
+    return usage_totals
+
+
+def _turn_duration_from_events(events: Sequence[Mapping[str, Any]], fallback_ms: float) -> float:
+    for event in reversed(events):
+        if event.get("event_name") != "turn_finished":
+            continue
+        try:
+            return float(_payload(event).get("duration_ms", fallback_ms))
+        except (TypeError, ValueError):
+            return fallback_ms
+    return fallback_ms
+
+
+def _estimate_optimized_prompt_tokens(
+    *,
+    step: EvalStep,
+    response: Mapping[str, Any],
+) -> int:
+    scoped_payload = {
+        "system_scope": "BG3 graph node prompt with routed state slice, visible actor view, and current input",
+        "request": {
+            "user_input": step.user_input,
+            "intent": step.intent,
+            "character": step.character,
+            "payload": dict(step.payload or {}),
+        },
+        "visible_response_context": {
+            "responses": response.get("responses", []),
+            "latest_roll": response.get("latest_roll", {}),
+            "journal_events": list(response.get("journal_events") or [])[-3:],
+            "current_location": response.get("current_location", ""),
+        },
+    }
+    return estimate_payload_tokens(scoped_payload)
+
+
+def _estimate_completion_tokens(response: Mapping[str, Any]) -> int:
+    texts: List[str] = []
+    for item in list(response.get("responses") or []):
+        if isinstance(item, Mapping):
+            texts.append(str(item.get("text") or ""))
+    texts.extend(str(item) for item in list(response.get("journal_events") or []))
+    if response.get("latest_roll"):
+        texts.append(json.dumps(response.get("latest_roll"), ensure_ascii=False, default=str))
+    return estimate_text_tokens("\n".join(text for text in texts if text))
+
+
+def _estimate_naive_prompt_tokens(
+    *,
+    step: EvalStep,
+    snapshot: Mapping[str, Any],
+) -> int:
+    game_state = snapshot.get("game_state") if isinstance(snapshot.get("game_state"), Mapping) else snapshot
+    naive_payload = {
+        "system_rules": (
+            "Monolithic BG3 agent: resolve intent, inspect full game state, handle every entity, "
+            "all inventories, flags, actor memory, hidden state, physics rules, JSON action output, "
+            "narration, dialogue, and validation in one prompt."
+        ),
+        "full_game_state": game_state,
+        "recent_transcript": snapshot.get("responses", []),
+        "current_user_input": step.user_input,
+        "current_intent": step.intent,
+        "current_payload": dict(step.payload or {}),
+    }
+    return estimate_payload_tokens(naive_payload)
+
+
+def classify_step_path(events: Sequence[Mapping[str, Any]]) -> str:
+    has_generation_llm = False
+    has_actor_runtime = False
+    has_physics = False
+    has_dm_llm = False
+    for event in events:
+        payload = _payload(event)
+        if event.get("event_name") == "llm_call":
+            component = str(payload.get("component") or "").strip().lower()
+            if component == "generation":
+                has_generation_llm = True
+            elif component == "dm":
+                has_dm_llm = True
+        elif event.get("event_name") == "actor_runtime_decision":
+            has_actor_runtime = True
+        elif event.get("event_name") == "node_finished":
+            if classify_node_name(str(payload.get("node_name") or "")) == "physics":
+                has_physics = True
+
+    if has_generation_llm:
+        return "Generation LLM"
+    if has_actor_runtime:
+        return "ActorRuntime"
+    if has_physics:
+        return "Mechanics-only"
+    if has_dm_llm:
+        return "DM-only"
+    return "Router"
 
 
 def is_action_attempt(step: EvalStep, payload: Mapping[str, Any] | None = None) -> bool:
@@ -523,10 +648,22 @@ async def run_benchmark_case(
 
         after_events = _snapshot_telemetry_events(sink)
         step_events = after_events[before_events_count:]
+        elapsed_ms = max(0.0, (time.perf_counter() - started_at) * 1000.0)
         first_update_latency_ms = (
             max(0.0, (first_update_at - started_at) * 1000.0) if first_update_at is not None else None
         )
         ttft_ms = _first_token_latency(step_events)
+        usage_totals = _llm_usage_from_events(step_events)
+        estimated_prompt_tokens = _estimate_optimized_prompt_tokens(
+            step=step,
+            response=response_payload,
+        )
+        estimated_completion_tokens = _estimate_completion_tokens(response_payload)
+        estimated_total_tokens = estimated_prompt_tokens + estimated_completion_tokens
+        naive_prompt_tokens = _estimate_naive_prompt_tokens(
+            step=step,
+            snapshot=snapshot_payload,
+        )
         action_attempt, action_success, action_unknown = infer_action_outcome(
             step=step,
             response=response_payload,
@@ -543,6 +680,16 @@ async def run_benchmark_case(
             action_success=action_success,
             action_unknown=action_unknown,
             error=step_error,
+            duration_ms=_turn_duration_from_events(step_events, elapsed_ms),
+            llm_call_count=sum(1 for event in step_events if event.get("event_name") == "llm_call"),
+            provider_prompt_tokens=usage_totals["prompt_tokens"],
+            provider_completion_tokens=usage_totals["completion_tokens"],
+            provider_total_tokens=usage_totals["total_tokens"],
+            estimated_prompt_tokens=estimated_prompt_tokens,
+            estimated_completion_tokens=estimated_completion_tokens,
+            estimated_total_tokens=estimated_total_tokens,
+            naive_prompt_tokens=naive_prompt_tokens,
+            path_class=classify_step_path(step_events),
         )
         step_metrics.append(metric)
         if not step_ok:
@@ -657,6 +804,7 @@ async def run_benchmark_suite(options: BenchmarkOptions) -> BenchmarkResult:
             ],
             steps=[],
             telemetry_events=[],
+            options=options,
         )
 
     validate_real_llm_config()
@@ -687,31 +835,39 @@ async def run_benchmark_suite(options: BenchmarkOptions) -> BenchmarkResult:
 
     telemetry_events = _snapshot_telemetry_events(sink)
     token_economy = collect_token_economy(telemetry_events, step_count=len(step_metrics))
+    timestamp = datetime.now(timezone.utc).isoformat()
+    result = BenchmarkResult(
+        suite=options.suite,
+        model=_settings_value("MODEL_NAME"),
+        timestamp=timestamp,
+        run_dir=run_dir,
+        cases=case_metrics,
+        steps=step_metrics,
+        telemetry_events=telemetry_events,
+        missing_token_usage_calls=int(token_economy["missing_usage_count"]),
+        options=options,
+    )
     summary = {
         "suite": options.suite,
         "model": _settings_value("MODEL_NAME"),
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": timestamp,
         "case_count": len(case_metrics),
         "step_count": len(step_metrics),
         "passed_count": sum(1 for item in case_metrics if item.ok),
         "failed_count": sum(1 for item in case_metrics if not item.ok),
         "case_results": [case_metric_to_dict(item) for item in case_metrics],
         "token_economy": token_economy,
+        "estimated_token_economy": estimated_token_economy(result),
         "node_breakdown": collect_node_breakdown(telemetry_events),
         "action_reliability": collect_action_reliability(step_metrics),
         "coverage": collect_coverage_summary(telemetry_events, step_metrics),
+        "architecture_comparison": architecture_comparison(result),
+        "prompt_budget_comparison": prompt_budget_comparison(result),
+        "routing_efficiency": routing_efficiency(result),
+        "per_case_details": per_case_details(result),
     }
     _write_json(run_dir / "summary.json", summary)
-    return BenchmarkResult(
-        suite=options.suite,
-        model=_settings_value("MODEL_NAME"),
-        timestamp=str(summary["timestamp"]),
-        run_dir=run_dir,
-        cases=case_metrics,
-        steps=step_metrics,
-        telemetry_events=telemetry_events,
-        missing_token_usage_calls=int(token_economy["missing_usage_count"]),
-    )
+    return result
 
 
 def _fmt_ms(value: float | int | None) -> str:
@@ -805,10 +961,331 @@ def _baseline_criteria_rows(result: BenchmarkResult) -> List[str]:
     ]
 
 
+def _architecture_rows(result: BenchmarkResult) -> List[str]:
+    comparison = architecture_comparison(result)
+    if not comparison:
+        return []
+    optimized = comparison["optimized"]
+    naive = comparison["naive"]
+    improvements = comparison["improvements"]
+    rows = [
+        [
+            "LLM Calls / Turn",
+            _fmt_num(float(optimized["llm_calls_per_turn"])),
+            _fmt_num(float(naive["llm_calls_per_turn"])),
+            _fmt_signed_reduction(improvements["llm_calls_per_turn"]),
+        ],
+        [
+            "Avg Turn Latency",
+            _fmt_ms(optimized["avg_turn_latency_ms"]),
+            _fmt_ms(naive["avg_turn_latency_ms"]),
+            _fmt_signed_reduction(improvements["avg_turn_latency_ms"]),
+        ],
+        [
+            "Prompt Tokens / Turn (est.)",
+            _fmt_ms(optimized["prompt_tokens_per_turn"]),
+            _fmt_ms(naive["prompt_tokens_per_turn"]),
+            _fmt_signed_reduction(improvements["prompt_tokens_per_turn"]),
+        ],
+        [
+            "Physics Compute",
+            _fmt_ms(optimized["physics_compute_ms"]),
+            "N/A",
+            "deterministic code path",
+        ],
+        [
+            "Action Success Rate",
+            f"{float(optimized['action_success_rate']):.1f}%",
+            f"{float(naive['action_success_rate']):.1f}%",
+            "same benchmark actions",
+        ],
+    ]
+    return [
+        "| " + " | ".join(_markdown_cell(cell) for cell in row) + " |"
+        for row in rows
+    ]
+
+
+def _prompt_budget_rows(result: BenchmarkResult) -> List[str]:
+    rows = []
+    for row in prompt_budget_comparison(result):
+        rows.append(
+            "| "
+            + " | ".join(
+                [
+                    _markdown_cell(row["case"]),
+                    _markdown_cell(_fmt_ms(row["optimized_prompt_tokens"])),
+                    _markdown_cell(_fmt_ms(row["naive_prompt_tokens"])),
+                    _markdown_cell(_fmt_prompt_reduction(row["reduction_percent"])),
+                ]
+            )
+            + " |"
+        )
+    return rows
+
+
+def _routing_rows(result: BenchmarkResult) -> List[str]:
+    rows = []
+    for path, data in routing_efficiency(result).items():
+        rows.append(
+            "| "
+            + " | ".join(
+                [
+                    _markdown_cell(path),
+                    str(data["turns"]),
+                    _fmt_ms(data["avg_turn_latency_ms"]),
+                    _fmt_ms(data["core_node_latency_ms"]),
+                    _fmt_num(float(data["llm_calls_per_turn"])),
+                    _fmt_ms(data["prompt_tokens_per_turn"]),
+                    _markdown_cell(data["description"]),
+                ]
+            )
+            + " |"
+        )
+    return rows
+
+
+def _per_case_detail_rows(result: BenchmarkResult) -> List[str]:
+    rows = []
+    for row in per_case_details(result):
+        rows.append(
+            "| "
+            + " | ".join(
+                [
+                    _markdown_cell(row["case"]),
+                    _markdown_cell(row["path"]),
+                    "yes" if row["ok"] else "no",
+                    _fmt_ms(row["turn_ms"]),
+                    str(row["llm_calls"]),
+                    _fmt_ms(row["optimized_prompt_tokens"]),
+                    _fmt_ms(row["naive_prompt_tokens"]),
+                    _fmt_prompt_reduction(row["reduction_percent"]),
+                    _markdown_cell(row["action"]),
+                ]
+            )
+            + " |"
+        )
+    return rows
+
+
 def _token_display(token_economy: Mapping[str, Any], key: str) -> str:
     if not bool(token_economy.get("usage_available", False)):
         return "Unavailable"
     return _fmt_num(float(token_economy[key]))
+
+
+def _effective_prompt_tokens(step: StepMetric, *, allow_estimated: bool) -> int | None:
+    if step.provider_prompt_tokens > 0:
+        return int(step.provider_prompt_tokens)
+    if allow_estimated and step.estimated_prompt_tokens is not None:
+        return int(step.estimated_prompt_tokens)
+    return None
+
+
+def _effective_completion_tokens(step: StepMetric, *, allow_estimated: bool) -> int | None:
+    if step.provider_completion_tokens > 0:
+        return int(step.provider_completion_tokens)
+    if allow_estimated and step.estimated_completion_tokens is not None:
+        return int(step.estimated_completion_tokens)
+    return None
+
+
+def _avg_optional(values: Sequence[int | float | None]) -> float | None:
+    clean = [float(value) for value in values if value is not None]
+    if not clean:
+        return None
+    return sum(clean) / len(clean)
+
+
+def _reduction_percent(optimized: int | float | None, naive: int | float | None) -> float | None:
+    if optimized is None or naive is None or float(naive) <= 0:
+        return None
+    return (1.0 - (float(optimized) / float(naive))) * 100.0
+
+
+def _fmt_percent(value: float | None) -> str:
+    if value is None:
+        return "N/A"
+    return f"{value:.1f}%"
+
+
+def _fmt_signed_reduction(value: float | None) -> str:
+    if value is None:
+        return "N/A"
+    return f"{value:+.1f}%"
+
+
+def _fmt_prompt_reduction(value: float | None) -> str:
+    if value is None:
+        return "N/A"
+    return f"-{value:.1f}%"
+
+
+def estimated_token_economy(result: BenchmarkResult) -> Dict[str, float | None]:
+    if not result.options.estimated_tokens:
+        return {"avg_prompt_tokens": None, "avg_completion_tokens": None, "avg_total_tokens": None}
+    prompt_avg = _avg_optional([step.estimated_prompt_tokens for step in result.steps])
+    completion_avg = _avg_optional([step.estimated_completion_tokens for step in result.steps])
+    total_avg = _avg_optional([step.estimated_total_tokens for step in result.steps])
+    return {
+        "avg_prompt_tokens": prompt_avg,
+        "avg_completion_tokens": completion_avg,
+        "avg_total_tokens": total_avg,
+    }
+
+
+def prompt_budget_comparison(result: BenchmarkResult) -> List[Dict[str, Any]]:
+    if not result.options.naive_comparison:
+        return []
+    rows: List[Dict[str, Any]] = []
+    for step in result.steps:
+        optimized = _effective_prompt_tokens(step, allow_estimated=result.options.estimated_tokens)
+        naive = step.naive_prompt_tokens
+        reduction = _reduction_percent(optimized, naive)
+        if step.provider_prompt_tokens > 0:
+            optimized_source = "provider"
+        elif result.options.estimated_tokens and step.estimated_prompt_tokens is not None:
+            optimized_source = "estimated"
+        else:
+            optimized_source = "unavailable"
+        rows.append(
+            {
+                "case": step.case_id,
+                "optimized_prompt_tokens": optimized,
+                "optimized_source": optimized_source,
+                "naive_prompt_tokens": naive,
+                "reduction_percent": reduction,
+            }
+        )
+    return rows
+
+
+def routing_efficiency(result: BenchmarkResult) -> Dict[str, Dict[str, Any]]:
+    descriptions = {
+        "Mechanics-only": "deterministic movement/interaction",
+        "ActorRuntime": "template/runtime companion response",
+        "Generation LLM": "rich freeform NPC dialogue",
+        "DM-only": "intent routing without downstream actor/generation",
+        "Router": "non-LLM graph routing",
+    }
+    core_node_classes = {
+        "Mechanics-only": "physics",
+        "ActorRuntime": "actor_runtime",
+        "Generation LLM": "generation",
+        "DM-only": "dm_router",
+        "Router": "other",
+    }
+    node_breakdown = collect_node_breakdown(result.telemetry_events)
+    grouped: Dict[str, List[StepMetric]] = {}
+    for step in result.steps:
+        grouped.setdefault(step.path_class or "unknown", []).append(step)
+
+    out: Dict[str, Dict[str, Any]] = {}
+    for path in ["Mechanics-only", "ActorRuntime", "Generation LLM", "DM-only", "Router"]:
+        items = grouped.get(path, [])
+        if not items:
+            continue
+        prompt_avg = _avg_optional(
+            [_effective_prompt_tokens(step, allow_estimated=result.options.estimated_tokens) for step in items]
+        )
+        core_node_class = core_node_classes.get(path)
+        core_node_latency = (node_breakdown.get(core_node_class or "") or {}).get("avg_ms")
+        out[path] = {
+            "turns": len(items),
+            "avg_turn_latency_ms": _avg_optional([step.duration_ms for step in items]),
+            "core_node_latency_ms": core_node_latency,
+            "llm_calls_per_turn": sum(step.llm_call_count for step in items) / max(1, len(items)),
+            "prompt_tokens_per_turn": prompt_avg,
+            "description": descriptions.get(path, ""),
+        }
+    return out
+
+
+def architecture_comparison(result: BenchmarkResult) -> Dict[str, Any]:
+    if not result.options.naive_comparison:
+        return {}
+    node_breakdown = collect_node_breakdown(result.telemetry_events)
+    action = collect_action_reliability(result.steps)
+    optimized_prompt_avg = _avg_optional(
+        [_effective_prompt_tokens(step, allow_estimated=result.options.estimated_tokens) for step in result.steps]
+    )
+    naive_prompt_avg = _avg_optional([step.naive_prompt_tokens for step in result.steps])
+    generation_latency = (node_breakdown.get("generation") or {}).get("avg_ms")
+    dm_latency = (node_breakdown.get("dm_router") or {}).get("avg_ms")
+    observed_llm_latency = float(generation_latency or dm_latency or result.options.naive_llm_latency_ms)
+    prompt_delta = max(0.0, float(naive_prompt_avg or 0.0) - float(optimized_prompt_avg or 0.0))
+    prompt_size_penalty_ms = prompt_delta * float(result.options.latency_penalty_ms_per_1k_tokens) / 1000.0
+    naive_latency = max(float(result.options.naive_llm_latency_ms), observed_llm_latency) + prompt_size_penalty_ms
+    optimized_latency = avg([step.duration_ms for step in result.steps if step.duration_ms is not None])
+    optimized_llm_calls = sum(step.llm_call_count for step in result.steps) / max(1, result.step_count)
+    return {
+        "note": "Naive latency is estimated from observed LLM latency plus prompt-size penalty; it is not a second live LLM run.",
+        "optimized": {
+            "llm_calls_per_turn": optimized_llm_calls,
+            "avg_turn_latency_ms": optimized_latency,
+            "prompt_tokens_per_turn": optimized_prompt_avg,
+            "physics_compute_ms": (node_breakdown.get("physics") or {}).get("avg_ms"),
+            "action_success_rate": action["success_rate"],
+        },
+        "naive": {
+            "llm_calls_per_turn": 1.0,
+            "avg_turn_latency_ms": naive_latency,
+            "prompt_tokens_per_turn": naive_prompt_avg,
+            "physics_compute_ms": None,
+            "action_success_rate": action["success_rate"],
+            "prompt_size_penalty_ms": prompt_size_penalty_ms,
+        },
+        "improvements": {
+            "llm_calls_per_turn": _reduction_percent(optimized_llm_calls, 1.0),
+            "avg_turn_latency_ms": _reduction_percent(optimized_latency, naive_latency),
+            "prompt_tokens_per_turn": _reduction_percent(optimized_prompt_avg, naive_prompt_avg),
+        },
+    }
+
+
+def per_case_details(result: BenchmarkResult) -> List[Dict[str, Any]]:
+    case_by_id = {case.case_id: case for case in result.cases}
+    rows: List[Dict[str, Any]] = []
+    for step in result.steps:
+        optimized = _effective_prompt_tokens(step, allow_estimated=result.options.estimated_tokens)
+        naive = step.naive_prompt_tokens if result.options.naive_comparison else None
+        action = "none"
+        if step.action_attempt:
+            if step.action_success:
+                action = "success"
+            elif step.action_unknown:
+                action = "unknown"
+            else:
+                action = "failed"
+        rows.append(
+            {
+                "case": step.case_id,
+                "path": step.path_class,
+                "ok": bool(case_by_id.get(step.case_id, CaseMetric(step.case_id, "", False, 0, 0)).ok),
+                "turn_ms": step.duration_ms,
+                "llm_calls": step.llm_call_count,
+                "optimized_prompt_tokens": optimized,
+                "naive_prompt_tokens": naive,
+                "reduction_percent": _reduction_percent(optimized, naive),
+                "action": action,
+            }
+        )
+    return rows
+
+
+def executive_summary(result: BenchmarkResult) -> List[str]:
+    node_breakdown = collect_node_breakdown(result.telemetry_events)
+    action = collect_action_reliability(result.steps)
+    prompt_rows = prompt_budget_comparison(result)
+    avg_reduction = _avg_optional([row.get("reduction_percent") for row in prompt_rows])
+    physics_ms = _fmt_ms((node_breakdown.get("physics") or {}).get("avg_ms"))
+    generation_ms = _fmt_ms((node_breakdown.get("generation") or {}).get("avg_ms"))
+    return [
+        f"Physics path averages `{physics_ms} ms`, while generation LLM node averages `{generation_ms} ms`.",
+        f"ActorView-scoped prompt budget is estimated to be `{_fmt_percent(avg_reduction)}` lower than full-state prompts.",
+        f"Mechanics/action turns completed with `{action['attempts']}` action attempts and `{float(action['success_rate']):.1f}%` success rate.",
+        "This benchmark separates deterministic game-state computation from high-latency LLM narration.",
+    ]
 
 
 def render_console_report(result: BenchmarkResult) -> str:
@@ -927,6 +1404,7 @@ def render_markdown_report(result: BenchmarkResult) -> str:
     ttfts = [item.ttft_ms for item in result.steps if item.ttft_ms is not None]
     node_breakdown = collect_node_breakdown(result.telemetry_events)
     token_economy = collect_token_economy(result.telemetry_events, step_count=result.step_count)
+    estimated_tokens = estimated_token_economy(result)
     action = collect_action_reliability(result.steps)
     coverage = collect_coverage_summary(result.telemetry_events, result.steps)
     status = benchmark_status(result)
@@ -934,7 +1412,21 @@ def render_markdown_report(result: BenchmarkResult) -> str:
         "This is a real LLM benchmark, not the deterministic CI golden replay runner.",
         "Current graph stream is node-update streaming; strict token-level TTFT requires generation LLM astream instrumentation.",
         "Benchmark results can vary by provider, network conditions, and model load.",
+        "Provider Usage is real LLM token usage returned by the provider or LangChain metadata.",
     ]
+    if result.options.estimated_tokens:
+        notes.append(
+            "Token counts are provider usage when available; otherwise estimated using deterministic local estimator."
+        )
+    else:
+        notes.append("Estimated token fallback was disabled for this run.")
+    if result.options.naive_comparison:
+        notes.append(
+            "Naive latency is estimated from observed LLM latency plus prompt-size penalty; it is not a second live LLM run."
+        )
+    notes.append(
+        "Turn latency includes graph orchestration and session initialization; core node latency isolates the routed execution path."
+    )
     if status == "Experimental":
         notes.append("Status is Experimental, so this run should not be presented as a formal performance baseline.")
     if coverage["generation_llm_calls"] == 0:
@@ -951,51 +1443,82 @@ def render_markdown_report(result: BenchmarkResult) -> str:
     if not node_rows:
         node_rows = ["| N/A | N/A | N/A | 0 |"]
 
-    return "\n".join(
+    lines = [
+        "# BG3 LLM Agent Real-LLM Benchmark",
+        "",
+        f"Status: {status}",
+        "",
+        "## Executive Summary",
+        "",
+        *(f"- {line}" for line in executive_summary(result)),
+        "",
+        "## Run Metadata",
+        "",
+        f"- Timestamp: `{result.timestamp}`",
+        f"- Model: `{result.model or 'N/A'}`",
+        f"- Suite: `{result.suite}`",
+        f"- Cases: `{result.case_count}`",
+        f"- Steps: `{result.step_count}`",
+        f"- Eval Pass: `{result.passed_count}/{result.case_count}`",
+        f"- Artifacts: `{result.run_dir}`",
+        "",
+        "## Latency",
+        "",
+        "| Metric | Avg ms | P95 ms | Count |",
+        "| --- | ---: | ---: | ---: |",
+        f"| First Graph Node Update (not token TTFT) | {_fmt_ms(avg(first_updates))} | {_fmt_ms(percentile(first_updates, 95))} | {len(first_updates)} |",
+        f"| TTFT (token-level) | {_fmt_ms(avg(ttfts))} | {_fmt_ms(percentile(ttfts, 95))} | {len(ttfts)} |",
+        "",
+        "## Coverage Summary",
+        "",
+        "| Metric | Value |",
+        "| --- | ---: |",
+        f"| DM LLM calls | {coverage['dm_llm_calls']} |",
+        f"| Generation LLM calls | {coverage['generation_llm_calls']} |",
+        f"| Physics node samples | {coverage['physics_node_samples']} |",
+        f"| Action attempts | {coverage['action_attempts']} |",
+        "",
+        "## Node Breakdown",
+        "",
+        "| Node Class | Avg ms | P95 ms | Count |",
+        "| --- | ---: | ---: | ---: |",
+        *node_rows,
+        "",
+        "## Token Economy",
+        "",
+        "| Metric | Provider Usage | Estimated |",
+        "| --- | ---: | ---: |",
+        f"| Avg Prompt Tokens | {_token_display(token_economy, 'avg_prompt_tokens')} | {_fmt_num(estimated_tokens['avg_prompt_tokens'])} |",
+        f"| Avg Output Tokens | {_token_display(token_economy, 'avg_completion_tokens')} | {_fmt_num(estimated_tokens['avg_completion_tokens'])} |",
+        f"| Avg Total Tokens | {_token_display(token_economy, 'avg_total_tokens')} | {_fmt_num(estimated_tokens['avg_total_tokens'])} |",
+        "",
+    ]
+
+    if result.options.naive_comparison:
+        lines.extend(
+            [
+                "## Architecture Comparison",
+                "",
+                "| Metric | Optimized Graph Agent | Naive Monolithic Agent | Improvement |",
+                "| --- | ---: | ---: | ---: |",
+                *_architecture_rows(result),
+                "",
+                "## Prompt Budget Comparison (Estimated)",
+                "",
+                "| Case | Optimized Scoped Prompt Tokens (est.) | Naive Full-State Tokens (est.) | Reduction |",
+                "| --- | ---: | ---: | ---: |",
+                *(_prompt_budget_rows(result) or ["| - | N/A | N/A | N/A |"]),
+                "",
+            ]
+        )
+
+    lines.extend(
         [
-            "# BG3 LLM Agent Real-LLM Benchmark",
+            "## Routing Efficiency",
             "",
-            f"Status: {status}",
-            "",
-            "## Run Metadata",
-            "",
-            f"- Timestamp: `{result.timestamp}`",
-            f"- Model: `{result.model or 'N/A'}`",
-            f"- Suite: `{result.suite}`",
-            f"- Cases: `{result.case_count}`",
-            f"- Steps: `{result.step_count}`",
-            f"- Eval Pass: `{result.passed_count}/{result.case_count}`",
-            f"- Artifacts: `{result.run_dir}`",
-            "",
-            "## Latency",
-            "",
-            "| Metric | Avg ms | P95 ms | Count |",
-            "| --- | ---: | ---: | ---: |",
-            f"| First Graph Node Update (not token TTFT) | {_fmt_ms(avg(first_updates))} | {_fmt_ms(percentile(first_updates, 95))} | {len(first_updates)} |",
-            f"| TTFT (token-level) | {_fmt_ms(avg(ttfts))} | {_fmt_ms(percentile(ttfts, 95))} | {len(ttfts)} |",
-            "",
-            "## Coverage Summary",
-            "",
-            "| Metric | Value |",
-            "| --- | ---: |",
-            f"| DM LLM calls | {coverage['dm_llm_calls']} |",
-            f"| Generation LLM calls | {coverage['generation_llm_calls']} |",
-            f"| Physics node samples | {coverage['physics_node_samples']} |",
-            f"| Action attempts | {coverage['action_attempts']} |",
-            "",
-            "## Node Breakdown",
-            "",
-            "| Node Class | Avg ms | P95 ms | Count |",
-            "| --- | ---: | ---: | ---: |",
-            *node_rows,
-            "",
-            "## Token Economy",
-            "",
-            "| Metric | Value |",
-            "| --- | ---: |",
-            f"| Avg Prompt Tokens | {_token_display(token_economy, 'avg_prompt_tokens')} |",
-            f"| Avg Output Tokens | {_token_display(token_economy, 'avg_completion_tokens')} |",
-            f"| Avg Total Tokens | {_token_display(token_economy, 'avg_total_tokens')} |",
+            "| Path | Turns | Avg Turn Latency | Core Node Latency | LLM Calls / Turn | Prompt Tokens / Turn | Description |",
+            "| --- | ---: | ---: | ---: | ---: | ---: | --- |",
+            *(_routing_rows(result) or ["| - | 0 | N/A | N/A | N/A | N/A | - |"]),
             "",
             "## Baseline Criteria",
             "",
@@ -1012,6 +1535,12 @@ def render_markdown_report(result: BenchmarkResult) -> str:
             f"| Unknown | {action['unknown']} |",
             f"| Success Rate | {float(action['success_rate']):.1f}% |",
             "",
+            "## Per-Case Details",
+            "",
+            "| Case | Path | OK | Turn ms | LLM Calls | Optimized Prompt | Naive Prompt | Reduction | Action |",
+            "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |",
+            *(_per_case_detail_rows(result) or ["| - | - | - | N/A | 0 | N/A | N/A | N/A | - |"]),
+            "",
             "## Case Results",
             "",
             "| Case | OK | Steps | Failed Steps | Error |",
@@ -1024,6 +1553,7 @@ def render_markdown_report(result: BenchmarkResult) -> str:
             "",
         ]
     )
+    return "\n".join(lines)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -1038,6 +1568,34 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output", default="BENCHMARK.md", help="Markdown benchmark output path.")
     parser.add_argument("--artifacts-dir", default="artifacts/benchmarks", help="Benchmark artifacts root.")
     parser.add_argument("--max-cases", type=int, default=None, help="Limit cases to control real LLM cost.")
+    parser.add_argument(
+        "--naive-llm-latency-ms",
+        type=int,
+        default=2500,
+        help="Default latency estimate for the naive monolithic LLM baseline when no measured LLM node is available.",
+    )
+    parser.add_argument(
+        "--latency-penalty-ms-per-1k-tokens",
+        type=float,
+        default=150.0,
+        help="Prompt-size latency penalty applied to naive full-state baseline per 1k extra prompt tokens.",
+    )
+    parser.add_argument(
+        "--token-estimator",
+        default="char_heuristic",
+        choices=["char_heuristic"],
+        help="Local deterministic token estimator used when provider usage metadata is unavailable.",
+    )
+    parser.add_argument(
+        "--no-naive-comparison",
+        action="store_true",
+        help="Disable deterministic naive monolithic baseline comparison sections.",
+    )
+    parser.add_argument(
+        "--no-estimated-tokens",
+        action="store_true",
+        help="Disable local estimated token fallback when provider usage metadata is unavailable.",
+    )
     parser.add_argument(
         "--fail-on-eval-failure",
         action="store_true",
@@ -1056,6 +1614,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         output=args.output,
         artifacts_dir=args.artifacts_dir,
         max_cases=args.max_cases,
+        naive_llm_latency_ms=int(args.naive_llm_latency_ms),
+        latency_penalty_ms_per_1k_tokens=float(args.latency_penalty_ms_per_1k_tokens),
+        token_estimator=args.token_estimator,
+        naive_comparison=not bool(args.no_naive_comparison),
+        estimated_tokens=not bool(args.no_estimated_tokens),
         fail_on_eval_failure=bool(args.fail_on_eval_failure),
         dry_run=bool(args.dry_run),
     )
