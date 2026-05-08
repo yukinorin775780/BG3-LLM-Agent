@@ -46,6 +46,8 @@ class GameState(TypedDict, total=False):
     # Input Processing [TRANSIENT]
     # -------------------------------------------------------------------------
     user_input: str         # Raw player input this turn
+    target: str             # Optional structured action/dialogue target from API/UI
+    source: str             # Optional structured source channel or actor hint from API/UI
     speaker_queue: List[str]  # 需要发言的 NPC 队列，例如 ["astarion", "shadowheart"]
     current_speaker: str     # 当前正在生成的 NPC
     intent: str             # DM-analyzed 机制动作 (e.g. "ATTACK", "PERSUASION", "CHAT")

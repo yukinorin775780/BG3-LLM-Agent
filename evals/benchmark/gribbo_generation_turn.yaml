@@ -1,0 +1,17 @@
+session:
+  id: benchmark_gribbo_generation_turn
+  metadata:
+    tag: real_llm_benchmark
+    coverage: generation
+determinism:
+  strict: false
+steps:
+  - id: legacy_npc_generation
+    user_input: 地精巡逻兵，你在这间死灵实验室里看到了什么？
+    intent: chat
+    payload:
+      target: goblin_1
+      source: benchmark
+      benchmark_action_attempt: false
+    expected: {}
+expected: {}

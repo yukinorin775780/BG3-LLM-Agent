@@ -1,0 +1,112 @@
+{
+  "action_reliability": {
+    "attempts": 3,
+    "success_rate": 100.0,
+    "successes": 3,
+    "unknown": 0
+  },
+  "case_count": 4,
+  "case_results": [
+    {
+      "case_assertions": {
+        "failure_count": 0,
+        "failures": [],
+        "ok": true
+      },
+      "case_id": "benchmark_dm_actor_runtime_turn",
+      "error": "",
+      "executed_steps": 1,
+      "failed_steps": [],
+      "ok": true,
+      "step_count": 1
+    },
+    {
+      "case_assertions": {
+        "failure_count": 0,
+        "failures": [],
+        "ok": true
+      },
+      "case_id": "benchmark_gribbo_generation_turn",
+      "error": "",
+      "executed_steps": 1,
+      "failed_steps": [],
+      "ok": true,
+      "step_count": 1
+    },
+    {
+      "case_assertions": {
+        "failure_count": 0,
+        "failures": [],
+        "ok": true
+      },
+      "case_id": "benchmark_mechanics_physics_turn",
+      "error": "",
+      "executed_steps": 1,
+      "failed_steps": [],
+      "ok": true,
+      "step_count": 1
+    },
+    {
+      "case_assertions": {
+        "failure_count": 0,
+        "failures": [],
+        "ok": true
+      },
+      "case_id": "benchmark_physical_action_turn",
+      "error": "",
+      "executed_steps": 1,
+      "failed_steps": [],
+      "ok": true,
+      "step_count": 1
+    }
+  ],
+  "coverage": {
+    "action_attempts": 3,
+    "dm_llm_calls": 1,
+    "generation_llm_calls": 0,
+    "generation_node_samples": 0,
+    "physics_node_samples": 2
+  },
+  "failed_count": 0,
+  "model": "qwen-plus",
+  "node_breakdown": {
+    "actor_runtime": {
+      "avg_ms": 3.0,
+      "count": 2,
+      "p95_ms": 5.0
+    },
+    "dm_router": {
+      "avg_ms": 190.25,
+      "count": 8,
+      "p95_ms": 1509.0
+    },
+    "event_drain": {
+      "avg_ms": 4.5,
+      "count": 2,
+      "p95_ms": 5.0
+    },
+    "other": {
+      "avg_ms": 466.3333333333333,
+      "count": 6,
+      "p95_ms": 1444.0
+    },
+    "physics": {
+      "avg_ms": 1.0,
+      "count": 2,
+      "p95_ms": 1.0
+    }
+  },
+  "passed_count": 4,
+  "step_count": 4,
+  "suite": "benchmark",
+  "timestamp": "2026-05-08T03:12:09.616995+00:00",
+  "token_economy": {
+    "avg_completion_tokens": 0.0,
+    "avg_prompt_tokens": 0.0,
+    "avg_total_tokens": 0.0,
+    "llm_call_count": 3,
+    "missing_usage_count": 0,
+    "usage_available": false,
+    "zero_usage_call_count": 1
+  }
+}

@@ -1,0 +1,68 @@
+{
+  "action_reliability": {
+    "attempts": 1,
+    "success_rate": 0.0,
+    "successes": 0,
+    "unknown": 1
+  },
+  "case_count": 1,
+  "case_results": [
+    {
+      "case_assertions": {
+        "failure_count": 0,
+        "failures": [],
+        "ok": true
+      },
+      "case_id": "benchmark_gribbo_generation_turn",
+      "error": "",
+      "executed_steps": 1,
+      "failed_steps": [],
+      "ok": true,
+      "step_count": 1
+    }
+  ],
+  "coverage": {
+    "action_attempts": 1,
+    "dm_llm_calls": 0,
+    "generation_llm_calls": 1,
+    "generation_node_samples": 1,
+    "physics_node_samples": 0
+  },
+  "failed_count": 0,
+  "model": "qwen-plus",
+  "node_breakdown": {
+    "actor_runtime": {
+      "avg_ms": 2.0,
+      "count": 1,
+      "p95_ms": 2.0
+    },
+    "dm_router": {
+      "avg_ms": 2.0,
+      "count": 2,
+      "p95_ms": 3.0
+    },
+    "generation": {
+      "avg_ms": 1696.0,
+      "count": 1,
+      "p95_ms": 1696.0
+    },
+    "other": {
+      "avg_ms": 5.0,
+      "count": 1,
+      "p95_ms": 5.0
+    }
+  },
+  "passed_count": 1,
+  "step_count": 1,
+  "suite": "benchmark",
+  "timestamp": "2026-05-08T03:12:52.350331+00:00",
+  "token_economy": {
+    "avg_completion_tokens": 0.0,
+    "avg_prompt_tokens": 0.0,
+    "avg_total_tokens": 0.0,
+    "llm_call_count": 1,
+    "missing_usage_count": 0,
+    "usage_available": false,
+    "zero_usage_call_count": 1
+  }
+}

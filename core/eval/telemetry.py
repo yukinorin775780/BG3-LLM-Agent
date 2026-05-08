@@ -19,6 +19,9 @@ ALLOWED_TELEMETRY_EVENTS = frozenset(
         "memory_retrieval",
         "actor_runtime_decision",
         "event_drain",
+        "first_token",
+        "benchmark_step",
+        "action_result",
         "reflection_enqueued",
         "reflection_processed",
     }

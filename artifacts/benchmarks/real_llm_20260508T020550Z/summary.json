@@ -1,0 +1,44 @@
+{
+  "action_reliability": {
+    "attempts": 0,
+    "success_rate": 0.0,
+    "successes": 0,
+    "unknown": 0
+  },
+  "case_count": 3,
+  "failed_count": 3,
+  "model": "qwen-plus",
+  "node_breakdown": {
+    "actor_runtime": {
+      "avg_ms": 6.666666666666667,
+      "count": 3,
+      "p95_ms": 14.0
+    },
+    "dm_router": {
+      "avg_ms": 2131.6666666666665,
+      "count": 6,
+      "p95_ms": 4334.0
+    },
+    "event_drain": {
+      "avg_ms": 3.3333333333333335,
+      "count": 3,
+      "p95_ms": 4.0
+    },
+    "other": {
+      "avg_ms": 4.0,
+      "count": 3,
+      "p95_ms": 10.0
+    }
+  },
+  "passed_count": 0,
+  "step_count": 4,
+  "suite": "golden",
+  "timestamp": "2026-05-08T02:06:03.748005+00:00",
+  "token_economy": {
+    "avg_completion_tokens": 93.5,
+    "avg_prompt_tokens": 3297.25,
+    "avg_total_tokens": 3390.75,
+    "llm_call_count": 6,
+    "missing_usage_count": 0
+  }
+}
