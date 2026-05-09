@@ -177,7 +177,9 @@ def _apply_actor_negotiation_outcome(
         target["faction"] = "hostile"
 
     reason = str(payload.get("reason") or "").strip().lower()
-    if reason == "paranoia_meltdown":
+    if reason == "diary_evidence_pressure":
+        journal_events.append("[交涉筹码] diary_evidence -> gribbo_elixir_truth")
+    elif reason == "paranoia_meltdown":
         journal_events.append("💢 [谈判破裂] Gribbo 的 paranoia 爆发，认定你们在算计他。")
     else:
         journal_events.append("💢 [谈判破裂] Gribbo 被当众激怒，彻底失去耐心。")

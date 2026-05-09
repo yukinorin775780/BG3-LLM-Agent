@@ -5,6 +5,8 @@ from core.graph.nodes.actor_invocation import actor_invocation_node
 from core.graph.nodes.dm import dm_node
 from core.graph.nodes.event_drain import event_drain_node
 from core.actors.registry import get_default_actor_registry
+from core.systems import mechanics
+from core.systems.maps import load_maps
 from core.systems.world_init import get_initial_world_state
 
 
@@ -99,3 +101,25 @@ def test_key_guidance_writes_visible_journal_marker():
     result = _run_guidance_turn(state, "这扇实验室门怎么办？")
 
     assert any("[队友建议]" in line and "topic=lab_key" in line for line in result.get("journal_events", []))
+
+
+def test_looted_study_chest_lab_key_triggers_has_key_guidance():
+    load_maps(force_reload=True)
+    state = get_initial_world_state(map_id="necromancer_lab")
+    loot_result = mechanics.execute_loot_action(
+        {
+            **state,
+            "intent_context": {
+                "action_actor": "player",
+                "action_target": "study_chest",
+            },
+        }
+    )
+
+    result = _run_guidance_turn({**state, **loot_result}, "现在能打开实验室门了吗？")
+    text = _response_text(result)
+
+    assert result["player_inventory"].get("lab_key") == 1
+    assert "打开" in text
+    assert "实验室门" in text or "door_b_to_d" in text
+    assert "去找钥匙" not in text

@@ -9,11 +9,14 @@
   let toastContainer = null;
   let chipContainer = null;
   let inventoryHintContainer = null;
+  let agentSignalContainer = null;
   let actProgressEl = null;
   let actTitleEl = null;
   let actSummaryEl = null;
   let toastQueue = [];
+  let agentSignalQueue = [];
   const MAX_TOASTS = 4;
+  const MAX_AGENT_SIGNAL_CARDS = 3;
 
   function getToastContainer() {
     if (!toastContainer) toastContainer = document.getElementById("toast-container");
@@ -42,6 +45,146 @@
       document.body.appendChild(inventoryHintContainer);
     }
     return inventoryHintContainer;
+  }
+
+  function getAgentSignalContainer() {
+    if (agentSignalContainer && document.body.contains(agentSignalContainer)) return agentSignalContainer;
+    agentSignalContainer = document.getElementById("agent-signal-card-container");
+    if (!agentSignalContainer) {
+      agentSignalContainer = document.createElement("div");
+      agentSignalContainer.id = "agent-signal-card-container";
+      agentSignalContainer.className = "agent-signal-card-container";
+      document.body.appendChild(agentSignalContainer);
+    }
+    return agentSignalContainer;
+  }
+
+  function prefersReducedMotion() {
+    return !!(
+      window.matchMedia &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    );
+  }
+
+  function actorLabel(id) {
+    const key = String(id || "").toLowerCase();
+    if (key === "astarion") return "Astarion";
+    if (key === "shadowheart") return "Shadowheart";
+    if (key === "laezel") return "Lae'zel";
+    if (key === "party") return "Party";
+    return String(id || "Party").replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  }
+
+  function titleLabel(value) {
+    const raw = String(value || "").trim();
+    if (!raw) return "Unknown";
+    const mapped = {
+      lab_key: "Lab Key",
+      missing_key: "Missing Key",
+      key_acquired: "Key Acquired",
+      diary_evidence: "Diary Evidence",
+      necromancer_diary: "Necromancer Diary",
+      gribbo: "Gribbo",
+      gribbo_elixir_truth: "Elixir Truth",
+    };
+    if (mapped[raw.toLowerCase()]) return mapped[raw.toLowerCase()];
+    return raw.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  }
+
+  function effectLabel(effects) {
+    const e = effects && typeof effects === "object" ? effects : {};
+    return ["patience", "fear", "paranoia"]
+      .filter((key) => Number(e[key]) !== 0)
+      .map((key) => {
+        const delta = Number(e[key]) || 0;
+        return titleLabel(key) + " " + (delta > 0 ? "+" : "") + delta;
+      })
+      .join(" / ");
+  }
+
+  function appendAgentSignalCard(card, durationMs) {
+    const host = getAgentSignalContainer();
+    if (!host) return;
+    host.appendChild(card);
+    agentSignalQueue.push(card);
+    while (agentSignalQueue.length > MAX_AGENT_SIGNAL_CARDS) {
+      const old = agentSignalQueue.shift();
+      if (old && old.parentNode) old.parentNode.removeChild(old);
+    }
+
+    if (prefersReducedMotion()) {
+      card.classList.add("is-reduced-motion", "agent-signal-card--visible");
+    } else {
+      void card.offsetWidth;
+      card.classList.add("agent-signal-card--visible", "agent-signal-card--pulse");
+    }
+
+    window.setTimeout(() => {
+      card.classList.remove("agent-signal-card--visible", "agent-signal-card--pulse");
+      card.classList.add("agent-signal-card--exit");
+      window.setTimeout(() => {
+        if (card.parentNode) card.parentNode.removeChild(card);
+        const idx = agentSignalQueue.indexOf(card);
+        if (idx >= 0) agentSignalQueue.splice(idx, 1);
+      }, prefersReducedMotion() ? 0 : 320);
+    }, Number(durationMs) || 5200);
+  }
+
+  function buildAgentSignalCard(kind, titleText, iconText, rows) {
+    const card = document.createElement("article");
+    card.className = "agent-signal-card agent-signal-card--" + kind;
+    card.setAttribute("role", "status");
+    card.setAttribute("aria-live", "polite");
+
+    const header = document.createElement("div");
+    header.className = "agent-signal-card-header";
+    const icon = document.createElement("span");
+    icon.className = "agent-signal-card-icon";
+    icon.textContent = iconText;
+    const title = document.createElement("strong");
+    title.className = "agent-signal-card-title";
+    title.textContent = titleText;
+    header.appendChild(icon);
+    header.appendChild(title);
+    card.appendChild(header);
+
+    const body = document.createElement("dl");
+    body.className = "agent-signal-card-body";
+    rows.forEach((row) => {
+      if (!row || !row.value) return;
+      const term = document.createElement("dt");
+      term.textContent = row.label;
+      const value = document.createElement("dd");
+      value.textContent = row.value;
+      body.appendChild(term);
+      body.appendChild(value);
+    });
+    card.appendChild(body);
+    return card;
+  }
+
+  function renderCompanionGuidanceCard(event) {
+    const e = event && typeof event === "object" ? event : {};
+    const stateLabel = titleLabel(e.state || "unknown");
+    const card = buildAgentSignalCard("guidance", "Companion Guidance", "⌖", [
+      { label: "Actor", value: actorLabel(e.actorId) },
+      { label: "Topic", value: titleLabel(e.topic) },
+      { label: "Advice", value: e.advice || e.raw || "Party advice updated." },
+      { label: "State", value: stateLabel },
+    ]);
+    appendAgentSignalCard(card, 5400);
+  }
+
+  function renderNegotiationLeverageCard(event) {
+    const e = event && typeof event === "object" ? event : {};
+    const effect = effectLabel(e.effects);
+    const card = buildAgentSignalCard("leverage", "Negotiation Leverage", "⚗", [
+      { label: "Evidence", value: titleLabel(e.evidence) },
+      { label: "Target", value: titleLabel(e.targetId) },
+      { label: "Pressure", value: titleLabel(e.pressure) },
+      { label: "Effect", value: effect || "" },
+    ]);
+    appendAgentSignalCard(card, 5800);
   }
 
   /* ── Toast System ── */
@@ -277,6 +420,8 @@
         case "act_progress": updateActProgress(ev.act, ev.objective); break;
         case "trap_discovered": showTrapDiscovered(ev); break;
         case "trap_triggered": showTrapTriggered(ev); break;
+        case "companion_guidance": renderCompanionGuidanceCard(ev); break;
+        case "negotiation_leverage": renderNegotiationLeverageCard(ev); break;
         case "demo_cleared": showDemoClearedBanner(); break;
         default: break;
       }
@@ -287,6 +432,7 @@
     showToast, showDiceCard, showAffectionDelta, showStatusBadge,
     showMemoryCard, showItemGainedToast, showLoSBlockedOverlay,
     updateActProgress, showDemoClearedBanner, showTrapDiscovered,
-    showTrapTriggered, dispatchUIEvents,
+    showTrapTriggered, renderCompanionGuidanceCard,
+    renderNegotiationLeverageCard, dispatchUIEvents,
   });
 })();

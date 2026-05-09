@@ -123,6 +123,58 @@ def _build_key_guidance_metadata(*, actor_id: str, context: Dict[str, Any]) -> D
     }
 
 
+def _diary_negotiation_context(actor_view: ActorView) -> Dict[str, Any]:
+    payload = actor_view.intent_context.get("diary_negotiation_context")
+    if not isinstance(payload, dict):
+        return {}
+    if str(payload.get("topic") or "").strip().lower() != "gribbo_elixir_truth":
+        return {}
+    if not bool(payload.get("decoded_diary", False)):
+        return {}
+    return dict(payload)
+
+
+def _build_diary_pressure_events(
+    *,
+    actor_id: str,
+    turn_index: int,
+    context: Dict[str, Any],
+) -> Tuple[DomainEvent, ...]:
+    if actor_id != "shadowheart" or not context:
+        return ()
+    try:
+        current_patience = int(context.get("patience_current", 10) or 10)
+    except (TypeError, ValueError):
+        current_patience = 10
+    next_patience = max(0, current_patience - 1)
+    return (
+        DomainEvent(
+            event_id=_new_event_id(),
+            event_type="actor_negotiation_outcome_requested",
+            actor_id=actor_id,
+            turn_index=turn_index,
+            visibility="party",
+            payload={
+                "target_actor_id": "gribbo",
+                "patience_set": next_patience,
+                "fear_delta": 1,
+                "paranoia_delta": 1,
+                "force_hostile": False,
+                "trigger_combat": False,
+                "reason": "diary_evidence_pressure",
+            },
+        ),
+        DomainEvent(
+            event_id=_new_event_id(),
+            event_type="world_flag_changed",
+            actor_id=actor_id,
+            turn_index=turn_index,
+            visibility="party",
+            payload={"key": "necromancer_lab_gribbo_truth_pressure", "value": True},
+        ),
+    )
+
+
 def _build_act3_memory_note(choice_context: str) -> str:
     if choice_context == ACT3_CHOICE_SIDE_WITH_ASTARION:
         return "玩家与我一起嘲笑了 Gribbo，这种默契让我满意。"
@@ -421,6 +473,9 @@ class TemplateActorRuntime:
         act3_choice_context = _detect_act3_choice_context(actor_view)
         act4_post_combat_context = _detect_act4_post_combat_context(actor_view)
         key_guidance_context = _key_guidance_context(actor_view)
+        diary_negotiation_context = _diary_negotiation_context(actor_view)
+        if diary_negotiation_context:
+            social_action = {}
         spoken_text = self._compose_reply(
             actor_view,
             social_action=social_action,
@@ -428,6 +483,7 @@ class TemplateActorRuntime:
             act3_choice_context=act3_choice_context,
             act4_post_combat_context=act4_post_combat_context,
             key_guidance_context=key_guidance_context,
+            diary_negotiation_context=diary_negotiation_context,
         )
         spoke_payload: Dict[str, Any] = {"text": spoken_text}
         guidance_metadata = _build_key_guidance_metadata(
@@ -525,6 +581,14 @@ class TemplateActorRuntime:
                     },
                 )
             )
+        if diary_negotiation_context:
+            events.extend(
+                _build_diary_pressure_events(
+                    actor_id=self.actor_id,
+                    turn_index=int(actor_view.turn_count or 0),
+                    context=diary_negotiation_context,
+                )
+            )
         requested_reflections: Tuple[ReflectionRequest, ...] = ()
         if any(token in user_input for token in ("秘密", "真相", "信仰", "过去")):
             requested_reflections = (
@@ -599,6 +663,7 @@ class TemplateActorRuntime:
         act3_choice_context: str = "",
         act4_post_combat_context: bool = False,
         key_guidance_context: Dict[str, Any] | None = None,
+        diary_negotiation_context: Dict[str, Any] | None = None,
     ) -> str:
         action_type = str(social_action.get("action_type") or "").strip().lower()
         if action_type == "gift_accept":
@@ -647,6 +712,15 @@ class TemplateActorRuntime:
             if self.actor_id == "laezel":
                 return "没有 lab_key。钥匙、撬锁、破门，选一个。别浪费时间。"
             return "没有钥匙。先找书房线索，或尝试撬锁。"
+
+        if diary_negotiation_context:
+            if self.actor_id == "shadowheart":
+                return "日记说得够清楚了：这是死灵污染，不是天赋。继续逼问很危险，但能动摇他。"
+            if self.actor_id == "astarion":
+                return "原来那瓶聪明药把你变得这么可悲。钥匙呢，Gribbo？"
+            if self.actor_id == "laezel":
+                return "这是弱点。逼问他，把钥匙逼出来。"
+            return "日记里的证据可以压住他的谎话。"
 
         if self.actor_id == "astarion":
             if act3_choice_context == ACT3_CHOICE_SIDE_WITH_ASTARION:

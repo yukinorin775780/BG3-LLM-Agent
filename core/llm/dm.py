@@ -176,6 +176,7 @@ ENTITY_ALIAS_MAP = {
     "player": tuple(PLAYER_TARGET_ALIASES),
     "camp_fire": ("camp_fire", "campfire", "篝火", "营火", "火堆", "fire"),
     "iron_chest": ("iron_chest", "铁箱子", "箱子", "宝箱", "chest"),
+    "chest_1": ("chest_1", "study_chest", "书房箱子", "书房的箱子", "书房宝箱", "战利品箱"),
     "locked_chest": ("locked_chest", "上锁宝箱", "上锁箱子", "锁住的箱子", "旅行箱"),
     "door_oak_1": ("door_oak_1", "door", "门", "木门", "橡木门", "沉重的橡木门"),
     "trap_tripwire_1": ("trap_tripwire_1", "陷阱", "绊线陷阱", "绊线", "trap"),

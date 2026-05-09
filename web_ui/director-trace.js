@@ -159,6 +159,7 @@
       item.classList.toggle("is-active", status === "active");
       item.classList.toggle("is-visited", status === "done");
       item.classList.toggle("is-skipped", status === "skipped");
+      item.classList.toggle("is-agent-signal", detail.signal === "agent_signal");
       item.classList.remove("node-status--idle", "node-status--pending", "node-status--active", "node-status--done", "node-status--skipped");
       item.classList.add("node-status--" + status);
       const statusEl = item.querySelector(".node-status");
@@ -238,6 +239,8 @@
     const types = new Set(eventTypes(data, events));
     if (/memory|记忆|actor_runtime_state|memory_notes/i.test(blob) || types.has("memory_added")) parts.push("memory_update x" + Math.max(1, (blob.match(/memory_notes|记忆/g) || []).length));
     if (/item|transfer|获得|搜刮|heavy_iron_key|lab_key|钥匙/i.test(blob) || types.has("item_gained")) parts.push("item_transfer");
+    if (types.has("companion_guidance")) parts.push("companion_guidance");
+    if (types.has("negotiation_leverage") || /\[交涉筹码\]|diary_evidence|gribbo_elixir_truth/i.test(blob)) parts.push("negotiation_leverage");
     const aff = blob.match(/affection[^\d+\-]*([+\-]\s*\d+)/i) || blob.match(/好感度?\s*([+\-]\s*\d+)/);
     if (aff) parts.push("affection " + aff[1].replace(/\s/g, ""));
     if (/combat_active|initiative_order|战斗|hostile|敌对/i.test(blob)) parts.push("combat/hostility");
@@ -252,6 +255,8 @@
     if (types.has("memory_added") || /记忆|memory/i.test(blob)) out.push("Memory Card");
     if (types.has("item_gained") || /获得|已入包|heavy_iron_key|lab_key/i.test(blob)) out.push("Item Toast");
     if (types.has("affection_delta") || /affection|好感/i.test(blob)) out.push("Affection Chip");
+    if (types.has("companion_guidance") || /\[队友建议\]/i.test(blob)) out.push("Guidance Card");
+    if (types.has("negotiation_leverage") || /\[交涉筹码\]/i.test(blob)) out.push("Leverage Card");
     if (types.has("demo_cleared") || /demo_cleared|DEMO CLEARED/i.test(blob)) out.push("Demo Banner");
     if (types.has("trap_discovered") || types.has("trap_triggered") || /陷阱|trap/i.test(blob)) out.push("Trap HUD");
     return out.join(", ") || "HUD events";
@@ -284,10 +289,20 @@
     if (explicit === "domain_event") return ["player_input", "dm_router", "actor_view_filter", "actor_runtime", "domain_event"];
     if (explicit === "event_drain") return ["player_input", "dm_router", "actor_view_filter", "actor_runtime", "domain_event", "event_drain"];
     const blob = textBlob(payload, opts.userLine, opts.intent);
+    const intentKey = normalizeId(opts.intent || safeObj(gameState.intent_context).fallback_intent || "");
+    const isDiaryRead = intentKey === "read" && /necromancer_diary|diary|日记|读日记|阅读日记/i.test(blob);
+    const isGribboDiaryNegotiation =
+      /(chat|start_dialogue|dialogue_reply)/i.test(intentKey)
+      && /gribbo|格里布|格里波|地精|boss/i.test(blob)
+      && /diary|日记|药剂|灵药|死灵|实验|解药|钥匙|真相|gribbo_elixir_truth|diary_negotiation/i.test(blob);
+    if (isDiaryRead || isGribboDiaryNegotiation) {
+      return ["player_input", "dm_router", "actor_view_filter", "actor_runtime", "domain_event", "event_drain", "ui_events"];
+    }
     const nodes = ["player_input", "dm_router", "actor_view_filter"];
     const needsParty = /gribbo|astarion|dialogue|party|好感|affection|combat|initiative|台词|对话/i.test(blob);
-    const needsDomain = /memory|记忆|item|transfer|获得|搜刮|flag|demo_cleared|combat|hostile|affection|状态|status|EventDrain/i.test(blob)
-      || eventTypes(payload, events).some((type) => ["memory_added", "item_gained", "affection_delta", "status_changed", "demo_cleared"].includes(type));
+    const types = eventTypes(payload, events);
+    const needsDomain = /memory|记忆|item|transfer|获得|搜刮|flag|demo_cleared|combat|hostile|affection|状态|status|EventDrain|\[交涉筹码\]/i.test(blob)
+      || types.some((type) => ["memory_added", "item_gained", "affection_delta", "status_changed", "demo_cleared", "negotiation_leverage"].includes(type));
     if (needsParty || needsDomain) nodes.push("actor_runtime");
     if (needsDomain) nodes.push("domain_event", "event_drain");
     nodes.push("ui_events");
@@ -313,6 +328,15 @@
       event_drain: { input: "pending events", output: /EventDrain|event_drain|pending_events|item|memory|affection|flag/i.test(blob) ? domainSummary : "state committed" },
       ui_events: { input: "response/ui_events", output: uiSummary },
     };
+    const types = new Set(eventTypes(payload, events));
+    if (types.has("companion_guidance") || /\[队友建议\]/i.test(blob)) {
+      details.ui_events.signal = "agent_signal";
+    }
+    if (types.has("negotiation_leverage") || /\[交涉筹码\]/i.test(blob)) {
+      details.domain_event.signal = "agent_signal";
+      details.event_drain.signal = "agent_signal";
+      details.ui_events.signal = "agent_signal";
+    }
     Object.keys(details).forEach((node) => Object.assign(details[node], timings[node] || { ms: null, estimated: true }));
     return details;
   }

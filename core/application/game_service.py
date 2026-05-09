@@ -883,7 +883,7 @@ class GameService:
         # Alias-based resolution for common targets
         _LOOT_ALIASES: Dict[str, tuple] = {
             "gribbo": ("地精", "哥布林", "gribbo"),
-            "chest_1": ("箱子", "宝箱", "战利品箱", "chest"),
+            "chest_1": ("study_chest", "书房箱子", "书房的箱子", "书房宝箱", "箱子", "宝箱", "战利品箱", "chest"),
         }
         for target_id, aliases in _LOOT_ALIASES.items():
             if target_id not in candidates:

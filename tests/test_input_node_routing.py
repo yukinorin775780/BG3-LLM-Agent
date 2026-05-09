@@ -1,3 +1,7 @@
+import asyncio
+from unittest.mock import patch
+
+from core.graph.nodes.dm import dm_node
 from core.graph.nodes.input import input_node
 
 
@@ -54,6 +58,97 @@ def test_input_node_keeps_read_with_explicit_target():
 
     assert patch["intent"] == "READ"
     assert patch["target"] == "necromancer_diary"
+
+
+def test_input_node_routes_necromancer_diary_text_to_read_target():
+    state = {
+        **_base_state(),
+        "user_input": "读日记",
+        "intent": "chat",
+        "target": "",
+        "source": "text_input",
+    }
+
+    patch = input_node(state)
+
+    assert patch["intent"] == "READ"
+    assert patch["target"] == "necromancer_diary"
+    assert patch["source"] == "ui_text_normalized"
+    assert patch["intent_context"]["action_target"] == "necromancer_diary"
+
+
+def test_input_node_overrides_gribbo_diary_truth_use_item_to_chat():
+    state = {
+        **_base_state(),
+        "user_input": "Gribbo，我读了日记，知道你喝了死灵药剂，也知道钥匙和实验的真相。",
+        "intent": "USE_ITEM",
+        "target": "gribbo",
+        "source": "text_input",
+    }
+
+    patch = input_node(state)
+
+    assert patch["intent"] == "CHAT"
+    assert patch["target"] == "gribbo"
+    assert patch["source"] == "ui_text_normalized"
+    assert patch["intent_context"]["action_target"] == "gribbo"
+    assert patch["intent_context"]["diary_negotiation_hint"] is True
+
+
+def test_input_node_keeps_explicit_attack_gribbo_as_attack():
+    state = {
+        **_base_state(),
+        "user_input": "attack gribbo",
+        "intent": "ATTACK",
+        "target": "gribbo",
+        "source": "text_input",
+    }
+
+    patch = input_node(state)
+
+    assert patch["intent"] == "ATTACK"
+    assert patch["target"] == "gribbo"
+
+
+def test_dm_necromancer_diary_negotiation_from_ui_text_sets_target_gribbo():
+    state = {
+        **_base_state(),
+        "user_input": "Gribbo，我读了日记，知道你喝了死灵药剂，也知道钥匙和实验的真相。",
+        "intent": "USE_ITEM",
+        "target": "",
+        "source": "text_input",
+        "active_dialogue_target": "",
+        "flags": {
+            "necromancer_lab_diary_decoded": True,
+            "necromancer_lab_antidote_formula_fragment_known": True,
+            "necromancer_lab_key_hint_known": True,
+        },
+        "entities": {
+            "player": {"name": "玩家", "faction": "player", "status": "alive", "hp": 20, "inventory": {}},
+            "gribbo": {
+                "name": "Gribbo",
+                "faction": "neutral",
+                "status": "alive",
+                "hp": 18,
+                "inventory": {"heavy_iron_key": 1},
+                "dynamic_states": {
+                    "patience": {"current_value": 15},
+                    "fear": {"current_value": 5},
+                    "paranoia": {"current_value": 0},
+                },
+            },
+            "shadowheart": {"name": "Shadowheart", "faction": "party", "status": "alive", "hp": 11, "inventory": {}},
+        },
+    }
+
+    with patch("core.graph.nodes.dm.analyze_intent") as analyze:
+        dm_patch = asyncio.run(dm_node(state))
+
+    analyze.assert_not_called()
+    assert dm_patch["intent"] == "CHAT"
+    assert dm_patch["intent_context"]["reason"] == "diary_evidence_pressure"
+    assert dm_patch["intent_context"]["action_target"] == "gribbo"
+    assert dm_patch["intent_context"]["diary_negotiation_context"]["target_actor_id"] == "gribbo"
 
 
 def test_input_node_reset_keeps_current_map_id(monkeypatch):

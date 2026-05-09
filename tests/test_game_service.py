@@ -847,6 +847,67 @@ def test_process_chat_turn_ui_loot_accepts_player_as_valid_character():
     }
 
 
+def test_process_chat_turn_ui_loot_study_chest_grants_lab_key():
+    existing_state = {
+        "entities": {
+            "player": {"name": "玩家", "hp": 20, "inventory": {}, "x": 2, "y": 2, "faction": "player"},
+        },
+        "player_inventory": {"healing_potion": 2},
+        "journal_events": ["old event"],
+        "current_location": "necromancer_lab",
+        "map_data": {"id": "necromancer_lab"},
+        "flags": {},
+        "environment_objects": {
+            "chest_1": {
+                "id": "chest_1",
+                "type": "locked_chest",
+                "name": "死灵法师的战利品箱",
+                "status": "open",
+                "is_locked": False,
+                "inventory": {"lab_key": 1, "gold_coin": 25},
+                "alias_ids": ["study_chest"],
+                "x": 16,
+                "y": 2,
+            }
+        },
+    }
+    updated_state = {
+        **existing_state,
+        "player_inventory": {"healing_potion": 2, "lab_key": 1, "gold_coin": 25},
+        "journal_events": [
+            "old event",
+            "💰 [搜刮] 玩家 从 死灵法师的战利品箱 上搜刮到了: lab_key x 1, 金币 x 25。",
+            "🚶 [自动寻路] 玩家 走向了 死灵法师的战利品箱。",
+        ],
+        "environment_objects": {
+            "chest_1": {
+                **existing_state["environment_objects"]["chest_1"],
+                "inventory": {},
+            }
+        },
+    }
+    fake_graph = _FakeGraph(snapshots=[existing_state, updated_state], invoke_result={})
+
+    result = asyncio.run(
+        process_chat_turn(
+            user_input="loot study_chest",
+            intent="ui_action_loot",
+            session_id="session-study-chest-loot",
+            character="player",
+            target="study_chest",
+            saver_factory=Mock(return_value=_AsyncContextManager(value=object())),
+            graph_builder=Mock(return_value=fake_graph),
+            initial_state_factory=Mock(),
+        )
+    )
+
+    persisted_payload = fake_graph.aupdate_state_calls[0]["payload"]
+    assert persisted_payload["player_inventory"].get("lab_key") == 1
+    assert persisted_payload["environment_objects"]["chest_1"]["inventory"] == {}
+    assert "heavy_iron_key" not in persisted_payload["player_inventory"]
+    assert result["player_inventory"].get("lab_key") == 1
+
+
 def test_process_chat_turn_ui_loot_necromancer_gribbo_key_drains_event_before_persist():
     existing_state = {
         "map_data": {"id": "necromancer_lab"},
@@ -1180,6 +1241,18 @@ def test_p0_loot_target_alias_resolves_chest():
         entities={"chest_1": {"status": "open"}, "player": {"hp": 20}},
         environment_objects={},
     )
+    assert target == "chest_1"
+
+
+def test_necromancer_lab_loot_target_alias_resolves_study_chest():
+    from core.application.game_service import GameService
+
+    target = GameService._extract_loot_target_id(
+        user_input="搜刮书房箱子",
+        entities={"player": {"hp": 20}},
+        environment_objects={"chest_1": {"status": "open", "alias_ids": ["study_chest"]}},
+    )
+
     assert target == "chest_1"
 
 

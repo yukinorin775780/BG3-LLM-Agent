@@ -14,9 +14,11 @@ from core.campaigns import (
     ACT3_CHOICE_REBUKE_ASTARION,
     ACT3_CHOICE_SIDE_WITH_ASTARION,
     ACT4_POST_COMBAT_BANTER,
+    detect_diary_negotiation_context,
     detect_key_guidance_context,
     detect_lab_act3_choice,
     detect_lab_act4_post_combat_banter,
+    detect_study_chest_loot_context,
 )
 from core.engine import generate_dialogue, parse_ai_response
 from core.graph.graph_state import GameState
@@ -36,6 +38,16 @@ _DOOR_INTERACT_MARKERS = (
     "打开 heavy_oak_door_1",
     "check heavy_oak_door_1",
 )
+_READ_DIARY_MARKERS = (
+    "读日记",
+    "查看日记",
+    "阅读日记",
+    "necromancer_diary",
+    "diary",
+)
+_GRIBBO_TARGET_MARKERS = ("gribbo", "格里布", "格里波", "地精", "boss")
+_GRIBBO_NEGOTIATION_MARKERS = ("日记", "药剂", "灵药", "死灵", "实验", "解药", "钥匙", "真相")
+_GRIBBO_ATTACK_MARKERS = ("攻击 gribbo", "attack gribbo", "攻击格里布", "攻击格里波", "攻击地精")
 
 
 def _apply_act3_necromancer_lab_override(*, state: GameState, analysis: dict) -> dict:
@@ -111,6 +123,118 @@ def _apply_key_guidance_override(*, state: GameState, analysis: dict) -> dict:
     overridden["responders"] = ["astarion", "shadowheart", "laezel"]
     intent_context = dict(overridden.get("intent_context") or {})
     intent_context["key_guidance_context"] = context
+    overridden["intent_context"] = intent_context
+    return overridden
+
+
+def _apply_diary_negotiation_override(*, state: GameState, analysis: dict) -> dict:
+    context = detect_diary_negotiation_context(
+        dict(state or {}),
+        str(state.get("user_input") or ""),
+    )
+    if not context or not bool(context.get("decoded_diary", False)):
+        return analysis
+
+    overridden = dict(analysis or {})
+    overridden["action_type"] = "CHAT"
+    overridden["action_actor"] = "player"
+    overridden["action_target"] = "gribbo"
+    overridden["reason"] = "diary_evidence_pressure"
+    overridden["responders"] = ["gribbo", "shadowheart"]
+    intent_context = dict(overridden.get("intent_context") or {})
+    intent_context["diary_negotiation_context"] = context
+    overridden["intent_context"] = intent_context
+    return overridden
+
+
+def _contains_marker(user_input: str, markers: tuple[str, ...]) -> bool:
+    text = str(user_input or "").strip()
+    lowered = text.lower()
+    return any(marker in text or marker in lowered for marker in markers)
+
+
+def _looks_like_read_diary_text(user_input: str) -> bool:
+    return _contains_marker(user_input, _READ_DIARY_MARKERS)
+
+
+def _looks_like_gribbo_diary_negotiation(user_input: str) -> bool:
+    return _contains_marker(user_input, _GRIBBO_TARGET_MARKERS) and _contains_marker(
+        user_input,
+        _GRIBBO_NEGOTIATION_MARKERS,
+    )
+
+
+def _looks_like_explicit_gribbo_attack(user_input: str) -> bool:
+    return _contains_marker(user_input, _GRIBBO_ATTACK_MARKERS)
+
+
+def _apply_necromancer_lab_ui_text_fallback(*, state: GameState, analysis: dict) -> dict:
+    if not _is_necromancer_lab(state):
+        return analysis
+
+    user_input = str(state.get("user_input") or "")
+    out = dict(analysis or {})
+    incoming_target = str(state.get("target") or "").strip().lower()
+    intent_context = out.get("intent_context") if isinstance(out.get("intent_context"), dict) else {}
+    action_target = str(out.get("action_target") or incoming_target or "").strip().lower()
+    target_missing = not action_target or action_target in {"unknown", "null", "none"}
+
+    if _looks_like_read_diary_text(user_input) and target_missing:
+        out["action_type"] = "READ"
+        out["action_actor"] = "player"
+        out["action_target"] = "necromancer_diary"
+        out["reason"] = "ui_text_read_necromancer_diary"
+        out["responders"] = []
+        intent_context = dict(intent_context)
+        intent_context["source"] = "ui_text_normalized"
+        out["intent_context"] = intent_context
+        return out
+
+    if _looks_like_explicit_gribbo_attack(user_input):
+        return out
+    if not _looks_like_gribbo_diary_negotiation(user_input):
+        return out
+
+    patched_state = {
+        **dict(state or {}),
+        "target": "gribbo",
+        "intent_context": {
+            **(state.get("intent_context") if isinstance(state.get("intent_context"), dict) else {}),
+            "action_target": "gribbo",
+        },
+    }
+    context = detect_diary_negotiation_context(patched_state, user_input)
+
+    out["action_type"] = "CHAT"
+    out["action_actor"] = "player"
+    out["action_target"] = "gribbo"
+    out["reason"] = "diary_evidence_pressure" if context and bool(context.get("decoded_diary", False)) else "ui_text_gribbo_diary_negotiation"
+    out["responders"] = ["gribbo", "shadowheart"] if context and bool(context.get("decoded_diary", False)) else ["gribbo"]
+    intent_context = dict(intent_context)
+    intent_context["source"] = "ui_text_normalized"
+    intent_context["diary_negotiation_hint"] = True
+    if context and bool(context.get("decoded_diary", False)):
+        intent_context["diary_negotiation_context"] = context
+    out["intent_context"] = intent_context
+    return out
+
+
+def _apply_study_chest_loot_override(*, state: GameState, analysis: dict) -> dict:
+    context = detect_study_chest_loot_context(
+        dict(state or {}),
+        str(state.get("user_input") or ""),
+    )
+    if not context:
+        return analysis
+
+    overridden = dict(analysis or {})
+    overridden["action_type"] = "LOOT"
+    overridden["action_actor"] = "player"
+    overridden["action_target"] = str(context.get("target_id") or "chest_1")
+    overridden["reason"] = "necromancer_lab_study_chest_loot"
+    overridden["responders"] = ["player"]
+    intent_context = dict(overridden.get("intent_context") or {})
+    intent_context["study_chest_loot_context"] = context
     overridden["intent_context"] = intent_context
     return overridden
 
@@ -383,6 +507,18 @@ async def dm_node(state: GameState) -> dict:
         fallback_speaker=fallback_speaker,
     )
     if isinstance(structured_analysis, dict):
+        structured_analysis = _apply_necromancer_lab_ui_text_fallback(
+            state=state,
+            analysis=structured_analysis,
+        )
+        structured_analysis = _apply_study_chest_loot_override(
+            state=state,
+            analysis=structured_analysis,
+        )
+        structured_analysis = _apply_diary_negotiation_override(
+            state=state,
+            analysis=structured_analysis,
+        )
         structured_analysis = _apply_key_guidance_override(
             state=state,
             analysis=structured_analysis,
@@ -400,18 +536,57 @@ async def dm_node(state: GameState) -> dict:
             analysis=structured_analysis,
         )
     else:
+        ui_text_fast_path = _apply_necromancer_lab_ui_text_fallback(
+            state=state,
+            analysis={},
+        )
+        if (
+            isinstance(ui_text_fast_path, dict)
+            and str(ui_text_fast_path.get("action_type") or "").strip()
+        ):
+            structured_analysis = ui_text_fast_path
+        study_chest_loot_fast_path = _apply_study_chest_loot_override(
+            state=state,
+            analysis={},
+        )
+        if (
+            not structured_analysis
+            and
+            isinstance(study_chest_loot_fast_path, dict)
+            and str(study_chest_loot_fast_path.get("action_type") or "").strip()
+        ):
+            structured_analysis = study_chest_loot_fast_path
+        diary_negotiation_fast_path = _apply_diary_negotiation_override(
+            state=state,
+            analysis={},
+        )
+        if (
+            not structured_analysis
+            and
+            isinstance(diary_negotiation_fast_path, dict)
+            and str(diary_negotiation_fast_path.get("action_type") or "").strip()
+        ):
+            structured_analysis = diary_negotiation_fast_path
         key_guidance_fast_path = _apply_key_guidance_override(
             state=state,
             analysis={},
         )
-        if isinstance(key_guidance_fast_path, dict) and str(key_guidance_fast_path.get("action_type") or "").strip():
+        if (
+            not structured_analysis
+            and isinstance(key_guidance_fast_path, dict)
+            and str(key_guidance_fast_path.get("action_type") or "").strip()
+        ):
             structured_analysis = key_guidance_fast_path
         # Act3 side/rebuke choices should remain deterministic even without an explicit target/source payload.
         act3_fast_path = _apply_act3_necromancer_lab_override(
             state=state,
             analysis={},
         )
-        if isinstance(act3_fast_path, dict) and str(act3_fast_path.get("action_type") or "").strip():
+        if (
+            not structured_analysis
+            and isinstance(act3_fast_path, dict)
+            and str(act3_fast_path.get("action_type") or "").strip()
+        ):
             structured_analysis = act3_fast_path
     if structured_analysis:
         analysis = structured_analysis
@@ -447,6 +622,18 @@ async def dm_node(state: GameState) -> dict:
             }
 
         analysis = _apply_act3_necromancer_lab_override(
+            state=state,
+            analysis=analysis if isinstance(analysis, dict) else {},
+        )
+        analysis = _apply_necromancer_lab_ui_text_fallback(
+            state=state,
+            analysis=analysis if isinstance(analysis, dict) else {},
+        )
+        analysis = _apply_study_chest_loot_override(
+            state=state,
+            analysis=analysis if isinstance(analysis, dict) else {},
+        )
+        analysis = _apply_diary_negotiation_override(
             state=state,
             analysis=analysis if isinstance(analysis, dict) else {},
         )
@@ -532,6 +719,8 @@ async def dm_node(state: GameState) -> dict:
                 else bool(state.get("flags", {}).get("necromancer_lab_player_sided_with_astarion", False))
             ),
             "key_guidance_context": dict(analysis_intent_context.get("key_guidance_context") or {}),
+            "diary_negotiation_context": dict(analysis_intent_context.get("diary_negotiation_context") or {}),
+            "study_chest_loot_context": dict(analysis_intent_context.get("study_chest_loot_context") or {}),
         },
         "is_probing_secret": analysis.get("is_probing_secret", False),
         "active_dialogue_target": next_dialogue_target,

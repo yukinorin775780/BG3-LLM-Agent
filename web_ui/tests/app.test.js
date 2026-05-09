@@ -1246,6 +1246,31 @@ describe("web_ui/app.js UI bindings", () => {
     expect(chatPayloads[1].target).not.toBe("unknown");
   });
 
+  test("test_plain_text_read_diary_routes_to_read_necromancer_diary", async () => {
+    const api = await bootAppForTest();
+    const { payload } = api.buildChatPayload("读日记", null, null, { source: "text_input" });
+
+    expect(payload.intent).toBe("READ");
+    expect(payload.target).toBe("necromancer_diary");
+    expect(payload.source).toBe("ui_text_normalized");
+  });
+
+  test("test_gribbo_diary_truth_text_routes_to_chat_gribbo_not_use_item", async () => {
+    const api = await bootAppForTest();
+    const { payload } = api.buildChatPayload(
+      "Gribbo，我读了日记，知道你喝了死灵药剂，也知道钥匙和实验的真相。",
+      "USE_ITEM",
+      null,
+      { source: "text_input", target: "gribbo" }
+    );
+
+    expect(payload.intent).toBe("CHAT");
+    expect(payload.target).toBe("gribbo");
+    expect(payload.source).toBe("ui_text_normalized");
+    expect(payload.intent_context).toEqual({ diary_negotiation_hint: true });
+    expect(payload.intent).not.toBe("USE_ITEM");
+  });
+
   test("test_active_dialogue_target_gribbo_forces_chat_target_on_plain_text", async () => {
     const fetchSpy = spyOnFetch().mockResolvedValue(
       mockResponse({
@@ -1267,6 +1292,17 @@ describe("web_ui/app.js UI bindings", () => {
 
     const chatCall = fetchSpy.mock.calls.find(([url]) => String(url).includes("/api/chat"));
     const payload = JSON.parse(chatCall[1].body);
+    expect(payload.intent).toBe("CHAT");
+    expect(payload.target).toBe("gribbo");
+    expect(payload.source).toBe("dialogue_input");
+  });
+
+  test("test_active_dialogue_target_gribbo_keeps_plain_text_as_chat", async () => {
+    const api = await bootAppForTest();
+    api.state.activeDialogueTarget = "gribbo";
+
+    const { payload } = api.buildChatPayload("我知道你在隐瞒钥匙。", null, null, {});
+
     expect(payload.intent).toBe("CHAT");
     expect(payload.target).toBe("gribbo");
     expect(payload.source).toBe("dialogue_input");
@@ -1700,6 +1736,38 @@ describe("web_ui/app.js UI bindings", () => {
     expect(details.domain_event.output).toContain("affection +2");
   });
 
+  test("test_director_trace_activates_for_diary_read_and_gribbo_negotiation", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    await bootAppForTest();
+
+    const diaryNodes = window.BG3DirectorTrace.buildTraceNodes({}, {
+      userLine: "读日记",
+      intent: "READ",
+    });
+    const negotiationNodes = window.BG3DirectorTrace.buildTraceNodes({
+      journal_events: ["[交涉筹码] diary_evidence -> gribbo_elixir_truth"],
+    }, {
+      userLine: "Gribbo，我读了日记，知道你喝了死灵药剂，也知道钥匙和实验的真相。",
+      intent: "CHAT",
+    });
+    const expected = ["player_input", "dm_router", "actor_runtime", "domain_event", "event_drain", "ui_events"];
+
+    expected.forEach((node) => {
+      expect(diaryNodes).toContain(node);
+      expect(negotiationNodes).toContain(node);
+    });
+  });
+
+  test("test_wasd_still_does_not_activate_trace", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    await bootAppForTest("http://localhost/?qa_test=1");
+    if (window.BG3InputController) {
+      window.BG3InputController.movePlayer(1, 0);
+    }
+    await flushAsync();
+    expect(window.BG3DirectorTrace.getState()).toBe("idle");
+  });
+
   test("test_item_transfer_constructs_domainevent_eventdrain_item_toast_trace", async () => {
     spyOnFetch().mockResolvedValue(mockResponse({}));
     await bootAppForTest();
@@ -1787,5 +1855,250 @@ describe("web_ui/app.js UI bindings", () => {
     expect(fallback).not.toBeNull();
     expect(fallback.classList.contains("is-hidden")).toBe(false);
     expect(fallback.textContent).toContain("network_timeout_or_unavailable");
+  });
+
+  test("test_journal_companion_guidance_derives_ui_event", async () => {
+    loadNewModules();
+    const events = window.BG3UIEventAdapter.extractUIEvents({
+      journal_events: ["[队友建议] Astarion topic=lab_key missing: 去书房找钥匙，或者撬锁。"],
+    });
+    const guidance = events.find((event) => event.type === "companion_guidance");
+    expect(guidance).toMatchObject({
+      actorId: "astarion",
+      topic: "lab_key",
+      state: "missing_key",
+    });
+    expect(guidance.advice).toContain("书房");
+  });
+
+  test("test_companion_guidance_state_parses_missing_and_key_acquired", async () => {
+    loadNewModules();
+    const missing = window.BG3UIEventAdapter.extractUIEvents({
+      journal_events: ["[队友建议] topic=lab_key 找钥匙，去书房搜箱子。"],
+    }).find((event) => event.type === "companion_guidance");
+    const acquired = window.BG3UIEventAdapter.extractUIEvents({
+      journal_events: ["[队友建议] topic=lab_key has_key=true 钥匙在手，打开实验室门。"],
+    }).find((event) => event.type === "companion_guidance");
+    expect(missing.state).toBe("missing_key");
+    expect(acquired.state).toBe("key_acquired");
+  });
+
+  test("test_companion_guidance_actor_parsing_and_party_fallback", async () => {
+    loadNewModules();
+    const lines = [
+      "[队友建议] Astarion topic=lab_key 找钥匙",
+      "[队友建议] Shadowheart topic=lab_key 找钥匙",
+      "[队友建议] Lae’zel topic=lab_key 找钥匙",
+      "[队友建议] topic=lab_key 找钥匙",
+    ];
+    const actorIds = lines.map((line) => window.BG3UIEventAdapter.extractUIEvents({ journal_events: [line] })
+      .find((event) => event.type === "companion_guidance").actorId);
+    expect(actorIds).toEqual(["astarion", "shadowheart", "laezel", "party"]);
+  });
+
+  test("test_journal_negotiation_leverage_derives_ui_event", async () => {
+    loadNewModules();
+    const events = window.BG3UIEventAdapter.extractUIEvents({
+      journal_events: ["[交涉筹码] diary_evidence -> gribbo_elixir_truth"],
+    });
+    const leverage = events.find((event) => event.type === "negotiation_leverage");
+    expect(leverage).toMatchObject({
+      evidence: "diary_evidence",
+      targetId: "gribbo",
+      pressure: "gribbo_elixir_truth",
+    });
+  });
+
+  test("test_negotiation_leverage_card_from_journal_events", async () => {
+    loadNewModules();
+    const events = window.BG3UIEventAdapter.extractUIEvents({
+      journal_events: ["[交涉筹码] diary_evidence -> gribbo_elixir_truth"],
+    });
+
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: "negotiation_leverage",
+        evidence: "diary_evidence",
+        targetId: "gribbo",
+        pressure: "gribbo_elixir_truth",
+      }),
+    ]));
+  });
+
+  test("test_negotiation_leverage_effects_can_come_from_state_delta", async () => {
+    loadNewModules();
+    const events = window.BG3UIEventAdapter.extractUIEvents({
+      journal_events: ["[交涉筹码] diary_evidence -> gribbo_elixir_truth"],
+      environment_objects: {
+        gribbo: {
+          dynamic_states: {
+            patience: { current_value: 7 },
+            fear: { current_value: 2 },
+            paranoia: { current_value: 3 },
+          },
+        },
+      },
+    }, {
+      environment_objects: {
+        gribbo: {
+          dynamic_states: {
+            patience: { current_value: 8 },
+            fear: { current_value: 1 },
+            paranoia: { current_value: 2 },
+          },
+        },
+      },
+    });
+    const leverage = events.find((event) => event.type === "negotiation_leverage");
+    expect(leverage.effects).toEqual({ patience: -1, fear: 1, paranoia: 1 });
+  });
+
+  test("test_negotiation_leverage_card_from_flag_diff", async () => {
+    loadNewModules();
+    const events = window.BG3UIEventAdapter.extractUIEvents({
+      flags: { necromancer_lab_gribbo_truth_pressure: true },
+      environment_objects: {
+        gribbo: {
+          dynamic_states: {
+            patience: { current_value: 14 },
+            fear: { current_value: 6 },
+            paranoia: { current_value: 1 },
+          },
+        },
+      },
+    }, {
+      flags: { necromancer_lab_gribbo_truth_pressure: false },
+      environment_objects: {
+        gribbo: {
+          dynamic_states: {
+            patience: { current_value: 15 },
+            fear: { current_value: 5 },
+            paranoia: { current_value: 0 },
+          },
+        },
+      },
+    });
+
+    const leverage = events.find((event) => event.type === "negotiation_leverage");
+    expect(leverage).toMatchObject({
+      evidence: "diary_evidence",
+      targetId: "gribbo",
+      pressure: "gribbo_elixir_truth",
+      effects: { patience: -1, fear: 1, paranoia: 1 },
+    });
+  });
+
+  test("test_hud_renders_companion_guidance_card", async () => {
+    loadNewModules();
+    jest.useFakeTimers();
+    window.BG3HudRenderers.renderCompanionGuidanceCard({
+      type: "companion_guidance",
+      actorId: "astarion",
+      topic: "lab_key",
+      state: "missing_key",
+      advice: "Find the study or lockpick the door.",
+    });
+    const card = document.querySelector(".agent-signal-card--guidance");
+    expect(card).not.toBeNull();
+    expect(card.textContent).toContain("Companion Guidance");
+    expect(card.textContent).toContain("Astarion");
+    expect(card.textContent).toContain("Lab Key");
+    expect(card.textContent).toContain("Missing Key");
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+  });
+
+  test("test_hud_renders_negotiation_leverage_card", async () => {
+    loadNewModules();
+    jest.useFakeTimers();
+    window.BG3HudRenderers.renderNegotiationLeverageCard({
+      type: "negotiation_leverage",
+      evidence: "diary_evidence",
+      targetId: "gribbo",
+      pressure: "gribbo_elixir_truth",
+      effects: { patience: -1, fear: 1, paranoia: 1 },
+    });
+    const card = document.querySelector(".agent-signal-card--leverage");
+    expect(card).not.toBeNull();
+    expect(card.textContent).toContain("Negotiation Leverage");
+    expect(card.textContent).toContain("Diary Evidence");
+    expect(card.textContent).toContain("Gribbo");
+    expect(card.textContent).toContain("Elixir Truth");
+    expect(card.textContent).toContain("Patience -1");
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+  });
+
+  test("test_original_journal_event_remains_in_world_log", async () => {
+    const rawJournal = "[队友建议] topic=lab_key 找钥匙，去书房搜箱子。";
+    spyOnFetch().mockResolvedValueOnce(mockResponse({
+      responses: [],
+      journal_events: [rawJournal],
+      party_status: {},
+      environment_objects: {},
+      player_inventory: {},
+      combat_state: {},
+    }));
+    const api = await bootAppForTest("http://localhost/?qa_test=1");
+    await api.sendMessage("怎么打开实验室门？", "CHAT", null, { source: "dialogue_input" });
+    await flushAsync();
+    expect(document.body.textContent).toContain(rawJournal);
+    expect(document.querySelector(".agent-signal-card--guidance")).not.toBeNull();
+  });
+
+  test("test_plain_journal_event_does_not_generate_agent_signal_card", async () => {
+    loadNewModules();
+    const events = window.BG3UIEventAdapter.extractUIEvents({
+      journal_events: ["[系统] 门仍然锁着。"],
+    });
+    expect(events.some((event) => event.type === "companion_guidance" || event.type === "negotiation_leverage")).toBe(false);
+  });
+
+  test("test_agent_signal_event_highlights_director_ui_events_without_wasd_activation", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    await bootAppForTest("http://localhost/?qa_test=1");
+    if (window.BG3InputController) {
+      window.BG3InputController.movePlayer(1, 0);
+    }
+    await flushAsync();
+    expect(window.BG3DirectorTrace.getState()).toBe("idle");
+
+    window.BG3DirectorTrace.activateTrace(["player_input", "dm_router", "ui_events"], {
+      animate: false,
+      data: { journal_events: ["[队友建议] topic=lab_key 找钥匙"] },
+      uiEvents: [{ type: "companion_guidance", topic: "lab_key" }],
+    });
+    const uiNode = document.querySelector('li[data-node="ui_events"]');
+    expect(uiNode).not.toBeNull();
+    expect(uiNode.classList.contains("is-agent-signal")).toBe(true);
+  });
+
+  test("test_reduced_motion_agent_signal_card_has_no_pulse_class", async () => {
+    loadNewModules();
+    const previousMatchMedia = window.matchMedia;
+    window.matchMedia = jest.fn().mockImplementation((query) => ({
+      matches: query === "(prefers-reduced-motion: reduce)",
+      media: query,
+      addListener: jest.fn(),
+      removeListener: jest.fn(),
+      addEventListener: jest.fn(),
+      removeEventListener: jest.fn(),
+      dispatchEvent: jest.fn(),
+    }));
+    jest.useFakeTimers();
+    window.BG3HudRenderers.renderCompanionGuidanceCard({
+      type: "companion_guidance",
+      actorId: "party",
+      topic: "lab_key",
+      state: "missing_key",
+      advice: "Find the study.",
+    });
+    const card = document.querySelector(".agent-signal-card--guidance");
+    expect(card).not.toBeNull();
+    expect(card.classList.contains("is-reduced-motion")).toBe(true);
+    expect(card.classList.contains("agent-signal-card--pulse")).toBe(false);
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+    window.matchMedia = previousMatchMedia;
   });
 });

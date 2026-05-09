@@ -36,6 +36,8 @@
     /发现.*陷阱|察觉.*陷阱|trap.*discovered|trap.*revealed/i;
   const RE_TRAP_TRIGGERED =
     /踩中.*陷阱|陷阱.*触发|poison.*damage|毒雾.*喷发|trap.*trigger/i;
+  const RE_COMPANION_GUIDANCE = /\[队友建议\]/i;
+  const RE_NEGOTIATION_LEVERAGE = /\[交涉筹码\]/i;
 
   /* ══════════════════════════════════════════════════════
    *  normalizeRollEvent(raw)
@@ -116,14 +118,13 @@
   function extractUIEvents(backendResponse, previousState) {
     const data = safeObj(backendResponse);
 
-    /* Fast path: backend provides ui_events directly */
-    if (Array.isArray(data.ui_events) && data.ui_events.length > 0) {
-      return data.ui_events.map(normalizeDirectUIEvent);
-    }
-
-    /* Inference path */
-    const events = [];
-    const journal = safeArr(data.journal_events);
+    const events = safeArr(data.ui_events).map(normalizeDirectUIEvent);
+    const gameState = safeObj(data.game_state || data.gameState || data.state);
+    const journal = [
+      ...safeArr(data.journal_events),
+      ...safeArr(gameState.journal_events),
+      ...safeArr(data.state && data.state.journal_events),
+    ];
     const prev = safeObj(previousState);
 
     journal.forEach((line) => {
@@ -163,6 +164,9 @@
       events.push({ type: "demo_cleared" });
     }
 
+    inferNegotiationFromFlags(prev, data, events);
+    inferNegotiationEffects(prev, data, events);
+
     return events;
   }
 
@@ -196,10 +200,23 @@
         reason: e.reason || "",
       };
     }
+    if (type === "companion_guidance" || type === "negotiation_leverage") {
+      return e;
+    }
     return e;
   }
 
   function inferFromLine(text, events) {
+    const guidance = parseCompanionGuidance(text);
+    if (guidance) {
+      events.push(guidance);
+    }
+
+    const leverage = parseNegotiationLeverage(text);
+    if (leverage) {
+      events.push(leverage);
+    }
+
     /* LoS blocked */
     if (RE_LOS_BLOCKED.test(text)) {
       events.push(buildLoSEvent({}, text));
@@ -296,6 +313,174 @@
         });
       }
     }
+  }
+
+  function titleCaseId(id) {
+    return String(id || "")
+      .replace(/_/g, " ")
+      .replace(/\b\w/g, (char) => char.toUpperCase());
+  }
+
+  function parseActorId(text) {
+    const raw = String(text || "");
+    if (/astarion|阿斯代伦/i.test(raw)) return "astarion";
+    if (/shadowheart|影心/i.test(raw)) return "shadowheart";
+    if (/lae[’'`]?zel|laezel|莱埃泽尔/i.test(raw)) return "laezel";
+    return "party";
+  }
+
+  function parseGuidanceState(text) {
+    const raw = String(text || "");
+    if (/has_key\s*=\s*true|key[_\s-]*acquired|钥匙在手|已.*钥匙|拿到.*钥匙|有.*钥匙/i.test(raw)) {
+      return "key_acquired";
+    }
+    if (/has_key\s*=\s*false|missing|missing[_\s-]*key|找钥匙|没.*钥匙|缺.*钥匙|书房|撬锁|搜箱|箱子|study|lockpick|chest/i.test(raw)) {
+      return "missing_key";
+    }
+    return "unknown";
+  }
+
+  function parseCompanionGuidance(text) {
+    const raw = String(text || "");
+    if (!RE_COMPANION_GUIDANCE.test(raw)) return null;
+    const topicMatch = raw.match(/topic\s*=\s*([a-z0-9_\-]+)/i);
+    const topic = topicMatch ? topicMatch[1].toLowerCase() : (/lab[_\s-]*key|实验室.*钥匙|钥匙/i.test(raw) ? "lab_key" : "unknown");
+    const advice = raw
+      .replace(RE_COMPANION_GUIDANCE, "")
+      .replace(/topic\s*=\s*[a-z0-9_\-]+/i, "")
+      .replace(/actor\s*=\s*[a-z0-9_'’\-]+/i, "")
+      .replace(/\s+/g, " ")
+      .trim();
+    return {
+      type: "companion_guidance",
+      actorId: parseActorId(raw),
+      topic,
+      state: parseGuidanceState(raw),
+      advice: advice || raw,
+      raw,
+    };
+  }
+
+  function labelToNegotiationKey(label) {
+    const key = String(label || "").trim().toLowerCase();
+    if (key === "耐心") return "patience";
+    if (key === "恐惧") return "fear";
+    if (key === "偏执" || key === "猜疑") return "paranoia";
+    return key;
+  }
+
+  function parseInlineEffects(text) {
+    const raw = String(text || "");
+    const effects = {};
+    const re = /(patience|fear|paranoia|耐心|恐惧|偏执|猜疑)\s*[:=]?\s*([+\-]\s*\d+)/ig;
+    let match;
+    while ((match = re.exec(raw))) {
+      const key = labelToNegotiationKey(match[1]);
+      const value = parseInt(String(match[2] || "0").replace(/\s/g, ""), 10);
+      if (["patience", "fear", "paranoia"].includes(key) && value !== 0) effects[key] = value;
+    }
+    return effects;
+  }
+
+  function parseNegotiationLeverage(text) {
+    const raw = String(text || "");
+    if (!RE_NEGOTIATION_LEVERAGE.test(raw)) return null;
+    const match = raw.match(/\[交涉筹码\]\s*([a-z0-9_\-]+)\s*->\s*([a-z0-9_\-]+)/i);
+    const evidence = match ? match[1].toLowerCase() : (/diary|日记/i.test(raw) ? "diary_evidence" : "unknown_evidence");
+    const pressure = match ? match[2].toLowerCase() : (/elixir|灵药|药剂/i.test(raw) ? "gribbo_elixir_truth" : "unknown_pressure");
+    const targetId = /gribbo|格里博/i.test(raw + " " + pressure) ? "gribbo" : "unknown";
+    return {
+      type: "negotiation_leverage",
+      evidence,
+      targetId,
+      pressure,
+      effects: parseInlineEffects(raw),
+      raw,
+    };
+  }
+
+  function actorDynamicValue(record, key) {
+    const actor = safeObj(record);
+    const states = safeObj(actor.dynamic_states || actor.dynamicStates);
+    const raw = states[key] ?? actor[key];
+    if (raw && typeof raw === "object") {
+      const current = Number(raw.current_value ?? raw.current ?? raw.value);
+      return Number.isFinite(current) ? current : null;
+    }
+    const value = Number(raw);
+    return Number.isFinite(value) ? value : null;
+  }
+
+  function actorRecordFromState(rawState, actorId) {
+    const state = safeObj(rawState);
+    const gameState = safeObj(state.game_state || state.gameState || {});
+    const pools = [
+      state.environment_objects,
+      state.environmentObjects,
+      state.party_status,
+      state.partyStatus,
+      state.entities,
+      gameState.environment_objects,
+      gameState.party_status,
+      gameState.entities,
+    ];
+    for (const pool of pools) {
+      const obj = safeObj(pool);
+      if (obj[actorId]) return obj[actorId];
+    }
+    return {};
+  }
+
+  function inferNegotiationEffects(previousState, currentState, events) {
+    const leverageEvents = events.filter((event) => event && event.type === "negotiation_leverage");
+    if (!leverageEvents.length) return;
+    leverageEvents.forEach((event) => {
+      const target = event.targetId || "gribbo";
+      const prevActor = actorRecordFromState(previousState, target);
+      const currActor = actorRecordFromState(currentState, target);
+      const effects = { ...safeObj(event.effects) };
+      ["patience", "fear", "paranoia"].forEach((key) => {
+        if (Object.prototype.hasOwnProperty.call(effects, key)) return;
+        const before = actorDynamicValue(prevActor, key);
+        const after = actorDynamicValue(currActor, key);
+        if (before == null || after == null || before === after) return;
+        effects[key] = after - before;
+      });
+      event.effects = effects;
+    });
+  }
+
+  function flagValue(raw) {
+    const record = safeObj(raw);
+    if (Object.prototype.hasOwnProperty.call(record, "value")) return record.value;
+    return raw;
+  }
+
+  function flagsFromState(rawState) {
+    const state = safeObj(rawState);
+    const gameState = safeObj(state.game_state || state.gameState || state.state);
+    return safeObj(state.flags || gameState.flags);
+  }
+
+  function hasNegotiationLeverageEvent(events) {
+    return events.some((event) => event && event.type === "negotiation_leverage");
+  }
+
+  function inferNegotiationFromFlags(previousState, currentState, events) {
+    if (hasNegotiationLeverageEvent(events)) return;
+    const prevFlags = flagsFromState(previousState);
+    const currFlags = flagsFromState(currentState);
+    const before = flagValue(prevFlags.necromancer_lab_gribbo_truth_pressure);
+    const after = flagValue(currFlags.necromancer_lab_gribbo_truth_pressure);
+    if (before === true || after !== true) return;
+    events.push({
+      type: "negotiation_leverage",
+      evidence: "diary_evidence",
+      targetId: "gribbo",
+      pressure: "gribbo_elixir_truth",
+      effects: {},
+      raw: "flags.necromancer_lab_gribbo_truth_pressure=true",
+    });
   }
 
   function inferAffectionDeltas(prevParty, currParty, events) {

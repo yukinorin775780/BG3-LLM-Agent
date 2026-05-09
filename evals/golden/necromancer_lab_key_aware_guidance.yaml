@@ -36,13 +36,21 @@ steps:
         events_contains:
           - event_name: actor_runtime_decision
           - event_name: event_drain
-  - id: give_lab_key_via_existing_command
-    user_input: /add lab_key
-    intent: chat
+  - id: loot_study_chest_for_lab_key
+    user_input: loot study_chest
+    intent: ui_action_loot
+    character: player
     expected:
       state:
         equals:
           game_state.player_inventory.lab_key: 1
+          game_state.pending_events: []
+        contains:
+          game_state.journal_events:
+            - "💰 [搜刮] 玩家 从 死灵法师的战利品箱 上搜刮到了: lab_key x 1, 金币 x 25。"
+      visibility:
+        forbidden_paths:
+          - game_state.environment_objects.chest_1.inventory.lab_key
   - id: has_key_guidance
     user_input: 现在能打开实验室门了吗？
     intent: chat

@@ -58,6 +58,24 @@
     return out;
   }
 
+  function dynamicValue(actor, key) {
+    const record = safeObj(actor);
+    const states = safeObj(record.dynamic_states || record.dynamicStates);
+    const raw = states[key] ?? record[key];
+    if (raw && typeof raw === "object") {
+      const current = Number(raw.current_value ?? raw.current ?? raw.value);
+      return Number.isFinite(current) ? current : null;
+    }
+    const value = Number(raw);
+    return Number.isFinite(value) ? value : null;
+  }
+
+  function statusEffectLabel(effect) {
+    if (typeof effect === "string") return effect;
+    const record = safeObj(effect);
+    return String(record.type || record.id || record.name || record.status || "").trim();
+  }
+
   function normalizeActorMemories(actorState) {
     const actor = safeObj(actorState);
     const notes = [];
@@ -100,8 +118,13 @@
         affection: Number(actor.affection),
         faction: normalizeId(actor.faction),
         status: actor.status,
-        status_effects: safeArr(actor.status_effects || actor.statusEffects).map(String),
+        status_effects: safeArr(actor.status_effects || actor.statusEffects).map(statusEffectLabel).filter(Boolean),
         inventory: inventoryMap(actor.inventory),
+        agentSignals: {
+          patience: dynamicValue(actor, "patience"),
+          fear: dynamicValue(actor, "fear"),
+          paranoia: dynamicValue(actor, "paranoia"),
+        },
       };
     });
 
@@ -190,6 +213,16 @@
       if (actor.faction && prevFaction && actor.faction !== prevFaction) {
         pushDiff(out, "hostility", label + ".hostility = " + actor.faction);
       }
+
+      const prevSignals = safeObj(before.agentSignals);
+      const nextSignals = safeObj(actor.agentSignals);
+      ["patience", "fear", "paranoia"].forEach((key) => {
+        const beforeValue = Number(prevSignals[key]);
+        const afterValue = Number(nextSignals[key]);
+        if (!Number.isFinite(beforeValue) || !Number.isFinite(afterValue) || beforeValue === afterValue) return;
+        const delta = afterValue - beforeValue;
+        pushDiff(out, "agent_signal", label + "." + key + " " + (delta > 0 ? "+" : "") + delta);
+      });
     });
 
     Object.entries(next.memories).forEach(([actorId, notes]) => {
@@ -261,6 +294,9 @@
         latestDiffs.forEach((entry) => {
           const row = document.createElement("div");
           row.className = "world-diff-row world-diff-row--" + normalizeId(entry.type || "change");
+          if (normalizeId(entry.type) === "agent_signal") {
+            row.classList.add("agent-signal-diff");
+          }
           const sigil = document.createElement("span");
           sigil.className = "world-diff-sigil";
           sigil.textContent = "◆";

@@ -164,6 +164,18 @@
     "open heavy_oak_door_1",
     "check heavy_oak_door_1",
   ];
+  const READ_DIARY_MARKERS = [
+    "读日记",
+    "查看日记",
+    "阅读日记",
+    "necromancer_diary",
+    "diary",
+  ];
+  const GRIBBO_TARGET_MARKERS = ["gribbo", "格里布", "格里波", "地精", "boss"];
+  const GRIBBO_NEGOTIATION_MARKERS = ["日记", "药剂", "灵药", "死灵", "实验", "解药", "钥匙", "真相"];
+  const EXPLICIT_ATTACK_MARKERS = ["攻击", "打", "砍", "射击", "attack", "strike", "shoot"];
+  const EXPLICIT_LOOT_MARKERS = ["搜刮", "洗劫", "拿走", "拾取", "loot", "take"];
+  const EXPLICIT_MOVE_MARKERS = ["移动", "走到", "前往", "move", "go to", "walk"];
 
   function readQaNumber(name, fallback) {
     const value = Number(QA_PARAMS.get(name));
@@ -655,8 +667,36 @@
     let resolvedTarget = explicitTarget;
     let resolvedSource = explicitSource;
     const activeMapId = String(MAP_ID || "").trim().toLowerCase();
+    const userLineLower = userLine.toLowerCase();
+    const isNecromancerLab = activeMapId === "necromancer_lab";
+    const hasReadDiaryText = isNecromancerLab && READ_DIARY_MARKERS.some((marker) => {
+      const key = String(marker || "");
+      return key && (userLine.includes(key) || userLineLower.includes(key.toLowerCase()));
+    });
+    const hasGribboNegotiationText = isNecromancerLab
+      && GRIBBO_TARGET_MARKERS.some((marker) => {
+        const key = String(marker || "");
+        return key && (userLine.includes(key) || userLineLower.includes(key.toLowerCase()));
+      })
+      && GRIBBO_NEGOTIATION_MARKERS.some((marker) => {
+        const key = String(marker || "");
+        return key && (userLine.includes(key) || userLineLower.includes(key.toLowerCase()));
+      });
+    const isExplicitAttack = EXPLICIT_ATTACK_MARKERS.some((marker) => {
+      const key = String(marker || "");
+      return key && (userLine.includes(key) || userLineLower.includes(key.toLowerCase()));
+    });
+    const isExplicitLoot = EXPLICIT_LOOT_MARKERS.some((marker) => {
+      const key = String(marker || "");
+      return key && (userLine.includes(key) || userLineLower.includes(key.toLowerCase()));
+    });
+    const isExplicitMove = EXPLICIT_MOVE_MARKERS.some((marker) => {
+      const key = String(marker || "");
+      return key && (userLine.includes(key) || userLineLower.includes(key.toLowerCase()));
+    });
     const normalizedIntent = String(resolvedIntent || "").trim().toUpperCase();
     const hasDoorOpenSemantics = shouldRouteDoorInteractText(userLine);
+    const isExplicitNonDialogue = isExplicitAttack || isExplicitLoot || isExplicitMove || hasDoorOpenSemantics;
     const shouldBackfillDoorTarget =
       activeMapId === "necromancer_lab"
       && hasDoorOpenSemantics
@@ -664,6 +704,32 @@
     const resolvedDoorTarget = shouldBackfillDoorTarget
       ? resolveDoorTargetFromWorldContext(userLine)
       : "";
+
+    if (hasGribboNegotiationText && !isExplicitAttack) {
+      resolvedIntent = "CHAT";
+      resolvedTarget = "gribbo";
+      resolvedSource = "ui_text_normalized";
+      return {
+        userLine,
+        intentValue: resolvedIntent,
+        target: resolvedTarget,
+        source: resolvedSource,
+        intentContext: { diary_negotiation_hint: true },
+      };
+    }
+
+    if (hasReadDiaryText) {
+      resolvedIntent = "READ";
+      resolvedTarget = "necromancer_diary";
+      resolvedSource = "ui_text_normalized";
+      return {
+        userLine,
+        intentValue: resolvedIntent,
+        target: resolvedTarget,
+        source: resolvedSource,
+        intentContext: {},
+      };
+    }
 
     if (
       shouldBackfillDoorTarget
@@ -678,7 +744,11 @@
 
     if (!resolvedIntent) {
       const activeDialogueTarget = normalizeId(state.activeDialogueTarget);
-      if (activeDialogueTarget === "gribbo") {
+      if (activeDialogueTarget === "gribbo" && isExplicitAttack) {
+        resolvedIntent = "ATTACK";
+        resolvedTarget = resolvedTarget || "gribbo";
+        resolvedSource = resolvedSource || "text_input";
+      } else if (activeDialogueTarget === "gribbo" && !isExplicitNonDialogue) {
         resolvedIntent = "CHAT";
         resolvedTarget = resolvedTarget || "gribbo";
         resolvedSource = resolvedSource || "dialogue_input";
@@ -704,6 +774,7 @@
       intentValue: String(resolvedIntent || "").trim(),
       target: String(resolvedTarget || "").trim(),
       source: String(resolvedSource || "").trim(),
+      intentContext: {},
     };
   }
 
@@ -720,6 +791,9 @@
     };
     if (characterId) {
       payload.character = characterId;
+    }
+    if (routed.intentContext && Object.keys(routed.intentContext).length > 0) {
+      payload.intent_context = routed.intentContext;
     }
     return { payload, routed };
   }
@@ -1403,7 +1477,7 @@
   }
 
   async function fetchShowcaseStateSnapshot() {
-    if (!QA_SHOWCASE) return null;
+    if (!QA_SHOWCASE && !QA_MAP_DEBUG) return null;
     try {
       const url = STATE_URL
         + "?session_id=" + encodeURIComponent(getSessionId())
@@ -3356,6 +3430,14 @@
       }
       const wasCombatActive = isCombatStateActive(state.combatState);
       const prevPartySnapshot = { ...state.partyStatus };
+      const prevEnvironmentSnapshot = { ...state.environmentObjects };
+      const prevInventorySnapshot = { ...state.playerInventory };
+      const previousUIEventState = {
+        party_status: prevPartySnapshot,
+        environment_objects: prevEnvironmentSnapshot,
+        player_inventory: prevInventorySnapshot,
+        combat_state: state.combatState,
+      };
       state.partyStatus = safeObject(data.party_status);
       state.environmentObjects = safeObject(data.environment_objects);
       state.playerInventory = safeObject(data.player_inventory);
@@ -3394,10 +3476,12 @@
       renderTacticalGrid(state.partyStatus, state.environmentObjects, state.mapData);
       renderInitiativeTracker(state.combatState, wasCombatActive);
       updateRestControls(state.combatState);
-      const uiEvents = window.BG3UIEventAdapter
-        ? window.BG3UIEventAdapter.extractUIEvents(data, { party_status: prevPartySnapshot })
+      let uiEvents = window.BG3UIEventAdapter
+        ? window.BG3UIEventAdapter.extractUIEvents(data, previousUIEventState)
         : [];
-      const trace = inferNodeTrace(data, userLine, intentValue);
+      const trace = window.BG3DirectorTrace && typeof window.BG3DirectorTrace.buildTraceNodes === "function"
+        ? window.BG3DirectorTrace.buildTraceNodes(data, { userLine, intent: intentValue, uiEvents })
+        : inferNodeTrace(data, userLine, intentValue);
       updateXrayPanel(data, {
         userLine,
         intent: intentValue,
@@ -3429,6 +3513,23 @@
               actor_runtime_state: liveState.actor_runtime_state,
               demo_cleared: data.demo_cleared === true || liveState.demo_cleared === true,
             };
+            if (window.BG3UIEventAdapter) {
+              const enrichedEvents = window.BG3UIEventAdapter.extractUIEvents(
+                diffData,
+                previousShowcaseSnapshot
+              );
+              enrichedEvents.forEach((event) => {
+                if (!event || event.type !== "negotiation_leverage") return;
+                const exists = uiEvents.some((candidate) => (
+                  candidate
+                  && candidate.type === "negotiation_leverage"
+                  && candidate.evidence === event.evidence
+                  && candidate.targetId === event.targetId
+                  && candidate.pressure === event.pressure
+                ));
+                if (!exists) uiEvents.push(event);
+              });
+            }
           }
         }
         updateWorldStateDiff(previousShowcaseSnapshot, buildShowcaseSnapshot(diffData), {
@@ -3438,7 +3539,7 @@
 
       /* Dispatch HUD UI events from response (#1) */
       if (intentValue.toLowerCase() !== "init_sync") {
-        dispatchUIEventsFromResponse(data, { party_status: prevPartySnapshot }, uiEvents);
+        dispatchUIEventsFromResponse(data, previousUIEventState, uiEvents);
       }
 
       if (!opts.skipLogUpdate) {

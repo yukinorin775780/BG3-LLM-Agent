@@ -1,13 +1,21 @@
+import asyncio
 from unittest.mock import patch
 
 from core.graph.nodes.dialogue import dialogue_node
+from core.graph.nodes.dm import dm_node
 from core.graph.nodes.event_drain import event_drain_node
-from core.campaigns.necromancer_lab import detect_key_guidance_context
+from core.campaigns.necromancer_lab import (
+    detect_diary_negotiation_context,
+    detect_key_guidance_context,
+    detect_study_chest_loot_context,
+)
 from core.systems import mechanics
+from core.systems.maps import load_maps
 from core.systems.world_init import get_initial_world_state
 
 
 def _build_lab_state() -> dict:
+    load_maps(force_reload=True)
     state = get_initial_world_state(map_id="necromancer_lab")
     entities = state.get("entities") or {}
     # 统一修正敌对阵营标记，避免 "enemy" 与 "hostile" 的旧卡数据差异影响测试稳定性
@@ -308,3 +316,125 @@ def test_key_guidance_context_suppressed_after_door_open():
     result = detect_key_guidance_context(state, "怎么打开实验室门？", "laezel")
 
     assert result is None
+
+
+def test_diary_negotiation_context_returns_none_outside_necromancer_lab():
+    state = get_initial_world_state(map_id="goblin_camp")
+    state["active_dialogue_target"] = "gribbo"
+
+    result = detect_diary_negotiation_context(state, "日记里写了你喝下死灵狂暴灵药。")
+
+    assert result is None
+
+
+def test_diary_negotiation_context_without_decoded_diary_reports_no_evidence():
+    state = _build_lab_state()
+    state["active_dialogue_target"] = "gribbo"
+    state["flags"].pop("necromancer_lab_diary_decoded", None)
+    state["flags"].pop("necromancer_lab_antidote_formula_fragment_known", None)
+    state["flags"].pop("necromancer_lab_key_hint_known", None)
+
+    result = detect_diary_negotiation_context(state, "我知道你喝了什么药，把钥匙给我。")
+
+    assert result is not None
+    assert result["topic"] == "gribbo_elixir_truth"
+    assert result["decoded_diary"] is False
+    assert result["evidence"] == []
+
+
+def test_diary_negotiation_context_decoded_diary_returns_pressure_evidence():
+    state = _build_lab_state()
+    state["active_dialogue_target"] = "gribbo"
+    state["flags"]["necromancer_lab_diary_decoded"] = True
+    state["flags"]["necromancer_lab_antidote_formula_fragment_known"] = True
+    state["flags"]["necromancer_lab_key_hint_known"] = True
+
+    result = detect_diary_negotiation_context(
+        state,
+        "日记里写了你喝下死灵狂暴灵药，钥匙和解药线索都和这件事有关。",
+    )
+
+    assert result is not None
+    assert result["decoded_diary"] is True
+    assert result["target_actor_id"] == "gribbo"
+    assert "necromancer_diary" in result["evidence"]
+    assert "antidote_fragment" in result["evidence"]
+    assert "key_hint" in result["evidence"]
+
+
+def test_study_chest_loot_context_detects_open_or_loot_text():
+    state = _build_lab_state()
+
+    result = detect_study_chest_loot_context(state, "打开 chest_1")
+    alias_result = detect_study_chest_loot_context(state, "搜刮书房箱子")
+
+    assert result is not None
+    assert result["target_id"] == "chest_1"
+    assert result["item_id"] == "lab_key"
+    assert alias_result is not None
+    assert alias_result["target_id"] == "chest_1"
+
+
+def test_study_chest_alias_loot_grants_lab_key():
+    state = _build_lab_state()
+
+    result = mechanics.execute_loot_action(
+        {
+            **state,
+            "intent_context": {
+                "action_actor": "player",
+                "action_target": "study_chest",
+            },
+        }
+    )
+
+    assert result["player_inventory"].get("lab_key") == 1
+    assert result["environment_objects"]["chest_1"]["inventory"].get("lab_key", 0) == 0
+    assert "heavy_iron_key" not in result["player_inventory"]
+    assert any("lab_key x 1" in line for line in result.get("journal_events", []))
+
+
+def test_chest_1_loot_grants_lab_key_and_repeat_does_not_duplicate():
+    state = _build_lab_state()
+
+    first = mechanics.execute_loot_action(
+        {
+            **state,
+            "intent_context": {
+                "action_actor": "player",
+                "action_target": "chest_1",
+            },
+        }
+    )
+    second = mechanics.execute_loot_action(
+        {
+            **state,
+            **first,
+            "intent_context": {
+                "action_actor": "player",
+                "action_target": "chest_1",
+            },
+        }
+    )
+
+    assert first["player_inventory"].get("lab_key") == 1
+    assert second["player_inventory"].get("lab_key") == 1
+    assert second["environment_objects"]["chest_1"]["inventory"] == {}
+
+
+def test_text_open_chest_1_routes_to_loot():
+    state = _build_lab_state()
+    state.update(
+        {
+            "user_input": "打开 chest_1",
+            "intent": "chat",
+            "speaker_responses": [],
+            "pending_events": [],
+        }
+    )
+
+    result = asyncio.run(dm_node(state))
+
+    assert result["intent"] == "LOOT"
+    assert result["intent_context"]["reason"] == "necromancer_lab_study_chest_loot"
+    assert result["intent_context"]["action_target"] == "chest_1"

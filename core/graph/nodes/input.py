@@ -34,6 +34,16 @@ _ACT3_REBUKE_MARKERS = (
     "rebuke astarion",
     "shut up astarion",
 )
+_READ_DIARY_MARKERS = (
+    "读日记",
+    "查看日记",
+    "阅读日记",
+    "necromancer_diary",
+    "diary",
+)
+_GRIBBO_TARGET_MARKERS = ("gribbo", "格里布", "格里波", "地精", "boss")
+_GRIBBO_NEGOTIATION_MARKERS = ("日记", "药剂", "灵药", "死灵", "实验", "解药", "钥匙", "真相")
+_GRIBBO_ATTACK_MARKERS = ("攻击 gribbo", "attack gribbo", "攻击格里布", "攻击格里波", "攻击地精")
 
 
 def _looks_like_act3_choice(map_id: str, user_input: str) -> bool:
@@ -46,6 +56,33 @@ def _looks_like_act3_choice(map_id: str, user_input: str) -> bool:
     return any(marker in text or marker in normalized for marker in _ACT3_SIDE_MARKERS) or any(
         marker in text or marker in normalized for marker in _ACT3_REBUKE_MARKERS
     )
+
+
+def _is_necromancer_lab_map(map_id: str) -> bool:
+    return str(map_id or "").strip().lower() == "necromancer_lab"
+
+
+def _contains_marker(user_input: str, markers: tuple[str, ...]) -> bool:
+    text = str(user_input or "").strip()
+    lowered = text.lower()
+    return any(marker in text or marker in lowered for marker in markers)
+
+
+def _looks_like_read_diary_text(map_id: str, user_input: str) -> bool:
+    return _is_necromancer_lab_map(map_id) and _contains_marker(user_input, _READ_DIARY_MARKERS)
+
+
+def _looks_like_gribbo_diary_negotiation(map_id: str, user_input: str) -> bool:
+    if not _is_necromancer_lab_map(map_id):
+        return False
+    return _contains_marker(user_input, _GRIBBO_TARGET_MARKERS) and _contains_marker(
+        user_input,
+        _GRIBBO_NEGOTIATION_MARKERS,
+    )
+
+
+def _looks_like_explicit_gribbo_attack(user_input: str) -> bool:
+    return _contains_marker(user_input, _GRIBBO_ATTACK_MARKERS)
 
 
 def input_node(state: GameState) -> dict:
@@ -103,6 +140,27 @@ def input_node(state: GameState) -> dict:
         read_target_key = incoming_target.lower()
         read_target_missing = not read_target_key or read_target_key in {"unknown", "null", "none"}
         map_id = str((state.get("map_data") or {}).get("id") or "").strip().lower()
+        if _looks_like_gribbo_diary_negotiation(map_id, user_input) and not _looks_like_explicit_gribbo_attack(user_input):
+            intent_context["action_target"] = "gribbo"
+            intent_context["source"] = "ui_text_normalized"
+            intent_context["diary_negotiation_hint"] = True
+            return {
+                **base,
+                "intent": "CHAT",
+                "target": "gribbo",
+                "source": "ui_text_normalized",
+                "intent_context": intent_context,
+            }
+        if _looks_like_read_diary_text(map_id, user_input) and read_target_missing:
+            intent_context["action_target"] = "necromancer_diary"
+            intent_context["source"] = "ui_text_normalized"
+            return {
+                **base,
+                "intent": "READ",
+                "target": "necromancer_diary",
+                "source": "ui_text_normalized",
+                "intent_context": intent_context,
+            }
         if is_read_intent and read_target_missing:
             if _looks_like_act3_choice(map_id=map_id, user_input=user_input):
                 intent_context["action_target"] = "gribbo"

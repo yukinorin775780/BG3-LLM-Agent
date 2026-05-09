@@ -459,6 +459,19 @@ def _target_text_matches(normalized_query: str, candidate_id: str, candidate_nam
     return False
 
 
+def _target_aliases(target: Dict[str, Any]) -> List[str]:
+    aliases: List[str] = []
+    raw_aliases = target.get("alias_ids") or target.get("aliases") or []
+    if isinstance(raw_aliases, str):
+        aliases.append(raw_aliases)
+    elif isinstance(raw_aliases, (list, tuple, set)):
+        aliases.extend(str(alias) for alias in raw_aliases if str(alias or "").strip())
+    raw_alias = target.get("alias_id")
+    if raw_alias:
+        aliases.append(str(raw_alias))
+    return aliases
+
+
 def _resolve_target_reference(
     *,
     target_id: str,
@@ -494,9 +507,14 @@ def _resolve_target_reference(
                 continue
             candidate_id = _normalize_match_text(actual_id)
             candidate_name = _normalize_match_text(target.get("name", ""))
-            if not any((candidate_id, candidate_name)):
+            candidate_aliases = [_normalize_match_text(alias) for alias in _target_aliases(target)]
+            if not any((candidate_id, candidate_name, *candidate_aliases)):
                 continue
-            if _target_text_matches(normalized_query, candidate_id, candidate_name):
+            alias_matches = any(
+                alias and (normalized_query in alias or alias in normalized_query)
+                for alias in candidate_aliases
+            )
+            if alias_matches or _target_text_matches(normalized_query, candidate_id, candidate_name):
                 display_name = (
                     _display_entity_name(target, str(actual_id))
                     if collection is entities

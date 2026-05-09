@@ -4,18 +4,22 @@ from core.campaigns.necromancer_lab import (
     ACT3_CHOICE_REBUKE_ASTARION,
     ACT3_CHOICE_SIDE_WITH_ASTARION,
     ACT4_POST_COMBAT_BANTER,
+    detect_diary_negotiation_context,
     detect_key_guidance_context,
     detect_lab_act3_choice,
     detect_lab_act4_post_combat_banter,
     detect_lab_intro_awareness,
+    detect_study_chest_loot_context,
 )
 
 __all__ = [
     "ACT3_CHOICE_REBUKE_ASTARION",
     "ACT3_CHOICE_SIDE_WITH_ASTARION",
     "ACT4_POST_COMBAT_BANTER",
+    "detect_diary_negotiation_context",
     "detect_key_guidance_context",
     "detect_lab_act3_choice",
     "detect_lab_act4_post_combat_banter",
     "detect_lab_intro_awareness",
+    "detect_study_chest_loot_context",
 ]

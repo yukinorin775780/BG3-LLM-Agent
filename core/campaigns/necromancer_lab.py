@@ -82,6 +82,45 @@ _KEY_GUIDANCE_STUDY_FLAGS = (
     "necromancer_lab_secret_study_discovered",
     "necromancer_lab_secret_study_entered",
 )
+_DIARY_NEGOTIATION_MARKERS = (
+    "日记",
+    "药",
+    "灵药",
+    "药剂",
+    "死灵",
+    "狂暴",
+    "实验",
+    "事故",
+    "解药",
+    "钥匙",
+    "真相",
+    "diary",
+    "elixir",
+    "potion",
+    "necromancy",
+    "experiment",
+    "antidote",
+    "key",
+    "truth",
+)
+_STUDY_CHEST_ALIASES = (
+    "study_chest",
+    "chest_1",
+    "书房箱子",
+    "书房的箱子",
+    "书房宝箱",
+    "战利品箱",
+)
+_STUDY_CHEST_ACTION_MARKERS = (
+    "搜刮",
+    "打开",
+    "翻",
+    "搜",
+    "拿",
+    "拾取",
+    "loot",
+    "open",
+)
 
 
 def _safe_dict(value: Any) -> Dict[str, Any]:
@@ -209,6 +248,119 @@ def detect_key_guidance_context(
         "has_key_hint": "lab_key 已在背包里：去打开 door_b_to_d / 实验室门。",
         "lockpick_hint": "如果暂时找不到钥匙，可以让擅长手上功夫的人尝试撬锁。",
     }
+
+
+def _is_gribbo_target(state: Mapping[str, Any]) -> bool:
+    intent_context = _safe_dict(state.get("intent_context"))
+    target = _normalize_id(
+        state.get("active_dialogue_target")
+        or state.get("target")
+        or intent_context.get("action_target")
+    )
+    return target == "gribbo"
+
+
+def _dynamic_state_value(entity: Mapping[str, Any], state_key: str, default: int = 0) -> int:
+    dynamic_states = _safe_dict(entity.get("dynamic_states"))
+    payload = dynamic_states.get(state_key)
+    raw_value = payload.get("current_value", payload.get("value", default)) if isinstance(payload, dict) else payload
+    try:
+        return int(raw_value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _decoded_diary_from_memory(state: Mapping[str, Any]) -> bool:
+    runtime_state = _safe_dict(state.get("actor_runtime_state"))
+    memory_texts: List[str] = []
+    for bucket_id in ("player", "__party_shared__"):
+        bucket = _safe_dict(runtime_state.get(bucket_id))
+        memory_texts.extend(str(item) for item in _safe_list(bucket.get("memory_notes")))
+    joined = "\n".join(memory_texts)
+    if not joined:
+        return False
+    has_diary_truth = ("我读懂了" in joined or "队伍确认" in joined or "diary" in joined.lower())
+    has_gribbo_context = "Gribbo" in joined or "gribbo" in joined.lower()
+    has_leverage_context = any(token in joined for token in ("heavy_iron_key", "解药", "药剂", "毒气陷阱"))
+    return has_diary_truth and has_gribbo_context and has_leverage_context
+
+
+def detect_diary_negotiation_context(
+    state: Mapping[str, Any],
+    user_input: str,
+) -> Optional[Dict[str, Any]]:
+    """
+    Detect read-only Act2 diary leverage during Gribbo negotiation.
+    Returns context for both decoded and non-decoded cases; callers decide whether to branch.
+    """
+    normalized_state = _safe_dict(state)
+    if _map_id(normalized_state) != "necromancer_lab":
+        return None
+    if not _is_gribbo_target(normalized_state):
+        return None
+
+    text = str(user_input or "").strip()
+    lowered = text.lower()
+    if not text or not any(marker in text or marker in lowered for marker in _DIARY_NEGOTIATION_MARKERS):
+        return None
+
+    flags = _safe_dict(normalized_state.get("flags"))
+    decoded_diary = (
+        _flag_bool(flags.get("necromancer_lab_diary_decoded"))
+        or _flag_bool(flags.get("necromancer_lab_antidote_formula_fragment_known"))
+        or _flag_bool(flags.get("necromancer_lab_key_hint_known"))
+        or _decoded_diary_from_memory(normalized_state)
+    )
+    evidence = []
+    if decoded_diary:
+        evidence.append("necromancer_diary")
+        if _flag_bool(flags.get("necromancer_lab_antidote_formula_fragment_known")):
+            evidence.append("antidote_fragment")
+        if _flag_bool(flags.get("necromancer_lab_key_hint_known")):
+            evidence.append("key_hint")
+
+    gribbo = _safe_dict(_safe_dict(normalized_state.get("entities")).get("gribbo"))
+    patience = _dynamic_state_value(gribbo, "patience", default=10)
+    fear = _dynamic_state_value(gribbo, "fear", default=0)
+    paranoia = _dynamic_state_value(gribbo, "paranoia", default=0)
+    return {
+        "topic": "gribbo_elixir_truth",
+        "decoded_diary": decoded_diary,
+        "evidence": evidence,
+        "target_actor_id": "gribbo",
+        "patience_current": patience,
+        "fear_current": fear,
+        "paranoia_current": paranoia,
+        "pressure_hint": "用 necromancer_diary 中的死灵狂暴灵药真相压迫 Gribbo，但不要直接赠送钥匙或强制开战。",
+    }
+
+
+def detect_study_chest_loot_context(
+    state: Mapping[str, Any],
+    user_input: str,
+) -> Optional[Dict[str, Any]]:
+    """
+    Detect a small Necromancer Lab study chest loot/open request.
+    This only resolves the target and never mutates state.
+    """
+    normalized_state = _safe_dict(state)
+    if _map_id(normalized_state) != "necromancer_lab":
+        return None
+
+    text = str(user_input or "").strip()
+    lowered = text.lower()
+    if not text:
+        return None
+    if not any(marker in text or marker in lowered for marker in _STUDY_CHEST_ACTION_MARKERS):
+        return None
+    if any(marker in text or marker in lowered for marker in _STUDY_CHEST_ALIASES):
+        return {
+            "topic": "study_chest_lab_key",
+            "target_id": "chest_1",
+            "alias_ids": ["study_chest"],
+            "item_id": "lab_key",
+        }
+    return None
 
 
 def detect_lab_act3_choice(state: Dict[str, Any]) -> str:

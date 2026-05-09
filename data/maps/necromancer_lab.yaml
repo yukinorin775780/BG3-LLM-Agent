@@ -41,10 +41,11 @@ environment_objects:
     type: "locked_chest"
     name: "死灵法师的战利品箱"
     position: [16, 2]
-    is_locked: true
+    status: "open"
+    is_locked: false
     unlock_dc: 14
     inventory:
-      heavy_iron_key: 1
+      lab_key: 1
       gold_coin: 25
     alias_ids: ["study_chest"]
   - id: "necromancer_diary"
