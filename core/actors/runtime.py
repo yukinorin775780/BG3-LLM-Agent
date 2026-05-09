@@ -102,6 +102,27 @@ def _detect_act4_post_combat_context(actor_view: ActorView) -> bool:
     return "necromancer" in location_text or "实验室" in str(actor_view.current_location or "")
 
 
+def _key_guidance_context(actor_view: ActorView) -> Dict[str, Any]:
+    payload = actor_view.intent_context.get("key_guidance_context")
+    if not isinstance(payload, dict):
+        return {}
+    if str(payload.get("topic") or "").strip().lower() != "lab_key":
+        return {}
+    return dict(payload)
+
+
+def _build_key_guidance_metadata(*, actor_id: str, context: Dict[str, Any]) -> Dict[str, Any]:
+    if not context:
+        return {}
+    return {
+        "type": "companion_guidance",
+        "topic": "lab_key",
+        "has_key": bool(context.get("has_lab_key", False)),
+        "door_id": str(context.get("door_id") or "door_b_to_d"),
+        "actor_id": actor_id,
+    }
+
+
 def _build_act3_memory_note(choice_context: str) -> str:
     if choice_context == ACT3_CHOICE_SIDE_WITH_ASTARION:
         return "玩家与我一起嘲笑了 Gribbo，这种默契让我满意。"
@@ -399,13 +420,22 @@ class TemplateActorRuntime:
         choice_context = _detect_party_choice_context(user_input)
         act3_choice_context = _detect_act3_choice_context(actor_view)
         act4_post_combat_context = _detect_act4_post_combat_context(actor_view)
+        key_guidance_context = _key_guidance_context(actor_view)
         spoken_text = self._compose_reply(
             actor_view,
             social_action=social_action,
             choice_context=choice_context,
             act3_choice_context=act3_choice_context,
             act4_post_combat_context=act4_post_combat_context,
+            key_guidance_context=key_guidance_context,
         )
+        spoke_payload: Dict[str, Any] = {"text": spoken_text}
+        guidance_metadata = _build_key_guidance_metadata(
+            actor_id=self.actor_id,
+            context=key_guidance_context,
+        )
+        if guidance_metadata:
+            spoke_payload["guidance"] = guidance_metadata
         events = [
             DomainEvent(
                 event_id=_new_event_id(),
@@ -413,7 +443,7 @@ class TemplateActorRuntime:
                 actor_id=self.actor_id,
                 turn_index=int(actor_view.turn_count or 0),
                 visibility="party",
-                payload={"text": spoken_text},
+                payload=spoke_payload,
             )
         ]
         if social_action:
@@ -568,6 +598,7 @@ class TemplateActorRuntime:
         choice_context: str = "",
         act3_choice_context: str = "",
         act4_post_combat_context: bool = False,
+        key_guidance_context: Dict[str, Any] | None = None,
     ) -> str:
         action_type = str(social_action.get("action_type") or "").strip().lower()
         if action_type == "gift_accept":
@@ -597,6 +628,25 @@ class TemplateActorRuntime:
             if self.actor_id == "laezel":
                 return "先救弱者会耗掉追击窗口。"
             return "先救平民可以，但别失去节奏。"
+
+        if key_guidance_context:
+            has_lab_key = bool(key_guidance_context.get("has_lab_key", False))
+            if has_lab_key:
+                if self.actor_id == "astarion":
+                    return "lab_key 都到手了，亲爱的，去打开 door_b_to_d 那扇实验室门。"
+                if self.actor_id == "shadowheart":
+                    return "钥匙在你手上，打开实验室门，别等这里的力量再聚拢。"
+                if self.actor_id == "laezel":
+                    return "钥匙已取得。打开 door_b_to_d 实验室门，面对里面的东西。"
+                return "钥匙已经在手上，打开实验室门。"
+
+            if self.actor_id == "astarion":
+                return "lab_key 不在你包里，亲爱的。先找书房和暗门，翻 study_chest；或者让我撬锁。"
+            if self.actor_id == "shadowheart":
+                return "没有钥匙就别硬说能开。死灵痕迹指向书房和 necromancer_diary，先读日记再搜箱子。"
+            if self.actor_id == "laezel":
+                return "没有 lab_key。钥匙、撬锁、破门，选一个。别浪费时间。"
+            return "没有钥匙。先找书房线索，或尝试撬锁。"
 
         if self.actor_id == "astarion":
             if act3_choice_context == ACT3_CHOICE_SIDE_WITH_ASTARION:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import copy
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 
 INTRO_SEEN_FLAG = "necromancer_lab_intro_seen"
@@ -39,6 +39,49 @@ _ACT4_BANTER_MARKERS = (
     "open the door",
     "let's go",
 )
+_KEY_GUIDANCE_DOOR_IDS = frozenset({"door_b_to_d", "heavy_oak_door_1"})
+_KEY_GUIDANCE_DOOR_MARKERS = (
+    "door_b_to_d",
+    "heavy_oak_door_1",
+    "实验室门",
+    "实验室重门",
+    "重门",
+    "lab door",
+    "laboratory door",
+)
+_KEY_GUIDANCE_KEY_MARKERS = (
+    "lab_key",
+    "heavy_iron_key",
+    "钥匙",
+    "key",
+)
+_KEY_GUIDANCE_QUESTION_MARKERS = (
+    "怎么",
+    "怎么办",
+    "在哪",
+    "哪里",
+    "接下来",
+    "去哪",
+    "能不能",
+    "能进",
+    "能打开",
+    "可以打开",
+    "现在能",
+    "下一步",
+    "how",
+    "where",
+    "what next",
+    "can we",
+    "should we",
+)
+_KEY_GUIDANCE_STUDY_FLAGS = (
+    "room_c_secret_study_discovered",
+    "room_c_secret_study_entered",
+    "world_room_c_secret_study_discovered",
+    "world_room_c_secret_study_entered",
+    "necromancer_lab_secret_study_discovered",
+    "necromancer_lab_secret_study_entered",
+)
 
 
 def _safe_dict(value: Any) -> Dict[str, Any]:
@@ -62,6 +105,110 @@ def _flag_bool(raw_value: Any) -> bool:
 def _map_id(state: Dict[str, Any]) -> str:
     map_data = _safe_dict(state.get("map_data"))
     return _normalize_id(map_data.get("id"))
+
+
+def _inventory_count(inventory: Mapping[str, Any], item_id: str) -> int:
+    try:
+        return int(inventory.get(item_id) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _object_payload(state: Mapping[str, Any], object_id: str) -> Dict[str, Any]:
+    normalized_id = _normalize_id(object_id)
+    for bucket_name in ("entities", "environment_objects"):
+        bucket = _safe_dict(state.get(bucket_name))
+        item = _safe_dict(bucket.get(normalized_id))
+        if item:
+            return item
+
+    map_data = _safe_dict(state.get("map_data"))
+    raw_env = map_data.get("environment_objects")
+    if isinstance(raw_env, dict):
+        return _safe_dict(raw_env.get(normalized_id))
+    if isinstance(raw_env, list):
+        for item in raw_env:
+            payload = _safe_dict(item)
+            if _normalize_id(payload.get("id")) == normalized_id:
+                return payload
+    return {}
+
+
+def _door_is_open(state: Mapping[str, Any]) -> bool:
+    for door_id in _KEY_GUIDANCE_DOOR_IDS:
+        payload = _object_payload(state, door_id)
+        if not payload:
+            continue
+        if bool(payload.get("is_open", False)):
+            return True
+        if _normalize_id(payload.get("status")) in {"open", "opened"}:
+            return True
+    return False
+
+
+def _looks_like_key_guidance_request(
+    *,
+    state: Mapping[str, Any],
+    user_input: str,
+) -> bool:
+    text = str(user_input or "").strip()
+    if not text:
+        return False
+    lowered = text.lower()
+    has_question_shape = any(marker in text or marker in lowered for marker in _KEY_GUIDANCE_QUESTION_MARKERS)
+    if not has_question_shape:
+        return False
+
+    has_door_hint = ("门" in text) or ("door" in lowered) or any(
+        marker in text or marker in lowered for marker in _KEY_GUIDANCE_DOOR_MARKERS
+    )
+    has_key_hint = any(marker in text or marker in lowered for marker in _KEY_GUIDANCE_KEY_MARKERS)
+    has_next_step_hint = any(marker in text or marker in lowered for marker in ("接下来", "去哪", "下一步", "what next"))
+    return has_door_hint or has_key_hint or has_next_step_hint
+
+
+def detect_key_guidance_context(
+    state: Mapping[str, Any],
+    user_input: str,
+    actor_id: str,
+) -> Optional[Dict[str, Any]]:
+    """
+    Detect read-only key-aware companion guidance for the necromancer lab door.
+    This helper only observes world/inventory state and never mutates it.
+    """
+    normalized_state = _safe_dict(state)
+    if _map_id(normalized_state) != "necromancer_lab":
+        return None
+    if _door_is_open(normalized_state):
+        return None
+    if not _looks_like_key_guidance_request(state=normalized_state, user_input=user_input):
+        return None
+
+    flags = _safe_dict(normalized_state.get("flags"))
+    player_inventory = _safe_dict(normalized_state.get("player_inventory"))
+    has_lab_key = (
+        _inventory_count(player_inventory, "lab_key") > 0
+        or _inventory_count(player_inventory, "heavy_iron_key") > 0
+    )
+    secret_study_found = any(_flag_bool(flags.get(flag)) for flag in _KEY_GUIDANCE_STUDY_FLAGS)
+    diary_read = _flag_bool(flags.get("necromancer_lab_diary_read"))
+    diary_decoded = _flag_bool(flags.get("necromancer_lab_diary_decoded")) or _flag_bool(
+        flags.get("necromancer_lab_key_hint_known")
+    )
+
+    return {
+        "topic": "lab_key",
+        "door_id": "door_b_to_d",
+        "legacy_door_id": "heavy_oak_door_1",
+        "actor_id": _normalize_id(actor_id),
+        "has_lab_key": has_lab_key,
+        "secret_study_found": secret_study_found,
+        "diary_read": diary_read,
+        "diary_decoded": diary_decoded,
+        "missing_key_hint": "缺少 lab_key：先找 room_c_secret_study，读 necromancer_diary，再搜刮 study_chest；也可以尝试撬锁。",
+        "has_key_hint": "lab_key 已在背包里：去打开 door_b_to_d / 实验室门。",
+        "lockpick_hint": "如果暂时找不到钥匙，可以让擅长手上功夫的人尝试撬锁。",
+    }
 
 
 def detect_lab_act3_choice(state: Dict[str, Any]) -> str:

@@ -30,6 +30,14 @@ def _apply_actor_spoke(
     messages.append(AIMessage(content=format_history_message(speaker_id, text), name=speaker_id))
     speaker_responses.append((speaker_id, text))
     journal_events.append(f"💬 [台词] {speaker_id}: \"{text}\"")
+    guidance = event.payload.get("guidance") if isinstance(event.payload, dict) else None
+    if isinstance(guidance, dict) and str(guidance.get("type") or "") == "companion_guidance":
+        topic = str(guidance.get("topic") or "").strip()
+        door_id = str(guidance.get("door_id") or "").strip()
+        has_key = bool(guidance.get("has_key", False))
+        journal_events.append(
+            f"[队友建议] {speaker_id} notices inventory/world state: topic={topic} has_key={has_key} door_id={door_id}."
+        )
     return text
 
 

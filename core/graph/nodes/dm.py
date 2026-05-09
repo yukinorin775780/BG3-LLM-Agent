@@ -14,6 +14,7 @@ from core.campaigns import (
     ACT3_CHOICE_REBUKE_ASTARION,
     ACT3_CHOICE_SIDE_WITH_ASTARION,
     ACT4_POST_COMBAT_BANTER,
+    detect_key_guidance_context,
     detect_lab_act3_choice,
     detect_lab_act4_post_combat_banter,
 )
@@ -89,6 +90,27 @@ def _apply_act4_necromancer_lab_override(*, state: GameState, analysis: dict) ->
     intent_context = dict(overridden.get("intent_context") or {})
     intent_context["act4_post_combat_banter"] = True
     intent_context["player_sided_with_astarion"] = sided_with_astarion
+    overridden["intent_context"] = intent_context
+    return overridden
+
+
+def _apply_key_guidance_override(*, state: GameState, analysis: dict) -> dict:
+    context = detect_key_guidance_context(
+        dict(state or {}),
+        str(state.get("user_input") or ""),
+        "",
+    )
+    if not context:
+        return analysis
+
+    overridden = dict(analysis or {})
+    overridden["action_type"] = "CHAT"
+    overridden["action_actor"] = "player"
+    overridden["action_target"] = "door_b_to_d"
+    overridden["reason"] = "key_aware_companion_guidance"
+    overridden["responders"] = ["astarion", "shadowheart", "laezel"]
+    intent_context = dict(overridden.get("intent_context") or {})
+    intent_context["key_guidance_context"] = context
     overridden["intent_context"] = intent_context
     return overridden
 
@@ -189,6 +211,9 @@ def _apply_necromancer_door_target_fallback(*, state: GameState, analysis: dict)
     if not _is_necromancer_lab(state):
         return analysis
     out = dict(analysis or {})
+    intent_context = out.get("intent_context") if isinstance(out.get("intent_context"), dict) else {}
+    if intent_context.get("key_guidance_context"):
+        return out
     user_input = str(state.get("user_input") or "")
     if _looks_like_door_attack(user_input):
         return out
@@ -358,6 +383,10 @@ async def dm_node(state: GameState) -> dict:
         fallback_speaker=fallback_speaker,
     )
     if isinstance(structured_analysis, dict):
+        structured_analysis = _apply_key_guidance_override(
+            state=state,
+            analysis=structured_analysis,
+        )
         structured_analysis = _apply_necromancer_door_target_fallback(
             state=state,
             analysis=structured_analysis,
@@ -371,6 +400,12 @@ async def dm_node(state: GameState) -> dict:
             analysis=structured_analysis,
         )
     else:
+        key_guidance_fast_path = _apply_key_guidance_override(
+            state=state,
+            analysis={},
+        )
+        if isinstance(key_guidance_fast_path, dict) and str(key_guidance_fast_path.get("action_type") or "").strip():
+            structured_analysis = key_guidance_fast_path
         # Act3 side/rebuke choices should remain deterministic even without an explicit target/source payload.
         act3_fast_path = _apply_act3_necromancer_lab_override(
             state=state,
@@ -412,6 +447,10 @@ async def dm_node(state: GameState) -> dict:
             }
 
         analysis = _apply_act3_necromancer_lab_override(
+            state=state,
+            analysis=analysis if isinstance(analysis, dict) else {},
+        )
+        analysis = _apply_key_guidance_override(
             state=state,
             analysis=analysis if isinstance(analysis, dict) else {},
         )
@@ -460,6 +499,9 @@ async def dm_node(state: GameState) -> dict:
     else:
         queue = [fallback_speaker] if fallback_speaker != "unknown" else []
     current = queue.pop(0) if queue else fallback_speaker
+    analysis_intent_context = (
+        analysis.get("intent_context") if isinstance(analysis.get("intent_context"), dict) else {}
+    )
     out = {
         "entities": entities,
         "speaker_queue": queue,
@@ -475,21 +517,21 @@ async def dm_node(state: GameState) -> dict:
             "spell_id": analysis.get("spell_id", ""),
             "action_spell": analysis.get("spell_id", ""),
             "act3_choice": str(
-                (analysis.get("intent_context") or {}).get("act3_choice")
+                analysis_intent_context.get("act3_choice")
                 or analysis.get("act3_choice")
                 or ""
             ).strip(),
             "act4_post_combat_banter": bool(
-                (analysis.get("intent_context") or {}).get("act4_post_combat_banter")
+                analysis_intent_context.get("act4_post_combat_banter")
                 or analysis.get("act4_post_combat_banter")
                 or False
             ),
             "player_sided_with_astarion": bool(
-                (analysis.get("intent_context") or {}).get("player_sided_with_astarion")
-                if isinstance(analysis.get("intent_context"), dict)
-                and "player_sided_with_astarion" in analysis.get("intent_context")
+                analysis_intent_context.get("player_sided_with_astarion")
+                if "player_sided_with_astarion" in analysis_intent_context
                 else bool(state.get("flags", {}).get("necromancer_lab_player_sided_with_astarion", False))
             ),
+            "key_guidance_context": dict(analysis_intent_context.get("key_guidance_context") or {}),
         },
         "is_probing_secret": analysis.get("is_probing_secret", False),
         "active_dialogue_target": next_dialogue_target,

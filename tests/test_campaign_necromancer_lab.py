@@ -2,6 +2,7 @@ from unittest.mock import patch
 
 from core.graph.nodes.dialogue import dialogue_node
 from core.graph.nodes.event_drain import event_drain_node
+from core.campaigns.necromancer_lab import detect_key_guidance_context
 from core.systems import mechanics
 from core.systems.world_init import get_initial_world_state
 
@@ -261,3 +262,49 @@ def test_necromancer_lab_open_door_sets_escape_completion_flags():
     assert interact_result.get("demo_cleared") is True
     assert interact_result["flags"]["necromancer_lab_escape_complete"] is True
     assert interact_result["flags"]["content_sprint_1_complete"] is True
+
+
+def test_key_guidance_context_returns_none_outside_necromancer_lab():
+    state = get_initial_world_state(map_id="goblin_camp")
+
+    result = detect_key_guidance_context(state, "怎么打开实验室门？", "astarion")
+
+    assert result is None
+
+
+def test_key_guidance_context_missing_lab_key():
+    state = _build_lab_state()
+    state["player_inventory"].pop("lab_key", None)
+    state["player_inventory"].pop("heavy_iron_key", None)
+
+    result = detect_key_guidance_context(state, "怎么打开实验室门？", "astarion")
+
+    assert result is not None
+    assert result["topic"] == "lab_key"
+    assert result["door_id"] == "door_b_to_d"
+    assert result["has_lab_key"] is False
+    assert "study_chest" in result["missing_key_hint"]
+
+
+def test_key_guidance_context_has_lab_key():
+    state = _build_lab_state()
+    state["player_inventory"]["lab_key"] = 1
+
+    result = detect_key_guidance_context(state, "现在能打开实验室门了吗？", "shadowheart")
+
+    assert result is not None
+    assert result["has_lab_key"] is True
+    assert "door_b_to_d" in result["has_key_hint"]
+
+
+def test_key_guidance_context_suppressed_after_door_open():
+    state = _build_lab_state()
+    state["entities"]["door_b_to_d"] = {
+        "entity_type": "door",
+        "is_open": True,
+        "status": "open",
+    }
+
+    result = detect_key_guidance_context(state, "怎么打开实验室门？", "laezel")
+
+    assert result is None
