@@ -14,6 +14,7 @@ from core.campaigns import (
     ACT3_CHOICE_REBUKE_ASTARION,
     ACT3_CHOICE_SIDE_WITH_ASTARION,
     ACT4_POST_COMBAT_BANTER,
+    detect_astarion_memory_echo_context,
     detect_diary_negotiation_context,
     detect_key_guidance_context,
     detect_lab_act3_choice,
@@ -206,6 +207,50 @@ def _apply_trap_awareness_override(*, state: GameState, analysis: dict) -> dict:
     intent_context["trap_awareness_context"] = context
     overridden["intent_context"] = intent_context
     return overridden
+
+
+def _apply_astarion_memory_echo_override(*, state: GameState, analysis: dict) -> dict:
+    if not _is_necromancer_lab(state):
+        return analysis
+
+    existing_action = str((analysis or {}).get("action_type") or "").strip().upper()
+    if existing_action in {"DISARM", "LOOT", "READ", "INTERACT", "MOVE", "APPROACH", "ATTACK", "CAST_SPELL", "UNLOCK"}:
+        return analysis
+
+    out = dict(analysis or {})
+    intent_context = dict(out.get("intent_context") or {})
+    action_target = str(out.get("action_target") or "").strip().lower()
+    action_actor = str(out.get("action_actor") or "").strip().lower()
+    responders = [
+        str(item).strip().lower()
+        for item in (out.get("responders") or [])
+        if str(item or "").strip()
+    ]
+    helper_context = {
+        **intent_context,
+        "action_target": action_target,
+        "action_actor": action_actor,
+        "responders": responders,
+    }
+    context = detect_astarion_memory_echo_context(
+        dict(state or {}),
+        str(state.get("user_input") or ""),
+        helper_context,
+    )
+    if not context:
+        return analysis
+
+    out["action_type"] = "CHAT"
+    out["action_actor"] = "player"
+    out["reason"] = "astarion_memory_echo"
+    if not action_target or action_target in {"unknown", "none", "null"}:
+        out["action_target"] = "astarion"
+    if "astarion" not in responders:
+        responders = ["astarion"] + [item for item in responders if item != "astarion"]
+    out["responders"] = responders or ["astarion"]
+    intent_context["memory_echo_context"] = context
+    out["intent_context"] = intent_context
+    return out
 
 
 def _contains_marker(user_input: str, markers: tuple[str, ...]) -> bool:
@@ -592,6 +637,10 @@ async def dm_node(state: GameState) -> dict:
             state=state,
             analysis=structured_analysis,
         )
+        structured_analysis = _apply_astarion_memory_echo_override(
+            state=state,
+            analysis=structured_analysis,
+        )
         structured_analysis = _apply_necromancer_door_target_fallback(
             state=state,
             analysis=structured_analysis,
@@ -666,6 +715,16 @@ async def dm_node(state: GameState) -> dict:
             and str(key_guidance_fast_path.get("action_type") or "").strip()
         ):
             structured_analysis = key_guidance_fast_path
+        memory_echo_fast_path = _apply_astarion_memory_echo_override(
+            state=state,
+            analysis=structured_analysis or {},
+        )
+        if (
+            isinstance(memory_echo_fast_path, dict)
+            and str(memory_echo_fast_path.get("action_type") or "").strip()
+            and memory_echo_fast_path is not (structured_analysis or {})
+        ):
+            structured_analysis = memory_echo_fast_path
         # Act3 side/rebuke choices should remain deterministic even without an explicit target/source payload.
         act3_fast_path = _apply_act3_necromancer_lab_override(
             state=state,
@@ -735,6 +794,10 @@ async def dm_node(state: GameState) -> dict:
             analysis=analysis if isinstance(analysis, dict) else {},
         )
         analysis = _apply_key_guidance_override(
+            state=state,
+            analysis=analysis if isinstance(analysis, dict) else {},
+        )
+        analysis = _apply_astarion_memory_echo_override(
             state=state,
             analysis=analysis if isinstance(analysis, dict) else {},
         )
@@ -819,6 +882,7 @@ async def dm_node(state: GameState) -> dict:
             "diary_negotiation_context": dict(analysis_intent_context.get("diary_negotiation_context") or {}),
             "study_chest_loot_context": dict(analysis_intent_context.get("study_chest_loot_context") or {}),
             "trap_awareness_context": dict(analysis_intent_context.get("trap_awareness_context") or {}),
+            "memory_echo_context": dict(analysis_intent_context.get("memory_echo_context") or {}),
             "action": str(analysis_intent_context.get("action") or "").strip(),
         },
         "is_probing_secret": analysis.get("is_probing_secret", False),

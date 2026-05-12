@@ -139,6 +139,33 @@ _TRAP_AWARENESS_MARKERS = (
     "corridor",
     "ahead",
 )
+_ASTARION_MEMORY_ACTOR_MARKERS = (
+    "阿斯代伦",
+    "astarion",
+)
+_ASTARION_MEMORY_COLLAB_MARKERS = (
+    "帮忙",
+    "帮我",
+    "建议",
+    "怎么看",
+    "你怎么看",
+    "陷阱",
+    "解除",
+    "拆除",
+    "钥匙",
+    "门",
+    "实验室",
+    "gribbo",
+    "怎么办",
+    "help",
+    "advice",
+    "what do you think",
+    "trap",
+    "disarm",
+    "key",
+    "door",
+    "lab",
+)
 
 
 def _safe_dict(value: Any) -> Dict[str, Any]:
@@ -437,6 +464,90 @@ def detect_trap_awareness_context(
         "revealed": bool(revealed),
         "disarmed": bool(disarmed),
         "triggered": bool(triggered),
+    }
+
+
+def _astarion_memory_notes(state: Mapping[str, Any]) -> str:
+    runtime_state = _safe_dict(state.get("actor_runtime_state"))
+    astarion_state = _safe_dict(runtime_state.get("astarion"))
+    return "\n".join(str(item) for item in _safe_list(astarion_state.get("memory_notes")))
+
+
+def _detect_astarion_history_type(state: Mapping[str, Any]) -> str:
+    flags = _safe_dict(state.get("flags"))
+    notes = _astarion_memory_notes(state)
+    notes_lower = notes.lower()
+
+    sided_flag = flags.get("necromancer_lab_player_sided_with_astarion")
+    if sided_flag is True:
+        return "sided_with_player"
+    if (
+        sided_flag is False
+        and "necromancer_lab_player_sided_with_astarion" in flags
+        and _flag_bool(flags.get("necromancer_lab_astarion_mocked_gribbo"))
+    ):
+        return "rebuked_by_player"
+
+    if any(token in notes for token in ("训斥", "闭嘴", "记住这笔账", "羞辱")) or any(
+        token in notes_lower for token in ("rebuke", "humiliat", "insult")
+    ):
+        return "rebuked_by_player"
+    if any(token in notes for token in ("一起嘲笑", "默契", "同调", "满意")) or any(
+        token in notes_lower for token in ("side_with", "sided", "complicit")
+    ):
+        return "sided_with_player"
+    return ""
+
+
+def detect_astarion_memory_echo_context(
+    state: Mapping[str, Any],
+    user_input: str,
+    intent_context: Optional[Mapping[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    """
+    Detect whether Astarion should surface Act3 relationship memory.
+    The helper is read-only and never blocks the requested action.
+    """
+    normalized_state = _safe_dict(state)
+    if _map_id(normalized_state) != "necromancer_lab":
+        return None
+
+    memory_type = _detect_astarion_history_type(normalized_state)
+    if not memory_type:
+        return None
+
+    ctx = _safe_dict(intent_context)
+    text = str(user_input or "").strip()
+    lowered = text.lower()
+    target = _normalize_id(
+        ctx.get("action_target")
+        or normalized_state.get("target")
+        or normalized_state.get("active_dialogue_target")
+    )
+    actor = _normalize_id(ctx.get("action_actor") or normalized_state.get("current_speaker"))
+    responders = ctx.get("responders")
+    responder_hits = isinstance(responders, list) and "astarion" in {
+        _normalize_id(item) for item in responders
+    }
+    mentions_astarion = any(marker in text or marker in lowered for marker in _ASTARION_MEMORY_ACTOR_MARKERS)
+    needs_astarion = (
+        target == "astarion"
+        or actor == "astarion"
+        or responder_hits
+        or mentions_astarion
+        or bool(ctx.get("key_guidance_context"))
+        or bool(ctx.get("trap_awareness_context"))
+    )
+    collaboration = any(marker in text or marker in lowered for marker in _ASTARION_MEMORY_COLLAB_MARKERS)
+    if not needs_astarion or not collaboration:
+        return None
+
+    return {
+        "topic": "memory_echo",
+        "actor_id": "astarion",
+        "memory_type": memory_type,
+        "severity": "resentful" if memory_type == "rebuked_by_player" else "complicit",
+        "should_block_action": False,
     }
 
 

@@ -2300,4 +2300,206 @@ describe("web_ui/app.js UI bindings", () => {
     jest.useRealTimers();
     window.matchMedia = previousMatchMedia;
   });
+
+  test("test_memory_echo_journal_rebuke_derives_ui_event", async () => {
+    loadNewModules();
+    const events = window.BG3UIEventAdapter.extractUIEvents({
+      journal_events: ["[记忆回响] astarion -> rebuked_by_player"],
+    });
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "memory_echo",
+      actor: "astarion",
+      memoryType: "rebuked_by_player",
+      tone: "resentful",
+      source: "journal",
+    }));
+  });
+
+  test("test_memory_echo_journal_sided_derives_ui_event", async () => {
+    loadNewModules();
+    const events = window.BG3UIEventAdapter.extractUIEvents({
+      journal_events: ["[记忆回响] astarion -> sided_with_player"],
+    });
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "memory_echo",
+      actor: "astarion",
+      memoryType: "sided_with_player",
+      tone: "complicit",
+      source: "journal",
+    }));
+  });
+
+  test("test_memory_echo_rebuke_flag_diff_derives_ui_event", async () => {
+    loadNewModules();
+    const events = window.BG3UIEventAdapter.extractUIEvents({
+      flags: { necromancer_lab_astarion_rebuke_echo_seen: true },
+    }, {
+      flags: { necromancer_lab_astarion_rebuke_echo_seen: false },
+    });
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "memory_echo",
+      memoryType: "rebuked_by_player",
+      tone: "resentful",
+      source: "state",
+    }));
+  });
+
+  test("test_memory_echo_sided_flag_diff_derives_ui_event", async () => {
+    loadNewModules();
+    const events = window.BG3UIEventAdapter.extractUIEvents({
+      flags: { necromancer_lab_astarion_complicity_echo_seen: true },
+    }, {
+      flags: {},
+    });
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "memory_echo",
+      memoryType: "sided_with_player",
+      tone: "complicit",
+      source: "state",
+    }));
+  });
+
+  test("test_memory_echo_response_token_fallback_derives_rebuke", async () => {
+    loadNewModules();
+    const events = window.BG3UIEventAdapter.extractUIEvents({
+      responses: [{ speaker: "astarion", text: "现在又需要我了？我会记住这笔账。" }],
+    });
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "memory_echo",
+      actor: "astarion",
+      memoryType: "rebuked_by_player",
+      tone: "resentful",
+      source: "response",
+    }));
+  });
+
+  test("test_memory_echo_journal_and_flag_are_deduped", async () => {
+    loadNewModules();
+    const events = window.BG3UIEventAdapter.extractUIEvents({
+      journal_events: ["[记忆回响] astarion -> rebuked_by_player"],
+      flags: { necromancer_lab_astarion_rebuke_echo_seen: true },
+    }, {
+      flags: {},
+    });
+    expect(events.filter((event) => event.type === "memory_echo" && event.memoryType === "rebuked_by_player")).toHaveLength(1);
+  });
+
+  test("test_hud_renders_memory_echo_rebuke_card", async () => {
+    loadNewModules();
+    jest.useFakeTimers();
+    window.BG3HudRenderers.renderMemoryEchoCard({
+      type: "memory_echo",
+      actor: "astarion",
+      memoryType: "rebuked_by_player",
+      tone: "resentful",
+      message: "He remembers you rebuked him.",
+      quote: "Now you need me?",
+    });
+    const card = document.querySelector(".agent-signal-card--memory-echo.memory-echo-resentful");
+    expect(card).not.toBeNull();
+    expect(card.textContent).toContain("Memory Echo");
+    expect(card.textContent).toContain("Astarion");
+    expect(card.textContent).toContain("Resentful");
+    expect(card.textContent).toContain("Now you need me?");
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+  });
+
+  test("test_hud_renders_memory_echo_sided_card", async () => {
+    loadNewModules();
+    jest.useFakeTimers();
+    window.BG3HudRenderers.renderMemoryEchoCard({
+      type: "memory_echo",
+      actor: "astarion",
+      memoryType: "sided_with_player",
+      tone: "complicit",
+      message: "He remembers you sided with him.",
+      quote: "Cruelty shared becomes trust.",
+    });
+    const card = document.querySelector(".agent-signal-card--memory-echo.memory-echo-complicit");
+    expect(card).not.toBeNull();
+    expect(card.textContent).toContain("Memory Echo");
+    expect(card.textContent).toContain("Complicit");
+    expect(card.textContent).toContain("Cruelty shared becomes trust.");
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+  });
+
+  test("test_memory_echo_activates_director_trace", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    await bootAppForTest("http://localhost/?qa_test=1");
+    const nodes = window.BG3DirectorTrace.buildTraceNodes({}, {
+      userLine: "阿斯代伦，你怎么看这件事？",
+      intent: "CHAT",
+      uiEvents: [{ type: "memory_echo", actor: "astarion", memoryType: "rebuked_by_player" }],
+    });
+    expect(nodes).toEqual(expect.arrayContaining(["actor_runtime", "domain_event", "event_drain", "ui_events"]));
+    window.BG3DirectorTrace.activateTrace(nodes, {
+      animate: false,
+      uiEvents: [{ type: "memory_echo", actor: "astarion", memoryType: "rebuked_by_player" }],
+    });
+    expect(document.querySelector('li[data-node="actor_runtime"]').classList.contains("is-agent-signal")).toBe(true);
+    expect(document.querySelector('li[data-node="ui_events"]').classList.contains("is-agent-signal")).toBe(true);
+  });
+
+  test("test_wasd_does_not_activate_trace_for_memory_echo_feature", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    await bootAppForTest("http://localhost/?qa_test=1");
+    if (window.BG3InputController) {
+      window.BG3InputController.movePlayer(1, 0);
+    }
+    await flushAsync();
+    expect(window.BG3DirectorTrace.getState()).toBe("idle");
+  });
+
+  test("test_state_diff_highlights_memory_echo_flags", async () => {
+    loadNewModules();
+    const diffs = window.BG3StateDiffRenderer.diffSnapshots({
+      flags: {},
+    }, {
+      flags: {
+        necromancer_lab_astarion_memory_echo_seen: true,
+        necromancer_lab_astarion_rebuke_echo_seen: true,
+        necromancer_lab_astarion_complicity_echo_seen: true,
+      },
+    });
+    expect(diffs).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "memory_echo_signal", label: "flags.necromancer_lab_astarion_memory_echo_seen = true" }),
+      expect.objectContaining({ type: "memory_echo_signal", label: "flags.necromancer_lab_astarion_rebuke_echo_seen = true" }),
+      expect.objectContaining({ type: "memory_echo_signal", label: "flags.necromancer_lab_astarion_complicity_echo_seen = true" }),
+    ]));
+    window.BG3StateDiffRenderer.renderDiffs(diffs, { autoExpand: false });
+    expect(document.querySelector(".world-diff-row--memory_echo_signal.memory-echo-diff")).not.toBeNull();
+  });
+
+  test("test_state_diff_synthesizes_memory_echo_flags_from_journal", async () => {
+    loadNewModules();
+    const diffs = window.BG3StateDiffRenderer.diffSnapshots({
+      journal_events: [],
+    }, {
+      journal_events: ["[记忆回响] astarion -> rebuked_by_player"],
+    });
+    expect(diffs).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "memory_echo_signal", label: "flags.necromancer_lab_astarion_memory_echo_seen = true" }),
+      expect.objectContaining({ type: "memory_echo_signal", label: "flags.necromancer_lab_astarion_rebuke_echo_seen = true" }),
+    ]));
+  });
+
+  test("test_memory_echo_does_not_break_existing_agent_signals", async () => {
+    loadNewModules();
+    const events = window.BG3UIEventAdapter.extractUIEvents({
+      journal_events: [
+        "[队友建议] Astarion topic=lab_key 找钥匙",
+        "[交涉筹码] diary_evidence -> gribbo_elixir_truth",
+        "[陷阱感知] astarion -> gas_trap_1",
+        "[记忆回响] astarion -> sided_with_player",
+      ],
+    });
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "companion_guidance" }),
+      expect.objectContaining({ type: "negotiation_leverage" }),
+      expect.objectContaining({ type: "trap_insight" }),
+      expect.objectContaining({ type: "memory_echo" }),
+    ]));
+  });
 });

@@ -41,6 +41,9 @@
   const RE_TRAP_INSIGHT_SIGNAL = /\[陷阱感知\]\s*([a-z0-9_\-]+)\s*->\s*([a-z0-9_\-]+)/i;
   const RE_TRAP_DISARMED_SIGNAL = /\[陷阱解除\]\s*([a-z0-9_\-]+)\s*->\s*([a-z0-9_\-]+)/i;
   const RE_POISON_TRAP_TRIGGER_SIGNAL = /\[毒气陷阱\]\s*([a-z0-9_\-]+)\s*(?:triggered|触发)/i;
+  const RE_MEMORY_ECHO_SIGNAL = /\[记忆回响\]\s*([a-z0-9_\-]+)\s*->\s*(rebuked_by_player|sided_with_player)/i;
+  const RE_MEMORY_ECHO_REBUKE_TOKEN = /现在又需要我|闭嘴|记住这笔账|记住.*账|need me now|now you need me|shut up|remember.*this/i;
+  const RE_MEMORY_ECHO_COMPLICITY_TOKEN = /默契|一起嘲笑|共谋|shared cruelty|cruelty shared|complicit|conspiracy/i;
 
   /* ══════════════════════════════════════════════════════
    *  normalizeRollEvent(raw)
@@ -167,9 +170,11 @@
       events.push({ type: "demo_cleared" });
     }
 
+    inferMemoryEchoEvents(prev, data, events);
     inferTrapSignalEvents(prev, data, events);
     inferNegotiationFromFlags(prev, data, events);
     inferNegotiationEffects(prev, data, events);
+    dedupeMemoryEchoEvents(events);
     dedupeTrapSignalEvents(events);
 
     return events;
@@ -205,7 +210,7 @@
         reason: e.reason || "",
       };
     }
-    if (type === "companion_guidance" || type === "negotiation_leverage"
+    if (type === "companion_guidance" || type === "negotiation_leverage" || type === "memory_echo"
       || type === "trap_insight" || type === "trap_disarmed" || type === "trap_triggered") {
       return e;
     }
@@ -226,6 +231,11 @@
     const trapSignal = parseTrapSignal(text);
     if (trapSignal) {
       events.push(trapSignal);
+    }
+
+    const memoryEcho = parseMemoryEchoSignal(text);
+    if (memoryEcho) {
+      events.push(memoryEcho);
     }
 
     /* LoS blocked */
@@ -334,6 +344,29 @@
     return value === 1;
   }
 
+  function responseTextBlob(data) {
+    const payload = safeObj(data);
+    const parts = [];
+    const pushResponse = (item) => {
+      if (item == null) return;
+      if (typeof item === "string") {
+        parts.push(item);
+        return;
+      }
+      const record = safeObj(item);
+      ["text", "content", "message", "line", "response"].forEach((key) => {
+        if (record[key]) parts.push(String(record[key]));
+      });
+    };
+    safeArr(payload.responses).forEach(pushResponse);
+    safeArr(payload.response).forEach(pushResponse);
+    pushResponse(payload.response);
+    pushResponse(payload.message);
+    pushResponse(payload.text);
+    pushResponse(payload.narration);
+    return parts.join(" ");
+  }
+
   function stateFlags(rawState) {
     const state = safeObj(rawState);
     const gameState = safeObj(state.game_state || state.gameState || state.state);
@@ -410,6 +443,107 @@
       };
     }
     return null;
+  }
+
+  function memoryEchoConfig(memoryType) {
+    const key = String(memoryType || "").trim().toLowerCase();
+    if (key === "sided_with_player") {
+      return {
+        memoryType: "sided_with_player",
+        tone: "complicit",
+        title: "Shared cruelty remembered",
+        message: "He remembers you sided with him.",
+        quote: "Cruelty shared becomes trust.",
+      };
+    }
+    return {
+      memoryType: "rebuked_by_player",
+      tone: "resentful",
+      title: "Astarion remembers",
+      message: "He remembers you rebuked him.",
+      quote: "Now you need me?",
+    };
+  }
+
+  function buildMemoryEchoEvent(actor, memoryType, source, raw) {
+    const cfg = memoryEchoConfig(memoryType);
+    return {
+      type: "memory_echo",
+      actor: String(actor || "astarion").toLowerCase(),
+      memoryType: cfg.memoryType,
+      tone: cfg.tone,
+      title: cfg.title,
+      message: cfg.message,
+      quote: cfg.quote,
+      source: source || "state",
+      raw: raw || "",
+    };
+  }
+
+  function parseMemoryEchoSignal(text) {
+    const raw = String(text || "");
+    const match = raw.match(RE_MEMORY_ECHO_SIGNAL);
+    if (!match) return null;
+    return buildMemoryEchoEvent(match[1], match[2], "journal", raw);
+  }
+
+  function flagChangedToTrue(previousFlags, currentFlags, key) {
+    return flagBool(currentFlags[key]) && !flagBool(previousFlags[key]);
+  }
+
+  function pushMemoryEchoEvent(events, nextEvent) {
+    if (!nextEvent || nextEvent.type !== "memory_echo") return;
+    const actor = String(nextEvent.actor || "astarion").toLowerCase();
+    const memoryType = String(nextEvent.memoryType || "").toLowerCase();
+    const existing = events.find((event) => {
+      return event
+        && event.type === "memory_echo"
+        && String(event.actor || "astarion").toLowerCase() === actor
+        && String(event.memoryType || "").toLowerCase() === memoryType;
+    });
+    if (!existing) {
+      events.push(nextEvent);
+      return;
+    }
+    if (nextEvent.source === "journal") existing.source = "journal";
+    if (nextEvent.raw && !existing.raw) existing.raw = nextEvent.raw;
+    if (nextEvent.quote && !existing.quote) existing.quote = nextEvent.quote;
+  }
+
+  function inferMemoryEchoEvents(previousState, currentState, events) {
+    const prevFlags = stateFlags(previousState);
+    const currFlags = stateFlags(currentState);
+    if (flagChangedToTrue(prevFlags, currFlags, "necromancer_lab_astarion_rebuke_echo_seen")) {
+      pushMemoryEchoEvent(events, buildMemoryEchoEvent("astarion", "rebuked_by_player", "state", "flags.necromancer_lab_astarion_rebuke_echo_seen=true"));
+    }
+    if (flagChangedToTrue(prevFlags, currFlags, "necromancer_lab_astarion_complicity_echo_seen")) {
+      pushMemoryEchoEvent(events, buildMemoryEchoEvent("astarion", "sided_with_player", "state", "flags.necromancer_lab_astarion_complicity_echo_seen=true"));
+    }
+
+    const responseText = responseTextBlob(currentState);
+    if (responseText && RE_MEMORY_ECHO_REBUKE_TOKEN.test(responseText)) {
+      pushMemoryEchoEvent(events, buildMemoryEchoEvent("astarion", "rebuked_by_player", "response", responseText));
+    }
+    if (responseText && RE_MEMORY_ECHO_COMPLICITY_TOKEN.test(responseText)) {
+      pushMemoryEchoEvent(events, buildMemoryEchoEvent("astarion", "sided_with_player", "response", responseText));
+    }
+  }
+
+  function dedupeMemoryEchoEvents(events) {
+    const seen = new Map();
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const event = events[index];
+      if (!event || event.type !== "memory_echo") continue;
+      const key = String(event.actor || "astarion").toLowerCase() + ":" + String(event.memoryType || "").toLowerCase();
+      if (!seen.has(key)) {
+        seen.set(key, event);
+        continue;
+      }
+      const kept = seen.get(key);
+      if (event.source === "journal") kept.source = "journal";
+      if (event.raw && !kept.raw) kept.raw = event.raw;
+      events.splice(index, 1);
+    }
   }
 
   function buildTrapInsightEvent(actor, trapId, source, raw) {

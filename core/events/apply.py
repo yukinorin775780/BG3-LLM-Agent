@@ -60,6 +60,16 @@ def _apply_actor_spoke(
                 continue
             trap["is_hidden"] = False
             trap["status"] = "revealed"
+    memory_echo = event.payload.get("memory_echo") if isinstance(event.payload, dict) else None
+    if isinstance(memory_echo, dict) and str(memory_echo.get("topic") or "") == "memory_echo":
+        memory_type = str(memory_echo.get("memory_type") or "").strip()
+        if speaker_id == "astarion" and memory_type in {"rebuked_by_player", "sided_with_player"}:
+            journal_events.append(f"[记忆回响] astarion -> {memory_type}")
+            flags["necromancer_lab_astarion_memory_echo_seen"] = True
+            if memory_type == "rebuked_by_player":
+                flags["necromancer_lab_astarion_rebuke_echo_seen"] = True
+            else:
+                flags["necromancer_lab_astarion_complicity_echo_seen"] = True
     return text
 
 

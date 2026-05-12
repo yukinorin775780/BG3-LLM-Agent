@@ -3509,7 +3509,7 @@
 
       if (window.BG3StateDiffRenderer && typeof window.BG3StateDiffRenderer.update === "function") {
         let diffData = data;
-        if (QA_SHOWCASE) {
+        if (QA_SHOWCASE || QA_MAP_DEBUG) {
           const liveState = await fetchShowcaseStateSnapshot();
           if (liveState) {
             diffData = {
@@ -3525,14 +3525,16 @@
                 previousShowcaseSnapshot
               );
               enrichedEvents.forEach((event) => {
-                if (!event || event.type !== "negotiation_leverage") return;
-                const exists = uiEvents.some((candidate) => (
-                  candidate
-                  && candidate.type === "negotiation_leverage"
-                  && candidate.evidence === event.evidence
-                  && candidate.targetId === event.targetId
-                  && candidate.pressure === event.pressure
-                ));
+                if (!event || !["negotiation_leverage", "memory_echo"].includes(event.type)) return;
+                const exists = uiEvents.some((candidate) => {
+                  if (!candidate || candidate.type !== event.type) return false;
+                  if (event.type === "negotiation_leverage") {
+                    return candidate.evidence === event.evidence
+                      && candidate.targetId === event.targetId
+                      && candidate.pressure === event.pressure;
+                  }
+                  return candidate.actor === event.actor && candidate.memoryType === event.memoryType;
+                });
                 if (!exists) uiEvents.push(event);
               });
             }

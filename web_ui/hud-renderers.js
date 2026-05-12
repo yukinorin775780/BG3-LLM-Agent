@@ -86,6 +86,10 @@
       necromancer_diary: "Necromancer Diary",
       gribbo: "Gribbo",
       gribbo_elixir_truth: "Elixir Truth",
+      rebuked_by_player: "Rebuked By Player",
+      sided_with_player: "Sided With Player",
+      resentful: "Resentful",
+      complicit: "Complicit",
     };
     if (mapped[raw.toLowerCase()]) return mapped[raw.toLowerCase()];
     return raw.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
@@ -217,6 +221,18 @@
       { label: "Trap", value: e.trapId || "gas_trap_1" },
       { label: "Result", value: "Poison gas released" },
       { label: "Affected", value: affected },
+    ]);
+    appendAgentSignalCard(card, 5600);
+  }
+
+  function renderMemoryEchoCard(event) {
+    const e = event && typeof event === "object" ? event : {};
+    const tone = String(e.tone || "").toLowerCase() === "complicit" ? "complicit" : "resentful";
+    const card = buildAgentSignalCard("memory-echo memory-echo-" + tone, "Memory Echo", "✦", [
+      { label: "Actor", value: actorLabel(e.actor || "astarion") },
+      { label: "Tone", value: titleLabel(tone) },
+      { label: "Memory", value: e.message || (tone === "complicit" ? "He remembers you sided with him." : "He remembers you rebuked him.") },
+      { label: "Quote", value: e.quote || (tone === "complicit" ? "Cruelty shared becomes trust." : "Now you need me?") },
     ]);
     appendAgentSignalCard(card, 5600);
   }
@@ -459,6 +475,7 @@
           if (ev.trapId || Array.isArray(ev.affectedActors)) renderTrapTriggeredCard(ev);
           showTrapTriggered(ev);
           break;
+        case "memory_echo": renderMemoryEchoCard(ev); break;
         case "companion_guidance": renderCompanionGuidanceCard(ev); break;
         case "negotiation_leverage": renderNegotiationLeverageCard(ev); break;
         case "demo_cleared": showDemoClearedBanner(); break;
@@ -473,6 +490,7 @@
     updateActProgress, showDemoClearedBanner, showTrapDiscovered,
     showTrapTriggered, renderCompanionGuidanceCard,
     renderNegotiationLeverageCard, renderTrapInsightCard,
-    renderTrapDisarmedCard, renderTrapTriggeredCard, dispatchUIEvents,
+    renderTrapDisarmedCard, renderTrapTriggeredCard, renderMemoryEchoCard,
+    dispatchUIEvents,
   });
 })();

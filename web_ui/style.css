@@ -3119,6 +3119,22 @@ textarea {
   box-shadow: 0 16px 38px rgba(0, 0, 0, 0.42), 0 0 28px rgba(180, 42, 31, 0.2);
 }
 
+.agent-signal-card--memory-echo.memory-echo-resentful {
+  border-color: rgba(164, 63, 79, 0.72);
+  background:
+    radial-gradient(circle at 100% 0%, rgba(103, 142, 176, 0.16), transparent 34%),
+    linear-gradient(135deg, rgba(28, 36, 48, 0.96), rgba(42, 13, 18, 0.94));
+  box-shadow: 0 16px 38px rgba(0, 0, 0, 0.42), 0 0 24px rgba(142, 35, 56, 0.2);
+}
+
+.agent-signal-card--memory-echo.memory-echo-complicit {
+  border-color: rgba(184, 139, 62, 0.72);
+  background:
+    radial-gradient(circle at 100% 0%, rgba(139, 93, 170, 0.18), transparent 36%),
+    linear-gradient(135deg, rgba(46, 31, 14, 0.96), rgba(20, 12, 27, 0.94));
+  box-shadow: 0 16px 38px rgba(0, 0, 0, 0.42), 0 0 24px rgba(176, 119, 41, 0.18);
+}
+
 .agent-signal-card-header {
   display: flex;
   align-items: center;
@@ -3482,6 +3498,18 @@ textarea {
 .world-diff-row--trap_signal code,
 .world-diff-row.trap-signal-diff code {
   color: #ffe0a3;
+}
+
+.world-diff-row--memory_echo_signal,
+.world-diff-row.memory-echo-diff {
+  border-color: rgba(164, 63, 79, 0.5);
+  background:
+    linear-gradient(135deg, rgba(46, 30, 51, 0.52), rgba(14, 8, 12, 0.56));
+}
+
+.world-diff-row--memory_echo_signal code,
+.world-diff-row.memory-echo-diff code {
+  color: #ffd2dc;
 }
 
 @media (prefers-reduced-motion: reduce) {

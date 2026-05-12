@@ -98,7 +98,13 @@
     const party = safeObj(src.party_status || src.partyStatus || gameState.party_status || gameState.entities || {});
     const env = safeObj(src.environment_objects || src.environmentObjects || gameState.environment_objects || gameState.entities || {});
     const actorRuntime = safeObj(src.actor_runtime_state || gameState.actor_runtime_state || {});
-    const flags = safeObj(src.flags || gameState.flags || {});
+    const flags = synthesizeMemoryEchoFlags(
+      safeObj(src.flags || gameState.flags || {}),
+      [
+        ...safeArr(src.journal_events),
+        ...safeArr(gameState.journal_events),
+      ]
+    );
     const inventory = inventoryMap(src.player_inventory || src.playerInventory || gameState.player_inventory || {});
     const combat = safeObj(src.combat_state || src.combatState || gameState.combat_state || {
       combat_active: src.combat_active || gameState.combat_active,
@@ -168,6 +174,22 @@
     return /^necromancer_lab_poison_trap_/.test(String(key || ""));
   }
 
+  function isMemoryEchoFlag(key) {
+    return /^necromancer_lab_astarion_(?:memory_echo_seen|rebuke_echo_seen|complicity_echo_seen)$/.test(String(key || ""));
+  }
+
+  function synthesizeMemoryEchoFlags(flags, journalEvents) {
+    const out = { ...safeObj(flags) };
+    safeArr(journalEvents).forEach((line) => {
+      const text = String(line || "");
+      if (!/\[记忆回响\]\s*astarion\s*->/i.test(text)) return;
+      out.necromancer_lab_astarion_memory_echo_seen = true;
+      if (/rebuked_by_player/i.test(text)) out.necromancer_lab_astarion_rebuke_echo_seen = true;
+      if (/sided_with_player/i.test(text)) out.necromancer_lab_astarion_complicity_echo_seen = true;
+    });
+    return out;
+  }
+
   function diffSnapshots(previousRaw, nextRaw) {
     const prev = normalizeSnapshot(previousRaw);
     const next = normalizeSnapshot(nextRaw);
@@ -181,7 +203,8 @@
       const before = flagValue(prev.flags[key]);
       const after = flagValue(raw);
       if (!valuesEqual(before, after)) {
-        pushDiff(out, isTrapFlag(key) ? "trap_signal" : "flags", "flags." + key + " = " + JSON.stringify(after));
+        const type = isTrapFlag(key) ? "trap_signal" : (isMemoryEchoFlag(key) ? "memory_echo_signal" : "flags");
+        pushDiff(out, type, "flags." + key + " = " + JSON.stringify(after));
       }
     });
 
@@ -307,6 +330,9 @@
           }
           if (normalizeId(entry.type) === "trap_signal") {
             row.classList.add("trap-signal-diff");
+          }
+          if (normalizeId(entry.type) === "memory_echo_signal") {
+            row.classList.add("memory-echo-diff");
           }
           const sigil = document.createElement("span");
           sigil.className = "world-diff-sigil";

@@ -86,6 +86,7 @@ def test_golden_suite_contains_expected_minimum_cases():
         "necromancer_lab_key_aware_guidance",
         "necromancer_lab_diary_changes_negotiation",
         "necromancer_lab_astarion_trap_intervention",
+        "necromancer_lab_astarion_remembers_rebuke",
         "reflection_queue_drain",
         "world_flag_reveal",
         "world_flag_reveal_to_visible_party",

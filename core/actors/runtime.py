@@ -143,6 +143,39 @@ def _build_trap_insight_metadata(*, actor_id: str, context: Dict[str, Any]) -> D
     }
 
 
+def _memory_echo_context(actor_view: ActorView) -> Dict[str, Any]:
+    payload = actor_view.intent_context.get("memory_echo_context")
+    if not isinstance(payload, dict):
+        return {}
+    if str(payload.get("topic") or "").strip().lower() != "memory_echo":
+        return {}
+    if str(payload.get("actor_id") or "").strip().lower() != "astarion":
+        return {}
+    return dict(payload)
+
+
+def _build_memory_echo_metadata(*, actor_id: str, context: Dict[str, Any]) -> Dict[str, Any]:
+    if actor_id != "astarion" or not context:
+        return {}
+    memory_type = str(context.get("memory_type") or "").strip()
+    if memory_type not in {"rebuked_by_player", "sided_with_player"}:
+        return {}
+    return {
+        "topic": "memory_echo",
+        "memory_type": memory_type,
+        "actor_id": actor_id,
+    }
+
+
+def _astarion_memory_prefix(context: Dict[str, Any]) -> str:
+    memory_type = str(context.get("memory_type") or "").strip()
+    if memory_type == "rebuked_by_player":
+        return "现在又需要我了？有趣。上次你让我闭嘴的时候可没这么客气。"
+    if memory_type == "sided_with_player":
+        return "这次我们又要一起做正确而残忍的选择了吗？我喜欢这种默契。"
+    return ""
+
+
 def _diary_negotiation_context(actor_view: ActorView) -> Dict[str, Any]:
     payload = actor_view.intent_context.get("diary_negotiation_context")
     if not isinstance(payload, dict):
@@ -495,6 +528,7 @@ class TemplateActorRuntime:
         key_guidance_context = _key_guidance_context(actor_view)
         trap_awareness_context = _trap_awareness_context(actor_view)
         diary_negotiation_context = _diary_negotiation_context(actor_view)
+        memory_echo_context = _memory_echo_context(actor_view)
         if diary_negotiation_context:
             social_action = {}
         spoken_text = self._compose_reply(
@@ -506,6 +540,7 @@ class TemplateActorRuntime:
             key_guidance_context=key_guidance_context,
             trap_awareness_context=trap_awareness_context,
             diary_negotiation_context=diary_negotiation_context,
+            memory_echo_context=memory_echo_context,
         )
         spoke_payload: Dict[str, Any] = {"text": spoken_text}
         guidance_metadata = _build_key_guidance_metadata(
@@ -520,6 +555,12 @@ class TemplateActorRuntime:
         )
         if trap_metadata:
             spoke_payload["trap_insight"] = trap_metadata
+        memory_metadata = _build_memory_echo_metadata(
+            actor_id=self.actor_id,
+            context=memory_echo_context,
+        )
+        if memory_metadata:
+            spoke_payload["memory_echo"] = memory_metadata
         events = [
             DomainEvent(
                 event_id=_new_event_id(),
@@ -693,7 +734,12 @@ class TemplateActorRuntime:
         key_guidance_context: Dict[str, Any] | None = None,
         trap_awareness_context: Dict[str, Any] | None = None,
         diary_negotiation_context: Dict[str, Any] | None = None,
+        memory_echo_context: Dict[str, Any] | None = None,
     ) -> str:
+        memory_prefix = ""
+        if self.actor_id == "astarion" and memory_echo_context:
+            memory_prefix = _astarion_memory_prefix(memory_echo_context)
+
         action_type = str(social_action.get("action_type") or "").strip().lower()
         if action_type == "gift_accept":
             if self.actor_id == "shadowheart":
@@ -727,7 +773,8 @@ class TemplateActorRuntime:
             has_lab_key = bool(key_guidance_context.get("has_lab_key", False))
             if has_lab_key:
                 if self.actor_id == "astarion":
-                    return "lab_key 都到手了，亲爱的，去打开 door_b_to_d 那扇实验室门。"
+                    base = "lab_key 都到手了，亲爱的，去打开 door_b_to_d 那扇实验室门。"
+                    return f"{memory_prefix}{base}" if memory_prefix else base
                 if self.actor_id == "shadowheart":
                     return "钥匙在你手上，打开实验室门，别等这里的力量再聚拢。"
                 if self.actor_id == "laezel":
@@ -735,7 +782,8 @@ class TemplateActorRuntime:
                 return "钥匙已经在手上，打开实验室门。"
 
             if self.actor_id == "astarion":
-                return "lab_key 不在你包里，亲爱的。先找书房和暗门，翻 study_chest；或者让我撬锁。"
+                base = "lab_key 不在你包里，亲爱的。先找书房和暗门，翻 study_chest；或者让我撬锁。"
+                return f"{memory_prefix}{base}" if memory_prefix else base
             if self.actor_id == "shadowheart":
                 return "没有钥匙就别硬说能开。死灵痕迹指向书房和 necromancer_diary，先读日记再搜箱子。"
             if self.actor_id == "laezel":
@@ -744,7 +792,8 @@ class TemplateActorRuntime:
 
         if trap_awareness_context:
             if self.actor_id == "astarion":
-                return "停。地面有毒气压力板，旁边还有可疑喷口。别再往前踩；我可以解除 gas_trap_1。"
+                base = "停。地面有毒气压力板，旁边还有可疑喷口。别再往前踩；我可以解除 gas_trap_1。"
+                return f"{memory_prefix}{base}" if memory_prefix else base
             return "Astarion 看到了陷阱，先别继续往前。"
 
         if diary_negotiation_context:
@@ -755,6 +804,11 @@ class TemplateActorRuntime:
             if self.actor_id == "laezel":
                 return "这是弱点。逼问他，把钥匙逼出来。"
             return "日记里的证据可以压住他的谎话。"
+
+        if memory_prefix:
+            if str((memory_echo_context or {}).get("memory_type") or "") == "rebuked_by_player":
+                return f"{memory_prefix}说吧，我会帮，但别装得像什么都没发生。"
+            return f"{memory_prefix}说吧，我们一起把局面弄得更有趣。"
 
         if self.actor_id == "astarion":
             if act3_choice_context == ACT3_CHOICE_SIDE_WITH_ASTARION:

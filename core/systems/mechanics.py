@@ -87,6 +87,57 @@ BARK_TRIGGER_TYPES = frozenset(
 )
 
 
+def _astarion_memory_echo_type_from_state(state: Any) -> str:
+    flags = state.get("flags") if isinstance(state, dict) and isinstance(state.get("flags"), dict) else {}
+    sided_flag = flags.get("necromancer_lab_player_sided_with_astarion")
+    if sided_flag is True:
+        return "sided_with_player"
+    if (
+        sided_flag is False
+        and "necromancer_lab_player_sided_with_astarion" in flags
+        and bool(flags.get("necromancer_lab_astarion_mocked_gribbo"))
+    ):
+        return "rebuked_by_player"
+
+    runtime_state = (
+        state.get("actor_runtime_state")
+        if isinstance(state, dict) and isinstance(state.get("actor_runtime_state"), dict)
+        else {}
+    )
+    astarion_state = runtime_state.get("astarion") if isinstance(runtime_state.get("astarion"), dict) else {}
+    notes = "\n".join(str(item) for item in astarion_state.get("memory_notes", []) if item is not None)
+    notes_lower = notes.lower()
+    if any(token in notes for token in ("训斥", "闭嘴", "记住这笔账", "羞辱")) or any(
+        token in notes_lower for token in ("rebuke", "humiliat", "insult")
+    ):
+        return "rebuked_by_player"
+    if any(token in notes for token in ("一起嘲笑", "默契", "同调", "满意")) or any(
+        token in notes_lower for token in ("side_with", "sided", "complicit")
+    ):
+        return "sided_with_player"
+    return ""
+
+
+def _apply_astarion_memory_echo_journal(
+    state: Any,
+    flags: Dict[str, Any],
+    journal_events: List[str],
+) -> None:
+    memory_state = dict(state or {}) if isinstance(state, dict) else {}
+    memory_state["flags"] = flags
+    memory_type = _astarion_memory_echo_type_from_state(memory_state)
+    if memory_type not in {"rebuked_by_player", "sided_with_player"}:
+        return
+    journal_events.append(f"[记忆回响] astarion -> {memory_type}")
+    flags["necromancer_lab_astarion_memory_echo_seen"] = True
+    if memory_type == "rebuked_by_player":
+        flags["necromancer_lab_astarion_rebuke_echo_seen"] = True
+        journal_events.append("💬 [台词] astarion: \"现在又需要我了？上次你让我闭嘴时可没这么客气。\"")
+    else:
+        flags["necromancer_lab_astarion_complicity_echo_seen"] = True
+        journal_events.append("💬 [台词] astarion: \"又要一起做漂亮坏事？我喜欢这种默契。\"")
+
+
 def calculate_ability_modifier(ability_score: int) -> int:
     """
     Calculate D&D 5e ability modifier from ability score.
@@ -6263,11 +6314,17 @@ def execute_disarm_action(state: Any) -> Dict[str, Any]:
         )
         entities.pop(target_id, None)
         _remove_trap_obstacle_from_map(map_data=map_data, x=trap_x, y=trap_y)
+        journal_events = [
+            f"[陷阱解除] astarion -> {target_id}",
+            f"🔧 [解除陷阱] {actor_name} 稳稳拆除了 {trap_name}。",
+        ]
+        _apply_astarion_memory_echo_journal(
+            state=state,
+            flags=flags,
+            journal_events=journal_events,
+        )
         return {
-            "journal_events": [
-                f"[陷阱解除] astarion -> {target_id}",
-                f"🔧 [解除陷阱] {actor_name} 稳稳拆除了 {trap_name}。",
-            ],
+            "journal_events": journal_events,
             "entities": entities,
             "environment_objects": environment_objects,
             "flags": flags,
