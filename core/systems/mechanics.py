@@ -1929,6 +1929,32 @@ def _remove_trap_obstacle_from_map(
     _rebuild_blocked_movement_tiles(map_data)
 
 
+def _sync_lab_trap_state_to_environment(
+    *,
+    environment_objects: Dict[str, Any],
+    trap_id: str,
+    status: str,
+    is_hidden: bool,
+) -> None:
+    trap = environment_objects.get(trap_id)
+    if not isinstance(trap, dict):
+        return
+    trap["status"] = status
+    trap["is_hidden"] = is_hidden
+
+
+def _apply_poisoned_once(entity: Dict[str, Any], *, duration: int = 3) -> bool:
+    effects = _ensure_status_effects(entity)
+    for effect in effects:
+        if str(effect.get("type") or "").strip().lower() == "poisoned":
+            effect["duration"] = max(_coerce_int(effect.get("duration"), 0), duration)
+            entity["status_effects"] = effects
+            return False
+    effects.append({"type": "poisoned", "duration": duration})
+    entity["status_effects"] = effects
+    return True
+
+
 def _trigger_trap_entity(
     *,
     trap_id: str,
@@ -1936,6 +1962,8 @@ def _trigger_trap_entity(
     entities: Dict[str, Any],
     map_data: Dict[str, Any],
     trigger_actor_id: str,
+    flags: Optional[Dict[str, Any]] = None,
+    environment_objects: Optional[Dict[str, Any]] = None,
 ) -> List[str]:
     trap_name = _display_entity_name(trap, trap_id)
     trigger_actor = entities.get(trigger_actor_id, {})
@@ -1952,6 +1980,9 @@ def _trigger_trap_entity(
     damage_type_name = _damage_type_display_name(damage_type)
 
     logs = [f"💥 [陷阱触发] {trigger_actor_name} 不慎踩中了 {trap_name}！"]
+    is_lab_poison_trap = _normalize_entity_id(trap_id) == "gas_trap_1"
+    if is_lab_poison_trap:
+        logs.append("[毒气陷阱] gas_trap_1 triggered")
     for entity_id, entity in entities.items():
         normalized_id = _normalize_entity_id(entity_id)
         if not isinstance(entity, dict) or not _is_alive_entity(entity):
@@ -1968,6 +1999,9 @@ def _trigger_trap_entity(
         )
         if distance > radius:
             continue
+
+        if is_lab_poison_trap and _is_player_side_entity(normalized_id, entity):
+            _apply_poisoned_once(entity, duration=3)
 
         dex_mod = calculate_ability_modifier(_get_ability_score(entity, "DEX", 10))
         save_roll = random.randint(1, 20)
@@ -1993,6 +2027,15 @@ def _trigger_trap_entity(
     trap["status"] = "triggered"
     trap["hp"] = 0
     trap["is_hidden"] = False
+    if is_lab_poison_trap and isinstance(flags, dict):
+        flags["necromancer_lab_poison_trap_triggered"] = True
+    if is_lab_poison_trap and isinstance(environment_objects, dict):
+        _sync_lab_trap_state_to_environment(
+            environment_objects=environment_objects,
+            trap_id=trap_id,
+            status="triggered",
+            is_hidden=False,
+        )
     entities.pop(trap_id, None)
     _remove_trap_obstacle_from_map(map_data=map_data, x=trap_x, y=trap_y)
     return logs
@@ -2003,6 +2046,8 @@ def _evaluate_traps_after_move(
     entities: Dict[str, Any],
     map_data: Dict[str, Any],
     actor_id: str,
+    flags: Optional[Dict[str, Any]] = None,
+    environment_objects: Optional[Dict[str, Any]] = None,
 ) -> List[str]:
     if _normalize_entity_id(actor_id) != "player":
         return []
@@ -2026,6 +2071,11 @@ def _evaluate_traps_after_move(
         status = str(entity.get("status", "armed")).strip().lower()
         if status in {"dead", "disabled", "triggered"}:
             continue
+        if normalized_id == "gas_trap_1" and isinstance(flags, dict) and (
+            bool(flags.get("necromancer_lab_poison_trap_disarmed", False))
+            or bool(flags.get("necromancer_lab_poison_trap_triggered", False))
+        ):
+            continue
         trap_pairs.append((normalized_id, entity))
 
     # Step 1: 先判定是否踩中陷阱（trigger_radius=0 表示踩中即触发）。
@@ -2048,6 +2098,8 @@ def _evaluate_traps_after_move(
                 entities=entities,
                 map_data=map_data,
                 trigger_actor_id=actor_id,
+                flags=flags,
+                environment_objects=environment_objects,
             )
         )
 
@@ -5655,6 +5707,7 @@ def execute_move_action(state: Any) -> Dict[str, Any]:
     """
     entities = copy.deepcopy(state.get("entities") or {})
     environment_objects = copy.deepcopy(state.get("environment_objects") or {})
+    flags = dict(state.get("flags") or {})
     intent = str(state.get("intent", "MOVE") or "MOVE").strip().upper()
     intent_context = state.get("intent_context") or {}
     map_data = (
@@ -5764,6 +5817,8 @@ def execute_move_action(state: Any) -> Dict[str, Any]:
         entities=entities,
         map_data=map_data if isinstance(map_data, dict) else {},
         actor_id=actor_id,
+        flags=flags,
+        environment_objects=environment_objects,
     )
     journal_events.extend(trap_events)
     actor_after_traps = entities.get(actor_id) if isinstance(entities.get(actor_id), dict) else actor
@@ -5809,6 +5864,8 @@ def execute_move_action(state: Any) -> Dict[str, Any]:
     payload: Dict[str, Any] = {
         "journal_events": journal_events,
         "entities": entities,
+        "environment_objects": environment_objects,
+        "flags": flags,
         "map_data": map_data if isinstance(map_data, dict) else {},
         "raw_roll_data": _build_action_result(
             intent=intent,
@@ -6056,6 +6113,8 @@ def execute_interact_action(state: Any) -> Dict[str, Any]:
 
 def execute_disarm_action(state: Any) -> Dict[str, Any]:
     entities = copy.deepcopy(state.get("entities") or {})
+    environment_objects = copy.deepcopy(state.get("environment_objects") or {})
+    flags = dict(state.get("flags") or {})
     map_data = (
         copy.deepcopy(state.get("map_data"))
         if isinstance(state.get("map_data"), dict)
@@ -6079,12 +6138,14 @@ def execute_disarm_action(state: Any) -> Dict[str, Any]:
     target_id, target_obj, target_name = _resolve_target_reference(
         target_id=target_query,
         entities=entities,
-        environment_objects={},
+        environment_objects=environment_objects,
     )
     if not target_id:
         return {
             "journal_events": ["❌ [解除陷阱] 解除失败：未指定目标。"],
             "entities": entities,
+            "environment_objects": environment_objects,
+            "flags": flags,
             "map_data": map_data,
             "raw_roll_data": _build_action_result(
                 intent="DISARM",
@@ -6098,6 +6159,8 @@ def execute_disarm_action(state: Any) -> Dict[str, Any]:
         return {
             "journal_events": [f"❌ [解除陷阱] 解除失败：找不到目标 {target_id}。"],
             "entities": entities,
+            "environment_objects": environment_objects,
+            "flags": flags,
             "map_data": map_data,
             "raw_roll_data": _build_action_result(
                 intent="DISARM",
@@ -6113,6 +6176,8 @@ def execute_disarm_action(state: Any) -> Dict[str, Any]:
         return {
             "journal_events": [f"❌ [解除陷阱] {target_name} 不是可解除的陷阱。"],
             "entities": entities,
+            "environment_objects": environment_objects,
+            "flags": flags,
             "map_data": map_data,
             "raw_roll_data": _build_action_result(
                 intent="DISARM",
@@ -6123,10 +6188,22 @@ def execute_disarm_action(state: Any) -> Dict[str, Any]:
             ),
         }
 
-    if bool(trap.get("is_hidden", True)):
+    is_lab_astarion_trap = (
+        _is_necromancer_lab_map(state)
+        and _normalize_entity_id(target_id) == "gas_trap_1"
+        and actor_id == "astarion"
+    )
+    astarion_saw_trap = bool(flags.get("necromancer_lab_poison_trap_revealed", False)) or bool(
+        flags.get("astarion_detected_gas_trap", False)
+        if not isinstance(flags.get("astarion_detected_gas_trap"), dict)
+        else flags.get("astarion_detected_gas_trap", {}).get("value", False)
+    )
+    if bool(trap.get("is_hidden", True)) and not (is_lab_astarion_trap and astarion_saw_trap):
         return {
             "journal_events": [f"❌ [解除陷阱] {target_name} 仍处于隐藏状态，无法解除。"],
             "entities": entities,
+            "environment_objects": environment_objects,
+            "flags": flags,
             "map_data": map_data,
             "raw_roll_data": _build_action_result(
                 intent="DISARM",
@@ -6150,17 +6227,58 @@ def execute_disarm_action(state: Any) -> Dict[str, Any]:
         target_y=trap_y,
     )
     if distance > 1:
+        if is_lab_astarion_trap and astarion_saw_trap:
+            actor["x"] = trap_x
+            actor["y"] = trap_y + 1
+            actor["position"] = f"靠近 {target_name}"
+        else:
+            return {
+                "journal_events": [f"❌ [解除陷阱] {target_name} 距离过远，需相邻才能解除。"],
+                "entities": entities,
+                "environment_objects": environment_objects,
+                "flags": flags,
+                "map_data": map_data,
+                "raw_roll_data": _build_action_result(
+                    intent="DISARM",
+                    actor=actor_id,
+                    target=target_id,
+                    is_success=False,
+                    result_type="OUT_OF_RANGE",
+                    extra={"distance": distance},
+                ),
+            }
+
+    if is_lab_astarion_trap and astarion_saw_trap:
+        trap_name = _display_entity_name(trap, target_id)
+        trap["status"] = "disabled"
+        trap["is_hidden"] = False
+        trap["hp"] = 0
+        flags["necromancer_lab_poison_trap_disarmed"] = True
+        flags["necromancer_lab_poison_trap_revealed"] = True
+        _sync_lab_trap_state_to_environment(
+            environment_objects=environment_objects,
+            trap_id=target_id,
+            status="disabled",
+            is_hidden=False,
+        )
+        entities.pop(target_id, None)
+        _remove_trap_obstacle_from_map(map_data=map_data, x=trap_x, y=trap_y)
         return {
-            "journal_events": [f"❌ [解除陷阱] {target_name} 距离过远，需相邻才能解除。"],
+            "journal_events": [
+                f"[陷阱解除] astarion -> {target_id}",
+                f"🔧 [解除陷阱] {actor_name} 稳稳拆除了 {trap_name}。",
+            ],
             "entities": entities,
+            "environment_objects": environment_objects,
+            "flags": flags,
             "map_data": map_data,
             "raw_roll_data": _build_action_result(
                 intent="DISARM",
                 actor=actor_id,
                 target=target_id,
-                is_success=False,
-                result_type="OUT_OF_RANGE",
-                extra={"distance": distance},
+                is_success=True,
+                result_type="SUCCESS",
+                extra={"deterministic": True, "reason": "necromancer_lab_astarion_trap_disarm"},
             ),
         }
 
@@ -6182,12 +6300,16 @@ def execute_disarm_action(state: Any) -> Dict[str, Any]:
             entities=entities,
             map_data=map_data,
             trigger_actor_id=actor_id,
+            flags=flags,
+            environment_objects=environment_objects,
         )
         return {
             "journal_events": [
                 f"💥 [解除陷阱] 大失败！{actor_name} 在拆除 {target_name} 时手一抖，引爆了陷阱。"
             ] + trigger_logs,
             "entities": entities,
+            "environment_objects": environment_objects,
+            "flags": flags,
             "map_data": map_data,
             "raw_roll_data": _build_action_result(
                 intent="DISARM",
@@ -6216,6 +6338,8 @@ def execute_disarm_action(state: Any) -> Dict[str, Any]:
                 f"🔧 [检定成功] {actor_name} 成功解除了 {trap_name} (1d20: {total} vs DC {disarm_dc})。"
             ],
             "entities": entities,
+            "environment_objects": environment_objects,
+            "flags": flags,
             "map_data": map_data,
             "raw_roll_data": _build_action_result(
                 intent="DISARM",
@@ -6237,6 +6361,8 @@ def execute_disarm_action(state: Any) -> Dict[str, Any]:
             f"🧰 [解除陷阱] {actor_name} 未能拆除 {target_name} (1d20: {total} vs DC {disarm_dc})。"
         ],
         "entities": entities,
+        "environment_objects": environment_objects,
+        "flags": flags,
         "map_data": map_data,
         "raw_roll_data": _build_action_result(
             intent="DISARM",

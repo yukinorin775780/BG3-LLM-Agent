@@ -19,6 +19,7 @@ from core.campaigns import (
     detect_lab_act3_choice,
     detect_lab_act4_post_combat_banter,
     detect_study_chest_loot_context,
+    detect_trap_awareness_context,
 )
 from core.engine import generate_dialogue, parse_ai_response
 from core.graph.graph_state import GameState
@@ -48,6 +49,9 @@ _READ_DIARY_MARKERS = (
 _GRIBBO_TARGET_MARKERS = ("gribbo", "格里布", "格里波", "地精", "boss")
 _GRIBBO_NEGOTIATION_MARKERS = ("日记", "药剂", "灵药", "死灵", "实验", "解药", "钥匙", "真相")
 _GRIBBO_ATTACK_MARKERS = ("攻击 gribbo", "attack gribbo", "攻击格里布", "攻击格里波", "攻击地精")
+_TRAP_DISARM_ACTOR_MARKERS = ("阿斯代伦", "astarion")
+_TRAP_DISARM_TARGET_MARKERS = ("陷阱", "毒气", "gas_trap_1", "poison_trap", "trap")
+_TRAP_DISARM_ACTION_MARKERS = ("解除", "拆", "拆掉", "拆除", "disarm", "disable")
 
 
 def _apply_act3_necromancer_lab_override(*, state: GameState, analysis: dict) -> dict:
@@ -143,6 +147,63 @@ def _apply_diary_negotiation_override(*, state: GameState, analysis: dict) -> di
     overridden["responders"] = ["gribbo", "shadowheart"]
     intent_context = dict(overridden.get("intent_context") or {})
     intent_context["diary_negotiation_context"] = context
+    overridden["intent_context"] = intent_context
+    return overridden
+
+
+def _looks_like_astarion_trap_disarm(user_input: str) -> bool:
+    return (
+        _contains_marker(user_input, _TRAP_DISARM_TARGET_MARKERS)
+        and _contains_marker(user_input, _TRAP_DISARM_ACTION_MARKERS)
+        and (
+            _contains_marker(user_input, _TRAP_DISARM_ACTOR_MARKERS)
+            or _contains_marker(user_input, ("gas_trap_1", "poison_trap"))
+        )
+    )
+
+
+def _apply_trap_disarm_override(*, state: GameState, analysis: dict) -> dict:
+    if not _is_necromancer_lab(state):
+        return analysis
+    if not _looks_like_astarion_trap_disarm(str(state.get("user_input") or "")):
+        return analysis
+
+    overridden = dict(analysis or {})
+    overridden["action_type"] = "DISARM"
+    overridden["action_actor"] = "astarion"
+    overridden["action_target"] = "gas_trap_1"
+    overridden["reason"] = "necromancer_lab_astarion_trap_disarm"
+    overridden["responders"] = []
+    intent_context = dict(overridden.get("intent_context") or {})
+    intent_context["action"] = "disarm_trap"
+    overridden["intent_context"] = intent_context
+    return overridden
+
+
+def _apply_trap_awareness_override(*, state: GameState, analysis: dict) -> dict:
+    existing_action = str((analysis or {}).get("action_type") or "").strip().upper()
+    if existing_action == "DISARM":
+        return analysis
+    context = detect_trap_awareness_context(
+        dict(state or {}),
+        str(state.get("user_input") or ""),
+        (analysis or {}).get("intent_context") if isinstance((analysis or {}).get("intent_context"), dict) else {},
+    )
+    if not context:
+        return analysis
+    if not bool(context.get("can_detect", False)):
+        return analysis
+    if bool(context.get("revealed", False)) or bool(context.get("disarmed", False)) or bool(context.get("triggered", False)):
+        return analysis
+
+    overridden = dict(analysis or {})
+    overridden["action_type"] = "CHAT"
+    overridden["action_actor"] = "player"
+    overridden["action_target"] = "gas_trap_1"
+    overridden["reason"] = "necromancer_lab_trap_awareness"
+    overridden["responders"] = ["astarion"]
+    intent_context = dict(overridden.get("intent_context") or {})
+    intent_context["trap_awareness_context"] = context
     overridden["intent_context"] = intent_context
     return overridden
 
@@ -250,7 +311,7 @@ def _run_blocking_with_timeout(func, *args, timeout: float = LLM_TIMEOUT_SECONDS
 
 def _coerce_client_intent(state: GameState) -> str:
     raw_intent = str(state.get("intent") or "").strip().upper()
-    if raw_intent in {"READ", "INTERACT", "CHAT", "START_DIALOGUE", "DIALOGUE_REPLY"}:
+    if raw_intent in {"READ", "INTERACT", "CHAT", "START_DIALOGUE", "DIALOGUE_REPLY", "DISARM", "MOVE", "APPROACH"}:
         return raw_intent
     if raw_intent == "UI_ACTION_LOOT":
         return "LOOT"
@@ -515,7 +576,15 @@ async def dm_node(state: GameState) -> dict:
             state=state,
             analysis=structured_analysis,
         )
+        structured_analysis = _apply_trap_disarm_override(
+            state=state,
+            analysis=structured_analysis,
+        )
         structured_analysis = _apply_diary_negotiation_override(
+            state=state,
+            analysis=structured_analysis,
+        )
+        structured_analysis = _apply_trap_awareness_override(
             state=state,
             analysis=structured_analysis,
         )
@@ -556,6 +625,16 @@ async def dm_node(state: GameState) -> dict:
             and str(study_chest_loot_fast_path.get("action_type") or "").strip()
         ):
             structured_analysis = study_chest_loot_fast_path
+        trap_disarm_fast_path = _apply_trap_disarm_override(
+            state=state,
+            analysis={},
+        )
+        if (
+            not structured_analysis
+            and isinstance(trap_disarm_fast_path, dict)
+            and str(trap_disarm_fast_path.get("action_type") or "").strip()
+        ):
+            structured_analysis = trap_disarm_fast_path
         diary_negotiation_fast_path = _apply_diary_negotiation_override(
             state=state,
             analysis={},
@@ -567,6 +646,16 @@ async def dm_node(state: GameState) -> dict:
             and str(diary_negotiation_fast_path.get("action_type") or "").strip()
         ):
             structured_analysis = diary_negotiation_fast_path
+        trap_awareness_fast_path = _apply_trap_awareness_override(
+            state=state,
+            analysis={},
+        )
+        if (
+            not structured_analysis
+            and isinstance(trap_awareness_fast_path, dict)
+            and str(trap_awareness_fast_path.get("action_type") or "").strip()
+        ):
+            structured_analysis = trap_awareness_fast_path
         key_guidance_fast_path = _apply_key_guidance_override(
             state=state,
             analysis={},
@@ -633,7 +722,15 @@ async def dm_node(state: GameState) -> dict:
             state=state,
             analysis=analysis if isinstance(analysis, dict) else {},
         )
+        analysis = _apply_trap_disarm_override(
+            state=state,
+            analysis=analysis if isinstance(analysis, dict) else {},
+        )
         analysis = _apply_diary_negotiation_override(
+            state=state,
+            analysis=analysis if isinstance(analysis, dict) else {},
+        )
+        analysis = _apply_trap_awareness_override(
             state=state,
             analysis=analysis if isinstance(analysis, dict) else {},
         )
@@ -721,6 +818,8 @@ async def dm_node(state: GameState) -> dict:
             "key_guidance_context": dict(analysis_intent_context.get("key_guidance_context") or {}),
             "diary_negotiation_context": dict(analysis_intent_context.get("diary_negotiation_context") or {}),
             "study_chest_loot_context": dict(analysis_intent_context.get("study_chest_loot_context") or {}),
+            "trap_awareness_context": dict(analysis_intent_context.get("trap_awareness_context") or {}),
+            "action": str(analysis_intent_context.get("action") or "").strip(),
         },
         "is_probing_secret": analysis.get("is_probing_secret", False),
         "active_dialogue_target": next_dialogue_target,

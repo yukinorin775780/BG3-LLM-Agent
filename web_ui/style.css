@@ -3097,6 +3097,28 @@ textarea {
   box-shadow: 0 16px 38px rgba(0, 0, 0, 0.4), 0 0 22px rgba(145, 39, 30, 0.18);
 }
 
+.agent-signal-card--trap-insight {
+  border-color: rgba(231, 171, 76, 0.68);
+  background:
+    radial-gradient(circle at 100% 0%, rgba(232, 178, 74, 0.2), transparent 36%),
+    linear-gradient(135deg, rgba(58, 42, 18, 0.96), rgba(12, 12, 9, 0.93));
+}
+
+.agent-signal-card--trap-disarmed {
+  border-color: rgba(128, 188, 126, 0.62);
+  background:
+    radial-gradient(circle at 100% 0%, rgba(104, 178, 106, 0.2), transparent 36%),
+    linear-gradient(135deg, rgba(29, 48, 31, 0.96), rgba(9, 13, 9, 0.94));
+}
+
+.agent-signal-card--trap-triggered {
+  border-color: rgba(214, 68, 58, 0.72);
+  background:
+    radial-gradient(circle at 100% 0%, rgba(164, 36, 29, 0.28), transparent 36%),
+    linear-gradient(135deg, rgba(65, 22, 16, 0.97), rgba(12, 8, 7, 0.95));
+  box-shadow: 0 16px 38px rgba(0, 0, 0, 0.42), 0 0 28px rgba(180, 42, 31, 0.2);
+}
+
 .agent-signal-card-header {
   display: flex;
   align-items: center;
@@ -3448,6 +3470,18 @@ textarea {
 .world-diff-row--agent_signal code,
 .world-diff-row.agent-signal-diff code {
   color: #d6ffb7;
+}
+
+.world-diff-row--trap_signal,
+.world-diff-row.trap-signal-diff {
+  border-color: rgba(231, 171, 76, 0.48);
+  background:
+    linear-gradient(135deg, rgba(80, 50, 18, 0.5), rgba(8, 8, 5, 0.54));
+}
+
+.world-diff-row--trap_signal code,
+.world-diff-row.trap-signal-diff code {
+  color: #ffe0a3;
 }
 
 @media (prefers-reduced-motion: reduce) {

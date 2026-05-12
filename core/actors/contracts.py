@@ -38,6 +38,7 @@ class ActorDecision:
 @dataclass(frozen=True)
 class StatePatch:
     entities: Optional[Dict[str, Any]] = None
+    environment_objects: Optional[Dict[str, Any]] = None
     player_inventory: Optional[Dict[str, Any]] = None
     flags: Optional[Dict[str, Any]] = None
     journal_events: Tuple[str, ...] = ()

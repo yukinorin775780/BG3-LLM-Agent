@@ -44,6 +44,9 @@ _READ_DIARY_MARKERS = (
 _GRIBBO_TARGET_MARKERS = ("gribbo", "格里布", "格里波", "地精", "boss")
 _GRIBBO_NEGOTIATION_MARKERS = ("日记", "药剂", "灵药", "死灵", "实验", "解药", "钥匙", "真相")
 _GRIBBO_ATTACK_MARKERS = ("攻击 gribbo", "attack gribbo", "攻击格里布", "攻击格里波", "攻击地精")
+_TRAP_DISARM_ACTOR_MARKERS = ("阿斯代伦", "astarion")
+_TRAP_DISARM_TARGET_MARKERS = ("陷阱", "毒气", "gas_trap_1", "poison_trap", "trap")
+_TRAP_DISARM_ACTION_MARKERS = ("解除", "拆", "拆掉", "拆除", "disarm", "disable")
 
 
 def _looks_like_act3_choice(map_id: str, user_input: str) -> bool:
@@ -83,6 +86,19 @@ def _looks_like_gribbo_diary_negotiation(map_id: str, user_input: str) -> bool:
 
 def _looks_like_explicit_gribbo_attack(user_input: str) -> bool:
     return _contains_marker(user_input, _GRIBBO_ATTACK_MARKERS)
+
+
+def _looks_like_astarion_trap_disarm(map_id: str, user_input: str) -> bool:
+    if not _is_necromancer_lab_map(map_id):
+        return False
+    return (
+        _contains_marker(user_input, _TRAP_DISARM_TARGET_MARKERS)
+        and _contains_marker(user_input, _TRAP_DISARM_ACTION_MARKERS)
+        and (
+            _contains_marker(user_input, _TRAP_DISARM_ACTOR_MARKERS)
+            or _contains_marker(user_input, ("gas_trap_1", "poison_trap"))
+        )
+    )
 
 
 def input_node(state: GameState) -> dict:
@@ -140,6 +156,18 @@ def input_node(state: GameState) -> dict:
         read_target_key = incoming_target.lower()
         read_target_missing = not read_target_key or read_target_key in {"unknown", "null", "none"}
         map_id = str((state.get("map_data") or {}).get("id") or "").strip().lower()
+        if _looks_like_astarion_trap_disarm(map_id, user_input):
+            intent_context["action_actor"] = "astarion"
+            intent_context["action_target"] = "gas_trap_1"
+            intent_context["source"] = "ui_text_normalized"
+            intent_context["action"] = "disarm_trap"
+            return {
+                **base,
+                "intent": "DISARM",
+                "target": "gas_trap_1",
+                "source": "ui_text_normalized",
+                "intent_context": intent_context,
+            }
         if _looks_like_gribbo_diary_negotiation(map_id, user_input) and not _looks_like_explicit_gribbo_attack(user_input):
             intent_context["action_target"] = "gribbo"
             intent_context["source"] = "ui_text_normalized"

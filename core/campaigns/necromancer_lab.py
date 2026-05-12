@@ -121,6 +121,24 @@ _STUDY_CHEST_ACTION_MARKERS = (
     "loot",
     "open",
 )
+_TRAP_AWARENESS_MARKERS = (
+    "陷阱",
+    "机关",
+    "毒气",
+    "压力板",
+    "喷口",
+    "小心",
+    "往前",
+    "走廊",
+    "前面",
+    "trap",
+    "poison",
+    "gas",
+    "pressure plate",
+    "vent",
+    "corridor",
+    "ahead",
+)
 
 
 def _safe_dict(value: Any) -> Dict[str, Any]:
@@ -361,6 +379,65 @@ def detect_study_chest_loot_context(
             "item_id": "lab_key",
         }
     return None
+
+
+def detect_trap_awareness_context(
+    state: Mapping[str, Any],
+    user_input: str,
+    intent_context: Optional[Mapping[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    """
+    Detect the Necromancer Lab poison-trap awareness beat.
+    This helper is read-only: it reports whether Astarion can warn/disarm and
+    whether the trap is already revealed, disarmed, or triggered.
+    """
+    normalized_state = _safe_dict(state)
+    if _map_id(normalized_state) != "necromancer_lab":
+        return None
+
+    entities = _safe_dict(normalized_state.get("entities"))
+    astarion = _safe_dict(entities.get("astarion"))
+    if not astarion or _normalize_id(astarion.get("status")) in {"dead", "downed", "unconscious"}:
+        return None
+    if astarion.get("is_alive") is False:
+        return None
+
+    flags = _safe_dict(normalized_state.get("flags"))
+    detected_flag = _flag_bool(flags.get("astarion_detected_gas_trap"))
+    revealed = _flag_bool(flags.get("necromancer_lab_poison_trap_revealed"))
+    disarmed = _flag_bool(flags.get("necromancer_lab_poison_trap_disarmed"))
+    triggered = _flag_bool(flags.get("necromancer_lab_poison_trap_triggered"))
+    trap = _object_payload(normalized_state, "gas_trap_1")
+    trap_status = _normalize_id(trap.get("status"))
+    if trap_status in {"disabled", "disarmed"}:
+        disarmed = True
+    if trap_status == "triggered":
+        triggered = True
+    if not bool(trap.get("is_hidden", True)) and trap:
+        revealed = True
+
+    can_detect = detected_flag or _astarion_detects_trap(entities)
+    ctx = _safe_dict(intent_context)
+    target = _normalize_id(ctx.get("action_target") or normalized_state.get("target"))
+    text = str(user_input or "").strip()
+    lowered = text.lower()
+    explicit_trap_target = target in {"gas_trap_1", "poison_trap_1", "poison_trap_2", "trap"}
+    looks_relevant = explicit_trap_target or any(
+        marker in text or marker in lowered for marker in _TRAP_AWARENESS_MARKERS
+    )
+    if not looks_relevant:
+        return None
+
+    return {
+        "topic": "poison_trap",
+        "trap_id": "gas_trap_1",
+        "actor_id": "astarion",
+        "can_detect": bool(can_detect),
+        "can_disarm": bool(can_detect and not disarmed and not triggered),
+        "revealed": bool(revealed),
+        "disarmed": bool(disarmed),
+        "triggered": bool(triggered),
+    }
 
 
 def detect_lab_act3_choice(state: Dict[str, Any]) -> str:

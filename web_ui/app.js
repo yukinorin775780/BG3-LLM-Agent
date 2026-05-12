@@ -1875,7 +1875,13 @@
         const copy = { ...entity };
         const isTrapEntity = normalizeId(entity.type || entity.kind || "").includes("trap") || normalizeId(id).includes("trap");
         if (isTrapEntity) {
-          const discovered = state.discoveredTrapIds.has(normalizeId(id)) || state.discoveredTrapIds.has("gas_trap_1");
+          const status = normalizeId(entity.status || entity.state || "");
+          const backendRevealed =
+            entity.is_hidden === false
+            || entity.is_revealed === true
+            || entity.discovered === true
+            || ["revealed", "disabled", "disarmed", "triggered"].includes(status);
+          const discovered = backendRevealed || state.discoveredTrapIds.has(normalizeId(id)) || state.discoveredTrapIds.has("gas_trap_1");
           copy.discovered = discovered;
           copy.is_revealed = discovered;
           copy.is_hidden = !discovered;
@@ -4429,6 +4435,27 @@
       ? providedEvents
       : window.BG3UIEventAdapter.extractUIEvents(data, previousState);
     window.BG3HudRenderers.dispatchUIEvents(events);
+    events.forEach((event) => {
+      const ev = safeObject(event);
+      if (ev.type === "trap_insight" && window.BG3TacticalMap && typeof window.BG3TacticalMap.playTrapDiscoveryHighlight === "function") {
+        window.BG3TacticalMap.playTrapDiscoveryHighlight([ev.trapId || "gas_trap_1"]);
+      }
+      if (ev.type === "trap_triggered" && window.BG3TacticalMap) {
+        if (typeof window.BG3TacticalMap.playTrapHazardPulse === "function") {
+          const trap = safeObject(state.environmentObjects[ev.trapId || "gas_trap_1"]);
+          window.BG3TacticalMap.playTrapHazardPulse({
+            id: ev.trapId || "gas_trap_1",
+            x: Number(trap.x) || 0,
+            y: Number(trap.y) || 0,
+            w: Number(trap.w || trap.width) || 1,
+            h: Number(trap.h || trap.height) || 1,
+          });
+        }
+        if (typeof window.BG3TacticalMap.playStatusDamage === "function") {
+          safeArray(ev.affectedActors).forEach((actorId) => window.BG3TacticalMap.playStatusDamage(actorId, "中毒"));
+        }
+      }
+    });
     return events;
   }
 

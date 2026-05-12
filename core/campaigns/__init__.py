@@ -10,6 +10,7 @@ from core.campaigns.necromancer_lab import (
     detect_lab_act4_post_combat_banter,
     detect_lab_intro_awareness,
     detect_study_chest_loot_context,
+    detect_trap_awareness_context,
 )
 
 __all__ = [
@@ -22,4 +23,5 @@ __all__ = [
     "detect_lab_act4_post_combat_banter",
     "detect_lab_intro_awareness",
     "detect_study_chest_loot_context",
+    "detect_trap_awareness_context",
 ]

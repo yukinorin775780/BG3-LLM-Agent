@@ -77,6 +77,25 @@ def test_input_node_routes_necromancer_diary_text_to_read_target():
     assert patch["intent_context"]["action_target"] == "necromancer_diary"
 
 
+def test_input_node_routes_astarion_trap_disarm_to_disarm():
+    state = {
+        **_base_state(),
+        "user_input": "阿斯代伦，解除毒气陷阱。",
+        "intent": "chat",
+        "target": "",
+        "source": "text_input",
+    }
+
+    patch = input_node(state)
+
+    assert patch["intent"] == "DISARM"
+    assert patch["target"] == "gas_trap_1"
+    assert patch["source"] == "ui_text_normalized"
+    assert patch["intent_context"]["action_actor"] == "astarion"
+    assert patch["intent_context"]["action_target"] == "gas_trap_1"
+    assert patch["intent_context"]["action"] == "disarm_trap"
+
+
 def test_input_node_overrides_gribbo_diary_truth_use_item_to_chat():
     state = {
         **_base_state(),

@@ -187,6 +187,40 @@
     appendAgentSignalCard(card, 5800);
   }
 
+  function renderTrapInsightCard(event) {
+    const e = event && typeof event === "object" ? event : {};
+    const card = buildAgentSignalCard("trap-insight", "Hidden Trap Spotted", "!", [
+      { label: "Actor", value: actorLabel(e.actor || "astarion") },
+      { label: "Signal", value: "Saw what the player could not" },
+      { label: "Trap", value: e.trapId || "gas_trap_1" },
+      { label: "Suggested Action", value: "Ask Astarion to disarm it" },
+    ]);
+    appendAgentSignalCard(card, 5600);
+  }
+
+  function renderTrapDisarmedCard(event) {
+    const e = event && typeof event === "object" ? event : {};
+    const card = buildAgentSignalCard("trap-disarmed", "Trap Disarmed", "✓", [
+      { label: "Actor", value: actorLabel(e.actor || "astarion") },
+      { label: "Result", value: (e.trapId || "gas_trap_1") + " disabled" },
+      { label: "State", value: "Safe passage" },
+    ]);
+    appendAgentSignalCard(card, 5000);
+  }
+
+  function renderTrapTriggeredCard(event) {
+    const e = event && typeof event === "object" ? event : {};
+    const affected = Array.isArray(e.affectedActors) && e.affectedActors.length
+      ? e.affectedActors.map(actorLabel).join(" / ")
+      : "Unknown";
+    const card = buildAgentSignalCard("trap-triggered", "Poison Gas Released", "☠", [
+      { label: "Trap", value: e.trapId || "gas_trap_1" },
+      { label: "Result", value: "Poison gas released" },
+      { label: "Affected", value: affected },
+    ]);
+    appendAgentSignalCard(card, 5600);
+  }
+
   /* ── Toast System ── */
   function showToast(type, content, durationMs) {
     const host = getToastContainer();
@@ -419,7 +453,12 @@
         case "line_of_sight_blocked": showLoSBlockedOverlay(ev); break;
         case "act_progress": updateActProgress(ev.act, ev.objective); break;
         case "trap_discovered": showTrapDiscovered(ev); break;
-        case "trap_triggered": showTrapTriggered(ev); break;
+        case "trap_insight": renderTrapInsightCard(ev); break;
+        case "trap_disarmed": renderTrapDisarmedCard(ev); break;
+        case "trap_triggered":
+          if (ev.trapId || Array.isArray(ev.affectedActors)) renderTrapTriggeredCard(ev);
+          showTrapTriggered(ev);
+          break;
         case "companion_guidance": renderCompanionGuidanceCard(ev); break;
         case "negotiation_leverage": renderNegotiationLeverageCard(ev); break;
         case "demo_cleared": showDemoClearedBanner(); break;
@@ -433,6 +472,7 @@
     showMemoryCard, showItemGainedToast, showLoSBlockedOverlay,
     updateActProgress, showDemoClearedBanner, showTrapDiscovered,
     showTrapTriggered, renderCompanionGuidanceCard,
-    renderNegotiationLeverageCard, dispatchUIEvents,
+    renderNegotiationLeverageCard, renderTrapInsightCard,
+    renderTrapDisarmedCard, renderTrapTriggeredCard, dispatchUIEvents,
   });
 })();

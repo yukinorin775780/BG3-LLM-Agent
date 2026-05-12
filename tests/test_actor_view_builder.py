@@ -320,3 +320,23 @@ def test_build_actor_view_never_leaks_internal_graph_fields():
     assert "speaker_queue" not in actor_dict
     assert "final_response" not in actor_dict
     assert "thought_process" not in actor_dict
+
+
+def test_hidden_trap_metadata_is_filtered_until_revealed():
+    state = make_sample_state()
+    state["environment_objects"]["gas_trap_1"] = {
+        "id": "gas_trap_1",
+        "type": "trap",
+        "name": "毒气陷阱",
+        "is_hidden": True,
+        "detect_dc": 13,
+        "disarm_dc": 15,
+    }
+
+    hidden_view = build_actor_view(state, "player")
+    assert "gas_trap_1" not in hidden_view.visible_environment_objects
+
+    state["environment_objects"]["gas_trap_1"]["is_hidden"] = False
+    state["environment_objects"]["gas_trap_1"]["status"] = "revealed"
+    revealed_view = build_actor_view(state, "player")
+    assert revealed_view.visible_environment_objects["gas_trap_1"]["status"] == "revealed"

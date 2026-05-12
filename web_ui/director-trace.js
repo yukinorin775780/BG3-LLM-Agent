@@ -241,6 +241,9 @@
     if (/item|transfer|获得|搜刮|heavy_iron_key|lab_key|钥匙/i.test(blob) || types.has("item_gained")) parts.push("item_transfer");
     if (types.has("companion_guidance")) parts.push("companion_guidance");
     if (types.has("negotiation_leverage") || /\[交涉筹码\]|diary_evidence|gribbo_elixir_truth/i.test(blob)) parts.push("negotiation_leverage");
+    if (types.has("trap_insight") || /\[陷阱感知\]|gas_trap_1.*revealed|poison_trap_revealed/i.test(blob)) parts.push("trap_reveal");
+    if (types.has("trap_disarmed") || /\[陷阱解除\]|gas_trap_1.*disabled|poison_trap_disarmed/i.test(blob)) parts.push("trap_disarmed");
+    if (types.has("trap_triggered") || /\[毒气陷阱\]|gas_trap_1.*triggered|poisoned|中毒/i.test(blob)) parts.push("trap_triggered");
     const aff = blob.match(/affection[^\d+\-]*([+\-]\s*\d+)/i) || blob.match(/好感度?\s*([+\-]\s*\d+)/);
     if (aff) parts.push("affection " + aff[1].replace(/\s/g, ""));
     if (/combat_active|initiative_order|战斗|hostile|敌对/i.test(blob)) parts.push("combat/hostility");
@@ -257,6 +260,9 @@
     if (types.has("affection_delta") || /affection|好感/i.test(blob)) out.push("Affection Chip");
     if (types.has("companion_guidance") || /\[队友建议\]/i.test(blob)) out.push("Guidance Card");
     if (types.has("negotiation_leverage") || /\[交涉筹码\]/i.test(blob)) out.push("Leverage Card");
+    if (types.has("trap_insight") || /\[陷阱感知\]/i.test(blob)) out.push("Trap Insight Card");
+    if (types.has("trap_disarmed") || /\[陷阱解除\]/i.test(blob)) out.push("Trap Disarmed Card");
+    if (types.has("trap_triggered") || /\[毒气陷阱\]|poisoned|中毒/i.test(blob)) out.push("Trap Triggered Card");
     if (types.has("demo_cleared") || /demo_cleared|DEMO CLEARED/i.test(blob)) out.push("Demo Banner");
     if (types.has("trap_discovered") || types.has("trap_triggered") || /陷阱|trap/i.test(blob)) out.push("Trap HUD");
     return out.join(", ") || "HUD events";
@@ -299,9 +305,12 @@
       return ["player_input", "dm_router", "actor_view_filter", "actor_runtime", "domain_event", "event_drain", "ui_events"];
     }
     const nodes = ["player_input", "dm_router", "actor_view_filter"];
-    const needsParty = /gribbo|astarion|dialogue|party|好感|affection|combat|initiative|台词|对话/i.test(blob);
     const types = eventTypes(payload, events);
+    const hasTrapSignal = types.some((type) => ["trap_insight", "trap_disarmed", "trap_triggered"].includes(type))
+      || /\[陷阱感知\]|\[陷阱解除\]|\[毒气陷阱\]|gas_trap_1|poison_trap/i.test(blob);
+    const needsParty = /gribbo|astarion|dialogue|party|好感|affection|combat|initiative|台词|对话/i.test(blob) || types.includes("trap_insight");
     const needsDomain = /memory|记忆|item|transfer|获得|搜刮|flag|demo_cleared|combat|hostile|affection|状态|status|EventDrain|\[交涉筹码\]/i.test(blob)
+      || hasTrapSignal
       || types.some((type) => ["memory_added", "item_gained", "affection_delta", "status_changed", "demo_cleared", "negotiation_leverage"].includes(type));
     if (needsParty || needsDomain) nodes.push("actor_runtime");
     if (needsDomain) nodes.push("domain_event", "event_drain");
@@ -333,6 +342,19 @@
       details.ui_events.signal = "agent_signal";
     }
     if (types.has("negotiation_leverage") || /\[交涉筹码\]/i.test(blob)) {
+      details.domain_event.signal = "agent_signal";
+      details.event_drain.signal = "agent_signal";
+      details.ui_events.signal = "agent_signal";
+    }
+    if (types.has("trap_insight") || /\[陷阱感知\]/i.test(blob)) {
+      details.actor_view_filter.signal = "agent_signal";
+      details.actor_runtime.signal = "agent_signal";
+      details.domain_event.signal = "agent_signal";
+      details.event_drain.signal = "agent_signal";
+      details.ui_events.signal = "agent_signal";
+    }
+    if (types.has("trap_disarmed") || types.has("trap_triggered") || /\[陷阱解除\]|\[毒气陷阱\]/i.test(blob)) {
+      details.dm_router.signal = "agent_signal";
       details.domain_event.signal = "agent_signal";
       details.event_drain.signal = "agent_signal";
       details.ui_events.signal = "agent_signal";

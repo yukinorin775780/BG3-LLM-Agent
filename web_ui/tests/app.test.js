@@ -11,6 +11,7 @@ const STATE_DIFF_RENDERER_PATH = path.resolve(__dirname, "../state-diff-renderer
 const DEMO_SCRIPT_RUNNER_PATH = path.resolve(__dirname, "../demo-script-runner.js");
 const INPUT_CONTROLLER_PATH = path.resolve(__dirname, "../input-controller.js");
 const HUD_RENDERERS_PATH = path.resolve(__dirname, "../hud-renderers.js");
+const GAME_JS_PATH = path.resolve(__dirname, "../game.js");
 const REAL_MAP_JSON_PATH = path.resolve(__dirname, "../assets/maps/necromancer_lab.json");
 const REAL_MAP_TMX_PATH = path.resolve(__dirname, "../../data/maps/necromancer_lab.tmx");
 
@@ -50,6 +51,14 @@ function loadNewModules() {
   jest.isolateModules(() => { require(DEMO_SCRIPT_RUNNER_PATH); });
   jest.isolateModules(() => { require(INPUT_CONTROLLER_PATH); });
   jest.isolateModules(() => { require(HUD_RENDERERS_PATH); });
+}
+
+function loadGameHelpers() {
+  delete window.BG3TacticalMap;
+  const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+  jest.isolateModules(() => { require(GAME_JS_PATH); });
+  warnSpy.mockRestore();
+  return window.BG3TacticalMap;
 }
 
 async function bootAppForTest(url = "http://localhost/?qa_test=1") {
@@ -2094,6 +2103,196 @@ describe("web_ui/app.js UI bindings", () => {
       advice: "Find the study.",
     });
     const card = document.querySelector(".agent-signal-card--guidance");
+    expect(card).not.toBeNull();
+    expect(card.classList.contains("is-reduced-motion")).toBe(true);
+    expect(card.classList.contains("agent-signal-card--pulse")).toBe(false);
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+    window.matchMedia = previousMatchMedia;
+  });
+
+  test("test_trap_insight_journal_derives_ui_event", async () => {
+    loadNewModules();
+    const events = window.BG3UIEventAdapter.extractUIEvents({
+      journal_events: ["[陷阱感知] astarion -> gas_trap_1"],
+    });
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "trap_insight",
+      actor: "astarion",
+      trapId: "gas_trap_1",
+      source: "journal",
+    }));
+  });
+
+  test("test_trap_reveal_flag_or_status_derives_insight_event", async () => {
+    loadNewModules();
+    const events = window.BG3UIEventAdapter.extractUIEvents({
+      flags: { necromancer_lab_poison_trap_revealed: true },
+      environment_objects: {
+        gas_trap_1: { id: "gas_trap_1", type: "trap", status: "revealed", is_hidden: false, x: 4, y: 5 },
+      },
+    }, {
+      flags: {},
+      environment_objects: {
+        gas_trap_1: { id: "gas_trap_1", type: "trap", status: "hidden", is_hidden: true, x: 4, y: 5 },
+      },
+    });
+    expect(events.filter((event) => event.type === "trap_insight")).toHaveLength(1);
+    expect(events.find((event) => event.type === "trap_insight")).toMatchObject({ trapId: "gas_trap_1" });
+  });
+
+  test("test_trap_disarmed_journal_derives_ui_event", async () => {
+    loadNewModules();
+    const events = window.BG3UIEventAdapter.extractUIEvents({
+      journal_events: ["[陷阱解除] astarion -> gas_trap_1"],
+    });
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "trap_disarmed",
+      actor: "astarion",
+      trapId: "gas_trap_1",
+    }));
+  });
+
+  test("test_trap_triggered_journal_derives_ui_event", async () => {
+    loadNewModules();
+    const events = window.BG3UIEventAdapter.extractUIEvents({
+      journal_events: ["[毒气陷阱] gas_trap_1 triggered"],
+    });
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "trap_triggered",
+      trapId: "gas_trap_1",
+    }));
+  });
+
+  test("test_poisoned_status_diff_derives_trap_triggered_affected_actor", async () => {
+    loadNewModules();
+    const events = window.BG3UIEventAdapter.extractUIEvents({
+      party_status: {
+        player: { status_effects: [{ type: "poisoned", duration: 3 }] },
+      },
+    }, {
+      party_status: {
+        player: { status_effects: [] },
+      },
+    });
+    const triggered = events.find((event) => event.type === "trap_triggered");
+    expect(triggered).toBeDefined();
+    expect(triggered.affectedActors).toContain("player");
+  });
+
+  test("test_hidden_trap_overlay_not_rendered_before_reveal", async () => {
+    const tacticalMap = loadGameHelpers();
+    const entries = tacticalMap.resolveTrapOverlayEntries({
+      gas_trap_1: { id: "gas_trap_1", type: "trap", status: "hidden", is_hidden: true, x: 4, y: 5 },
+    });
+    expect(entries).toEqual([]);
+  });
+
+  test("test_revealed_trap_overlay_is_amber", async () => {
+    const tacticalMap = loadGameHelpers();
+    const [entry] = tacticalMap.resolveTrapOverlayEntries({
+      gas_trap_1: { id: "gas_trap_1", type: "trap", status: "revealed", is_hidden: false, x: 4, y: 5 },
+    });
+    expect(entry).toMatchObject({ id: "gas_trap_1", status: "revealed", label: "TRAP", color: 0xe0a84e });
+  });
+
+  test("test_disabled_trap_overlay_is_safe", async () => {
+    const tacticalMap = loadGameHelpers();
+    const [entry] = tacticalMap.resolveTrapOverlayEntries({
+      gas_trap_1: { id: "gas_trap_1", type: "trap", status: "disabled", is_hidden: false, x: 4, y: 5 },
+    });
+    expect(entry).toMatchObject({ status: "disabled", label: "DISARMED", color: 0x7fae83 });
+  });
+
+  test("test_triggered_trap_overlay_is_danger", async () => {
+    const tacticalMap = loadGameHelpers();
+    const [entry] = tacticalMap.resolveTrapOverlayEntries({
+      gas_trap_1: { id: "gas_trap_1", type: "trap", status: "triggered", is_hidden: false, x: 4, y: 5 },
+    });
+    expect(entry).toMatchObject({ status: "triggered", label: "POISON", color: 0xc54232 });
+  });
+
+  test("test_state_diff_highlights_trap_flags_status_and_poisoned", async () => {
+    loadNewModules();
+    const diffs = window.BG3StateDiffRenderer.diffSnapshots({
+      flags: {},
+      environment_objects: {
+        gas_trap_1: { id: "gas_trap_1", type: "trap", name: "gas_trap_1", status: "revealed" },
+      },
+      party_status: {
+        player: { name: "Player", status_effects: [] },
+      },
+    }, {
+      flags: { necromancer_lab_poison_trap_disarmed: true },
+      environment_objects: {
+        gas_trap_1: { id: "gas_trap_1", type: "trap", name: "gas_trap_1", status: "disabled" },
+      },
+      party_status: {
+        player: { name: "Player", status_effects: [{ type: "poisoned", duration: 3 }] },
+      },
+    });
+    expect(diffs).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "trap_signal", label: "flags.necromancer_lab_poison_trap_disarmed = true" }),
+      expect.objectContaining({ type: "trap_signal", label: "Gas Trap 1.status revealed -> disabled" }),
+      expect.objectContaining({ type: "trap_signal", label: "Player.status += poisoned" }),
+    ]));
+  });
+
+  test("test_director_trace_trap_events_activate_expected_nodes", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    await bootAppForTest("http://localhost/?qa_test=1");
+    if (window.BG3InputController) {
+      window.BG3InputController.movePlayer(1, 0);
+    }
+    await flushAsync();
+    expect(window.BG3DirectorTrace.getState()).toBe("idle");
+
+    const insightNodes = window.BG3DirectorTrace.buildTraceNodes({}, {
+      userLine: "Astarion spots a trap",
+      intent: "CHAT",
+      uiEvents: [{ type: "trap_insight", trapId: "gas_trap_1" }],
+    });
+    const disarmNodes = window.BG3DirectorTrace.buildTraceNodes({}, {
+      userLine: "阿斯代伦，解除毒气陷阱",
+      intent: "INTERACT",
+      uiEvents: [{ type: "trap_disarmed", trapId: "gas_trap_1" }],
+    });
+    const triggerNodes = window.BG3DirectorTrace.buildTraceNodes({}, {
+      userLine: "step into poison gas",
+      intent: "trigger_zone",
+      uiEvents: [{ type: "trap_triggered", trapId: "gas_trap_1" }],
+    });
+    expect(insightNodes).toEqual(expect.arrayContaining(["actor_view_filter", "actor_runtime", "domain_event", "event_drain", "ui_events"]));
+    expect(disarmNodes).toEqual(expect.arrayContaining(["dm_router", "domain_event", "event_drain", "ui_events"]));
+    expect(triggerNodes).toEqual(expect.arrayContaining(["domain_event", "event_drain", "ui_events"]));
+
+    window.BG3DirectorTrace.activateTrace(insightNodes, {
+      animate: false,
+      uiEvents: [{ type: "trap_insight", trapId: "gas_trap_1" }],
+    });
+    expect(document.querySelector('li[data-node="actor_view_filter"]').classList.contains("is-agent-signal")).toBe(true);
+    expect(document.querySelector('li[data-node="ui_events"]').classList.contains("is-agent-signal")).toBe(true);
+  });
+
+  test("test_reduced_motion_trap_cards_do_not_pulse", async () => {
+    loadNewModules();
+    const previousMatchMedia = window.matchMedia;
+    window.matchMedia = jest.fn().mockImplementation((query) => ({
+      matches: query === "(prefers-reduced-motion: reduce)",
+      media: query,
+      addListener: jest.fn(),
+      removeListener: jest.fn(),
+      addEventListener: jest.fn(),
+      removeEventListener: jest.fn(),
+      dispatchEvent: jest.fn(),
+    }));
+    jest.useFakeTimers();
+    window.BG3HudRenderers.renderTrapInsightCard({
+      type: "trap_insight",
+      actor: "astarion",
+      trapId: "gas_trap_1",
+    });
+    const card = document.querySelector(".agent-signal-card--trap-insight");
     expect(card).not.toBeNull();
     expect(card.classList.contains("is-reduced-motion")).toBe(true);
     expect(card.classList.contains("agent-signal-card--pulse")).toBe(false);

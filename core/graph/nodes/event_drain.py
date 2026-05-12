@@ -44,6 +44,8 @@ def event_drain_node(state: GameState) -> Dict[str, Any]:
     }
     if patch.entities is not None:
         out["entities"] = patch.entities
+    if patch.environment_objects is not None:
+        out["environment_objects"] = patch.environment_objects
     if patch.player_inventory is not None:
         out["player_inventory"] = patch.player_inventory
     if patch.flags is not None:

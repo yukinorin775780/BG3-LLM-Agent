@@ -164,6 +164,10 @@
     out.push({ type, label, detail: detail || "" });
   }
 
+  function isTrapFlag(key) {
+    return /^necromancer_lab_poison_trap_/.test(String(key || ""));
+  }
+
   function diffSnapshots(previousRaw, nextRaw) {
     const prev = normalizeSnapshot(previousRaw);
     const next = normalizeSnapshot(nextRaw);
@@ -177,7 +181,7 @@
       const before = flagValue(prev.flags[key]);
       const after = flagValue(raw);
       if (!valuesEqual(before, after)) {
-        pushDiff(out, "flags", "flags." + key + " = " + JSON.stringify(after));
+        pushDiff(out, isTrapFlag(key) ? "trap_signal" : "flags", "flags." + key + " = " + JSON.stringify(after));
       }
     });
 
@@ -201,12 +205,16 @@
       const prevStatus = String(before.status || "").trim();
       const nextStatus = String(actor.status || "").trim();
       if (nextStatus && nextStatus !== prevStatus) {
-        pushDiff(out, "status", label + ".status += " + nextStatus);
+        const isTrap = id === "gas_trap_1" || /trap/i.test(id);
+        const statusLabel = prevStatus
+          ? label + ".status " + prevStatus + " -> " + nextStatus
+          : label + ".status += " + nextStatus;
+        pushDiff(out, isTrap ? "trap_signal" : "status", statusLabel);
       }
 
       const prevEffects = new Set(safeArr(before.status_effects).map(String));
       safeArr(actor.status_effects).forEach((effect) => {
-        if (!prevEffects.has(effect)) pushDiff(out, "status", label + ".status += " + effect);
+        if (!prevEffects.has(effect)) pushDiff(out, normalizeId(effect) === "poisoned" ? "trap_signal" : "status", label + ".status += " + effect);
       });
 
       const prevFaction = String(before.faction || "");
@@ -296,6 +304,9 @@
           row.className = "world-diff-row world-diff-row--" + normalizeId(entry.type || "change");
           if (normalizeId(entry.type) === "agent_signal") {
             row.classList.add("agent-signal-diff");
+          }
+          if (normalizeId(entry.type) === "trap_signal") {
+            row.classList.add("trap-signal-diff");
           }
           const sigil = document.createElement("span");
           sigil.className = "world-diff-sigil";

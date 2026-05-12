@@ -38,6 +38,9 @@
     /踩中.*陷阱|陷阱.*触发|poison.*damage|毒雾.*喷发|trap.*trigger/i;
   const RE_COMPANION_GUIDANCE = /\[队友建议\]/i;
   const RE_NEGOTIATION_LEVERAGE = /\[交涉筹码\]/i;
+  const RE_TRAP_INSIGHT_SIGNAL = /\[陷阱感知\]\s*([a-z0-9_\-]+)\s*->\s*([a-z0-9_\-]+)/i;
+  const RE_TRAP_DISARMED_SIGNAL = /\[陷阱解除\]\s*([a-z0-9_\-]+)\s*->\s*([a-z0-9_\-]+)/i;
+  const RE_POISON_TRAP_TRIGGER_SIGNAL = /\[毒气陷阱\]\s*([a-z0-9_\-]+)\s*(?:triggered|触发)/i;
 
   /* ══════════════════════════════════════════════════════
    *  normalizeRollEvent(raw)
@@ -164,8 +167,10 @@
       events.push({ type: "demo_cleared" });
     }
 
+    inferTrapSignalEvents(prev, data, events);
     inferNegotiationFromFlags(prev, data, events);
     inferNegotiationEffects(prev, data, events);
+    dedupeTrapSignalEvents(events);
 
     return events;
   }
@@ -200,7 +205,8 @@
         reason: e.reason || "",
       };
     }
-    if (type === "companion_guidance" || type === "negotiation_leverage") {
+    if (type === "companion_guidance" || type === "negotiation_leverage"
+      || type === "trap_insight" || type === "trap_disarmed" || type === "trap_triggered") {
       return e;
     }
     return e;
@@ -215,6 +221,11 @@
     const leverage = parseNegotiationLeverage(text);
     if (leverage) {
       events.push(leverage);
+    }
+
+    const trapSignal = parseTrapSignal(text);
+    if (trapSignal) {
+      events.push(trapSignal);
     }
 
     /* LoS blocked */
@@ -279,14 +290,14 @@
       });
     }
 
-    if (RE_TRAP_DISCOVERED.test(text)) {
+    if (RE_TRAP_DISCOVERED.test(text) && !trapSignal) {
       events.push({
         type: "trap_discovered",
         text,
       });
     }
 
-    if (RE_TRAP_TRIGGERED.test(text)) {
+    if (RE_TRAP_TRIGGERED.test(text) && !trapSignal) {
       events.push({
         type: "trap_triggered",
         text,
@@ -312,6 +323,185 @@
           count,
         });
       }
+    }
+  }
+
+  function flagBool(value) {
+    const raw = safeObj(value);
+    if (Object.prototype.hasOwnProperty.call(raw, "value")) return raw.value === true;
+    if (typeof value === "boolean") return value;
+    if (typeof value === "string") return ["true", "yes", "1"].includes(value.trim().toLowerCase());
+    return value === 1;
+  }
+
+  function stateFlags(rawState) {
+    const state = safeObj(rawState);
+    const gameState = safeObj(state.game_state || state.gameState || state.state);
+    return safeObj(state.flags || gameState.flags);
+  }
+
+  function stateEnvironment(rawState) {
+    const state = safeObj(rawState);
+    const gameState = safeObj(state.game_state || state.gameState || state.state);
+    return safeObj(state.environment_objects || state.environmentObjects || gameState.environment_objects || gameState.entities);
+  }
+
+  function statusEffectId(effect) {
+    if (typeof effect === "string") return effect.trim().toLowerCase();
+    const record = safeObj(effect);
+    return String(record.type || record.id || record.name || record.status || "").trim().toLowerCase();
+  }
+
+  function actorStatusEffects(actor) {
+    return safeArr(safeObj(actor).status_effects || safeObj(actor).statusEffects)
+      .map(statusEffectId)
+      .filter(Boolean);
+  }
+
+  function actorPools(rawState) {
+    const state = safeObj(rawState);
+    const gameState = safeObj(state.game_state || state.gameState || state.state);
+    return [
+      safeObj(state.party_status),
+      safeObj(state.partyStatus),
+      safeObj(gameState.party_status),
+      safeObj(gameState.entities),
+    ];
+  }
+
+  function inferPoisonedActors(previousState, currentState) {
+    const previous = Object.assign({}, ...actorPools(previousState));
+    const current = Object.assign({}, ...actorPools(currentState));
+    const affected = [];
+    Object.entries(current).forEach(([actorId, actor]) => {
+      const currEffects = new Set(actorStatusEffects(actor));
+      if (!currEffects.has("poisoned") && !currEffects.has("中毒")) return;
+      const prevEffects = new Set(actorStatusEffects(previous[actorId]));
+      if (prevEffects.has("poisoned") || prevEffects.has("中毒")) return;
+      affected.push(String(actorId || "").toLowerCase());
+    });
+    return affected;
+  }
+
+  function parseTrapSignal(text) {
+    const raw = String(text || "");
+    let match = raw.match(RE_TRAP_INSIGHT_SIGNAL);
+    if (match) {
+      return buildTrapInsightEvent(match[1], match[2], "journal", raw);
+    }
+    match = raw.match(RE_TRAP_DISARMED_SIGNAL);
+    if (match) {
+      return {
+        type: "trap_disarmed",
+        actor: String(match[1] || "astarion").toLowerCase(),
+        trapId: String(match[2] || "gas_trap_1").toLowerCase(),
+        raw,
+        source: "journal",
+      };
+    }
+    match = raw.match(RE_POISON_TRAP_TRIGGER_SIGNAL);
+    if (match) {
+      return {
+        type: "trap_triggered",
+        trapId: String(match[1] || "gas_trap_1").toLowerCase(),
+        affectedActors: [],
+        raw,
+        source: "journal",
+      };
+    }
+    return null;
+  }
+
+  function buildTrapInsightEvent(actor, trapId, source, raw) {
+    return {
+      type: "trap_insight",
+      actor: String(actor || "astarion").toLowerCase(),
+      trapId: String(trapId || "gas_trap_1").toLowerCase(),
+      title: "Hidden Trap Spotted",
+      message: "Astarion saw what the player could not. Ask him to disarm it.",
+      source: source || "state",
+      raw: raw || "",
+    };
+  }
+
+  function pushTrapEvent(events, nextEvent) {
+    if (!nextEvent || !nextEvent.type) return;
+    const trapId = String(nextEvent.trapId || "gas_trap_1").toLowerCase();
+    const existing = events.find((event) => {
+      return event && event.type === nextEvent.type && String(event.trapId || "gas_trap_1").toLowerCase() === trapId;
+    });
+    if (!existing) {
+      events.push(nextEvent);
+      return;
+    }
+    if (nextEvent.actor && !existing.actor) existing.actor = nextEvent.actor;
+    if (nextEvent.raw && !existing.raw) existing.raw = nextEvent.raw;
+    if (Array.isArray(nextEvent.affectedActors)) {
+      existing.affectedActors = Array.from(new Set([
+        ...safeArr(existing.affectedActors).map(String),
+        ...nextEvent.affectedActors.map(String),
+      ].filter(Boolean)));
+    }
+  }
+
+  function inferTrapSignalEvents(previousState, currentState, events) {
+    const prevFlags = stateFlags(previousState);
+    const currFlags = stateFlags(currentState);
+    const prevEnv = stateEnvironment(previousState);
+    const currEnv = stateEnvironment(currentState);
+    const prevTrap = safeObj(prevEnv.gas_trap_1);
+    const currTrap = safeObj(currEnv.gas_trap_1);
+    const prevStatus = String(prevTrap.status || "").trim().toLowerCase();
+    const currStatus = String(currTrap.status || "").trim().toLowerCase();
+    const wasRevealed = flagBool(prevFlags.necromancer_lab_poison_trap_revealed)
+      || prevStatus === "revealed"
+      || prevTrap.is_hidden === false;
+    const isRevealed = flagBool(currFlags.necromancer_lab_poison_trap_revealed)
+      || currStatus === "revealed"
+      || currTrap.is_hidden === false;
+    const isDisabled = flagBool(currFlags.necromancer_lab_poison_trap_disarmed) || currStatus === "disabled";
+    const isTriggered = flagBool(currFlags.necromancer_lab_poison_trap_triggered) || currStatus === "triggered";
+    const affectedActors = inferPoisonedActors(previousState, currentState);
+
+    if (!wasRevealed && isRevealed) {
+      pushTrapEvent(events, buildTrapInsightEvent("astarion", "gas_trap_1", "state", ""));
+    }
+    if (isDisabled) {
+      pushTrapEvent(events, {
+        type: "trap_disarmed",
+        actor: "astarion",
+        trapId: "gas_trap_1",
+        source: "state",
+      });
+    }
+    if (isTriggered || affectedActors.length) {
+      pushTrapEvent(events, {
+        type: "trap_triggered",
+        trapId: "gas_trap_1",
+        affectedActors,
+        source: affectedActors.length ? "state_diff" : "state",
+      });
+    }
+  }
+
+  function dedupeTrapSignalEvents(events) {
+    const seen = new Map();
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const event = events[index];
+      if (!event || !["trap_insight", "trap_disarmed", "trap_triggered"].includes(event.type)) continue;
+      const key = event.type + ":" + String(event.trapId || "gas_trap_1").toLowerCase();
+      if (!seen.has(key)) {
+        seen.set(key, event);
+        continue;
+      }
+      const kept = seen.get(key);
+      if (Array.isArray(event.affectedActors)) {
+        kept.affectedActors = Array.from(new Set([
+          ...safeArr(kept.affectedActors).map(String),
+          ...event.affectedActors.map(String),
+        ].filter(Boolean)));
+      }
+      events.splice(index, 1);
     }
   }
 

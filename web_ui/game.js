@@ -232,6 +232,9 @@
       if (!this.scene || typeof this.scene.setTrapSenseMode !== "function") return;
       this.scene.setTrapSenseMode(enabled);
     },
+    resolveTrapOverlayEntries(environmentObjects) {
+      return resolveTrapOverlayEntries(environmentObjects);
+    },
     resize() {
       if (!this.game) return;
       const size = gameViewportSize();
@@ -274,6 +277,13 @@
     if (window.BG3DialogueActive === true) return true;
     const overlay = document.getElementById("dialogue-overlay");
     return Boolean(overlay && !overlay.classList.contains("hidden"));
+  }
+
+  function prefersReducedMotion() {
+    return !!(
+      window.matchMedia
+      && window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    );
   }
 
   function gameViewportSize() {
@@ -490,6 +500,46 @@
     return false;
   }
 
+  function trapStatus(data) {
+    const entity = safeObject(data);
+    const status = normalizeId(entity.status || entity.state);
+    if (["disabled", "disarmed"].includes(status)) return "disabled";
+    if (["triggered", "active", "burst"].includes(status)) return "triggered";
+    if (["revealed", "detected", "visible"].includes(status)) return "revealed";
+    if (entity.is_hidden === false || entity.is_revealed === true || entity.discovered === true) return "revealed";
+    return "";
+  }
+
+  function resolveTrapOverlayEntries(environmentObjects) {
+    const entries = [];
+    Object.entries(safeObject(environmentObjects)).forEach(([id, raw]) => {
+      const entity = safeObject(raw);
+      if (!isTrap(id, entity)) return;
+      const status = trapStatus(entity);
+      if (!status || isEntityHidden(entity)) return;
+      const x = Number(entity.x);
+      const y = Number(entity.y);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+      const w = Math.max(1, Math.round(Number(entity.w ?? entity.width ?? entity.size_w ?? entity.tile_width) || 1));
+      const h = Math.max(1, Math.round(Number(entity.h ?? entity.height ?? entity.size_h ?? entity.tile_height) || 1));
+      const color = status === "disabled" ? 0x7fae83 : (status === "triggered" ? 0xc54232 : 0xe0a84e);
+      const fill = status === "disabled" ? 0x24382a : (status === "triggered" ? 0x5d1714 : 0x4a3518);
+      entries.push({
+        id: normalizeId(id),
+        x,
+        y,
+        w,
+        h,
+        status,
+        color,
+        fill,
+        alpha: status === "triggered" ? 0.28 : 0.18,
+        label: status === "disabled" ? "DISARMED" : (status === "triggered" ? "POISON" : "TRAP"),
+      });
+    });
+    return entries;
+  }
+
   function isDoor(id, data) {
     const entity = safeObject(data);
     const key = normalizeId(id);
@@ -634,8 +684,10 @@
       this.losSprites = [];
       this.roomFogSprites = [];
       this.obstacleSprites = [];
+      this.trapOverlaySprites = [];
       this.obstacleFxTweens = [];
       this.overlayTweens = [];
+      this.trapOverlayTweens = [];
       this.interactionRing = null;
       this.highlightedInteractableId = "";
       this.trapSenseMode = false;
@@ -704,6 +756,7 @@
         }
       });
       this.refreshInteractionHighlight();
+      this.drawTrapOverlays();
       this.updateCameraFollow();
 
       if (options.mapChanged) {
@@ -732,6 +785,7 @@
       this.drawRoomVisibilityMask();
       this.drawObstacleTiles();
       this.drawLosBlockers();
+      this.drawTrapOverlays();
       this.tokens.forEach((token) => {
         this.updateTokenScale(token);
         this.updateIdleTween(token, true);
@@ -971,6 +1025,50 @@
           );
         }
       }
+    }
+
+    drawTrapOverlays() {
+      this.destroySpriteList(this.trapOverlaySprites);
+      this.trapOverlayTweens.forEach((tween) => tween.stop());
+      this.trapOverlayTweens = [];
+
+      const entries = resolveTrapOverlayEntries(safeObject(controller.latestState.environmentObjects));
+      const reducedMotion = prefersReducedMotion();
+      entries.forEach((entry) => {
+        const center = this.gridToWorld(entry.x + entry.w / 2 - 0.5, entry.y + entry.h / 2 - 0.5);
+        const width = entry.w * this.board.cell * 0.94;
+        const height = entry.h * this.board.cell * 0.94;
+        const fill = this.add.rectangle(center.x, center.y, width, height, entry.fill, entry.alpha)
+          .setDepth(DEPTH_LAYERS.overlay + 0.24);
+        const rim = this.add.rectangle(center.x, center.y, width, height)
+          .setFillStyle(0x000000, 0)
+          .setStrokeStyle(Math.max(2, this.board.cell * 0.045), entry.color, 0.92)
+          .setDepth(DEPTH_LAYERS.overlay + 0.25);
+        const label = this.add.text(center.x, center.y - height * 0.5 - Math.max(8, this.board.cell * 0.12), entry.label, {
+          fontFamily: "SFMono-Regular, Cascadia Code, Fira Code, monospace",
+          fontSize: Math.max(9, this.board.cell * 0.16) + "px",
+          fontStyle: "bold",
+          color: entry.status === "triggered" ? "#ffd7d0" : (entry.status === "disabled" ? "#d6f5cf" : "#ffe0a3"),
+          stroke: "#120c05",
+          strokeThickness: 3,
+        }).setOrigin(0.5).setDepth(DEPTH_LAYERS.overlay + 0.26);
+
+        this.overlayLayer.add(fill);
+        this.overlayLayer.add(rim);
+        this.overlayLayer.add(label);
+        this.trapOverlaySprites.push(fill, rim, label);
+
+        if (!reducedMotion && entry.status !== "disabled") {
+          this.trapOverlayTweens.push(this.tweens.add({
+            targets: [fill, rim],
+            alpha: entry.status === "triggered" ? 0.62 : 0.42,
+            duration: entry.status === "triggered" ? 420 : 900,
+            yoyo: true,
+            repeat: -1,
+            ease: "Sine.easeInOut",
+          }));
+        }
+      });
     }
 
     playTrapDiscoveryHighlight(trapIds) {

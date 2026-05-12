@@ -19,6 +19,9 @@ from core.utils.text_processor import format_history_message
 def _apply_actor_spoke(
     *,
     event: DomainEvent,
+    entities: Dict[str, Dict[str, Any]],
+    environment_objects: Dict[str, Dict[str, Any]],
+    flags: Dict[str, Any],
     messages: List[Any],
     speaker_responses: List[Tuple[str, str]],
     journal_events: List[str],
@@ -38,6 +41,25 @@ def _apply_actor_spoke(
         journal_events.append(
             f"[队友建议] {speaker_id} notices inventory/world state: topic={topic} has_key={has_key} door_id={door_id}."
         )
+    trap_insight = event.payload.get("trap_insight") if isinstance(event.payload, dict) else None
+    if isinstance(trap_insight, dict) and str(trap_insight.get("topic") or "") == "poison_trap":
+        trap_id = str(trap_insight.get("trap_id") or "gas_trap_1").strip() or "gas_trap_1"
+        journal_events.append(f"[陷阱感知] {speaker_id} -> {trap_id}")
+        flags["necromancer_lab_poison_trap_revealed"] = True
+        flags["astarion_detected_gas_trap"] = {
+            "value": True,
+            "visibility": {
+                "scope": "actor",
+                "actors": ["astarion"],
+                "reason": "trap_awareness",
+            },
+        }
+        for bucket in (entities, environment_objects):
+            trap = bucket.get(trap_id)
+            if not isinstance(trap, dict):
+                continue
+            trap["is_hidden"] = False
+            trap["status"] = "revealed"
     return text
 
 
@@ -205,6 +227,7 @@ def _apply_actor_negotiation_outcome(
 
 def apply_domain_events(state: Dict[str, Any], events: List[DomainEvent]) -> StatePatch:
     entities = copy.deepcopy(state.get("entities") or {})
+    environment_objects = copy.deepcopy(state.get("environment_objects") or {})
     player_inventory = copy.deepcopy(state.get("player_inventory") or {})
     flags = dict(state.get("flags") or {})
     messages: List[Any] = []
@@ -223,6 +246,9 @@ def apply_domain_events(state: Dict[str, Any], events: List[DomainEvent]) -> Sta
         if event.event_type == "actor_spoke":
             latest = _apply_actor_spoke(
                 event=event,
+                entities=entities,
+                environment_objects=environment_objects,
+                flags=flags,
                 messages=messages,
                 speaker_responses=speaker_responses,
                 journal_events=journal_events,
@@ -345,6 +371,7 @@ def apply_domain_events(state: Dict[str, Any], events: List[DomainEvent]) -> Sta
 
     return StatePatch(
         entities=entities,
+        environment_objects=environment_objects,
         player_inventory=player_inventory,
         flags=flags,
         journal_events=tuple(journal_events),

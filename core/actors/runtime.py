@@ -123,6 +123,26 @@ def _build_key_guidance_metadata(*, actor_id: str, context: Dict[str, Any]) -> D
     }
 
 
+def _trap_awareness_context(actor_view: ActorView) -> Dict[str, Any]:
+    payload = actor_view.intent_context.get("trap_awareness_context")
+    if not isinstance(payload, dict):
+        return {}
+    if str(payload.get("topic") or "").strip().lower() != "poison_trap":
+        return {}
+    return dict(payload)
+
+
+def _build_trap_insight_metadata(*, actor_id: str, context: Dict[str, Any]) -> Dict[str, Any]:
+    if not context or actor_id != "astarion":
+        return {}
+    return {
+        "topic": "poison_trap",
+        "trap_id": str(context.get("trap_id") or "gas_trap_1"),
+        "actor_id": actor_id,
+        "can_disarm": bool(context.get("can_disarm", False)),
+    }
+
+
 def _diary_negotiation_context(actor_view: ActorView) -> Dict[str, Any]:
     payload = actor_view.intent_context.get("diary_negotiation_context")
     if not isinstance(payload, dict):
@@ -473,6 +493,7 @@ class TemplateActorRuntime:
         act3_choice_context = _detect_act3_choice_context(actor_view)
         act4_post_combat_context = _detect_act4_post_combat_context(actor_view)
         key_guidance_context = _key_guidance_context(actor_view)
+        trap_awareness_context = _trap_awareness_context(actor_view)
         diary_negotiation_context = _diary_negotiation_context(actor_view)
         if diary_negotiation_context:
             social_action = {}
@@ -483,6 +504,7 @@ class TemplateActorRuntime:
             act3_choice_context=act3_choice_context,
             act4_post_combat_context=act4_post_combat_context,
             key_guidance_context=key_guidance_context,
+            trap_awareness_context=trap_awareness_context,
             diary_negotiation_context=diary_negotiation_context,
         )
         spoke_payload: Dict[str, Any] = {"text": spoken_text}
@@ -492,6 +514,12 @@ class TemplateActorRuntime:
         )
         if guidance_metadata:
             spoke_payload["guidance"] = guidance_metadata
+        trap_metadata = _build_trap_insight_metadata(
+            actor_id=self.actor_id,
+            context=trap_awareness_context,
+        )
+        if trap_metadata:
+            spoke_payload["trap_insight"] = trap_metadata
         events = [
             DomainEvent(
                 event_id=_new_event_id(),
@@ -663,6 +691,7 @@ class TemplateActorRuntime:
         act3_choice_context: str = "",
         act4_post_combat_context: bool = False,
         key_guidance_context: Dict[str, Any] | None = None,
+        trap_awareness_context: Dict[str, Any] | None = None,
         diary_negotiation_context: Dict[str, Any] | None = None,
     ) -> str:
         action_type = str(social_action.get("action_type") or "").strip().lower()
@@ -712,6 +741,11 @@ class TemplateActorRuntime:
             if self.actor_id == "laezel":
                 return "没有 lab_key。钥匙、撬锁、破门，选一个。别浪费时间。"
             return "没有钥匙。先找书房线索，或尝试撬锁。"
+
+        if trap_awareness_context:
+            if self.actor_id == "astarion":
+                return "停。地面有毒气压力板，旁边还有可疑喷口。别再往前踩；我可以解除 gas_trap_1。"
+            return "Astarion 看到了陷阱，先别继续往前。"
 
         if diary_negotiation_context:
             if self.actor_id == "shadowheart":
