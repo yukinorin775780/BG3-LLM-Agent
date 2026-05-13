@@ -176,6 +176,210 @@ def _astarion_memory_prefix(context: Dict[str, Any]) -> str:
     return ""
 
 
+def _gribbo_mercy_context(actor_view: ActorView) -> Dict[str, Any]:
+    payload = actor_view.intent_context.get("gribbo_mercy_context")
+    if not isinstance(payload, dict):
+        return {}
+    if str(payload.get("topic") or "").strip().lower() != "gribbo_mercy":
+        return {}
+    return dict(payload)
+
+
+def _gribbo_mercy_stance(*, actor_id: str, context: Dict[str, Any]) -> str:
+    if not context:
+        return ""
+    memory_type = str(context.get("astarion_memory_type") or "none").strip()
+    if actor_id == "shadowheart":
+        return "mercy"
+    if actor_id == "laezel":
+        return "execute"
+    if actor_id == "astarion":
+        if memory_type == "rebuked_by_player":
+            return "resentful"
+        if memory_type == "sided_with_player":
+            return "execute"
+        return "mocking"
+    return ""
+
+
+def _build_gribbo_mercy_metadata(*, actor_id: str, context: Dict[str, Any]) -> Dict[str, Any]:
+    if not context:
+        return {}
+    if str(context.get("phase") or "stance").strip() != "stance":
+        return {}
+    stance = _gribbo_mercy_stance(actor_id=actor_id, context=context)
+    if not stance:
+        return {}
+    payload = {
+        "topic": "gribbo_mercy",
+        "stance": stance,
+        "actor_id": actor_id,
+        "target_id": str(context.get("target_id") or "gribbo"),
+    }
+    if actor_id == "astarion":
+        payload["memory_echo"] = str(context.get("astarion_memory_type") or "none")
+    return payload
+
+
+def _mercy_memory_note(actor_id: str, choice: str, *, diary_decoded: bool, memory_type: str) -> str:
+    if choice == "mercy":
+        if actor_id == "shadowheart":
+            return "玩家放过了被死灵实验扭曲的 Gribbo。怜悯有代价，但这次我认同。"
+        if actor_id == "laezel":
+            return "玩家放过了危险的失控实验体。软弱会留下后患。"
+        if actor_id == "astarion":
+            if memory_type == "rebuked_by_player":
+                return "玩家训斥过我，如今又选择对 Gribbo 表演仁慈。我会记住这种方便的道德。"
+            return "玩家放过了 Gribbo。仁慈未必聪明，但至少没有妨碍我继续前进。"
+    if choice == "execute":
+        if actor_id == "shadowheart":
+            suffix = "，尽管日记已经说明他也是受害者" if diary_decoded else "，尽管真相仍不完整"
+            return f"玩家处决了 Gribbo{suffix}。这让我不安。"
+        if actor_id == "laezel":
+            return "玩家处决了 Gribbo，选择了果断行动。危险不该被留下。"
+        if actor_id == "astarion":
+            return "玩家选择了残忍而实际的办法。至少这一次没有浪费时间。"
+    return ""
+
+
+def _build_gribbo_mercy_resolution_events(
+    *,
+    actor_id: str,
+    turn_index: int,
+    context: Dict[str, Any],
+) -> Tuple[DomainEvent, ...]:
+    if actor_id != "shadowheart" or not context:
+        return ()
+    if str(context.get("phase") or "").strip() != "resolution":
+        return ()
+    choice = str(context.get("choice") or "").strip()
+    if choice not in {"mercy", "execute"}:
+        return ()
+
+    diary_decoded = bool(context.get("diary_decoded", False))
+    memory_type = str(context.get("astarion_memory_type") or "none").strip()
+    if choice == "mercy":
+        affection_deltas = {"shadowheart": 2, "laezel": -1}
+        if memory_type == "rebuked_by_player":
+            affection_deltas["astarion"] = -1
+        status_set = "spared"
+        faction_set = "neutralized"
+        result_flag = "necromancer_lab_gribbo_spared"
+        reason = "gribbo_mercy_spared"
+    else:
+        affection_deltas = {"shadowheart": -2 if diary_decoded else -1, "laezel": 2}
+        if memory_type == "sided_with_player":
+            affection_deltas["astarion"] = 1
+        status_set = "dead"
+        faction_set = "defeated"
+        result_flag = "necromancer_lab_gribbo_executed"
+        reason = "gribbo_mercy_executed"
+
+    events = [
+        DomainEvent(
+            event_id=_new_event_id(),
+            event_type="actor_negotiation_outcome_requested",
+            actor_id=actor_id,
+            turn_index=turn_index,
+            visibility="party",
+            payload={
+                "target_actor_id": "gribbo",
+                "status_set": status_set,
+                "faction_set": faction_set,
+                "force_hostile": False,
+                "trigger_combat": False,
+                "reason": reason,
+            },
+        ),
+        DomainEvent(
+            event_id=_new_event_id(),
+            event_type="world_flag_changed",
+            actor_id=actor_id,
+            turn_index=turn_index,
+            visibility="party",
+            payload={"key": result_flag, "value": True},
+        ),
+        DomainEvent(
+            event_id=_new_event_id(),
+            event_type="world_flag_changed",
+            actor_id=actor_id,
+            turn_index=turn_index,
+            visibility="party",
+            payload={"key": "necromancer_lab_gribbo_mercy_resolved", "value": True},
+        ),
+        DomainEvent(
+            event_id=_new_event_id(),
+            event_type="world_flag_changed",
+            actor_id=actor_id,
+            turn_index=turn_index,
+            visibility="party",
+            payload={"key": "necromancer_lab_gribbo_mercy_window", "value": False},
+        ),
+        DomainEvent(
+            event_id=_new_event_id(),
+            event_type="world_flag_changed",
+            actor_id=actor_id,
+            turn_index=turn_index,
+            visibility="party",
+            payload={"key": "necromancer_lab_gribbo_key_available", "value": True},
+        ),
+    ]
+    if choice == "execute":
+        events.append(
+            DomainEvent(
+                event_id=_new_event_id(),
+                event_type="world_flag_changed",
+                actor_id=actor_id,
+                turn_index=turn_index,
+                visibility="party",
+                payload={"key": "world_necromancer_lab_gribbo_defeated", "value": True},
+            )
+        )
+
+    for target_actor_id, delta in affection_deltas.items():
+        if delta == 0:
+            continue
+        events.append(
+            DomainEvent(
+                event_id=_new_event_id(),
+                event_type="actor_affection_changed",
+                actor_id=actor_id,
+                turn_index=turn_index,
+                visibility="party",
+                payload={
+                    "target_actor_id": target_actor_id,
+                    "delta": delta,
+                    "reason": f"gribbo_mercy_{choice}",
+                },
+            )
+        )
+
+    for target_actor_id in ("shadowheart", "laezel", "astarion"):
+        memory_text = _mercy_memory_note(
+            target_actor_id,
+            choice,
+            diary_decoded=diary_decoded,
+            memory_type=memory_type,
+        )
+        if not memory_text:
+            continue
+        events.append(
+            DomainEvent(
+                event_id=_new_event_id(),
+                event_type="actor_memory_update_requested",
+                actor_id=target_actor_id,
+                turn_index=turn_index,
+                visibility="private",
+                payload={
+                    "scope": "actor_private",
+                    "memory_type": "gribbo_mercy_choice",
+                    "text": memory_text,
+                },
+            )
+        )
+    return tuple(events)
+
+
 def _diary_negotiation_context(actor_view: ActorView) -> Dict[str, Any]:
     payload = actor_view.intent_context.get("diary_negotiation_context")
     if not isinstance(payload, dict):
@@ -529,8 +733,12 @@ class TemplateActorRuntime:
         trap_awareness_context = _trap_awareness_context(actor_view)
         diary_negotiation_context = _diary_negotiation_context(actor_view)
         memory_echo_context = _memory_echo_context(actor_view)
+        gribbo_mercy_context = _gribbo_mercy_context(actor_view)
         if diary_negotiation_context:
             social_action = {}
+        if gribbo_mercy_context:
+            social_action = {}
+            choice_context = ""
         spoken_text = self._compose_reply(
             actor_view,
             social_action=social_action,
@@ -541,6 +749,7 @@ class TemplateActorRuntime:
             trap_awareness_context=trap_awareness_context,
             diary_negotiation_context=diary_negotiation_context,
             memory_echo_context=memory_echo_context,
+            gribbo_mercy_context=gribbo_mercy_context,
         )
         spoke_payload: Dict[str, Any] = {"text": spoken_text}
         guidance_metadata = _build_key_guidance_metadata(
@@ -561,6 +770,12 @@ class TemplateActorRuntime:
         )
         if memory_metadata:
             spoke_payload["memory_echo"] = memory_metadata
+        mercy_metadata = _build_gribbo_mercy_metadata(
+            actor_id=self.actor_id,
+            context=gribbo_mercy_context,
+        )
+        if mercy_metadata:
+            spoke_payload["gribbo_mercy"] = mercy_metadata
         events = [
             DomainEvent(
                 event_id=_new_event_id(),
@@ -658,6 +873,14 @@ class TemplateActorRuntime:
                     context=diary_negotiation_context,
                 )
             )
+        if gribbo_mercy_context:
+            events.extend(
+                _build_gribbo_mercy_resolution_events(
+                    actor_id=self.actor_id,
+                    turn_index=int(actor_view.turn_count or 0),
+                    context=gribbo_mercy_context,
+                )
+            )
         requested_reflections: Tuple[ReflectionRequest, ...] = ()
         if any(token in user_input for token in ("秘密", "真相", "信仰", "过去")):
             requested_reflections = (
@@ -735,6 +958,7 @@ class TemplateActorRuntime:
         trap_awareness_context: Dict[str, Any] | None = None,
         diary_negotiation_context: Dict[str, Any] | None = None,
         memory_echo_context: Dict[str, Any] | None = None,
+        gribbo_mercy_context: Dict[str, Any] | None = None,
     ) -> str:
         memory_prefix = ""
         if self.actor_id == "astarion" and memory_echo_context:
@@ -768,6 +992,34 @@ class TemplateActorRuntime:
             if self.actor_id == "laezel":
                 return "先救弱者会耗掉追击窗口。"
             return "先救平民可以，但别失去节奏。"
+
+        if gribbo_mercy_context:
+            phase = str(gribbo_mercy_context.get("phase") or "stance").strip()
+            choice = str(gribbo_mercy_context.get("choice") or "").strip()
+            diary_decoded = bool(gribbo_mercy_context.get("diary_decoded", False))
+            astarion_memory_type = str(gribbo_mercy_context.get("astarion_memory_type") or "none").strip()
+            if phase == "resolution":
+                if choice == "mercy":
+                    if self.actor_id == "shadowheart":
+                        return "你选择放过 Gribbo。日记里的真相不会让他无辜，但说明他也是死灵实验的受害者。"
+                    return "Gribbo 被放过了。"
+                if self.actor_id == "shadowheart":
+                    return "你选择处决 Gribbo。即使他危险，日记里的死灵实验真相也让这件事更沉重。"
+                return "Gribbo 被处决了。"
+
+            if self.actor_id == "shadowheart":
+                if diary_decoded:
+                    return "日记说明 Gribbo 是死灵实验扭曲出的受害者。放过他更危险，却也更像我们还能保住的底线。"
+                return "他已经崩溃了。先别急着杀，至少弄清楚他还能说出什么。"
+            if self.actor_id == "laezel":
+                return "处决他。失控实验体就是风险，留下活口只会让危险再站起来。"
+            if self.actor_id == "astarion":
+                if astarion_memory_type == "rebuked_by_player":
+                    return "现在又要装仁慈了？有趣。你训斥我时可没这么温柔。随你，但别假装这很高尚。"
+                if astarion_memory_type == "sided_with_player":
+                    return "我们已经一起嘲笑过他了，亲爱的。别浪费时间，处决或丢下他都比同情更实用。"
+                return "可怜的 Gribbo。真动人。处决他，或者放过他继续碍事，选一个。"
+            return "Gribbo 已经倒下。现在要决定放过还是处决他。"
 
         if key_guidance_context:
             has_lab_key = bool(key_guidance_context.get("has_lab_key", False))

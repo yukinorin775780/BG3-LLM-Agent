@@ -98,12 +98,13 @@
     const party = safeObj(src.party_status || src.partyStatus || gameState.party_status || gameState.entities || {});
     const env = safeObj(src.environment_objects || src.environmentObjects || gameState.environment_objects || gameState.entities || {});
     const actorRuntime = safeObj(src.actor_runtime_state || gameState.actor_runtime_state || {});
-    const flags = synthesizeMemoryEchoFlags(
-      safeObj(src.flags || gameState.flags || {}),
-      [
-        ...safeArr(src.journal_events),
-        ...safeArr(gameState.journal_events),
-      ]
+    const journalEvents = [
+      ...safeArr(src.journal_events),
+      ...safeArr(gameState.journal_events),
+    ];
+    const flags = synthesizeMercyFlags(
+      synthesizeMemoryEchoFlags(safeObj(src.flags || gameState.flags || {}), journalEvents),
+      journalEvents
     );
     const inventory = inventoryMap(src.player_inventory || src.playerInventory || gameState.player_inventory || {});
     const combat = safeObj(src.combat_state || src.combatState || gameState.combat_state || {
@@ -155,7 +156,7 @@
     const raw = String(safeObj(actor).name || id || "actor");
     if (normalizeId(raw) === "astarion") return "Astarion";
     if (normalizeId(raw) === "shadowheart") return "Shadowheart";
-    if (normalizeId(raw) === "laezel") return "Lae'zel";
+    if (normalizeId(raw).replace(/[’']/g, "") === "laezel") return "Lae'zel";
     if (normalizeId(raw) === "gribbo") return "Gribbo";
     return raw.replace(/_/g, " ").replace(/\b\w/g, (ch) => ch.toUpperCase());
   }
@@ -178,6 +179,10 @@
     return /^necromancer_lab_astarion_(?:memory_echo_seen|rebuke_echo_seen|complicity_echo_seen)$/.test(String(key || ""));
   }
 
+  function isMercyFlag(key) {
+    return /^necromancer_lab_gribbo_(?:mercy_window|mercy_resolved|spared|executed|key_available)$/.test(String(key || ""));
+  }
+
   function synthesizeMemoryEchoFlags(flags, journalEvents) {
     const out = { ...safeObj(flags) };
     safeArr(journalEvents).forEach((line) => {
@@ -186,6 +191,22 @@
       out.necromancer_lab_astarion_memory_echo_seen = true;
       if (/rebuked_by_player/i.test(text)) out.necromancer_lab_astarion_rebuke_echo_seen = true;
       if (/sided_with_player/i.test(text)) out.necromancer_lab_astarion_complicity_echo_seen = true;
+    });
+    return out;
+  }
+
+  function synthesizeMercyFlags(flags, journalEvents) {
+    const out = { ...safeObj(flags) };
+    safeArr(journalEvents).forEach((line) => {
+      const text = String(line || "");
+      if (/\[站队\]\s*[a-z0-9_'’\-]+\s*->\s*(mercy|execute|resentful|mocking)/i.test(text)) {
+        out.necromancer_lab_gribbo_mercy_window = true;
+      }
+      const decision = text.match(/\[抉择\]\s*(?:gribbo|格里博|格里布|格里波)\s*->\s*(spared|executed)/i);
+      if (!decision) return;
+      out.necromancer_lab_gribbo_mercy_resolved = true;
+      if (String(decision[1]).toLowerCase() === "spared") out.necromancer_lab_gribbo_spared = true;
+      if (String(decision[1]).toLowerCase() === "executed") out.necromancer_lab_gribbo_executed = true;
     });
     return out;
   }
@@ -203,7 +224,9 @@
       const before = flagValue(prev.flags[key]);
       const after = flagValue(raw);
       if (!valuesEqual(before, after)) {
-        const type = isTrapFlag(key) ? "trap_signal" : (isMemoryEchoFlag(key) ? "memory_echo_signal" : "flags");
+        const type = isTrapFlag(key)
+          ? "trap_signal"
+          : (isMemoryEchoFlag(key) ? "memory_echo_signal" : (isMercyFlag(key) ? "mercy_signal" : "flags"));
         pushDiff(out, type, "flags." + key + " = " + JSON.stringify(after));
       }
     });
@@ -229,10 +252,11 @@
       const nextStatus = String(actor.status || "").trim();
       if (nextStatus && nextStatus !== prevStatus) {
         const isTrap = id === "gas_trap_1" || /trap/i.test(id);
+        const isMercyTarget = id === "gribbo";
         const statusLabel = prevStatus
           ? label + ".status " + prevStatus + " -> " + nextStatus
           : label + ".status += " + nextStatus;
-        pushDiff(out, isTrap ? "trap_signal" : "status", statusLabel);
+        pushDiff(out, isTrap ? "trap_signal" : (isMercyTarget ? "mercy_signal" : "status"), statusLabel);
       }
 
       const prevEffects = new Set(safeArr(before.status_effects).map(String));
@@ -242,7 +266,7 @@
 
       const prevFaction = String(before.faction || "");
       if (actor.faction && prevFaction && actor.faction !== prevFaction) {
-        pushDiff(out, "hostility", label + ".hostility = " + actor.faction);
+        pushDiff(out, id === "gribbo" ? "mercy_signal" : "hostility", label + ".faction = " + actor.faction);
       }
 
       const prevSignals = safeObj(before.agentSignals);
@@ -333,6 +357,9 @@
           }
           if (normalizeId(entry.type) === "memory_echo_signal") {
             row.classList.add("memory-echo-diff");
+          }
+          if (normalizeId(entry.type) === "mercy_signal") {
+            row.classList.add("mercy-signal-diff");
           }
           const sigil = document.createElement("span");
           sigil.className = "world-diff-sigil";

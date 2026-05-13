@@ -2502,4 +2502,248 @@ describe("web_ui/app.js UI bindings", () => {
       expect.objectContaining({ type: "memory_echo" }),
     ]));
   });
+
+  test("test_party_stance_journals_merge_into_one_event", async () => {
+    loadNewModules();
+    const events = window.BG3UIEventAdapter.extractUIEvents({
+      journal_events: [
+        "[站队] shadowheart -> mercy",
+        "[站队] laezel -> execute",
+        "[站队] astarion -> resentful",
+      ],
+    });
+    const stances = events.filter((event) => event.type === "party_stance");
+    expect(stances).toHaveLength(1);
+    expect(stances[0]).toMatchObject({ target: "gribbo" });
+    expect(stances[0].stances).toEqual(expect.arrayContaining([
+      { actor: "shadowheart", stance: "mercy" },
+      { actor: "laezel", stance: "execute" },
+      { actor: "astarion", stance: "resentful" },
+    ]));
+  });
+
+  test("test_single_party_stance_journal_derives_event", async () => {
+    loadNewModules();
+    const event = window.BG3UIEventAdapter.extractUIEvents({
+      journal_events: ["[站队] astarion -> mocking"],
+    }).find((candidate) => candidate.type === "party_stance");
+    expect(event).toMatchObject({
+      type: "party_stance",
+      target: "gribbo",
+      stances: [{ actor: "astarion", stance: "mocking" }],
+    });
+  });
+
+  test("test_mercy_resolution_spared_journal_derives_event", async () => {
+    loadNewModules();
+    const event = window.BG3UIEventAdapter.extractUIEvents({
+      journal_events: ["[抉择] gribbo -> spared"],
+    }).find((candidate) => candidate.type === "mercy_resolution");
+    expect(event).toMatchObject({ target: "gribbo", result: "spared", source: "journal" });
+  });
+
+  test("test_mercy_resolution_executed_journal_derives_event", async () => {
+    loadNewModules();
+    const event = window.BG3UIEventAdapter.extractUIEvents({
+      journal_events: ["[抉择] gribbo -> executed"],
+    }).find((candidate) => candidate.type === "mercy_resolution");
+    expect(event).toMatchObject({ target: "gribbo", result: "executed", source: "journal" });
+  });
+
+  test("test_mercy_resolution_flag_diff_derives_event", async () => {
+    loadNewModules();
+    const spared = window.BG3UIEventAdapter.extractUIEvents({
+      flags: {
+        necromancer_lab_gribbo_spared: true,
+        necromancer_lab_gribbo_key_available: true,
+      },
+    }, {
+      flags: {},
+    }).find((event) => event.type === "mercy_resolution");
+    const executed = window.BG3UIEventAdapter.extractUIEvents({
+      flags: { necromancer_lab_gribbo_executed: true },
+    }, {
+      flags: {},
+    }).find((event) => event.type === "mercy_resolution");
+    expect(spared).toMatchObject({ result: "spared", keyAvailable: true });
+    expect(executed).toMatchObject({ result: "executed" });
+  });
+
+  test("test_mercy_resolution_journal_and_flag_are_deduped", async () => {
+    loadNewModules();
+    const events = window.BG3UIEventAdapter.extractUIEvents({
+      journal_events: ["[抉择] gribbo -> spared"],
+      flags: { necromancer_lab_gribbo_spared: true },
+    }, {
+      flags: {},
+    });
+    expect(events.filter((event) => event.type === "mercy_resolution" && event.result === "spared")).toHaveLength(1);
+  });
+
+  test("test_hud_renders_party_stance_card", async () => {
+    loadNewModules();
+    jest.useFakeTimers();
+    window.BG3HudRenderers.renderPartyStanceCard({
+      type: "party_stance",
+      target: "gribbo",
+      stances: [
+        { actor: "shadowheart", stance: "mercy" },
+        { actor: "laezel", stance: "execute" },
+        { actor: "astarion", stance: "resentful" },
+      ],
+    });
+    const card = document.querySelector(".agent-signal-card--party-stance");
+    expect(card).not.toBeNull();
+    expect(card.textContent).toContain("Party Split");
+    expect(card.textContent).toContain("Shadowheart");
+    expect(card.textContent).toContain("Mercy");
+    expect(card.textContent).toContain("Lae'zel");
+    expect(card.textContent).toContain("Execute");
+    expect(card.textContent).toContain("Astarion");
+    expect(card.textContent).toContain("Resentful");
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+  });
+
+  test("test_hud_renders_mercy_resolution_spared_card", async () => {
+    loadNewModules();
+    jest.useFakeTimers();
+    window.BG3HudRenderers.renderMercyResolutionCard({
+      type: "mercy_resolution",
+      target: "gribbo",
+      result: "spared",
+      keyAvailable: true,
+    });
+    const card = document.querySelector(".agent-signal-card--mercy-resolution.mercy-resolution-spared");
+    expect(card).not.toBeNull();
+    expect(card.textContent).toContain("Gribbo Spared");
+    expect(card.textContent).toContain("spared / neutralized");
+    expect(card.textContent).toContain("Shadowheart + / Lae'zel -");
+    expect(card.textContent).toContain("Key path remains available.");
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+  });
+
+  test("test_hud_renders_mercy_resolution_executed_card", async () => {
+    loadNewModules();
+    jest.useFakeTimers();
+    window.BG3HudRenderers.renderMercyResolutionCard({
+      type: "mercy_resolution",
+      target: "gribbo",
+      result: "executed",
+    });
+    const card = document.querySelector(".agent-signal-card--mercy-resolution.mercy-resolution-executed");
+    expect(card).not.toBeNull();
+    expect(card.textContent).toContain("Gribbo Executed");
+    expect(card.textContent).toContain("dead / defeated");
+    expect(card.textContent).toContain("Shadowheart - / Lae'zel +");
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+  });
+
+  test("test_state_diff_highlights_mercy_flags_gribbo_state_and_affection", async () => {
+    loadNewModules();
+    const diffs = window.BG3StateDiffRenderer.diffSnapshots({
+      flags: {},
+      environment_objects: {
+        gribbo: { id: "gribbo", name: "Gribbo", status: "alive", faction: "hostile" },
+      },
+      party_status: {
+        shadowheart: { name: "Shadowheart", affection: 0 },
+        laezel: { name: "Lae'zel", affection: 0 },
+      },
+    }, {
+      flags: {
+        necromancer_lab_gribbo_mercy_window: true,
+        necromancer_lab_gribbo_mercy_resolved: true,
+        necromancer_lab_gribbo_spared: true,
+        necromancer_lab_gribbo_key_available: true,
+      },
+      environment_objects: {
+        gribbo: { id: "gribbo", name: "Gribbo", status: "spared", faction: "neutralized" },
+      },
+      party_status: {
+        shadowheart: { name: "Shadowheart", affection: 1 },
+        laezel: { name: "Lae'zel", affection: -1 },
+      },
+    });
+    expect(diffs).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "mercy_signal", label: "flags.necromancer_lab_gribbo_mercy_window = true" }),
+      expect.objectContaining({ type: "mercy_signal", label: "flags.necromancer_lab_gribbo_mercy_resolved = true" }),
+      expect.objectContaining({ type: "mercy_signal", label: "flags.necromancer_lab_gribbo_spared = true" }),
+      expect.objectContaining({ type: "mercy_signal", label: "flags.necromancer_lab_gribbo_key_available = true" }),
+      expect.objectContaining({ type: "mercy_signal", label: "Gribbo.status alive -> spared" }),
+      expect.objectContaining({ type: "mercy_signal", label: "Gribbo.faction = neutralized" }),
+      expect.objectContaining({ type: "affection", label: "Shadowheart.affection +1" }),
+      expect.objectContaining({ type: "affection", label: "Lae'zel.affection -1" }),
+    ]));
+    window.BG3StateDiffRenderer.renderDiffs(diffs, { autoExpand: false });
+    expect(document.querySelector(".world-diff-row--mercy_signal.mercy-signal-diff")).not.toBeNull();
+  });
+
+  test("test_director_trace_party_stance_activates_party_nodes", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    await bootAppForTest("http://localhost/?qa_test=1");
+    const nodes = window.BG3DirectorTrace.buildTraceNodes({}, {
+      userLine: "队友们，你们觉得该怎么处理 Gribbo？",
+      intent: "CHAT",
+      uiEvents: [{ type: "party_stance", target: "gribbo", stances: [{ actor: "shadowheart", stance: "mercy" }] }],
+    });
+    expect(nodes).toEqual(expect.arrayContaining(["dm_router", "actor_runtime", "ui_events"]));
+    window.BG3DirectorTrace.activateTrace(nodes, {
+      animate: false,
+      uiEvents: [{ type: "party_stance", target: "gribbo", stances: [{ actor: "shadowheart", stance: "mercy" }] }],
+    });
+    expect(document.querySelector('li[data-node="actor_runtime"]').classList.contains("is-agent-signal")).toBe(true);
+    expect(document.querySelector('li[data-node="ui_events"]').classList.contains("is-agent-signal")).toBe(true);
+  });
+
+  test("test_director_trace_mercy_resolution_activates_event_nodes", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    await bootAppForTest("http://localhost/?qa_test=1");
+    const nodes = window.BG3DirectorTrace.buildTraceNodes({}, {
+      userLine: "放过他",
+      intent: "CHAT",
+      uiEvents: [{ type: "mercy_resolution", target: "gribbo", result: "spared" }],
+    });
+    expect(nodes).toEqual(expect.arrayContaining(["player_input", "dm_router", "domain_event", "event_drain", "ui_events"]));
+    window.BG3DirectorTrace.activateTrace(nodes, {
+      animate: false,
+      uiEvents: [{ type: "mercy_resolution", target: "gribbo", result: "spared" }],
+    });
+    expect(document.querySelector('li[data-node="domain_event"]').classList.contains("is-agent-signal")).toBe(true);
+    expect(document.querySelector('li[data-node="event_drain"]').classList.contains("is-agent-signal")).toBe(true);
+  });
+
+  test("test_wasd_does_not_activate_trace_for_mercy_feature", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    await bootAppForTest("http://localhost/?qa_test=1");
+    if (window.BG3InputController) {
+      window.BG3InputController.movePlayer(1, 0);
+    }
+    await flushAsync();
+    expect(window.BG3DirectorTrace.getState()).toBe("idle");
+  });
+
+  test("test_mercy_signals_do_not_break_existing_agent_signals", async () => {
+    loadNewModules();
+    const events = window.BG3UIEventAdapter.extractUIEvents({
+      journal_events: [
+        "[队友建议] Astarion topic=lab_key 找钥匙",
+        "[交涉筹码] diary_evidence -> gribbo_elixir_truth",
+        "[陷阱感知] astarion -> gas_trap_1",
+        "[记忆回响] astarion -> sided_with_player",
+        "[站队] shadowheart -> mercy",
+        "[抉择] gribbo -> spared",
+      ],
+    });
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "companion_guidance" }),
+      expect.objectContaining({ type: "negotiation_leverage" }),
+      expect.objectContaining({ type: "trap_insight" }),
+      expect.objectContaining({ type: "memory_echo" }),
+      expect.objectContaining({ type: "party_stance" }),
+      expect.objectContaining({ type: "mercy_resolution" }),
+    ]));
+  });
 });

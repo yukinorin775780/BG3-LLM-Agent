@@ -44,6 +44,8 @@
   const RE_MEMORY_ECHO_SIGNAL = /\[记忆回响\]\s*([a-z0-9_\-]+)\s*->\s*(rebuked_by_player|sided_with_player)/i;
   const RE_MEMORY_ECHO_REBUKE_TOKEN = /现在又需要我|闭嘴|记住这笔账|记住.*账|need me now|now you need me|shut up|remember.*this/i;
   const RE_MEMORY_ECHO_COMPLICITY_TOKEN = /默契|一起嘲笑|共谋|shared cruelty|cruelty shared|complicit|conspiracy/i;
+  const RE_PARTY_STANCE_SIGNAL = /\[站队\]\s*([a-z0-9_'’\-]+)\s*->\s*(mercy|execute|resentful|mocking)/i;
+  const RE_MERCY_RESOLUTION_SIGNAL = /\[抉择\]\s*(gribbo|格里博|格里布|格里波)\s*->\s*(spared|executed)/i;
 
   /* ══════════════════════════════════════════════════════
    *  normalizeRollEvent(raw)
@@ -171,9 +173,12 @@
     }
 
     inferMemoryEchoEvents(prev, data, events);
+    inferMercyResolutionFromFlags(prev, data, events);
     inferTrapSignalEvents(prev, data, events);
     inferNegotiationFromFlags(prev, data, events);
     inferNegotiationEffects(prev, data, events);
+    dedupePartyStanceEvents(events);
+    dedupeMercyResolutionEvents(events);
     dedupeMemoryEchoEvents(events);
     dedupeTrapSignalEvents(events);
 
@@ -211,6 +216,7 @@
       };
     }
     if (type === "companion_guidance" || type === "negotiation_leverage" || type === "memory_echo"
+      || type === "party_stance" || type === "mercy_resolution"
       || type === "trap_insight" || type === "trap_disarmed" || type === "trap_triggered") {
       return e;
     }
@@ -236,6 +242,16 @@
     const memoryEcho = parseMemoryEchoSignal(text);
     if (memoryEcho) {
       events.push(memoryEcho);
+    }
+
+    const partyStance = parsePartyStanceSignal(text);
+    if (partyStance) {
+      events.push(partyStance);
+    }
+
+    const mercyResolution = parseMercyResolutionSignal(text);
+    if (mercyResolution) {
+      events.push(mercyResolution);
     }
 
     /* LoS blocked */
@@ -542,6 +558,143 @@
       const kept = seen.get(key);
       if (event.source === "journal") kept.source = "journal";
       if (event.raw && !kept.raw) kept.raw = event.raw;
+      events.splice(index, 1);
+    }
+  }
+
+  function normalizeStanceActor(actor) {
+    const raw = String(actor || "").trim().toLowerCase().replace(/[’']/g, "");
+    if (/shadowheart|影心/.test(raw)) return "shadowheart";
+    if (/laezel|laezel|莱埃泽尔/.test(raw)) return "laezel";
+    if (/astarion|阿斯代伦/.test(raw)) return "astarion";
+    return raw || "party";
+  }
+
+  function normalizeStance(value) {
+    const raw = String(value || "").trim().toLowerCase();
+    if (["mercy", "execute", "resentful", "mocking"].includes(raw)) return raw;
+    return "unknown";
+  }
+
+  function parsePartyStanceSignal(text) {
+    const raw = String(text || "");
+    const match = raw.match(RE_PARTY_STANCE_SIGNAL);
+    if (!match) return null;
+    return {
+      type: "party_stance",
+      target: "gribbo",
+      stances: [{
+        actor: normalizeStanceActor(match[1]),
+        stance: normalizeStance(match[2]),
+      }],
+      raw,
+      source: "journal",
+    };
+  }
+
+  function parseMercyResolutionSignal(text) {
+    const raw = String(text || "");
+    const match = raw.match(RE_MERCY_RESOLUTION_SIGNAL);
+    if (!match) return null;
+    return {
+      type: "mercy_resolution",
+      target: "gribbo",
+      result: String(match[2] || "").trim().toLowerCase(),
+      raw,
+      source: "journal",
+    };
+  }
+
+  function mergeStanceList(existing, incoming) {
+    const byActor = new Map();
+    safeArr(existing).forEach((entry) => {
+      const item = safeObj(entry);
+      const actor = normalizeStanceActor(item.actor);
+      if (!actor) return;
+      byActor.set(actor, { actor, stance: normalizeStance(item.stance) });
+    });
+    safeArr(incoming).forEach((entry) => {
+      const item = safeObj(entry);
+      const actor = normalizeStanceActor(item.actor);
+      if (!actor) return;
+      byActor.set(actor, { actor, stance: normalizeStance(item.stance) });
+    });
+    return Array.from(byActor.values());
+  }
+
+  function dedupePartyStanceEvents(events) {
+    const firstIndexByTarget = new Map();
+    for (let index = 0; index < events.length; index += 1) {
+      const event = events[index];
+      if (!event || event.type !== "party_stance") continue;
+      const target = String(event.target || "gribbo").toLowerCase();
+      if (!firstIndexByTarget.has(target)) {
+        firstIndexByTarget.set(target, index);
+        event.target = target;
+        event.stances = mergeStanceList([], event.stances);
+        continue;
+      }
+      const kept = events[firstIndexByTarget.get(target)];
+      kept.stances = mergeStanceList(kept.stances, event.stances);
+      if (event.raw) kept.raw = [kept.raw, event.raw].filter(Boolean).join("\n");
+      events.splice(index, 1);
+      index -= 1;
+    }
+  }
+
+  function hasMercyResolutionEvent(events, result) {
+    return events.some((event) => (
+      event
+      && event.type === "mercy_resolution"
+      && (!result || String(event.result || "").toLowerCase() === result)
+    ));
+  }
+
+  function inferMercyResolutionFromFlags(previousState, currentState, events) {
+    const prevFlags = flagsFromState(previousState);
+    const currFlags = flagsFromState(currentState);
+    const keyAvailable = flagBool(currFlags.necromancer_lab_gribbo_key_available);
+    if (flagChangedToTrue(prevFlags, currFlags, "necromancer_lab_gribbo_spared") && !hasMercyResolutionEvent(events, "spared")) {
+      events.push({
+        type: "mercy_resolution",
+        target: "gribbo",
+        result: "spared",
+        keyAvailable,
+        source: "state",
+        raw: "flags.necromancer_lab_gribbo_spared=true",
+      });
+    }
+    if (flagChangedToTrue(prevFlags, currFlags, "necromancer_lab_gribbo_executed") && !hasMercyResolutionEvent(events, "executed")) {
+      events.push({
+        type: "mercy_resolution",
+        target: "gribbo",
+        result: "executed",
+        keyAvailable,
+        source: "state",
+        raw: "flags.necromancer_lab_gribbo_executed=true",
+      });
+    }
+    events.forEach((event) => {
+      if (event && event.type === "mercy_resolution" && event.keyAvailable == null) {
+        event.keyAvailable = keyAvailable;
+      }
+    });
+  }
+
+  function dedupeMercyResolutionEvents(events) {
+    const seen = new Map();
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const event = events[index];
+      if (!event || event.type !== "mercy_resolution") continue;
+      const key = String(event.target || "gribbo").toLowerCase() + ":" + String(event.result || "").toLowerCase();
+      if (!seen.has(key)) {
+        seen.set(key, event);
+        continue;
+      }
+      const kept = seen.get(key);
+      if (event.source === "journal") kept.source = "journal";
+      if (event.raw && !kept.raw) kept.raw = event.raw;
+      if (event.keyAvailable === true) kept.keyAvailable = true;
       events.splice(index, 1);
     }
   }

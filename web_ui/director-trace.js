@@ -239,6 +239,8 @@
     const types = new Set(eventTypes(data, events));
     if (/memory|记忆|actor_runtime_state|memory_notes/i.test(blob) || types.has("memory_added")) parts.push("memory_update x" + Math.max(1, (blob.match(/memory_notes|记忆/g) || []).length));
     if (types.has("memory_echo") || /\[记忆回响\]|memory_echo|rebuked_by_player|sided_with_player/i.test(blob)) parts.push("memory_echo");
+    if (types.has("party_stance") || /\[站队\]|party_stance|mercy|execute|mocking|resentful/i.test(blob)) parts.push("party_stance");
+    if (types.has("mercy_resolution") || /\[抉择\]|gribbo.*(?:spared|executed)|gribbo_(?:spared|executed)|mercy_resolved/i.test(blob)) parts.push("mercy_resolution");
     if (/item|transfer|获得|搜刮|heavy_iron_key|lab_key|钥匙/i.test(blob) || types.has("item_gained")) parts.push("item_transfer");
     if (types.has("companion_guidance")) parts.push("companion_guidance");
     if (types.has("negotiation_leverage") || /\[交涉筹码\]|diary_evidence|gribbo_elixir_truth/i.test(blob)) parts.push("negotiation_leverage");
@@ -258,6 +260,8 @@
     if (types.has("roll_result") || /latest_roll|检定|掷骰/i.test(blob)) out.push("Dice Card");
     if (types.has("memory_added") || /\[记忆\]|\[记忆沉淀\]|memory_added|memory_update/i.test(blob)) out.push("Memory Card");
     if (types.has("memory_echo") || /\[记忆回响\]|rebuked_by_player|sided_with_player/i.test(blob)) out.push("Memory Echo Card");
+    if (types.has("party_stance") || /\[站队\]/i.test(blob)) out.push("Party Stance Card");
+    if (types.has("mercy_resolution") || /\[抉择\]|gribbo.*(?:spared|executed)|gribbo_(?:spared|executed)/i.test(blob)) out.push("Mercy Result Card");
     if (types.has("item_gained") || /获得|已入包|heavy_iron_key|lab_key/i.test(blob)) out.push("Item Toast");
     if (types.has("affection_delta") || /affection|好感/i.test(blob)) out.push("Affection Chip");
     if (types.has("companion_guidance") || /\[队友建议\]/i.test(blob)) out.push("Guidance Card");
@@ -312,12 +316,18 @@
       || /\[陷阱感知\]|\[陷阱解除\]|\[毒气陷阱\]|gas_trap_1|poison_trap/i.test(blob);
     const hasMemoryEcho = types.includes("memory_echo")
       || /\[记忆回响\]|rebuked_by_player|sided_with_player|astarion_memory_echo|rebuke_echo|complicity_echo/i.test(blob);
-    const needsParty = /gribbo|astarion|dialogue|party|好感|affection|combat|initiative|台词|对话/i.test(blob) || types.includes("trap_insight");
+    const hasMercySignal = types.some((type) => ["party_stance", "mercy_resolution"].includes(type))
+      || /\[站队\]|\[抉择\]|gribbo_mercy|gribbo_spared|gribbo_executed|mercy_resolved/i.test(blob);
+    const needsParty = /gribbo|astarion|dialogue|party|好感|affection|combat|initiative|台词|对话/i.test(blob)
+      || types.includes("trap_insight")
+      || types.includes("party_stance");
     const needsDomain = /memory|记忆|item|transfer|获得|搜刮|flag|demo_cleared|combat|hostile|affection|状态|status|EventDrain|\[交涉筹码\]/i.test(blob)
       || hasTrapSignal
       || hasMemoryEcho
+      || types.includes("mercy_resolution")
+      || /\[抉择\]|gribbo_spared|gribbo_executed|mercy_resolved/i.test(blob)
       || types.some((type) => ["memory_added", "memory_echo", "item_gained", "affection_delta", "status_changed", "demo_cleared", "negotiation_leverage"].includes(type));
-    if (needsParty || needsDomain || hasMemoryEcho) nodes.push("actor_runtime");
+    if (needsParty || needsDomain || hasMemoryEcho || hasMercySignal) nodes.push("actor_runtime");
     if (needsDomain) nodes.push("domain_event", "event_drain");
     nodes.push("ui_events");
     return Array.from(new Set(nodes));
@@ -359,6 +369,19 @@
       details.actor_runtime.output = details.actor_runtime.output === "actor runtime"
         ? "Actor Memory / tone shift"
         : details.actor_runtime.output + " / Actor Memory";
+    }
+    if (types.has("party_stance") || /\[站队\]/i.test(blob)) {
+      details.dm_router.signal = "agent_signal";
+      details.actor_runtime.signal = "agent_signal";
+      details.ui_events.signal = "agent_signal";
+      details.actor_runtime.output = "Party Coordinator / split vote";
+    }
+    if (types.has("mercy_resolution") || /\[抉择\]|gribbo.*(?:spared|executed)|gribbo_(?:spared|executed)|mercy_resolved/i.test(blob)) {
+      details.player_input.signal = "agent_signal";
+      details.dm_router.signal = "agent_signal";
+      details.domain_event.signal = "agent_signal";
+      details.event_drain.signal = "agent_signal";
+      details.ui_events.signal = "agent_signal";
     }
     if (types.has("trap_insight") || /\[陷阱感知\]/i.test(blob)) {
       details.actor_view_filter.signal = "agent_signal";

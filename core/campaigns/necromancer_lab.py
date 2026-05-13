@@ -166,6 +166,37 @@ _ASTARION_MEMORY_COLLAB_MARKERS = (
     "door",
     "lab",
 )
+_GRIBBO_MERCY_STANCE_MARKERS = (
+    "怎么办",
+    "怎么处理",
+    "处理他",
+    "队友怎么看",
+    "该不该",
+    "放不放",
+    "饶不饶",
+    "处置",
+    "should we",
+    "what should",
+)
+_GRIBBO_MERCY_CHOICE_MARKERS = (
+    "mercy",
+    "spare",
+    "forgive",
+    "放过",
+    "饶了",
+    "饶他",
+    "不杀",
+    "留他一命",
+)
+_GRIBBO_EXECUTE_CHOICE_MARKERS = (
+    "execute",
+    "kill",
+    "finish him",
+    "处决",
+    "杀了",
+    "解决他",
+    "别留活口",
+)
 
 
 def _safe_dict(value: Any) -> Dict[str, Any]:
@@ -313,6 +344,14 @@ def _dynamic_state_value(entity: Mapping[str, Any], state_key: str, default: int
         return int(raw_value)
     except (TypeError, ValueError):
         return default
+
+
+def _dynamic_state_bool(entity: Mapping[str, Any], state_key: str) -> bool:
+    dynamic_states = _safe_dict(entity.get("dynamic_states"))
+    payload = dynamic_states.get(state_key)
+    if isinstance(payload, dict):
+        return _flag_bool(payload.get("current_value", payload.get("value", False)))
+    return _flag_bool(payload)
 
 
 def _decoded_diary_from_memory(state: Mapping[str, Any]) -> bool:
@@ -548,6 +587,94 @@ def detect_astarion_memory_echo_context(
         "memory_type": memory_type,
         "severity": "resentful" if memory_type == "rebuked_by_player" else "complicit",
         "should_block_action": False,
+    }
+
+
+def _gribbo_in_mercy_window(state: Mapping[str, Any]) -> bool:
+    flags = _safe_dict(state.get("flags"))
+    if _flag_bool(flags.get("necromancer_lab_gribbo_mercy_window")):
+        return True
+    if _flag_bool(flags.get("necromancer_lab_gribbo_defeated")):
+        return True
+    if _flag_bool(flags.get("world_necromancer_lab_gribbo_defeated")):
+        return True
+    gribbo = _safe_dict(_safe_dict(state.get("entities")).get("gribbo"))
+    if not gribbo:
+        return False
+    status = _normalize_id(gribbo.get("status"))
+    if status in {"defeated", "pleading"}:
+        return True
+    return _dynamic_state_bool(gribbo, "mercy_window")
+
+
+def _detect_gribbo_mercy_choice(user_input: str) -> str:
+    text = str(user_input or "").strip()
+    lowered = text.lower()
+    if not text:
+        return ""
+    if any(marker in text or marker in lowered for marker in _GRIBBO_EXECUTE_CHOICE_MARKERS):
+        return "execute"
+    if any(marker in text or marker in lowered for marker in _GRIBBO_MERCY_CHOICE_MARKERS):
+        return "mercy"
+    return ""
+
+
+def detect_gribbo_mercy_context(
+    state: Mapping[str, Any],
+    user_input: str,
+    intent_context: Optional[Mapping[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    """
+    Detect the post-defeat Gribbo mercy choice encounter.
+    This helper is read-only; callers decide whether to ask for stances or resolve a choice.
+    """
+    normalized_state = _safe_dict(state)
+    if _map_id(normalized_state) != "necromancer_lab":
+        return None
+
+    entities = _safe_dict(normalized_state.get("entities"))
+    if not _safe_dict(entities.get("gribbo")):
+        return None
+    flags = _safe_dict(normalized_state.get("flags"))
+    if _flag_bool(flags.get("necromancer_lab_gribbo_mercy_resolved")):
+        return None
+    if not _gribbo_in_mercy_window(normalized_state):
+        return None
+
+    ctx = _safe_dict(intent_context)
+    text = str(user_input or "").strip()
+    lowered = text.lower()
+    target = _normalize_id(
+        ctx.get("action_target")
+        or normalized_state.get("target")
+        or normalized_state.get("active_dialogue_target")
+    )
+    asks_for_stance = any(marker in text or marker in lowered for marker in _GRIBBO_MERCY_STANCE_MARKERS)
+    explicit_choice = _normalize_id(ctx.get("gribbo_mercy_choice") or ctx.get("choice"))
+    choice = explicit_choice if explicit_choice in {"mercy", "execute"} else _detect_gribbo_mercy_choice(text)
+    if asks_for_stance and explicit_choice not in {"mercy", "execute"}:
+        choice = ""
+    if not choice and not asks_for_stance and target not in {"gribbo", ""}:
+        return None
+    if not choice and not asks_for_stance:
+        return None
+
+    diary_decoded = (
+        _flag_bool(flags.get("necromancer_lab_diary_decoded"))
+        or _flag_bool(flags.get("necromancer_lab_antidote_formula_fragment_known"))
+        or _flag_bool(flags.get("necromancer_lab_key_hint_known"))
+        or _decoded_diary_from_memory(normalized_state)
+    )
+    memory_type = _detect_astarion_history_type(normalized_state) or "none"
+    return {
+        "topic": "gribbo_mercy",
+        "target_id": "gribbo",
+        "phase": "resolution" if choice else "stance",
+        "choice": choice,
+        "diary_decoded": bool(diary_decoded),
+        "astarion_memory_type": memory_type,
+        "available_choices": ["mercy", "execute"],
+        "party_summary": "Gribbo 可能是实验受害者。" if diary_decoded else "Gribbo 已失去战斗能力。",
     }
 
 

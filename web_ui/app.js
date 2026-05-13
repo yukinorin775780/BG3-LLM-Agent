@@ -3525,13 +3525,19 @@
                 previousShowcaseSnapshot
               );
               enrichedEvents.forEach((event) => {
-                if (!event || !["negotiation_leverage", "memory_echo"].includes(event.type)) return;
+                if (!event || !["negotiation_leverage", "memory_echo", "party_stance", "mercy_resolution"].includes(event.type)) return;
                 const exists = uiEvents.some((candidate) => {
                   if (!candidate || candidate.type !== event.type) return false;
                   if (event.type === "negotiation_leverage") {
                     return candidate.evidence === event.evidence
                       && candidate.targetId === event.targetId
                       && candidate.pressure === event.pressure;
+                  }
+                  if (event.type === "party_stance") {
+                    return candidate.target === event.target;
+                  }
+                  if (event.type === "mercy_resolution") {
+                    return candidate.target === event.target && candidate.result === event.result;
                   }
                   return candidate.actor === event.actor && candidate.memoryType === event.memoryType;
                 });

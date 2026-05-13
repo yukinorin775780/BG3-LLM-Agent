@@ -1,0 +1,84 @@
+session:
+  id: necromancer_lab_gribbo_mercy_execute
+  map_id: necromancer_lab
+  metadata:
+    tag: content_showcase_sprint_2e
+determinism:
+  strict: false
+  perf_counter: [0.0, 0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.07]
+  now_iso: ["2026-01-01T00:00:00+00:00"]
+  randint: [12]
+  choice_indices: [0]
+  random_values: [0.5]
+steps:
+  - id: setup_mercy_window
+    user_input: /flag necromancer_lab_gribbo_mercy_window true
+    intent: command
+    expected:
+      state:
+        equals:
+          game_state.flags.necromancer_lab_gribbo_mercy_window: true
+  - id: setup_diary_decoded
+    user_input: /flag necromancer_lab_diary_decoded true
+    intent: command
+    expected:
+      state:
+        equals:
+          game_state.flags.necromancer_lab_diary_decoded: true
+  - id: party_splits_on_mercy
+    user_input: 队友怎么看，应该怎么处理 Gribbo？
+    intent: chat
+    expected:
+      responses:
+        contains:
+          - 受害者
+          - 处决
+      state:
+        contains:
+          game_state.journal_events:
+            - "[站队] shadowheart -> mercy"
+            - "[站队] laezel -> execute"
+        equals:
+          game_state.pending_events: []
+      telemetry:
+        events_contains:
+          - event_name: actor_runtime_decision
+          - event_name: event_drain
+  - id: execute_gribbo
+    user_input: 杀了他，别留活口。
+    intent: chat
+    expected:
+      responses:
+        contains:
+          - 处决
+          - Gribbo
+      state:
+        equals:
+          game_state.flags.necromancer_lab_gribbo_executed: true
+          game_state.flags.necromancer_lab_gribbo_mercy_resolved: true
+          game_state.entities.gribbo.status: dead
+          game_state.entities.gribbo.faction: defeated
+          game_state.entities.shadowheart.affection: 48
+          game_state.entities.laezel.affection: 2
+          game_state.pending_events: []
+        contains:
+          game_state.journal_events:
+            - "[抉择] gribbo -> executed"
+          game_state.actor_runtime_state.laezel.memory_notes:
+            - "玩家处决了 Gribbo，选择了果断行动。危险不该被留下。"
+      visibility:
+        forbidden_paths:
+          - game_state.player_inventory.heavy_iron_key
+      telemetry:
+        events_contains:
+          - event_name: actor_runtime_decision
+          - event_name: event_drain
+expected:
+  telemetry:
+    events_contains:
+      - event_name: actor_runtime_decision
+      - event_name: event_drain
+  retrieval:
+    max_hits: 6
+  budget:
+    max_total_tokens: 0

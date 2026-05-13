@@ -3135,6 +3135,45 @@ textarea {
   box-shadow: 0 16px 38px rgba(0, 0, 0, 0.42), 0 0 24px rgba(176, 119, 41, 0.18);
 }
 
+.agent-signal-card--party-stance {
+  border-color: rgba(154, 176, 210, 0.66);
+  background:
+    radial-gradient(circle at 100% 0%, rgba(209, 170, 83, 0.16), transparent 34%),
+    linear-gradient(135deg, rgba(24, 36, 52, 0.96), rgba(44, 18, 18, 0.92));
+  box-shadow: 0 16px 38px rgba(0, 0, 0, 0.42), 0 0 24px rgba(87, 112, 160, 0.16);
+}
+
+.agent-signal-card--mercy-resolution.mercy-resolution-spared {
+  border-color: rgba(196, 167, 92, 0.72);
+  background:
+    radial-gradient(circle at 100% 0%, rgba(118, 154, 205, 0.18), transparent 36%),
+    linear-gradient(135deg, rgba(38, 45, 55, 0.96), rgba(46, 34, 18, 0.94));
+}
+
+.agent-signal-card--mercy-resolution.mercy-resolution-executed {
+  border-color: rgba(198, 67, 58, 0.74);
+  background:
+    radial-gradient(circle at 100% 0%, rgba(105, 118, 136, 0.18), transparent 34%),
+    linear-gradient(135deg, rgba(65, 22, 18, 0.97), rgba(20, 22, 26, 0.94));
+  box-shadow: 0 16px 38px rgba(0, 0, 0, 0.42), 0 0 24px rgba(174, 48, 38, 0.18);
+}
+
+.stance-value--mercy {
+  color: #d9e7ff !important;
+}
+
+.stance-value--execute {
+  color: #ffb1a7 !important;
+}
+
+.stance-value--resentful {
+  color: #f09aaa !important;
+}
+
+.stance-value--mocking {
+  color: #d6b2ff !important;
+}
+
 .agent-signal-card-header {
   display: flex;
   align-items: center;
@@ -3510,6 +3549,18 @@ textarea {
 .world-diff-row--memory_echo_signal code,
 .world-diff-row.memory-echo-diff code {
   color: #ffd2dc;
+}
+
+.world-diff-row--mercy_signal,
+.world-diff-row.mercy-signal-diff {
+  border-color: rgba(196, 167, 92, 0.5);
+  background:
+    linear-gradient(135deg, rgba(42, 45, 58, 0.54), rgba(55, 24, 20, 0.52));
+}
+
+.world-diff-row--mercy_signal code,
+.world-diff-row.mercy-signal-diff code {
+  color: #ffe1a8;
 }
 
 @media (prefers-reduced-motion: reduce) {

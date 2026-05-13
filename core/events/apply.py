@@ -70,6 +70,11 @@ def _apply_actor_spoke(
                 flags["necromancer_lab_astarion_rebuke_echo_seen"] = True
             else:
                 flags["necromancer_lab_astarion_complicity_echo_seen"] = True
+    gribbo_mercy = event.payload.get("gribbo_mercy") if isinstance(event.payload, dict) else None
+    if isinstance(gribbo_mercy, dict) and str(gribbo_mercy.get("topic") or "") == "gribbo_mercy":
+        stance = str(gribbo_mercy.get("stance") or "").strip()
+        if stance:
+            journal_events.append(f"[站队] {speaker_id} -> {stance}")
     return text
 
 
@@ -209,6 +214,25 @@ def _apply_actor_negotiation_outcome(
         target["faction"] = "hostile"
 
     reason = str(payload.get("reason") or "").strip().lower()
+    if reason in {"gribbo_mercy_spared", "gribbo_mercy_executed"}:
+        status_set = str(payload.get("status_set") or "").strip()
+        faction_set = str(payload.get("faction_set") or "").strip()
+        if status_set:
+            target["status"] = status_set
+        if faction_set:
+            target["faction"] = faction_set
+        mercy_state = dynamic_states.get("mercy_window")
+        if isinstance(mercy_state, dict):
+            mercy_state["current_value"] = False
+            dynamic_states["mercy_window"] = mercy_state
+        elif "mercy_window" in dynamic_states:
+            dynamic_states["mercy_window"] = False
+        target["dynamic_states"] = dynamic_states
+        if reason == "gribbo_mercy_spared":
+            journal_events.append("[抉择] gribbo -> spared")
+        else:
+            journal_events.append("[抉择] gribbo -> executed")
+        return {}
     if reason == "diary_evidence_pressure":
         journal_events.append("[交涉筹码] diary_evidence -> gribbo_elixir_truth")
     elif reason == "paranoia_meltdown":

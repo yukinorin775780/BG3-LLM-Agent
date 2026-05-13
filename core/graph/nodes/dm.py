@@ -16,6 +16,7 @@ from core.campaigns import (
     ACT4_POST_COMBAT_BANTER,
     detect_astarion_memory_echo_context,
     detect_diary_negotiation_context,
+    detect_gribbo_mercy_context,
     detect_key_guidance_context,
     detect_lab_act3_choice,
     detect_lab_act4_post_combat_banter,
@@ -249,6 +250,40 @@ def _apply_astarion_memory_echo_override(*, state: GameState, analysis: dict) ->
         responders = ["astarion"] + [item for item in responders if item != "astarion"]
     out["responders"] = responders or ["astarion"]
     intent_context["memory_echo_context"] = context
+    out["intent_context"] = intent_context
+    return out
+
+
+def _apply_gribbo_mercy_override(*, state: GameState, analysis: dict) -> dict:
+    if not _is_necromancer_lab(state):
+        return analysis
+
+    existing_action = str((analysis or {}).get("action_type") or "").strip().upper()
+    if existing_action in {"DISARM", "LOOT", "READ", "INTERACT", "MOVE", "APPROACH", "ATTACK", "CAST_SPELL", "UNLOCK"}:
+        return analysis
+
+    out = dict(analysis or {})
+    intent_context = dict(out.get("intent_context") or {})
+    action_target = str(out.get("action_target") or "").strip().lower()
+    helper_context = {
+        **intent_context,
+        "action_target": action_target or str(state.get("target") or "").strip().lower(),
+    }
+    context = detect_gribbo_mercy_context(
+        dict(state or {}),
+        str(state.get("user_input") or ""),
+        helper_context,
+    )
+    if not context:
+        return analysis
+
+    phase = str(context.get("phase") or "stance").strip()
+    out["action_type"] = "CHAT"
+    out["action_actor"] = "player"
+    out["action_target"] = "gribbo"
+    out["reason"] = "gribbo_mercy_resolution" if phase == "resolution" else "gribbo_mercy_stance"
+    out["responders"] = ["shadowheart"] if phase == "resolution" else ["shadowheart", "laezel", "astarion"]
+    intent_context["gribbo_mercy_context"] = context
     out["intent_context"] = intent_context
     return out
 
@@ -637,6 +672,10 @@ async def dm_node(state: GameState) -> dict:
             state=state,
             analysis=structured_analysis,
         )
+        structured_analysis = _apply_gribbo_mercy_override(
+            state=state,
+            analysis=structured_analysis,
+        )
         structured_analysis = _apply_astarion_memory_echo_override(
             state=state,
             analysis=structured_analysis,
@@ -715,6 +754,16 @@ async def dm_node(state: GameState) -> dict:
             and str(key_guidance_fast_path.get("action_type") or "").strip()
         ):
             structured_analysis = key_guidance_fast_path
+        gribbo_mercy_fast_path = _apply_gribbo_mercy_override(
+            state=state,
+            analysis=structured_analysis or {},
+        )
+        if (
+            isinstance(gribbo_mercy_fast_path, dict)
+            and str(gribbo_mercy_fast_path.get("action_type") or "").strip()
+            and gribbo_mercy_fast_path is not (structured_analysis or {})
+        ):
+            structured_analysis = gribbo_mercy_fast_path
         memory_echo_fast_path = _apply_astarion_memory_echo_override(
             state=state,
             analysis=structured_analysis or {},
@@ -794,6 +843,10 @@ async def dm_node(state: GameState) -> dict:
             analysis=analysis if isinstance(analysis, dict) else {},
         )
         analysis = _apply_key_guidance_override(
+            state=state,
+            analysis=analysis if isinstance(analysis, dict) else {},
+        )
+        analysis = _apply_gribbo_mercy_override(
             state=state,
             analysis=analysis if isinstance(analysis, dict) else {},
         )
@@ -883,6 +936,7 @@ async def dm_node(state: GameState) -> dict:
             "study_chest_loot_context": dict(analysis_intent_context.get("study_chest_loot_context") or {}),
             "trap_awareness_context": dict(analysis_intent_context.get("trap_awareness_context") or {}),
             "memory_echo_context": dict(analysis_intent_context.get("memory_echo_context") or {}),
+            "gribbo_mercy_context": dict(analysis_intent_context.get("gribbo_mercy_context") or {}),
             "action": str(analysis_intent_context.get("action") or "").strip(),
         },
         "is_probing_secret": analysis.get("is_probing_secret", False),

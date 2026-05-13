@@ -47,6 +47,18 @@ _GRIBBO_ATTACK_MARKERS = ("攻击 gribbo", "attack gribbo", "攻击格里布", "
 _TRAP_DISARM_ACTOR_MARKERS = ("阿斯代伦", "astarion")
 _TRAP_DISARM_TARGET_MARKERS = ("陷阱", "毒气", "gas_trap_1", "poison_trap", "trap")
 _TRAP_DISARM_ACTION_MARKERS = ("解除", "拆", "拆掉", "拆除", "disarm", "disable")
+_GRIBBO_MERCY_STANCE_MARKERS = (
+    "怎么办",
+    "怎么处理",
+    "处理他",
+    "队友怎么看",
+    "该不该",
+    "放不放",
+    "饶不饶",
+    "should we",
+)
+_GRIBBO_MERCY_CHOICE_MARKERS = ("mercy", "spare", "forgive", "放过", "饶了", "饶他", "不杀", "留他一命")
+_GRIBBO_EXECUTE_CHOICE_MARKERS = ("execute", "kill", "finish him", "处决", "杀了", "解决他", "别留活口")
 
 
 def _looks_like_act3_choice(map_id: str, user_input: str) -> bool:
@@ -98,6 +110,44 @@ def _looks_like_astarion_trap_disarm(map_id: str, user_input: str) -> bool:
             _contains_marker(user_input, _TRAP_DISARM_ACTOR_MARKERS)
             or _contains_marker(user_input, ("gas_trap_1", "poison_trap"))
         )
+    )
+
+
+def _flag_bool(raw_value) -> bool:
+    if isinstance(raw_value, dict):
+        return bool(raw_value.get("value", False))
+    return bool(raw_value)
+
+
+def _is_gribbo_mercy_window_active(state: GameState) -> bool:
+    flags = state.get("flags") if isinstance(state.get("flags"), dict) else {}
+    if _flag_bool(flags.get("necromancer_lab_gribbo_mercy_resolved")):
+        return False
+    if (
+        _flag_bool(flags.get("necromancer_lab_gribbo_mercy_window"))
+        or _flag_bool(flags.get("necromancer_lab_gribbo_defeated"))
+        or _flag_bool(flags.get("world_necromancer_lab_gribbo_defeated"))
+    ):
+        return True
+    entities = state.get("entities") if isinstance(state.get("entities"), dict) else {}
+    gribbo = entities.get("gribbo") if isinstance(entities.get("gribbo"), dict) else {}
+    status = str(gribbo.get("status") or "").strip().lower()
+    if status in {"defeated", "pleading"}:
+        return True
+    dynamic_states = gribbo.get("dynamic_states") if isinstance(gribbo.get("dynamic_states"), dict) else {}
+    mercy_state = dynamic_states.get("mercy_window")
+    if isinstance(mercy_state, dict):
+        return _flag_bool(mercy_state.get("current_value", mercy_state.get("value", False)))
+    return _flag_bool(mercy_state)
+
+
+def _looks_like_gribbo_mercy_text(map_id: str, state: GameState, user_input: str) -> bool:
+    if not _is_necromancer_lab_map(map_id) or not _is_gribbo_mercy_window_active(state):
+        return False
+    return (
+        _contains_marker(user_input, _GRIBBO_MERCY_STANCE_MARKERS)
+        or _contains_marker(user_input, _GRIBBO_MERCY_CHOICE_MARKERS)
+        or _contains_marker(user_input, _GRIBBO_EXECUTE_CHOICE_MARKERS)
     )
 
 
@@ -186,6 +236,17 @@ def input_node(state: GameState) -> dict:
                 **base,
                 "intent": "READ",
                 "target": "necromancer_diary",
+                "source": "ui_text_normalized",
+                "intent_context": intent_context,
+            }
+        if _looks_like_gribbo_mercy_text(map_id, state, user_input):
+            intent_context["action_target"] = "gribbo"
+            intent_context["source"] = "ui_text_normalized"
+            intent_context["gribbo_mercy_hint"] = True
+            return {
+                **base,
+                "intent": "CHAT",
+                "target": "gribbo",
                 "source": "ui_text_normalized",
                 "intent_context": intent_context,
             }

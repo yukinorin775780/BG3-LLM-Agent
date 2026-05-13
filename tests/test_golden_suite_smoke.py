@@ -77,6 +77,8 @@ def test_golden_suite_contains_expected_minimum_cases():
         "party_banter_after_player_choice",
         "laezel_disagrees_with_mercy_choice",
         "necromancer_lab_gribbo_key_path",
+        "necromancer_lab_gribbo_mercy_execute",
+        "necromancer_lab_gribbo_mercy_spare",
         "necromancer_lab_act1_trap_perception",
         "necromancer_lab_act2_diary_int_success",
         "necromancer_lab_act2_diary_int_failure",

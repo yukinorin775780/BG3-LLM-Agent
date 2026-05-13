@@ -90,6 +90,14 @@
       sided_with_player: "Sided With Player",
       resentful: "Resentful",
       complicit: "Complicit",
+      mercy: "Mercy",
+      execute: "Execute",
+      mocking: "Mocking",
+      spared: "Spared",
+      executed: "Executed",
+      dead: "Dead",
+      neutralized: "Neutralized",
+      defeated: "Defeated",
     };
     if (mapped[raw.toLowerCase()]) return mapped[raw.toLowerCase()];
     return raw.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
@@ -235,6 +243,43 @@
       { label: "Quote", value: e.quote || (tone === "complicit" ? "Cruelty shared becomes trust." : "Now you need me?") },
     ]);
     appendAgentSignalCard(card, 5600);
+  }
+
+  function stanceRows(stances) {
+    return (Array.isArray(stances) ? stances : [])
+      .filter((entry) => entry && entry.actor)
+      .map((entry) => ({
+        label: actorLabel(entry.actor),
+        value: titleLabel(entry.stance),
+        stance: String(entry.stance || "").toLowerCase(),
+      }));
+  }
+
+  function renderPartyStanceCard(event) {
+    const e = event && typeof event === "object" ? event : {};
+    const rows = stanceRows(e.stances);
+    const card = buildAgentSignalCard("party-stance", "Party Split", "⚖", rows.length ? rows : [
+      { label: "Party", value: "Stances divided" },
+    ]);
+    rows.forEach((row) => {
+      const dd = Array.from(card.querySelectorAll("dd")).find((el) => el.textContent === row.value);
+      if (dd) dd.classList.add("stance-value", "stance-value--" + row.stance);
+    });
+    appendAgentSignalCard(card, 6200);
+  }
+
+  function renderMercyResolutionCard(event) {
+    const e = event && typeof event === "object" ? event : {};
+    const result = String(e.result || "").toLowerCase() === "executed" ? "executed" : "spared";
+    const title = result === "executed" ? "Gribbo Executed" : "Gribbo Spared";
+    const gribboState = result === "executed" ? "dead / defeated" : "spared / neutralized";
+    const partyImpact = result === "executed" ? "Shadowheart - / Lae'zel +" : "Shadowheart + / Lae'zel -";
+    const card = buildAgentSignalCard("mercy-resolution mercy-resolution-" + result, title, result === "executed" ? "†" : "☾", [
+      { label: "Gribbo State", value: gribboState },
+      { label: "Party Impact", value: partyImpact },
+      { label: "Key Path", value: result === "spared" && e.keyAvailable ? "Key path remains available." : "" },
+    ]);
+    appendAgentSignalCard(card, 6000);
   }
 
   /* ── Toast System ── */
@@ -476,6 +521,8 @@
           showTrapTriggered(ev);
           break;
         case "memory_echo": renderMemoryEchoCard(ev); break;
+        case "party_stance": renderPartyStanceCard(ev); break;
+        case "mercy_resolution": renderMercyResolutionCard(ev); break;
         case "companion_guidance": renderCompanionGuidanceCard(ev); break;
         case "negotiation_leverage": renderNegotiationLeverageCard(ev); break;
         case "demo_cleared": showDemoClearedBanner(); break;
@@ -491,6 +538,7 @@
     showTrapTriggered, renderCompanionGuidanceCard,
     renderNegotiationLeverageCard, renderTrapInsightCard,
     renderTrapDisarmedCard, renderTrapTriggeredCard, renderMemoryEchoCard,
+    renderPartyStanceCard, renderMercyResolutionCard,
     dispatchUIEvents,
   });
 })();
