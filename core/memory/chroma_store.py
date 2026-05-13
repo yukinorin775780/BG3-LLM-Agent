@@ -118,7 +118,27 @@ class ChromaMemoryStore(MemoryStore):
         payload["participants"] = list(record.participants)
         payload["tags"] = list(record.tags)
         payload["source_event_ids"] = list(record.source_event_ids)
-        return payload
+        return ChromaMemoryStore._sanitize_metadata(payload)
+
+    @staticmethod
+    def _sanitize_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
+        """Normalize MemoryRecord metadata for ChromaDB's stricter validators."""
+        sanitized: Dict[str, Any] = {}
+        for key, value in metadata.items():
+            if value is None:
+                continue
+            if isinstance(value, (list, tuple)):
+                cleaned_items = [
+                    item
+                    for item in value
+                    if item is not None and not (isinstance(item, str) and not item.strip())
+                ]
+                if not cleaned_items:
+                    continue
+                sanitized[key] = cleaned_items
+                continue
+            sanitized[key] = value
+        return sanitized
 
     def upsert(self, record: MemoryRecord) -> None:
         if self._fallback_store is not None:

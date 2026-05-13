@@ -57,6 +57,35 @@ def test_store_writes_world_record_to_world_collection():
     assert len(collection.add_calls) == 1
 
 
+def test_store_omits_empty_list_metadata_for_chroma_compatibility():
+    client = FakeClient()
+    store = ChromaMemoryStore(client=client)
+
+    record = MemoryRecord(
+        memory_id="m_empty_lists",
+        text="影心记得夜兰花",
+        scope="party_shared",
+        memory_type="episodic",
+        owner_actor_id=None,
+        participants=("shadowheart",),
+        location_id="camp_fire",
+        turn_index=1,
+        importance=2,
+        tags=(),
+        source_event_ids=(),
+    )
+
+    store.upsert(record)
+
+    collection = client.collections["bg3_mem_party_shared"]
+    _, metadatas, _ = collection.add_calls[0]
+    metadata = metadatas[0]
+    assert metadata["participants"] == ["shadowheart"]
+    assert "tags" not in metadata
+    assert "source_event_ids" not in metadata
+    assert "owner_actor_id" not in metadata
+
+
 def test_store_queries_private_scope_from_private_collection():
     client = FakeClient()
     store = ChromaMemoryStore(client=client)
