@@ -133,6 +133,7 @@
     roomVisibleIds: new Set(),
     discoveredSecretDoorIds: new Set(),
     discoveredTrapIds: new Set(),
+    backendRevealedTrapIds: new Set(),
     openedLocalDoorIds: new Set(),
     act1PerceptionResolved: false,
     speechRecognition: null,
@@ -146,6 +147,7 @@
     lastShowcaseSnapshot: null,
     demoScriptRunner: null,
     demoScriptControls: null,
+    worldFlags: {},
   };
 
   const INTERACTION_SOURCES = new Set([
@@ -199,6 +201,9 @@
   const EXPLICIT_ATTACK_MARKERS = ["攻击", "打", "砍", "射击", "attack", "strike", "shoot"];
   const EXPLICIT_LOOT_MARKERS = ["搜刮", "洗劫", "拿走", "拾取", "loot", "take"];
   const EXPLICIT_MOVE_MARKERS = ["移动", "走到", "前往", "move", "go to", "walk"];
+  const TRAP_DISARM_ACTION_MARKERS = ["解除", "拆除", "拆掉", "disarm", "disable"];
+  const TRAP_DISARM_TARGET_MARKERS = ["陷阱", "机关", "毒气", "gas_trap_1", "poison_trap", "trap"];
+  const TRAP_DISARM_ACTOR_MARKERS = ["阿斯代伦", "astarion"];
 
   function readQaNumber(name, fallback) {
     const value = Number(QA_PARAMS.get(name));
@@ -721,6 +726,10 @@
       const key = String(marker || "");
       return key && (userLine.includes(key) || userLineLower.includes(key.toLowerCase()));
     });
+    const hasTrapDisarmText = isNecromancerLab
+      && TRAP_DISARM_ACTION_MARKERS.some((marker) => userLine.includes(marker) || userLineLower.includes(String(marker).toLowerCase()))
+      && TRAP_DISARM_TARGET_MARKERS.some((marker) => userLine.includes(marker) || userLineLower.includes(String(marker).toLowerCase()))
+      && TRAP_DISARM_ACTOR_MARKERS.some((marker) => userLine.includes(marker) || userLineLower.includes(String(marker).toLowerCase()));
     const normalizedIntent = String(resolvedIntent || "").trim().toUpperCase();
     const hasDoorOpenSemantics = shouldRouteDoorInteractText(userLine);
     const isExplicitNonDialogue = isExplicitAttack || isExplicitLoot || isExplicitMove || hasDoorOpenSemantics;
@@ -755,6 +764,25 @@
         target: resolvedTarget,
         source: resolvedSource,
         intentContext: {},
+      };
+    }
+
+    if (hasTrapDisarmText) {
+      resolvedIntent = "DISARM";
+      resolvedTarget = "gas_trap_1";
+      resolvedSource = "ui_text_normalized";
+      return {
+        userLine,
+        intentValue: resolvedIntent,
+        target: resolvedTarget,
+        source: resolvedSource,
+        actor: "astarion",
+        intentContext: {
+          action_actor: "astarion",
+          action_target: "gas_trap_1",
+          source: "ui_text_normalized",
+          action: "disarm_trap",
+        },
       };
     }
 
@@ -807,7 +835,8 @@
 
   function buildChatPayload(text, intent, character, options = {}) {
     const routed = resolveChatRouting(text, intent, options);
-    const characterId = character ? normalizeId(character) : "";
+    const characterId = character ? normalizeId(character) : normalizeId(routed.actor);
+    const clientPosition = getClientPlayerGridPosition();
     const payload = {
       user_input: routed.userLine,
       intent: routed.intentValue,
@@ -816,6 +845,10 @@
       session_id: getSessionId(),
       map_id: MAP_ID,
     };
+    if (clientPosition) {
+      payload.client_player_position = { x: clientPosition.x, y: clientPosition.y };
+      payload.player_position = [clientPosition.x, clientPosition.y];
+    }
     if (characterId) {
       payload.character = characterId;
     }
@@ -1418,6 +1451,36 @@
     return safeObject(window.BG3TacticalMap.getPlayerGridPosition());
   }
 
+  function getClientPlayerGridPosition() {
+    const candidates = [getTacticalPlayerPosition(), getInputControllerPosition()];
+    for (const candidate of candidates) {
+      const x = Number(safeObject(candidate).x);
+      const y = Number(safeObject(candidate).y);
+      if (Number.isFinite(x) && Number.isFinite(y)) {
+        return { x: Math.round(x), y: Math.round(y) };
+      }
+    }
+    return null;
+  }
+
+  function syncLocalPlayerProjectionState(source = "client_local") {
+    const coord = getClientPlayerGridPosition();
+    if (!coord) return null;
+    const previous = safeObject(state.partyStatus.player);
+    state.partyStatus = {
+      ...safeObject(state.partyStatus),
+      player: {
+        ...previous,
+        x: coord.x,
+        y: coord.y,
+        name: previous.name || "玩家",
+        faction: previous.faction || "player",
+        _projection_source: source,
+      },
+    };
+    return coord;
+  }
+
   function getCameraFollowTarget() {
     if (!window.BG3TacticalMap || typeof window.BG3TacticalMap.getCameraFollowTarget !== "function") {
       return null;
@@ -1616,6 +1679,47 @@
     return findMapInteractableById(state.normalizedMap, targetId);
   }
 
+  function normalizeDoorProjectionRecord(record) {
+    const item = {
+      ...safeObject(record),
+      data: { ...safeObject(safeObject(record).data) },
+    };
+    const id = normalizeId(item.id || item.alias_id || item.source_id || item.data.alias_id);
+    if (id === "door_a_to_b") {
+      item.w = 3;
+      item.width = 3;
+      item.h = Math.max(1, Number(item.h ?? item.height ?? item.data.h ?? item.data.height) || 1);
+      item.data.w = 3;
+      item.data.width = 3;
+      item.data.h = item.h;
+      item.data.height = item.h;
+      const ix = Math.round(Number(item.x) || 0);
+      const iy = Math.round(Number(item.y) || 0);
+      const ih = Math.max(1, Math.round(Number(item.h) || 1));
+      const cells = [];
+      for (let dx = 0; dx < 3; dx += 1) {
+        cells.push({ x: ix + dx, y: iy - 1 });
+        cells.push({ x: ix + dx, y: iy + ih });
+      }
+      item.interaction_cells = cells;
+      item.data.interaction_cells = cells;
+    }
+    return item;
+  }
+
+  function isDoorOpened(targetId, record = {}) {
+    const id = normalizeId(targetId || safeObject(record).id);
+    const data = safeObject(safeObject(record).data);
+    if (state.openedLocalDoorIds.has(id)) return true;
+    const explicit = safeObject(record).is_open ?? safeObject(record).open ?? safeObject(record).opened
+      ?? data.is_open ?? data.open ?? data.opened;
+    if (typeof explicit === "boolean") return explicit;
+    const explicitText = normalizeId(explicit);
+    if (["true", "yes", "open", "opened"].includes(explicitText)) return true;
+    const status = normalizeId(safeObject(record).status || data.status);
+    return ["open", "opened"].includes(status);
+  }
+
   function describeDoorHint(interactable, mapRecord) {
     const target = safeObject(interactable);
     const record = safeObject(mapRecord);
@@ -1628,6 +1732,10 @@
     const detectDc = Number(data.detect_dc) || 0;
     const keyRequired = String(data.key_required || "").trim();
     const lockpickDc = Number(data.lockpick_dc) || 0;
+    if (isDoorOpened(id, target) || isDoorOpened(id, record)) {
+      if (fromLabel && toLabel) return "通道已开启：" + fromLabel + " ↔ " + toLabel;
+      return "门已开启";
+    }
 
     if (id === "door_b_to_c" && detectDc > 0) {
       return "E 检查暗门：DC " + detectDc;
@@ -1665,10 +1773,7 @@
     } else if (type === "chest" || type === "loot" || type === "container" || id === "study_chest" || id === "chest_1") {
       coreText = "E 搜刮：" + targetName;
     } else if (type === "trap" || id.includes("trap")) {
-      const detectDc = Number(data.detect_dc) || 0;
-      coreText = detectDc > 0
-        ? "危险：" + targetName + " · E 检查陷阱：DC " + detectDc
-        : "危险：" + targetName + " · E 检查陷阱";
+      coreText = "可疑机关：" + targetName + " · 让阿斯代伦解除";
     }
 
     return coreText + " [" + idRaw + "]";
@@ -1694,12 +1799,118 @@
     return true;
   }
 
+  function updateExplorationActProgress() {
+    if (!window.BG3HudRenderers || typeof window.BG3HudRenderers.updateActProgress !== "function") return;
+    if (state.roomVisibleIds.has(ROOM_B)) {
+      window.BG3HudRenderers.updateActProgress(
+        2,
+        "阿斯代伦在前方停下脚步。空气里有甜腻的腐臭味，墙缝间隐约传来气压声。"
+      );
+      return;
+    }
+    window.BG3HudRenderers.updateActProgress(1);
+  }
+
   function discoverTrap(trapId) {
     const key = normalizeId(trapId);
     if (!key) return false;
     if (state.discoveredTrapIds.has(key)) return false;
     state.discoveredTrapIds.add(key);
     return true;
+  }
+
+  function trapAliases(trapId) {
+    const key = normalizeId(trapId);
+    const aliases = new Set([key]);
+    if (!key || key.includes("gas_trap") || key.includes("poison_trap")) {
+      aliases.add("gas_trap_1");
+      aliases.add("poison_trap_1");
+      aliases.add("poison_trap_2");
+    }
+    return Array.from(aliases).filter(Boolean);
+  }
+
+  function markBackendTrapSignal(trapId, status = "revealed") {
+    const normalizedStatus = normalizeId(status) || "revealed";
+    trapAliases(trapId || "gas_trap_1").forEach((id) => state.backendRevealedTrapIds.add(id));
+    const targetId = normalizeId(trapId || "gas_trap_1");
+    const targetKeys = trapAliases(targetId);
+    targetKeys.forEach((id) => {
+      const existing = safeObject(state.environmentObjects[id]);
+      if (!Object.keys(existing).length) return;
+      state.environmentObjects[id] = {
+        ...existing,
+        status: normalizedStatus,
+        is_hidden: false,
+        is_revealed: true,
+        discovered: true,
+      };
+    });
+  }
+
+  function refreshWorldFlags(data = {}) {
+    const payload = safeObject(data);
+    const gameState = safeObject(payload.game_state);
+    state.worldFlags = {
+      ...safeObject(state.worldFlags),
+      ...safeObject(gameState.flags),
+      ...safeObject(payload.flags),
+    };
+  }
+
+  function hasTrapRevealFlag() {
+    const flags = safeObject(state.worldFlags);
+    return Boolean(
+      flags.necromancer_lab_poison_trap_revealed === true
+      || flags.necromancer_lab_poison_trap_disarmed === true
+      || flags.necromancer_lab_poison_trap_triggered === true
+    );
+  }
+
+  function isBackendTrapVisible(trapId, entity = {}) {
+    const id = normalizeId(trapId);
+    const data = safeObject(entity);
+    const status = normalizeId(data.status || data.state || "");
+    if (["revealed", "disabled", "disarmed", "triggered"].includes(status)) return true;
+    if (data.is_revealed === true || data.discovered === true || data.is_discovered === true) return true;
+    if (state.backendRevealedTrapIds.has(id) || state.backendRevealedTrapIds.has(normalizeId(data.alias_id))) return true;
+    if (hasTrapRevealFlag() && (id === "gas_trap_1" || id.includes("poison_trap") || id.includes("gas_trap"))) return true;
+    return false;
+  }
+
+  function resolvedTrapVisualStatus(trapId, entity = {}) {
+    const status = normalizeId(safeObject(entity).status || safeObject(entity).state || "");
+    if (["disabled", "disarmed"].includes(status)) return "disabled";
+    if (["triggered", "active", "burst"].includes(status)) return "triggered";
+    const flags = safeObject(state.worldFlags);
+    if (flags.necromancer_lab_poison_trap_disarmed === true) return "disabled";
+    if (flags.necromancer_lab_poison_trap_triggered === true) return "triggered";
+    if (isBackendTrapVisible(trapId, entity)) return "revealed";
+    return "hidden";
+  }
+
+  function normalizeTrapTriggerTarget(trigger = {}) {
+    const record = safeObject(trigger);
+    const data = safeObject(record.data);
+    const rawId = normalizeId(record.alias_id || data.alias_id || record.id || data.id);
+    if (!rawId) return "";
+    if (rawId.includes("gas_trap") || rawId.includes("poison_trap") || rawId.includes("trap")) return "gas_trap_1";
+    return rawId;
+  }
+
+  function shouldTriggerTrapMechanic(trapId = "gas_trap_1") {
+    const id = normalizeId(trapId || "gas_trap_1");
+    const aliases = trapAliases(id);
+    const flags = safeObject(state.worldFlags);
+    if (flags.necromancer_lab_poison_trap_disarmed === true) return false;
+    if (flags.necromancer_lab_poison_trap_triggered === true) return false;
+    const candidates = aliases
+      .map((alias) => safeObject(state.environmentObjects[alias]))
+      .filter((record) => Object.keys(record).length > 0);
+    return !candidates.some((record) => {
+      const status = normalizeId(record.status || record.state || "");
+      return ["disabled", "disarmed", "triggered", "active", "burst"].includes(status);
+    });
   }
 
   function discoverSecretDoor(doorId) {
@@ -1733,7 +1944,7 @@
     };
 
     const visibleInteractables = safeArray(map.interactables)
-      .map((item) => ({ ...safeObject(item), data: { ...safeObject(safeObject(item).data) } }))
+      .map((item) => normalizeDoorProjectionRecord(item))
       .filter((item) => {
         const type = normalizeId(item.type || safeObject(item.data).type);
         const id = normalizeId(item.id);
@@ -1753,14 +1964,21 @@
         const id = normalizeId(item.id);
         const type = normalizeId(item.type || safeObject(item.data).type);
         if (type === "trap" || id.includes("trap")) {
-          const discovered = state.discoveredTrapIds.has(id) || state.discoveredTrapIds.has(normalizeId(item.alias_id));
+          const discovered = isBackendTrapVisible(id, {
+            ...safeObject(item.data),
+            ...item,
+          });
+          const status = resolvedTrapVisualStatus(id, {
+            ...safeObject(item.data),
+            ...item,
+          });
           item.discovered = discovered;
           item.is_revealed = discovered;
           item.is_hidden = !discovered;
           item.data.discovered = discovered;
           item.data.is_revealed = discovered;
           item.data.is_hidden = !discovered;
-          item.status = discovered ? "revealed" : "hidden";
+          item.status = discovered ? status : "hidden";
         }
         return item;
       });
@@ -1845,11 +2063,14 @@
     state.trapSenseEnabled = false;
     state.act1PerceptionResolved = false;
     state.discoveredTrapIds = new Set();
+    state.backendRevealedTrapIds = new Set();
     state.discoveredSecretDoorIds = new Set();
     state.openedLocalDoorIds = new Set();
+    state.worldFlags = {};
     resetRoomVisibility(map);
     state.normalizedMap = deriveVisibleNormalizedMap(map);
     state.mapData = mapDataFromNormalized({ ...map, visibleRooms: Array.from(state.roomVisibleIds) });
+    updateExplorationActProgress();
     updateMapSourceStatus(meta.source || "fixture", meta.reason || "");
     if (window.BG3InputController && typeof window.BG3InputController.setMap === "function") {
       window.BG3InputController.setMap(state.normalizedMap);
@@ -1863,6 +2084,9 @@
     }
     if (window.BG3TacticalMap && typeof window.BG3TacticalMap.setTrapSenseMode === "function") {
       window.BG3TacticalMap.setTrapSenseMode(state.trapSenseEnabled === true);
+    }
+    if (window.BG3TacticalMap && typeof window.BG3TacticalMap.resetLocalPartyTrail === "function") {
+      window.BG3TacticalMap.resetLocalPartyTrail();
     }
     updateMapDebug("applyNormalizedMap");
   }
@@ -1882,6 +2106,7 @@
     if (window.BG3InputController && typeof window.BG3InputController.setMap === "function") {
       window.BG3InputController.setMap(state.normalizedMap);
     }
+    updateExplorationActProgress();
   }
 
   function revealRoomByDoorTarget(targetId) {
@@ -1902,10 +2127,32 @@
     Object.entries(next).forEach(([id, data]) => {
       const key = String(id || "").trim();
       if (!key) return;
-      merged[key] = {
+      const previousRecord = safeObject(prev[key]);
+      const incomingRecord = safeObject(data);
+      const mergedRecord = {
         ...safeObject(prev[key]),
-        ...safeObject(data),
+        ...incomingRecord,
       };
+      if (
+        normalizeId(key) === "player"
+        && normalizeId(previousRecord._projection_source).startsWith("client_")
+      ) {
+        const local = getClientPlayerGridPosition();
+        if (local) {
+          mergedRecord.x = local.x;
+          mergedRecord.y = local.y;
+          mergedRecord._projection_source = previousRecord._projection_source;
+        }
+      }
+      if (
+        FORMATION_COMPANIONS.includes(normalizeId(key))
+        && normalizeId(previousRecord._projection_source) === "local_party_trail"
+      ) {
+        mergedRecord.x = previousRecord.x;
+        mergedRecord.y = previousRecord.y;
+        mergedRecord._projection_source = "local_party_trail";
+      }
+      merged[key] = mergedRecord;
     });
     return merged;
   }
@@ -1915,12 +2162,24 @@
     const isLocalDoor = key === "door_a_to_b"
       || (key === "door_b_to_c" && state.discoveredSecretDoorIds.has("door_b_to_c"));
     if (!isLocalDoor) return false;
+    if (state.openedLocalDoorIds.has(key)) {
+      if (window.BG3HudRenderers && typeof window.BG3HudRenderers.showToast === "function") {
+        window.BG3HudRenderers.showToast("narration", "通道已经打开。", 1200);
+      }
+      return true;
+    }
 
     const before = buildShowcaseSnapshot();
     state.openedLocalDoorIds.add(key);
     const revealed = revealRoomByDoorTarget(key);
     refreshVisibilityProjection();
-    renderTacticalGrid(state.partyStatus, state.environmentObjects, state.mapData);
+    const visibleEnvironment = filterEnvironmentObjectsForTactical(state.environmentObjects);
+    if (window.BG3TacticalMap && typeof window.BG3TacticalMap.refreshMapOnly === "function") {
+      window.BG3TacticalMap.refreshMapOnly(state.mapData, visibleEnvironment);
+      updateMapDebug("localDoorReveal:mapOnly");
+    } else {
+      renderTacticalGrid(state.partyStatus, state.environmentObjects, state.mapData);
+    }
     if (window.BG3HudRenderers && typeof window.BG3HudRenderers.showToast === "function") {
       window.BG3HudRenderers.showToast("narration", "铁门打开，前方区域进入视野。", 1800);
     }
@@ -1935,51 +2194,15 @@
   function resolveAct1Perception() {
     if (state.act1PerceptionResolved) return;
     state.act1PerceptionResolved = true;
-    const roll = Math.floor(Math.random() * 20) + 1;
-    const trapSuccess = roll >= 13;
     if (window.BG3HudRenderers && typeof window.BG3HudRenderers.dispatchUIEvents === "function") {
       window.BG3HudRenderers.dispatchUIEvents([{
-        type: "roll_result",
+        type: "narration",
         actor: "Astarion",
-        skill: "Perception",
-        dc: 13,
-        roll,
-        success: trapSuccess,
-        text: "毒气陷阱感知检定",
+        text: "Astarion 停下脚步观察走廊；感知结果等待后端判定。",
       }]);
     }
-    if (trapSuccess) {
-      discoverTrap("poison_trap_1");
-      discoverTrap("poison_trap_2");
-      discoverTrap("gas_trap_1");
-      discoverSecretDoor(SECRET_DOOR_ID);
-      if (window.BG3HudRenderers && typeof window.BG3HudRenderers.dispatchUIEvents === "function") {
-        window.BG3HudRenderers.dispatchUIEvents([{
-          type: "trap_discovered",
-          actor: "Astarion",
-          text: "Astarion 察觉到毒气陷阱，并指出了暗门轮廓。",
-          trap_ids: ["poison_trap_1", "poison_trap_2", "gas_trap_1"],
-        }]);
-      }
-      if (window.BG3TacticalMap && typeof window.BG3TacticalMap.playTrapDiscoveryHighlight === "function") {
-        window.BG3TacticalMap.playTrapDiscoveryHighlight(["poison_trap_1", "poison_trap_2", "gas_trap_1"]);
-      }
-      if (window.BG3HudRenderers && typeof window.BG3HudRenderers.showToast === "function") {
-        window.BG3HudRenderers.showToast("narration", "Astarion 察觉到毒气陷阱。", 2300);
-      }
-    } else if (window.BG3HudRenderers && typeof window.BG3HudRenderers.showToast === "function") {
-      window.BG3HudRenderers.showToast("warning", "感知检定失败，陷阱仍然隐藏。", 2200);
-    }
-
-    if (!trapSuccess) {
-      const secretDoorRoll = Math.floor(Math.random() * 20) + 1;
-      if (secretDoorRoll >= 14 && discoverSecretDoor(SECRET_DOOR_ID)) {
-        if (window.BG3HudRenderers && typeof window.BG3HudRenderers.showToast === "function") {
-          window.BG3HudRenderers.showToast("narration", "你发现了通往书房的暗门。", 2300);
-        }
-      }
-    } else if (window.BG3HudRenderers && typeof window.BG3HudRenderers.showToast === "function") {
-      window.BG3HudRenderers.showToast("narration", "你发现了通往书房的暗门。", 2300);
+    if (window.BG3HudRenderers && typeof window.BG3HudRenderers.showToast === "function") {
+      window.BG3HudRenderers.showToast("narration", "Astarion 正在观察走廊。", 1800);
     }
     refreshVisibilityProjection();
   }
@@ -2007,23 +2230,19 @@
         || (toRoom && state.roomVisibleIds.has(toRoom))
       );
       if (!rooms.length || isVisibleDoorBoundary || !roomIdFromMap || state.roomVisibleIds.has(String(roomIdFromMap))) {
-        const copy = { ...entity };
+        const copy = isDoorEntity ? normalizeDoorProjectionRecord(entity) : { ...entity };
         if (isVisibleDoorBoundary && state.openedLocalDoorIds.has(normalizeId(id))) {
           copy.is_open = true;
           copy.status = "open";
         }
         const isTrapEntity = normalizeId(entity.type || entity.kind || "").includes("trap") || normalizeId(id).includes("trap");
         if (isTrapEntity) {
-          const status = normalizeId(entity.status || entity.state || "");
-          const backendRevealed =
-            entity.is_hidden === false
-            || entity.is_revealed === true
-            || entity.discovered === true
-            || ["revealed", "disabled", "disarmed", "triggered"].includes(status);
-          const discovered = backendRevealed || state.discoveredTrapIds.has(normalizeId(id)) || state.discoveredTrapIds.has("gas_trap_1");
+          const discovered = isBackendTrapVisible(id, entity);
+          const status = resolvedTrapVisualStatus(id, entity);
           copy.discovered = discovered;
           copy.is_revealed = discovered;
           copy.is_hidden = !discovered;
+          copy.status = discovered ? status : "hidden";
         }
         out[id] = copy;
       }
@@ -2041,7 +2260,7 @@
       if (type !== "door" && !id.includes("door")) return;
       copyVisibleEntity(id, {
         ...safeObject(record.data),
-        ...record,
+        ...normalizeDoorProjectionRecord(record),
         id,
         type: "door",
         kind: "door",
@@ -2083,17 +2302,17 @@
       && isWithinMapBounds(localCoord, fullMapData)
       && isCoordInsideVisibleRooms(localCoord, state.normalizedMap);
 
-    if (canUseBackend) return { x: backendX, y: backendY, source: "backend" };
     const isRealMapSource = normalizeId(state.mapLoadSource) === "json";
+    if (isRealMapSource && canUseLocal) {
+      return { x: localX, y: localY, source: "input_local" };
+    }
+    if (canUseBackend) return { x: backendX, y: backendY, source: "backend" };
     if (!isRealMapSource) {
       if (hasBackend && isWithinMapBounds(backendCoord, fullMapData)) {
         return { x: backendX, y: backendY, source: "backend" };
       }
       if (canUseLocal) return { x: localX, y: localY, source: "input_local" };
       return hasStart ? { x: startX, y: startY, source: "visual_start" } : null;
-    }
-    if (canUseLocal) {
-      return { x: localX, y: localY, source: "input_local" };
     }
     if (hasStart) {
       return { x: startX, y: startY, source: "visual_start" };
@@ -2216,7 +2435,8 @@
     const projected = { ...party };
     const rawPlayer = safeObject(party.player);
     const coords = resolveTacticalPlayerCoordinates(rawPlayer);
-    if (!coords) return projectCompanionFormationForTactical(projected, mapData, safeObject(projected.player));
+    const applyLocalTokens = (candidateParty) => preserveLocalPartyTokenPositions(candidateParty);
+    if (!coords) return applyLocalTokens(projectCompanionFormationForTactical(projected, mapData, safeObject(projected.player)));
     projected.player = {
       ...rawPlayer,
       x: coords.x,
@@ -2225,7 +2445,42 @@
       faction: rawPlayer.faction || "player",
       _projection_source: coords.source || "backend",
     };
-    return projectCompanionFormationForTactical(projected, mapData, projected.player);
+    return applyLocalTokens(projectCompanionFormationForTactical(projected, mapData, projected.player));
+  }
+
+  function preserveLocalPartyTokenPositions(partyStatus) {
+    const party = { ...safeObject(partyStatus) };
+    if (!window.BG3TacticalMap || typeof window.BG3TacticalMap.getLocalPartyTokenPositions !== "function") {
+      return party;
+    }
+    const localPositions = safeObject(window.BG3TacticalMap.getLocalPartyTokenPositions());
+    FORMATION_COMPANIONS.forEach((companionId) => {
+      const local = safeObject(localPositions[companionId]);
+      const source = normalizeId(local._projection_source);
+      if (!["local_party_trail", "local_party_follow", "visual_party_formation"].includes(source)) return;
+      const x = Number(local.x);
+      const y = Number(local.y);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+      const incoming = safeObject(party[companionId]);
+      const incomingSource = normalizeId(incoming._projection_source);
+      const shouldPreserve =
+        source === "local_party_trail"
+        || source === "local_party_follow"
+        || !Number.isFinite(Number(incoming.x))
+        || !Number.isFinite(Number(incoming.y))
+        || incomingSource === "visual_party_formation"
+        || incomingSource === "local_party_trail"
+        || incomingSource === "local_party_follow";
+      if (!shouldPreserve) return;
+      party[companionId] = {
+        ...incoming,
+        ...local,
+        x: Math.round(x),
+        y: Math.round(y),
+        _projection_source: source,
+      };
+    });
+    return party;
   }
 
   function renderTacticalGrid(partyStatus, environmentObjects, mapData) {
@@ -3561,7 +3816,9 @@
     showLootModal();
   }
 
-  function maybeShowLootModal(environmentObjects) {
+  function maybeShowLootModal(environmentObjects, context = {}) {
+    const intent = normalizeId(safeObject(context).intent);
+    if (intent !== "ui_action_loot") return;
     const env = safeObject(environmentObjects);
     const eligibleTarget = Object.entries(env).find(([id, rawData]) => {
       return !state.seenLootTargets.has(normalizeId(id)) && canLootTarget(rawData);
@@ -3768,6 +4025,7 @@
       return { ok: true, qa_local: true };
     }
 
+    syncLocalPlayerProjectionState("client_before_narrative");
     setLoading(true);
     state.xrayNodeTimings = {};
     updateXrayNodeTimings(state.xrayNodeTimings);
@@ -3796,6 +4054,7 @@
       if (opts.incrementTurn !== false) {
         state.turnCount += 1;
       }
+      refreshWorldFlags(data);
       const wasCombatActive = isCombatStateActive(state.combatState);
       const prevPartySnapshot = { ...state.partyStatus };
       const prevEnvironmentSnapshot = { ...state.environmentObjects };
@@ -3915,7 +4174,11 @@
 
       /* Dispatch HUD UI events from response (#1) */
       if (intentValue.toLowerCase() !== "init_sync") {
-        dispatchUIEventsFromResponse(data, previousUIEventState, uiEvents);
+        const dispatchedEvents = dispatchUIEventsFromResponse(data, previousUIEventState, uiEvents);
+        if (safeArray(dispatchedEvents).some((event) => normalizeId(safeObject(event).type).startsWith("trap_"))) {
+          refreshVisibilityProjection();
+          renderTacticalGrid(state.partyStatus, state.environmentObjects, state.mapData);
+        }
       }
 
       if (!opts.skipLogUpdate) {
@@ -3925,7 +4188,7 @@
         triggerCombatVisualEffects(data, userLine || "");
         triggerSpeechBubbles(data);
       }
-      maybeShowLootModal(data.environment_objects);
+      maybeShowLootModal(data.environment_objects, { intent: intentValue });
       setNetworkState("链路在线", "ok");
       return data;
     } catch (error) {
@@ -4524,11 +4787,12 @@
       );
       if (!response.ok) return;
       const data = await response.json();
+      refreshWorldFlags(data);
       const partyStatus = safeObject(data.party_status);
       const environmentObjects = safeObject(data.environment_objects);
       const combatState = safeObject(data.combat_state);
       const prevPollParty = { ...state.partyStatus };
-      if (Object.keys(partyStatus).length) state.partyStatus = partyStatus;
+      if (Object.keys(partyStatus).length) state.partyStatus = mergePartyStatusResponse(prevPollParty, partyStatus);
       if (Object.keys(environmentObjects).length) state.environmentObjects = environmentObjects;
       state.combatState = combatState;
       const pollMapData = safeObject(data.map_data);
@@ -4543,7 +4807,11 @@
       renderTacticalGrid(state.partyStatus, state.environmentObjects, state.mapData);
       updateMapDebug("pollDialogueState");
       /* P1-1: dispatch HUD events from state polling too */
-      dispatchUIEventsFromResponse(data, { party_status: prevPollParty });
+      const pollEvents = dispatchUIEventsFromResponse(data, { party_status: prevPollParty });
+      if (safeArray(pollEvents).some((event) => normalizeId(safeObject(event).type).startsWith("trap_"))) {
+        refreshVisibilityProjection();
+        renderTacticalGrid(state.partyStatus, state.environmentObjects, state.mapData);
+      }
     } catch (error) {
       if (error && error.name === "AbortError") {
         setNetworkState("链路在线", "ok");
@@ -4627,35 +4895,33 @@
     /* Initialize Input Controller for WASD */
     if (window.BG3InputController && normalizedMap) {
       window.BG3InputController.init({
-        normalizedMap,
+        normalizedMap: state.normalizedMap || normalizedMap,
         playerStart: normalizedMap.playerStart,
         onNarrativeTrigger: (trigger) => {
           const triggerId = normalizeId(trigger && trigger.id);
           const triggerType = normalizeId(trigger && trigger.type);
+          const isTrapMechanicTrigger = triggerType === "trap" || triggerId.includes("trap");
+          const shouldRouteToBackend = triggerId === "act1_corridor_approach" || isTrapMechanicTrigger;
           if (triggerId === "act1_corridor_approach") {
-            state.trapSenseEnabled = true;
-            if (window.BG3TacticalMap && typeof window.BG3TacticalMap.setTrapSenseMode === "function") {
-              window.BG3TacticalMap.setTrapSenseMode(true);
-            }
             resolveAct1Perception();
           }
-          if (triggerType === "trap" || triggerId.includes("trap")) {
-            if (window.BG3TacticalMap && typeof window.BG3TacticalMap.playTrapHazardPulse === "function") {
-              window.BG3TacticalMap.playTrapHazardPulse(trigger);
-            }
-            if (window.BG3HudRenderers && typeof window.BG3HudRenderers.dispatchUIEvents === "function") {
-              window.BG3HudRenderers.dispatchUIEvents([{
-                type: "trap_triggered",
-                text: "毒雾骤然喷发，队伍受到伤害。",
-              }]);
-            }
-            if (window.BG3HudRenderers && typeof window.BG3HudRenderers.showToast === "function") {
-              window.BG3HudRenderers.showToast("warning", "你踩中了陷阱触发区。", 2000);
-            }
-          }
-          if (QA_NO_IDLE) return;
+          if (QA_NO_IDLE && !shouldRouteToBackend) return;
           const data = trigger && trigger.data ? trigger.data : {};
           const triggerEventId = (trigger && trigger.id) ? String(trigger.id) : "unknown";
+          if (isTrapMechanicTrigger) {
+            const trapTarget = normalizeTrapTriggerTarget(trigger) || "gas_trap_1";
+            if (!shouldTriggerTrapMechanic(trapTarget)) return;
+            sendStructuredAction({
+              text: "触发毒气陷阱",
+              intent: "INTERACT",
+              character: null,
+              options: {
+                target: trapTarget,
+                source: "trap_trigger",
+              },
+            });
+            return;
+          }
           sendMessage(
             "我踩到了一个触发区域: " + triggerEventId,
             "trigger_zone",
@@ -4799,6 +5065,7 @@
     if (NON_NARRATIVE.has(i)) return false;
 
     if (s === "trigger_zone" || i === "trigger_zone") return true;
+    if (s === "trap_trigger") return true;
     if (s === "interaction") return true;
     if (i === "companion_interrupt") return true;
     if (s === "dialogue_input") return true;
@@ -4816,6 +5083,19 @@
     window.BG3HudRenderers.dispatchUIEvents(events);
     events.forEach((event) => {
       const ev = safeObject(event);
+      if (ev.type === "trap_insight") {
+        markBackendTrapSignal(ev.trapId || "gas_trap_1", "revealed");
+        state.trapSenseEnabled = false;
+        if (window.BG3TacticalMap && typeof window.BG3TacticalMap.setTrapSenseMode === "function") {
+          window.BG3TacticalMap.setTrapSenseMode(false);
+        }
+      }
+      if (ev.type === "trap_disarmed") {
+        markBackendTrapSignal(ev.trapId || "gas_trap_1", "disabled");
+      }
+      if (ev.type === "trap_triggered") {
+        markBackendTrapSignal(ev.trapId || "gas_trap_1", "triggered");
+      }
       if (ev.type === "trap_insight" && window.BG3TacticalMap && typeof window.BG3TacticalMap.playTrapDiscoveryHighlight === "function") {
         window.BG3TacticalMap.playTrapDiscoveryHighlight([ev.trapId || "gas_trap_1"]);
       }

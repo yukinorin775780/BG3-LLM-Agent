@@ -42,8 +42,19 @@ def mechanics_node(state: GameState) -> dict:
         result = mechanics.execute_unequip_action(state)
     elif normalized_intent in ("MOVE", "APPROACH"):
         result = mechanics.execute_move_action(state)
+    elif normalized_intent == "TRIGGER_TRAP":
+        result = mechanics.execute_trigger_trap_action(state)
     elif normalized_intent == "INTERACT":
-        result = mechanics.execute_interact_action(state)
+        intent_context = state.get("intent_context") if isinstance(state, dict) else {}
+        source = ""
+        target = ""
+        if isinstance(intent_context, dict):
+            source = str(intent_context.get("source") or "").strip().lower()
+            target = str(intent_context.get("action_target") or "").strip().lower()
+        if source == "trap_trigger" or target == "gas_trap_1":
+            result = mechanics.execute_trigger_trap_action(state)
+        else:
+            result = mechanics.execute_interact_action(state)
     elif normalized_intent == "DISARM":
         result = mechanics.execute_disarm_action(state)
     elif normalized_intent == "UNLOCK":

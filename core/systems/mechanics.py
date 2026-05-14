@@ -10,6 +10,7 @@ import random
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
+from core.campaigns.necromancer_lab import detect_poison_trap_trigger_context
 from core.engine.physics import DEBUG_ALWAYS_PASS_CHECKS
 from core.systems.dice import roll_d20
 from core.systems.inventory import get_registry
@@ -2015,6 +2016,7 @@ def _trigger_trap_entity(
     trigger_actor_id: str,
     flags: Optional[Dict[str, Any]] = None,
     environment_objects: Optional[Dict[str, Any]] = None,
+    affected_actor_ids: Optional[List[str]] = None,
 ) -> List[str]:
     trap_name = _display_entity_name(trap, trap_id)
     trigger_actor = entities.get(trigger_actor_id, {})
@@ -2029,6 +2031,11 @@ def _trigger_trap_entity(
     damage_formula = str(trap.get("damage") or "2d6")
     damage_type = str(trap.get("damage_type") or "poison").strip().lower()
     damage_type_name = _damage_type_display_name(damage_type)
+    explicit_affected = {
+        _normalize_entity_id(actor_id)
+        for actor_id in (affected_actor_ids or [])
+        if _normalize_entity_id(actor_id)
+    }
 
     logs = [f"💥 [陷阱触发] {trigger_actor_name} 不慎踩中了 {trap_name}！"]
     is_lab_poison_trap = _normalize_entity_id(trap_id) == "gas_trap_1"
@@ -2048,11 +2055,14 @@ def _trigger_trap_entity(
             target_x=entity_x,
             target_y=entity_y,
         )
-        if distance > radius:
+        is_explicitly_affected = normalized_id in explicit_affected
+        if distance > radius and not is_explicitly_affected:
             continue
 
         if is_lab_poison_trap and _is_player_side_entity(normalized_id, entity):
-            _apply_poisoned_once(entity, duration=3)
+            if _apply_poisoned_once(entity, duration=3):
+                entity_name = _display_entity_name(entity, normalized_id)
+                logs.append(f"🤢 [状态] {entity_name} 获得 中毒（3 回合）。")
 
         dex_mod = calculate_ability_modifier(_get_ability_score(entity, "DEX", 10))
         save_roll = random.randint(1, 20)
@@ -2080,6 +2090,7 @@ def _trigger_trap_entity(
     trap["is_hidden"] = False
     if is_lab_poison_trap and isinstance(flags, dict):
         flags["necromancer_lab_poison_trap_triggered"] = True
+        _mark_act2_trap_triggered(flags)
     if is_lab_poison_trap and isinstance(environment_objects, dict):
         _sync_lab_trap_state_to_environment(
             environment_objects=environment_objects,
@@ -2100,7 +2111,8 @@ def _evaluate_traps_after_move(
     flags: Optional[Dict[str, Any]] = None,
     environment_objects: Optional[Dict[str, Any]] = None,
 ) -> List[str]:
-    if _normalize_entity_id(actor_id) != "player":
+    normalized_actor_id = _normalize_entity_id(actor_id)
+    if normalized_actor_id not in PLAYER_SIDE_ENTITY_IDS:
         return []
     actor = entities.get(actor_id)
     if not isinstance(actor, dict) or not _is_alive_entity(actor):
@@ -2565,6 +2577,80 @@ def _is_necromancer_lab_map(state: Any) -> bool:
     if not isinstance(map_data, dict):
         return False
     return str(map_data.get("id") or "").strip().lower() == "necromancer_lab"
+
+
+def _is_lab_corridor_door(target_id: str) -> bool:
+    return _normalize_entity_id(target_id) == "door_b_to_d"
+
+
+def _mark_act2_trap_revealed(flags: Dict[str, Any]) -> None:
+    flags["act2_corridor_entered"] = True
+    flags["act2_astarion_perception_checked"] = True
+    flags["act2_astarion_perception_success"] = True
+    flags["act2_gas_trap_revealed"] = True
+
+
+def _mark_act2_disarm_attempt(
+    flags: Dict[str, Any],
+    *,
+    actor_id: str,
+    success: bool,
+) -> None:
+    normalized_actor = _normalize_entity_id(actor_id) or "player"
+    if normalized_actor == "astarion":
+        flags["act2_astarion_ordered_to_disarm"] = True
+    flags["act2_disarm_actor"] = normalized_actor
+    flags["act2_disarm_attempted"] = True
+    flags["act2_disarm_success"] = bool(success)
+
+
+def _mark_act2_trap_disarmed(flags: Dict[str, Any]) -> None:
+    flags["act2_gas_trap_disarmed"] = True
+    flags["act2_gas_trap_revealed"] = True
+
+
+def _mark_act2_trap_triggered(flags: Dict[str, Any]) -> None:
+    flags["act2_gas_trap_triggered"] = True
+    flags["act2_gas_trap_damage_applied"] = True
+
+
+def _has_inventory_item(
+    *,
+    actor_id: str,
+    item_id: str,
+    actor: Dict[str, Any],
+    player_inventory: Dict[str, Any],
+) -> bool:
+    actor_inventory = actor.get("inventory") if isinstance(actor.get("inventory"), dict) else {}
+    try:
+        if int(actor_inventory.get(item_id, 0) or 0) > 0:
+            return True
+    except (TypeError, ValueError):
+        pass
+    if _normalize_entity_id(actor_id) == "player":
+        try:
+            return int(player_inventory.get(item_id, 0) or 0) > 0
+        except (TypeError, ValueError):
+            return False
+    return False
+
+
+def _sync_object_state(
+    *,
+    entities: Dict[str, Any],
+    environment_objects: Dict[str, Any],
+    target_id: str,
+    updates: Dict[str, Any],
+) -> None:
+    for bucket in (entities, environment_objects):
+        target = bucket.get(target_id)
+        if isinstance(target, dict):
+            target.update(updates)
+
+
+def _mark_lab_corridor_door_base_flags(flags: Dict[str, Any]) -> None:
+    flags["act2_corridor_exit_door_inspected"] = True
+    flags["act2_corridor_exit_requires_key"] = True
 
 
 def _flags_dict(state: Any) -> Dict[str, Any]:
@@ -5933,6 +6019,124 @@ def execute_move_action(state: Any) -> Dict[str, Any]:
     return payload
 
 
+def execute_trigger_trap_action(state: Any) -> Dict[str, Any]:
+    entities = copy.deepcopy(state.get("entities") or {})
+    environment_objects = copy.deepcopy(state.get("environment_objects") or {})
+    flags = dict(state.get("flags") or {})
+    map_data = (
+        copy.deepcopy(state.get("map_data"))
+        if isinstance(state.get("map_data"), dict)
+        else {}
+    )
+    intent_context = state.get("intent_context") or {}
+    context = detect_poison_trap_trigger_context(
+        {
+            **(state if isinstance(state, dict) else {}),
+            "entities": entities,
+            "environment_objects": environment_objects,
+            "flags": flags,
+            "map_data": map_data,
+        },
+        str(state.get("user_input") or ""),
+        intent_context if isinstance(intent_context, dict) else {},
+    )
+    actor_id = _normalize_entity_id(
+        (context or {}).get("trigger_actor_id")
+        or (intent_context.get("action_actor") if isinstance(intent_context, dict) else "")
+        or "player"
+    ) or "player"
+    target_id = _normalize_entity_id(
+        (context or {}).get("trap_id")
+        or (intent_context.get("action_target") if isinstance(intent_context, dict) else "")
+        or "gas_trap_1"
+    ) or "gas_trap_1"
+
+    if not context:
+        return {
+            "journal_events": [],
+            "entities": entities,
+            "environment_objects": environment_objects,
+            "flags": flags,
+            "map_data": map_data,
+            "raw_roll_data": _build_action_result(
+                intent="TRIGGER_TRAP",
+                actor=actor_id,
+                target=target_id,
+                is_success=False,
+                result_type="NO_TRIGGER",
+            ),
+        }
+
+    trap = entities.get(target_id)
+    if not isinstance(trap, dict):
+        trap_obj = environment_objects.get(target_id)
+        if isinstance(trap_obj, dict):
+            pos = trap_obj.get("position")
+            x = trap_obj.get("x")
+            y = trap_obj.get("y")
+            if isinstance(pos, (list, tuple)) and len(pos) == 2:
+                x, y = pos[0], pos[1]
+            trap = {
+                "name": trap_obj.get("name") or "毒气陷阱",
+                "entity_type": "trap",
+                "status": trap_obj.get("status") or "armed",
+                "is_hidden": bool(trap_obj.get("is_hidden", True)),
+                "x": x,
+                "y": y,
+                "hp": 1,
+                "max_hp": 1,
+                "ac": 10,
+                "detect_dc": trap_obj.get("detect_dc", 13),
+                "disarm_dc": trap_obj.get("disarm_dc", 15),
+                "save_dc": trap_obj.get("save_dc", 13),
+                "damage": trap_obj.get("damage") or "2d6",
+                "damage_type": trap_obj.get("damage_type") or "poison",
+                "trigger_radius": trap_obj.get("trigger_radius", 0),
+            }
+            entities[target_id] = trap
+    if not isinstance(trap, dict):
+        return {
+            "journal_events": [f"❌ [陷阱触发] 找不到目标 {target_id}。"],
+            "entities": entities,
+            "environment_objects": environment_objects,
+            "flags": flags,
+            "map_data": map_data,
+            "raw_roll_data": _build_action_result(
+                intent="TRIGGER_TRAP",
+                actor=actor_id,
+                target=target_id,
+                is_success=False,
+                result_type="NOT_FOUND",
+            ),
+        }
+
+    journal_events = _trigger_trap_entity(
+        trap_id=target_id,
+        trap=trap,
+        entities=entities,
+        map_data=map_data,
+        trigger_actor_id=actor_id,
+        flags=flags,
+        environment_objects=environment_objects,
+        affected_actor_ids=list(context.get("affected_actor_ids") or []),
+    )
+    return {
+        "journal_events": journal_events,
+        "entities": entities,
+        "environment_objects": environment_objects,
+        "flags": flags,
+        "map_data": map_data,
+        "raw_roll_data": _build_action_result(
+            intent="TRIGGER_TRAP",
+            actor=actor_id,
+            target=target_id,
+            is_success=True,
+            result_type="SUCCESS",
+            extra={"affected_actor_ids": list(context.get("affected_actor_ids") or [])},
+        ),
+    }
+
+
 def execute_interact_action(state: Any) -> Dict[str, Any]:
     entities = copy.deepcopy(state.get("entities") or {})
     environment_objects = copy.deepcopy(state.get("environment_objects") or {})
@@ -6036,6 +6240,63 @@ def execute_interact_action(state: Any) -> Dict[str, Any]:
         int(actor_inventory.get("heavy_iron_key", 0) or 0) > 0
         or (actor_id == "player" and int(player_inventory.get("heavy_iron_key", 0) or 0) > 0)
     )
+    if normalized_target_id == "door_b_to_d":
+        flags = dict(state.get("flags") or {})
+        _mark_lab_corridor_door_base_flags(flags)
+        has_lab_key = _has_inventory_item(
+            actor_id=actor_id,
+            item_id="lab_key",
+            actor=actor,
+            player_inventory=player_inventory,
+        )
+        if not has_lab_key:
+            return {
+                "journal_events": [
+                    "🚪 [系统] 实验室重门需要 lab_key；也可以尝试 DC 15 撬锁。"
+                ],
+                "entities": entities,
+                "environment_objects": environment_objects,
+                "map_data": map_data,
+                "flags": flags,
+                "demo_cleared": bool(state.get("demo_cleared", False)),
+                "raw_roll_data": _build_action_result(
+                    intent="INTERACT",
+                    actor=actor_id,
+                    target=target_id,
+                    is_success=False,
+                    result_type="MISSING_KEY",
+                    extra={"key_required": "lab_key", "lockpick_dc": _coerce_int(door.get("lockpick_dc"), 15)},
+                ),
+            }
+
+        door["is_locked"] = False
+        door["is_open"] = True
+        door["status"] = "open"
+        _sync_object_state(
+            entities=entities,
+            environment_objects=environment_objects,
+            target_id=target_id,
+            updates={"is_locked": False, "is_open": True, "status": "open"},
+        )
+        _sync_door_state_to_map(map_data=map_data, entities=entities)
+        flags["act2_corridor_exit_opened_with_key"] = True
+        flags["act2_lockpick_success_route_to_boss"] = False
+        return {
+            "journal_events": ["🚪 [交互] lab_key 嵌入锁孔，通往实验室的重门打开了。"],
+            "entities": entities,
+            "environment_objects": environment_objects,
+            "map_data": map_data,
+            "flags": flags,
+            "demo_cleared": bool(state.get("demo_cleared", False)),
+            "raw_roll_data": _build_action_result(
+                intent="INTERACT",
+                actor=actor_id,
+                target=target_id,
+                is_success=True,
+                result_type="SUCCESS",
+                extra={"is_open": True, "key_required": "lab_key"},
+            ),
+        }
     if normalized_target_id == "heavy_oak_door_1" and not has_heavy_key:
         payload: Dict[str, Any] = {
             "journal_events": ["🚪 [系统] 门被锁死了，你需要一把沉重的铁钥匙。"],
@@ -6301,11 +6562,58 @@ def execute_disarm_action(state: Any) -> Dict[str, Any]:
 
     if is_lab_astarion_trap and astarion_saw_trap:
         trap_name = _display_entity_name(trap, target_id)
+        force_failure = bool(intent_context.get("force_disarm_failure", False)) or bool(
+            flags.get("qa_force_trap_disarm_failure", False)
+        ) or bool(flags.get("necromancer_lab_force_trap_disarm_failure", False))
+        if force_failure:
+            _mark_act2_trap_revealed(flags)
+            _mark_act2_disarm_attempt(flags, actor_id=actor_id, success=False)
+            trigger_logs = _trigger_trap_entity(
+                trap_id=target_id,
+                trap=trap,
+                entities=entities,
+                map_data=map_data,
+                trigger_actor_id=actor_id,
+                flags=flags,
+                environment_objects=environment_objects,
+                affected_actor_ids=["player"],
+            )
+            journal_events = [
+                f"[陷阱解除失败] astarion -> {target_id}",
+                f"🧰 [解除陷阱] {actor_name} 的工具划过 {trap_name} 的触发簧片，毒气喷口猛然打开。",
+            ] + trigger_logs
+            _apply_astarion_memory_echo_journal(
+                state=state,
+                flags=flags,
+                journal_events=journal_events,
+            )
+            return {
+                "journal_events": journal_events,
+                "entities": entities,
+                "environment_objects": environment_objects,
+                "flags": flags,
+                "map_data": map_data,
+                "raw_roll_data": _build_action_result(
+                    intent="DISARM",
+                    actor=actor_id,
+                    target=target_id,
+                    is_success=False,
+                    result_type="FORCED_FAILURE_TRIGGERED",
+                    extra={
+                        "deterministic": True,
+                        "reason": "necromancer_lab_force_trap_disarm_failure",
+                    },
+                ),
+            }
+
         trap["status"] = "disabled"
         trap["is_hidden"] = False
         trap["hp"] = 0
         flags["necromancer_lab_poison_trap_disarmed"] = True
         flags["necromancer_lab_poison_trap_revealed"] = True
+        _mark_act2_trap_revealed(flags)
+        _mark_act2_disarm_attempt(flags, actor_id=actor_id, success=True)
+        _mark_act2_trap_disarmed(flags)
         _sync_lab_trap_state_to_environment(
             environment_objects=environment_objects,
             trap_id=target_id,
@@ -6351,6 +6659,9 @@ def execute_disarm_action(state: Any) -> Dict[str, Any]:
     is_success = bool(result.get("is_success", False))
 
     if raw_roll == 1:
+        if _is_necromancer_lab_map(state) and _normalize_entity_id(target_id) == "gas_trap_1":
+            _mark_act2_trap_revealed(flags)
+            _mark_act2_disarm_attempt(flags, actor_id=actor_id, success=False)
         trigger_logs = _trigger_trap_entity(
             trap_id=target_id,
             trap=trap,
@@ -6388,6 +6699,18 @@ def execute_disarm_action(state: Any) -> Dict[str, Any]:
         trap["status"] = "disabled"
         trap["is_hidden"] = False
         trap["hp"] = 0
+        if _is_necromancer_lab_map(state) and _normalize_entity_id(target_id) == "gas_trap_1":
+            flags["necromancer_lab_poison_trap_disarmed"] = True
+            flags["necromancer_lab_poison_trap_revealed"] = True
+            _mark_act2_trap_revealed(flags)
+            _mark_act2_disarm_attempt(flags, actor_id=actor_id, success=True)
+            _mark_act2_trap_disarmed(flags)
+            _sync_lab_trap_state_to_environment(
+                environment_objects=environment_objects,
+                trap_id=target_id,
+                status="disabled",
+                is_hidden=False,
+            )
         entities.pop(target_id, None)
         _remove_trap_obstacle_from_map(map_data=map_data, x=trap_x, y=trap_y)
         return {
@@ -6413,6 +6736,40 @@ def execute_disarm_action(state: Any) -> Dict[str, Any]:
             ),
         }
 
+    if _is_necromancer_lab_map(state) and _normalize_entity_id(target_id) == "gas_trap_1":
+        _mark_act2_trap_revealed(flags)
+        _mark_act2_disarm_attempt(flags, actor_id=actor_id, success=False)
+        trigger_logs = _trigger_trap_entity(
+            trap_id=target_id,
+            trap=trap,
+            entities=entities,
+            map_data=map_data,
+            trigger_actor_id=actor_id,
+            flags=flags,
+            environment_objects=environment_objects,
+        )
+        return {
+            "journal_events": [
+                f"🧰 [解除陷阱] {actor_name} 未能拆除 {target_name} (1d20: {total} vs DC {disarm_dc})，机关被触发。"
+            ] + trigger_logs,
+            "entities": entities,
+            "environment_objects": environment_objects,
+            "flags": flags,
+            "map_data": map_data,
+            "raw_roll_data": _build_action_result(
+                intent="DISARM",
+                actor=actor_id,
+                target=target_id,
+                is_success=False,
+                result_type="FAIL_TRIGGERED",
+                extra={
+                    "dc": disarm_dc,
+                    "raw_roll": raw_roll,
+                    "total": total,
+                    "modifier": dex_mod,
+                },
+            ),
+        }
     return {
         "journal_events": [
             f"🧰 [解除陷阱] {actor_name} 未能拆除 {target_name} (1d20: {total} vs DC {disarm_dc})。"
@@ -6534,6 +6891,108 @@ def execute_unlock_action(state: Any) -> Dict[str, Any]:
                 target=target_id,
                 is_success=True,
                 result_type="ALREADY_UNLOCKED",
+            ),
+        }
+
+    if _is_necromancer_lab_map(state) and _is_lab_corridor_door(target_id):
+        flags = dict(state.get("flags") or {})
+        _mark_lab_corridor_door_base_flags(flags)
+        flags["act2_corridor_exit_lockpick_attempted"] = True
+        lockpick_dc = max(
+            1,
+            _coerce_int(
+                target_obj.get("lockpick_dc"),
+                _coerce_int(target_obj.get("unlock_dc"), _coerce_int(intent_context.get("difficulty_class"), 15)),
+            ),
+        )
+        dex_mod = calculate_ability_modifier(_get_ability_score(actor, "DEX", 10))
+        force_success = bool(intent_context.get("force_lockpick_success", False)) or bool(
+            flags.get("necromancer_lab_force_lockpick_success", False)
+        )
+        force_failure = bool(intent_context.get("force_lockpick_failure", False)) or bool(
+            flags.get("necromancer_lab_force_lockpick_failure", False)
+        )
+        if force_success:
+            raw_roll = max(1, min(20, lockpick_dc - dex_mod))
+            total = raw_roll + dex_mod
+            is_success = True
+        elif force_failure:
+            raw_roll = 1
+            total = raw_roll + dex_mod
+            is_success = False
+        else:
+            result = roll_d20(
+                dc=lockpick_dc,
+                modifier=dex_mod,
+                roll_type="normal",
+            )
+            raw_roll = _coerce_int(result.get("raw_roll"), 0)
+            total = _coerce_int(result.get("total"), raw_roll + dex_mod)
+            is_success = bool(result.get("is_success", False))
+
+        if is_success:
+            target_obj["is_locked"] = False
+            target_obj["is_open"] = True
+            target_obj["status"] = "open"
+            _sync_object_state(
+                entities=entities,
+                environment_objects=environment_objects,
+                target_id=target_id,
+                updates={"is_locked": False, "is_open": True, "status": "open"},
+            )
+            _sync_door_state_to_map(map_data=map_data, entities=entities)
+            flags["act2_corridor_exit_lockpick_success"] = True
+            flags["act2_lockpick_success_route_to_boss"] = True
+            return {
+                "journal_events": [
+                    f"🔓 [撬锁成功] {actor_name} 撬开了通往实验室的重门 (1d20: {total} vs DC {lockpick_dc})。"
+                ],
+                "entities": entities,
+                "environment_objects": environment_objects,
+                "map_data": map_data,
+                "flags": flags,
+                "raw_roll_data": _build_action_result(
+                    intent="UNLOCK",
+                    actor=actor_id,
+                    target=target_id,
+                    is_success=True,
+                    result_type="SUCCESS",
+                    extra={
+                        "dc": lockpick_dc,
+                        "raw_roll": raw_roll,
+                        "total": total,
+                        "modifier": dex_mod,
+                        "route": "boss_room_direct",
+                    },
+                ),
+            }
+
+        flags["act2_corridor_exit_lockpick_success"] = False
+        flags["act2_lockpick_success_route_to_boss"] = False
+        flags["act2_secret_study_hint_given"] = True
+        flags["act2_secret_study_route_unlocked"] = True
+        return {
+            "journal_events": [
+                f"🔒 [撬锁失败] {actor_name} 没能撬开实验室重门 (1d20: {total} vs DC {lockpick_dc})。",
+                "🕯️ [线索] 墙后有空响，也许附近还有密道或别的入口。",
+            ],
+            "entities": entities,
+            "environment_objects": environment_objects,
+            "map_data": map_data,
+            "flags": flags,
+            "raw_roll_data": _build_action_result(
+                intent="UNLOCK",
+                actor=actor_id,
+                target=target_id,
+                is_success=False,
+                result_type="FAIL_SECRET_STUDY_HINT",
+                extra={
+                    "dc": lockpick_dc,
+                    "raw_roll": raw_roll,
+                    "total": total,
+                    "modifier": dex_mod,
+                    "route": "secret_study_hint",
+                },
             ),
         }
 

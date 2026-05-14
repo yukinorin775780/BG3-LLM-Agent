@@ -214,7 +214,8 @@
     const e = event && typeof event === "object" ? event : {};
     const card = buildAgentSignalCard("trap-disarmed", "Trap Disarmed", "✓", [
       { label: "Actor", value: actorLabel(e.actor || "astarion") },
-      { label: "Result", value: (e.trapId || "gas_trap_1") + " disabled" },
+      { label: "Result", value: "Astarion handled the mechanism" },
+      { label: "Trap", value: (e.trapId || "gas_trap_1") + " disabled" },
       { label: "State", value: "Safe passage" },
     ]);
     appendAgentSignalCard(card, 5000);

@@ -46,6 +46,10 @@ def _apply_actor_spoke(
         trap_id = str(trap_insight.get("trap_id") or "gas_trap_1").strip() or "gas_trap_1"
         journal_events.append(f"[陷阱感知] {speaker_id} -> {trap_id}")
         flags["necromancer_lab_poison_trap_revealed"] = True
+        flags["act2_corridor_entered"] = True
+        flags["act2_astarion_perception_checked"] = True
+        flags["act2_astarion_perception_success"] = True
+        flags["act2_gas_trap_revealed"] = True
         flags["astarion_detected_gas_trap"] = {
             "value": True,
             "visibility": {

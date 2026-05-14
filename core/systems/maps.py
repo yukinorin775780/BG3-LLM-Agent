@@ -123,6 +123,20 @@ def _normalize_obstacle(raw_obstacle: Dict[str, Any]) -> Dict[str, Any]:
         normalized_obstacle["entity_id"] = str(raw_obstacle.get("entity_id") or "").strip().lower()
     if "is_open" in raw_obstacle:
         normalized_obstacle["is_open"] = bool(raw_obstacle.get("is_open"))
+    if "is_locked" in raw_obstacle:
+        normalized_obstacle["is_locked"] = bool(raw_obstacle.get("is_locked"))
+    if "status" in raw_obstacle:
+        normalized_obstacle["status"] = str(raw_obstacle.get("status") or "").strip().lower()
+    if "key_required" in raw_obstacle:
+        normalized_obstacle["key_required"] = str(raw_obstacle.get("key_required") or "").strip()
+    if "lockpick_dc" in raw_obstacle:
+        try:
+            normalized_obstacle["lockpick_dc"] = int(raw_obstacle.get("lockpick_dc"))
+        except (TypeError, ValueError):
+            normalized_obstacle["lockpick_dc"] = 15
+    if "alias_ids" in raw_obstacle:
+        raw_aliases = raw_obstacle.get("alias_ids")
+        normalized_obstacle["alias_ids"] = list(raw_aliases) if isinstance(raw_aliases, list) else []
     if "target_map" in raw_obstacle:
         normalized_obstacle["target_map"] = _normalize_map_id(raw_obstacle.get("target_map"))
     if "spawn_x" in raw_obstacle:
@@ -216,6 +230,14 @@ def _normalize_environment_objects(
         if object_type == "door":
             is_open = bool(raw_obj.get("is_open", False))
             derived_obstacle["is_open"] = is_open
+            derived_obstacle["is_locked"] = bool(raw_obj.get("is_locked", False))
+            derived_obstacle["status"] = str(raw_obj.get("status") or ("open" if is_open else "closed"))
+            if raw_obj.get("key_required"):
+                derived_obstacle["key_required"] = str(raw_obj.get("key_required") or "")
+            if raw_obj.get("lockpick_dc") is not None:
+                derived_obstacle["lockpick_dc"] = int(raw_obj.get("lockpick_dc") or 0)
+            if raw_obj.get("alias_ids") is not None:
+                derived_obstacle["alias_ids"] = copy.deepcopy(raw_obj.get("alias_ids") or [])
             derived_obstacle["blocks_movement"] = not is_open
             derived_obstacle["blocks_los"] = not is_open
         if object_type == "trap":

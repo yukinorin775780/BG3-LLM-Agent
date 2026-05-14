@@ -479,7 +479,10 @@ def detect_trap_awareness_context(
         disarmed = True
     if trap_status == "triggered":
         triggered = True
-    if not bool(trap.get("is_hidden", True)) and trap:
+    # Do not treat `is_hidden=false` alone as full narrative reveal. The UI can
+    # use that for projection, but Act2 reveal must come from Astarion's signal
+    # or an explicit trap status/flag so metadata does not leak early.
+    if trap_status == "revealed":
         revealed = True
 
     can_detect = detected_flag or _astarion_detects_trap(entities)
@@ -503,6 +506,100 @@ def detect_trap_awareness_context(
         "revealed": bool(revealed),
         "disarmed": bool(disarmed),
         "triggered": bool(triggered),
+    }
+
+
+def _coordinate_from_payload(payload: Mapping[str, Any]) -> Optional[tuple[int, int]]:
+    if "x" in payload and "y" in payload:
+        try:
+            return int(payload.get("x")), int(payload.get("y"))
+        except (TypeError, ValueError):
+            return None
+
+    position = payload.get("position")
+    if isinstance(position, (list, tuple)) and len(position) == 2:
+        try:
+            return int(position[0]), int(position[1])
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _chebyshev_distance(left: tuple[int, int], right: tuple[int, int]) -> int:
+    return max(abs(left[0] - right[0]), abs(left[1] - right[1]))
+
+
+def detect_poison_trap_trigger_context(
+    state: Mapping[str, Any],
+    user_input: str,
+    intent_context: Optional[Mapping[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    """
+    Detect the explicit Act2 poison-trap trigger action.
+    This helper is read-only; mechanics owns mutation and journal writes.
+    """
+    normalized_state = _safe_dict(state)
+    if _map_id(normalized_state) != "necromancer_lab":
+        return None
+
+    ctx = _safe_dict(intent_context)
+    target = _normalize_id(ctx.get("action_target") or normalized_state.get("target"))
+    source = _normalize_id(ctx.get("source") or normalized_state.get("source"))
+    intent = _normalize_id(normalized_state.get("intent")).upper()
+    text = str(user_input or normalized_state.get("user_input") or "").strip()
+    lowered = text.lower()
+    explicit_target = target in {"gas_trap_1", "poison_trap_1", "poison_trap_2", "poison_trap"}
+    explicit_source = source == "trap_trigger"
+    explicit_intent = intent == "TRIGGER_TRAP"
+    explicit_text = "gas_trap_1" in lowered and any(
+        marker in lowered or marker in text
+        for marker in ("trigger", "trigger_trap", "trap_trigger", "触发", "踩中")
+    )
+    if not (explicit_target or explicit_source or explicit_intent or explicit_text):
+        return None
+
+    flags = _safe_dict(normalized_state.get("flags"))
+    trap = _object_payload(normalized_state, "gas_trap_1")
+    trap_status = _normalize_id(trap.get("status"))
+    if _flag_bool(flags.get("necromancer_lab_poison_trap_disarmed")):
+        return None
+    if _flag_bool(flags.get("necromancer_lab_poison_trap_triggered")):
+        return None
+    if trap_status in {"disabled", "disarmed", "triggered"}:
+        return None
+
+    trap_coord = _coordinate_from_payload(trap)
+    radius = 0
+    try:
+        radius = max(0, int(trap.get("trigger_radius") or 0))
+    except (TypeError, ValueError):
+        radius = 0
+
+    affected_actor_ids: List[str] = []
+    entities = _safe_dict(normalized_state.get("entities"))
+    if trap_coord is not None:
+        for actor_id in ("player", "astarion", "shadowheart", "laezel"):
+            actor = _safe_dict(entities.get(actor_id))
+            if not actor:
+                continue
+            if _normalize_id(actor.get("status")) in {"dead", "downed", "unconscious"}:
+                continue
+            if actor.get("is_alive") is False:
+                continue
+            actor_coord = _coordinate_from_payload(actor)
+            if actor_coord is None:
+                continue
+            if _chebyshev_distance(trap_coord, actor_coord) <= radius:
+                affected_actor_ids.append(actor_id)
+
+    if not affected_actor_ids:
+        affected_actor_ids.append("player")
+
+    return {
+        "topic": "poison_trap_trigger",
+        "trap_id": "gas_trap_1",
+        "trigger_actor_id": _normalize_id(ctx.get("action_actor")) or "player",
+        "affected_actor_ids": affected_actor_ids,
     }
 
 

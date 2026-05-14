@@ -395,6 +395,9 @@ def _inject_map_dynamic_entities_into_entities(
                 )
             elif obstacle_type == "door":
                 is_open = bool(obstacle.get("is_open", False))
+                is_locked = bool(obstacle.get("is_locked", False))
+                raw_status = str(obstacle.get("status") or "").strip().lower()
+                status = raw_status or ("open" if is_open else ("locked" if is_locked else "closed"))
                 entity_id = str(obstacle.get("entity_id") or f"door_{door_index}").strip().lower() or f"door_{door_index}"
                 door_index += 1
                 entities.setdefault(
@@ -406,8 +409,12 @@ def _inject_map_dynamic_entities_into_entities(
                         "hp": 10,
                         "max_hp": 10,
                         "ac": 10,
-                        "status": "open" if is_open else "closed",
+                        "status": status,
                         "is_open": is_open,
+                        "is_locked": is_locked,
+                        "key_required": obstacle.get("key_required"),
+                        "lockpick_dc": int(obstacle.get("lockpick_dc", 0) or 0) or None,
+                        "alias_ids": copy.deepcopy(obstacle.get("alias_ids") or []),
                         "inventory": {},
                         "equipment": {"main_hand": None, "ranged": None, "armor": None},
                         "position": "camp_center",

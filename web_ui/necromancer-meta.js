@@ -52,20 +52,20 @@
   const ACT_OBJECTIVES = Object.freeze([
     {
       act: 1,
-      title: "陷阱感知",
-      summary: "发现毒气陷阱，Astarion 气泡提醒，Shadowheart tense 状态。",
-      keywords: ["gas_trap", "毒气", "trap", "陷阱感知", "tense"],
+      title: "安全屋",
+      summary: "从死灵法师的废弃实验室醒来，确认队伍状态并寻找出口。",
+      keywords: ["room_a_spawn", "安全屋", "入口", "醒来"],
     },
     {
       act: 2,
-      title: "解读日记",
-      summary: "读日记 — INT / Arcana / Investigation 检定，解读死灵法师笔记。",
+      title: "毒气走廊",
+      summary: "阿斯代伦在前方停下脚步。空气里有甜腻的腐臭味，墙缝间隐约传来气压声。",
       keywords: [
-        "necromancer_diary",
-        "日记",
-        "arcana",
-        "investigation",
-        "diary",
+        "gas_trap",
+        "毒气",
+        "trap",
+        "陷阱感知",
+        "room_b_corridor",
       ],
     },
     {

@@ -75,6 +75,9 @@ async function bootAppForTest(url = "http://localhost/?qa_test=1") {
     playTrapHazardPulse: jest.fn(),
     setInteractionFocus: jest.fn(),
     setTrapSenseMode: jest.fn(),
+    resetLocalPartyTrail: jest.fn(),
+    refreshMapOnly: jest.fn(),
+    getLocalPartyTokenPositions: jest.fn().mockReturnValue({}),
   };
   if (typeof window.requestAnimationFrame !== "function") {
     window.requestAnimationFrame = (cb) => setTimeout(cb, 0);
@@ -192,6 +195,82 @@ function buildFormationTestMap(overrides = {}) {
     playerStart: { x: 4, y: 4 },
     interactables: [],
     obstacles: [],
+  };
+}
+
+function buildTrapCorridorTestMap() {
+  const width = 8;
+  const height = 5;
+  return {
+    id: "trap_corridor_test",
+    width,
+    height,
+    collision: Array.from({ length: height }, () => Array.from({ length: width }, () => false)),
+    losBlockers: Array.from({ length: height }, () => Array.from({ length: width }, () => false)),
+    groundTypes: Array.from({ length: height }, () => Array.from({ length: width }, () => 0)),
+    rooms: [
+      { id: "room_a_spawn", x: 0, y: 0, w: 4, h: 5 },
+      { id: "room_b_corridor", x: 4, y: 0, w: 4, h: 5 },
+    ],
+    visibleRooms: ["room_a_spawn"],
+    playerStart: { x: 2, y: 2 },
+    triggers: [
+      {
+        id: "poison_trap_1",
+        alias_id: "gas_trap_1",
+        type: "trap",
+        x: 5,
+        y: 2,
+        w: 1,
+        h: 1,
+        room_id: "room_b_corridor",
+        data: { type: "trap", alias_id: "gas_trap_1", room_id: "room_b_corridor" },
+      },
+    ],
+    interactables: [
+      {
+        id: "door_a_to_b",
+        type: "door",
+        x: 3,
+        y: 2,
+        w: 1,
+        h: 1,
+        connects_from: "room_a_spawn",
+        connects_to: "room_b_corridor",
+        data: { type: "door", connects_from: "room_a_spawn", connects_to: "room_b_corridor" },
+      },
+      {
+        id: "poison_trap_1",
+        alias_id: "gas_trap_1",
+        type: "trap",
+        x: 5,
+        y: 2,
+        w: 1,
+        h: 1,
+        room_id: "room_b_corridor",
+        status: "hidden",
+        is_hidden: true,
+        data: { type: "trap", alias_id: "gas_trap_1", room_id: "room_b_corridor", status: "hidden", is_hidden: true },
+      },
+    ],
+    obstacles: [],
+  };
+}
+
+function trapTriggeredResponse() {
+  return {
+    responses: [],
+    journal_events: ["[毒气陷阱] gas_trap_1 triggered"],
+    current_location: "毒气走廊",
+    party_status: {
+      player: { x: 5, y: 2, status_effects: [{ type: "poisoned", duration: 3 }] },
+    },
+    environment_objects: {
+      gas_trap_1: { id: "gas_trap_1", type: "trap", status: "triggered", is_hidden: false, x: 5, y: 2 },
+    },
+    player_inventory: {},
+    combat_state: {},
+    flags: { necromancer_lab_poison_trap_triggered: true },
   };
 }
 
@@ -933,7 +1012,7 @@ describe("web_ui/app.js UI bindings", () => {
     const environment = lastCall[1] || {};
     expect(environment.door_a_to_b).toBeDefined();
     expect(environment.door_a_to_b.type).toBe("door");
-    expect(environment.door_a_to_b.w).toBe(2);
+    expect(environment.door_a_to_b.w).toBe(3);
     expect(environment.door_b_to_d).toBeUndefined();
   });
 
@@ -975,6 +1054,51 @@ describe("web_ui/app.js UI bindings", () => {
     const projectedParty = lastCall[0] || {};
     expect(Object.keys(projectedParty).sort()).toEqual(["astarion", "laezel", "player", "shadowheart"]);
     expect(lastCall[1].door_a_to_b.is_open).toBe(true);
+    window.BG3InputController.updateHint();
+    const hintText = String(document.getElementById("interaction-hint").textContent || "");
+    expect(hintText).toContain("通道已开启");
+    expect(hintText).not.toContain("E 打开门");
+  });
+
+  test("test_ab_door_interaction_hint_works_on_all_three_threshold_cells", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    const api = await bootAppForTest();
+    const map = JSON.parse(fs.readFileSync(REAL_MAP_JSON_PATH, "utf8"));
+    const normalized = window.BG3TiledAdapter.normalizeTiledMap(map);
+    api.applyNormalizedMap(normalized, { source: "json" });
+
+    [5, 6, 7].forEach((x) => {
+      window.BG3InputController.setPlayerPosition(x, 17);
+      window.BG3InputController.updateHint();
+      const hintText = String(document.getElementById("interaction-hint").textContent || "");
+      expect(hintText).toContain("E 打开门");
+      expect(hintText).toContain("[door_a_to_b]");
+    });
+  });
+
+  test("test_open_ab_door_hint_works_from_corridor_side_without_reopening", async () => {
+    const fetchSpy = spyOnFetch().mockResolvedValue(mockResponse({}));
+    const api = await bootAppForTest();
+    const map = JSON.parse(fs.readFileSync(REAL_MAP_JSON_PATH, "utf8"));
+    const normalized = window.BG3TiledAdapter.normalizeTiledMap(map);
+    api.applyNormalizedMap(normalized, { source: "json" });
+    window.BG3InputController.setPlayerPosition(5, 17);
+    window.BG3InputController.interact();
+    await flushAsync();
+    fetchSpy.mockClear();
+
+    [5, 6, 7].forEach((x) => {
+      window.BG3InputController.setPlayerPosition(x, 15);
+      window.BG3InputController.updateHint();
+      const hintText = String(document.getElementById("interaction-hint").textContent || "");
+      expect(hintText).toContain("通道已开启");
+      expect(hintText).toContain("[door_a_to_b]");
+    });
+
+    window.BG3InputController.interact();
+    await flushAsync();
+    expect(fetchSpy.mock.calls.filter(([url]) => String(url).includes("/api/chat"))).toHaveLength(0);
+    expect(api.state.roomVisibleIds.has("room_b_corridor")).toBe(true);
   });
 
   test("test_secret_door_and_room_c_visibility_gate", async () => {
@@ -1373,6 +1497,134 @@ describe("web_ui/app.js UI bindings", () => {
 
     expect(fetchSpy.mock.calls.filter(([url]) => String(url).includes("/api/chat"))).toHaveLength(0);
     expect(window.BG3DirectorTrace.getState()).toBe("idle");
+  });
+
+  test("test_apply_normalized_map_resets_local_party_trail_only_on_new_map_setup", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    const api = await bootAppForTest();
+
+    window.BG3TacticalMap.resetLocalPartyTrail.mockClear();
+    api.applyNormalizedMap(buildFormationTestMap({ width: 8, height: 8 }), { source: "json" });
+
+    expect(window.BG3TacticalMap.resetLocalPartyTrail).toHaveBeenCalledTimes(1);
+  });
+
+  test("test_ab_door_reveal_uses_map_only_refresh_and_preserves_local_party_trail", async () => {
+    const fetchSpy = spyOnFetch().mockResolvedValue(mockResponse({}));
+    const api = await bootAppForTest("http://localhost/?qa_test=1&qa_no_idle=1");
+    api.applyNormalizedMap(buildTrapCorridorTestMap(), { source: "json" });
+    window.BG3TacticalMap.getLocalPartyTokenPositions.mockReturnValue({
+      astarion: { x: 2, y: 3, _projection_source: "local_party_trail" },
+      shadowheart: { x: 2, y: 4, _projection_source: "local_party_trail" },
+      laezel: { x: 1, y: 4, _projection_source: "local_party_trail" },
+    });
+    window.BG3TacticalMap.update.mockClear();
+    window.BG3TacticalMap.refreshMapOnly.mockClear();
+    fetchSpy.mockClear();
+
+    window.BG3InputController.setPlayerPosition(2, 2);
+    window.BG3InputController.interact();
+    await flushAsync();
+
+    expect(api.state.roomVisibleIds.has("room_b_corridor")).toBe(true);
+    expect(window.BG3TacticalMap.refreshMapOnly).toHaveBeenCalledTimes(1);
+    expect(window.BG3TacticalMap.update).not.toHaveBeenCalled();
+    const [mapData] = window.BG3TacticalMap.refreshMapOnly.mock.calls[0];
+    expect(mapData.visible_rooms || mapData.visibleRooms).toContain("room_b_corridor");
+    expect(fetchSpy.mock.calls.filter(([url]) => String(url).includes("/api/chat"))).toHaveLength(0);
+    expect(window.BG3DirectorTrace.getState()).toBe("idle");
+  });
+
+  test("test_polling_without_companion_coordinates_preserves_local_party_trail_positions", async () => {
+    const fetchSpy = spyOnFetch().mockResolvedValue(mockResponse({}));
+    const api = await bootAppForTest();
+    api.applyNormalizedMap(buildFormationTestMap(), { source: "json" });
+    window.BG3TacticalMap.getLocalPartyTokenPositions.mockReturnValue({
+      astarion: { x: 4, y: 5, _projection_source: "local_party_trail" },
+      shadowheart: { x: 4, y: 6, _projection_source: "local_party_trail" },
+      laezel: { x: 4, y: 7, _projection_source: "local_party_trail" },
+    });
+    fetchSpy.mockResolvedValueOnce(mockResponse({
+      party_status: {
+        player: { x: 4, y: 4 },
+        astarion: { name: "Astarion" },
+        shadowheart: { name: "Shadowheart" },
+        laezel: { name: "Lae'zel" },
+      },
+      environment_objects: {},
+      combat_state: {},
+      map_data: api.state.mapData,
+    }));
+    window.BG3TacticalMap.update.mockClear();
+
+    await api.pollDialogueState();
+    await flushAsync();
+
+    const projected = window.BG3TacticalMap.update.mock.calls.at(-1)[0];
+    expect(projected.astarion).toMatchObject({ x: 4, y: 5, _projection_source: "local_party_trail" });
+    expect(projected.shadowheart).toMatchObject({ x: 4, y: 6, _projection_source: "local_party_trail" });
+    expect(projected.laezel).toMatchObject({ x: 4, y: 7, _projection_source: "local_party_trail" });
+  });
+
+  test("test_polling_stale_visual_formation_preserves_local_party_trail_positions", async () => {
+    const fetchSpy = spyOnFetch().mockResolvedValue(mockResponse({}));
+    const api = await bootAppForTest();
+    api.applyNormalizedMap(buildFormationTestMap(), { source: "json" });
+    window.BG3TacticalMap.getLocalPartyTokenPositions.mockReturnValue({
+      astarion: { x: 5, y: 4, _projection_source: "local_party_trail" },
+      shadowheart: { x: 4, y: 4, _projection_source: "local_party_trail" },
+      laezel: { x: 3, y: 4, _projection_source: "local_party_trail" },
+    });
+    fetchSpy.mockResolvedValueOnce(mockResponse({
+      party_status: {
+        player: { x: 6, y: 4 },
+        astarion: { x: 6, y: 5, _projection_source: "visual_party_formation" },
+        shadowheart: { x: 6, y: 6, _projection_source: "visual_party_formation" },
+        laezel: { x: 6, y: 7, _projection_source: "visual_party_formation" },
+      },
+      environment_objects: {},
+      combat_state: {},
+      map_data: api.state.mapData,
+    }));
+    window.BG3TacticalMap.update.mockClear();
+
+    await api.pollDialogueState();
+    await flushAsync();
+
+    const projected = window.BG3TacticalMap.update.mock.calls.at(-1)[0];
+    expect(projected.astarion).toMatchObject({ x: 5, y: 4, _projection_source: "local_party_trail" });
+    expect(projected.shadowheart).toMatchObject({ x: 4, y: 4, _projection_source: "local_party_trail" });
+    expect(projected.laezel).toMatchObject({ x: 3, y: 4, _projection_source: "local_party_trail" });
+  });
+
+  test("test_tactical_refresh_map_only_does_not_sync_or_destroy_tokens", () => {
+    const tacticalMap = loadGameHelpers();
+    const scene = {
+      refreshMapOnly: jest.fn(),
+      syncState: jest.fn(),
+      upsertToken: jest.fn(),
+      destroyToken: jest.fn(),
+    };
+    tacticalMap.scene = scene;
+    tacticalMap.latestState = { partyStatus: { player: { x: 1, y: 1 } }, environmentObjects: {}, mapData: buildFormationTestMap() };
+
+    tacticalMap.refreshMapOnly(buildFormationTestMap({ width: 9, height: 9 }), { chest_1: { x: 2, y: 2 } });
+
+    expect(scene.refreshMapOnly).toHaveBeenCalledTimes(1);
+    expect(scene.syncState).not.toHaveBeenCalled();
+    expect(scene.upsertToken).not.toHaveBeenCalled();
+    expect(scene.destroyToken).not.toHaveBeenCalled();
+  });
+
+  test("test_tactical_map_changed_clears_local_party_trail", () => {
+    const tacticalMap = loadGameHelpers();
+    tacticalMap.localPartyTrail = [{ x: 4, y: 4 }];
+    tacticalMap.latestState = { partyStatus: {}, environmentObjects: {}, mapData: { ...buildFormationTestMap(), id: "old_map" } };
+    tacticalMap.scene = { syncState: jest.fn() };
+
+    tacticalMap.update({}, {}, { ...buildFormationTestMap(), id: "new_map" });
+
+    expect(tacticalMap.localPartyTrail).toEqual([]);
   });
 
   test("test_xray_panel_uses_scroll_safe_layout_contract", async () => {
@@ -1887,6 +2139,36 @@ describe("web_ui/app.js UI bindings", () => {
     expect(payload.source).toBe("dialogue_input");
   });
 
+  test("test_astarion_disarm_text_routes_to_disarm_gas_trap_payload", async () => {
+    const api = await bootAppForTest();
+
+    const { payload } = api.buildChatPayload("阿斯代伦，解除陷阱。", null, null, { source: "text_input" });
+
+    expect(payload).toMatchObject({
+      user_input: "阿斯代伦，解除陷阱。",
+      intent: "DISARM",
+      target: "gas_trap_1",
+      source: "ui_text_normalized",
+      character: "astarion",
+      intent_context: {
+        action_actor: "astarion",
+        action_target: "gas_trap_1",
+        source: "ui_text_normalized",
+        action: "disarm_trap",
+      },
+    });
+  });
+
+  test("test_narrative_payload_includes_current_local_player_grid_position", async () => {
+    const api = await bootAppForTest();
+    window.BG3TacticalMap.getPlayerGridPosition.mockReturnValue({ x: 6, y: 15 });
+
+    const { payload } = api.buildChatPayload("阿斯代伦，解除陷阱。", null, null, { source: "text_input" });
+
+    expect(payload.client_player_position).toEqual({ x: 6, y: 15 });
+    expect(payload.player_position).toEqual([6, 15]);
+  });
+
   test("test_interaction_hint_target_matches_e_payload_target", async () => {
     const fetchSpy = spyOnFetch().mockResolvedValue(
       mockResponse({
@@ -2026,7 +2308,8 @@ describe("web_ui/app.js UI bindings", () => {
     window.BG3InputController.setPlayerPosition(2, 2);
     window.BG3InputController.updateHint();
     const dangerOnlyText = String(document.getElementById("interaction-hint").textContent || "");
-    expect(dangerOnlyText).toContain("危险：");
+    expect(dangerOnlyText).toContain("可疑机关：");
+    expect(dangerOnlyText).toContain("让阿斯代伦解除");
     expect(dangerOnlyText).toContain("gas_trap_1");
 
     window.BG3InputController.setMap({
@@ -2776,6 +3059,323 @@ describe("web_ui/app.js UI bindings", () => {
       gas_trap_1: { id: "gas_trap_1", type: "trap", status: "hidden", is_hidden: true, x: 4, y: 5 },
     });
     expect(entries).toEqual([]);
+  });
+
+  test("test_is_hidden_false_alone_does_not_render_trap_overlay", async () => {
+    const tacticalMap = loadGameHelpers();
+    const entries = tacticalMap.resolveTrapOverlayEntries({
+      gas_trap_1: { id: "gas_trap_1", type: "trap", is_hidden: false, x: 4, y: 5 },
+    });
+    expect(entries).toEqual([]);
+  });
+
+  test("test_opening_a_b_door_reveals_corridor_without_revealing_trap_overlay", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    const api = await bootAppForTest();
+    api.applyNormalizedMap(buildTrapCorridorTestMap(), { source: "json" });
+    api.state.partyStatus = {
+      player: { x: 2, y: 2 },
+      astarion: { x: 2, y: 3, _projection_source: "local_party_trail" },
+      shadowheart: { x: 2, y: 4, _projection_source: "local_party_trail" },
+      laezel: { x: 1, y: 4, _projection_source: "local_party_trail" },
+    };
+    api.state.environmentObjects = {
+      gas_trap_1: { id: "gas_trap_1", type: "trap", status: "hidden", is_hidden: true, x: 5, y: 2, room_id: "room_b_corridor" },
+    };
+    window.BG3TacticalMap.update.mockClear();
+
+    expect(api.revealRoomByDoorTarget("door_a_to_b")).toBe(true);
+    api.refreshVisibilityProjection();
+    api.renderTacticalGrid(api.state.partyStatus, api.state.environmentObjects, api.state.mapData);
+
+    const lastCall = window.BG3TacticalMap.update.mock.calls.at(-1);
+    const projectedParty = lastCall[0] || {};
+    const projectedEnvironment = lastCall[1] || {};
+    expect(api.state.roomVisibleIds.has("room_b_corridor")).toBe(true);
+    expect(projectedEnvironment.gas_trap_1).toMatchObject({
+      status: "hidden",
+      is_hidden: true,
+      is_revealed: false,
+      discovered: false,
+    });
+    expect(projectedParty.astarion).toMatchObject({ x: 2, y: 3, _projection_source: "local_party_trail" });
+    expect(projectedParty.shadowheart).toMatchObject({ x: 2, y: 4, _projection_source: "local_party_trail" });
+    expect(projectedParty.laezel).toMatchObject({ x: 1, y: 4, _projection_source: "local_party_trail" });
+  });
+
+  test("test_trap_overlay_appears_after_backend_journal_trap_insight_signal", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    const api = await bootAppForTest();
+    api.applyNormalizedMap(buildTrapCorridorTestMap(), { source: "json" });
+    api.revealRoomByDoorTarget("door_a_to_b");
+    api.refreshVisibilityProjection();
+    api.state.environmentObjects = {
+      gas_trap_1: { id: "gas_trap_1", type: "trap", status: "hidden", is_hidden: true, x: 5, y: 2, room_id: "room_b_corridor" },
+    };
+
+    const events = api.dispatchUIEventsFromResponse({
+      journal_events: ["[陷阱感知] astarion -> gas_trap_1"],
+    }, {});
+    api.refreshVisibilityProjection();
+    api.renderTacticalGrid(api.state.partyStatus, api.state.environmentObjects, api.state.mapData);
+
+    const lastCall = window.BG3TacticalMap.update.mock.calls.at(-1);
+    expect(events.some((event) => event.type === "trap_insight")).toBe(true);
+    expect(lastCall[1].gas_trap_1).toMatchObject({
+      status: "revealed",
+      is_hidden: false,
+      is_revealed: true,
+      discovered: true,
+    });
+  });
+
+  test("test_local_act1_perception_does_not_discover_or_highlight_hidden_trap", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    const api = await bootAppForTest();
+    api.applyNormalizedMap(buildTrapCorridorTestMap(), { source: "json" });
+    api.revealRoomByDoorTarget("door_a_to_b");
+    api.refreshVisibilityProjection();
+    api.state.environmentObjects = {
+      gas_trap_1: { id: "gas_trap_1", type: "trap", status: "hidden", is_hidden: true, x: 5, y: 2, room_id: "room_b_corridor" },
+    };
+    const randomSpy = jest.spyOn(Math, "random").mockReturnValue(0.95);
+
+    api.resolveAct1Perception();
+    api.renderTacticalGrid(api.state.partyStatus, api.state.environmentObjects, api.state.mapData);
+
+    const lastCall = window.BG3TacticalMap.update.mock.calls.at(-1);
+    expect(api.state.discoveredTrapIds.has("gas_trap_1")).toBe(false);
+    expect(api.state.discoveredSecretDoorIds.has("door_b_to_c")).toBe(false);
+    expect(window.BG3TacticalMap.playTrapDiscoveryHighlight).not.toHaveBeenCalled();
+    expect(lastCall[1].gas_trap_1).toMatchObject({ status: "hidden", is_hidden: true });
+    expect(randomSpy).not.toHaveBeenCalled();
+    randomSpy.mockRestore();
+  });
+
+  test("test_revealing_room_b_updates_act_card_to_poison_corridor", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    const api = await bootAppForTest();
+    api.applyNormalizedMap(buildTrapCorridorTestMap(), { source: "json" });
+
+    expect(document.getElementById("act-title").textContent).toContain("Act 1");
+
+    api.revealRoomByDoorTarget("door_a_to_b");
+    api.refreshVisibilityProjection();
+
+    expect(document.getElementById("act-title").textContent).toContain("Act 2");
+    expect(document.getElementById("act-title").textContent).toContain("毒气走廊");
+    expect(document.getElementById("act-summary").textContent).toContain("甜腻的腐臭味");
+  });
+
+  test("test_entering_active_trap_zone_posts_trap_trigger_payload_once", async () => {
+    const fetchSpy = spyOnFetch().mockResolvedValue(mockResponse(trapTriggeredResponse()));
+    const api = await bootAppForTest("http://localhost/?qa_test=1&qa_no_idle=1");
+    fetchSpy.mockClear();
+    api.applyNormalizedMap(buildTrapCorridorTestMap(), { source: "json" });
+    api.revealRoomByDoorTarget("door_a_to_b");
+    api.refreshVisibilityProjection();
+    api.state.environmentObjects = {
+      gas_trap_1: { id: "gas_trap_1", type: "trap", status: "revealed", is_hidden: false, x: 5, y: 2 },
+    };
+    window.BG3InputController.setPlayerPosition(4, 2);
+    const dateSpy = jest.spyOn(Date, "now").mockReturnValue(1000);
+
+    window.BG3InputController.movePlayer(1, 0);
+    await flushAsync();
+
+    const chatCalls = fetchSpy.mock.calls.filter(([url]) => String(url).includes("/api/chat"));
+    expect(chatCalls).toHaveLength(1);
+    const payload = JSON.parse(chatCalls[0][1].body);
+    expect(payload).toMatchObject({
+      user_input: "触发毒气陷阱",
+      intent: "INTERACT",
+      target: "gas_trap_1",
+      source: "trap_trigger",
+      map_id: "necromancer_lab",
+    });
+    expect(document.querySelector(".agent-signal-card--trap-triggered")).not.toBeNull();
+    expect(window.BG3DirectorTrace.getState()).not.toBe("idle");
+    expect(window.BG3DirectorTrace.getLastNodes()).toEqual(expect.arrayContaining(["domain_event", "event_drain", "ui_events"]));
+    dateSpy.mockRestore();
+  });
+
+  test("test_entering_disabled_trap_zone_does_not_post_trap_trigger", async () => {
+    const fetchSpy = spyOnFetch().mockResolvedValue(mockResponse({}));
+    const api = await bootAppForTest("http://localhost/?qa_test=1&qa_no_idle=1");
+    fetchSpy.mockClear();
+    api.applyNormalizedMap(buildTrapCorridorTestMap(), { source: "json" });
+    api.revealRoomByDoorTarget("door_a_to_b");
+    api.refreshVisibilityProjection();
+    api.state.worldFlags = { necromancer_lab_poison_trap_disarmed: true };
+    api.state.environmentObjects = {
+      gas_trap_1: { id: "gas_trap_1", type: "trap", status: "disabled", is_hidden: false, x: 5, y: 2 },
+    };
+    window.BG3InputController.setPlayerPosition(4, 2);
+    const dateSpy = jest.spyOn(Date, "now").mockReturnValue(1000);
+
+    window.BG3InputController.movePlayer(1, 0);
+    await flushAsync();
+
+    expect(fetchSpy.mock.calls.filter(([url]) => String(url).includes("/api/chat"))).toHaveLength(0);
+    dateSpy.mockRestore();
+  });
+
+  test("test_entering_already_triggered_trap_zone_does_not_post_again", async () => {
+    const fetchSpy = spyOnFetch().mockResolvedValue(mockResponse({}));
+    const api = await bootAppForTest("http://localhost/?qa_test=1&qa_no_idle=1");
+    fetchSpy.mockClear();
+    api.applyNormalizedMap(buildTrapCorridorTestMap(), { source: "json" });
+    api.revealRoomByDoorTarget("door_a_to_b");
+    api.refreshVisibilityProjection();
+    api.state.worldFlags = { necromancer_lab_poison_trap_triggered: true };
+    api.state.environmentObjects = {
+      gas_trap_1: { id: "gas_trap_1", type: "trap", status: "triggered", is_hidden: false, x: 5, y: 2 },
+    };
+    window.BG3InputController.setPlayerPosition(4, 2);
+    const dateSpy = jest.spyOn(Date, "now").mockReturnValue(1000);
+
+    window.BG3InputController.movePlayer(1, 0);
+    await flushAsync();
+
+    expect(fetchSpy.mock.calls.filter(([url]) => String(url).includes("/api/chat"))).toHaveLength(0);
+    dateSpy.mockRestore();
+  });
+
+  test("test_trap_zone_repeated_enter_without_leaving_dedupes_trigger_post", async () => {
+    const fetchSpy = spyOnFetch().mockResolvedValue(mockResponse(trapTriggeredResponse()));
+    const api = await bootAppForTest("http://localhost/?qa_test=1&qa_no_idle=1");
+    fetchSpy.mockClear();
+    const map = buildTrapCorridorTestMap();
+    map.triggers[0].w = 2;
+    api.applyNormalizedMap(map, { source: "json" });
+    api.revealRoomByDoorTarget("door_a_to_b");
+    api.refreshVisibilityProjection();
+    api.state.environmentObjects = {
+      gas_trap_1: { id: "gas_trap_1", type: "trap", status: "revealed", is_hidden: false, x: 5, y: 2 },
+    };
+    window.BG3InputController.setPlayerPosition(4, 2);
+    let now = 1000;
+    const dateSpy = jest.spyOn(Date, "now").mockImplementation(() => now);
+
+    window.BG3InputController.movePlayer(1, 0);
+    await flushAsync();
+    now += 200;
+    window.BG3InputController.movePlayer(1, 0);
+    await flushAsync();
+
+    expect(fetchSpy.mock.calls.filter(([url]) => String(url).includes("/api/chat"))).toHaveLength(1);
+    dateSpy.mockRestore();
+  });
+
+  test("test_leave_and_reenter_after_triggered_state_still_does_not_retrigger", async () => {
+    const fetchSpy = spyOnFetch().mockResolvedValue(mockResponse(trapTriggeredResponse()));
+    const api = await bootAppForTest("http://localhost/?qa_test=1&qa_no_idle=1");
+    fetchSpy.mockClear();
+    api.applyNormalizedMap(buildTrapCorridorTestMap(), { source: "json" });
+    api.revealRoomByDoorTarget("door_a_to_b");
+    api.refreshVisibilityProjection();
+    api.state.environmentObjects = {
+      gas_trap_1: { id: "gas_trap_1", type: "trap", status: "revealed", is_hidden: false, x: 5, y: 2 },
+    };
+    window.BG3InputController.setPlayerPosition(4, 2);
+    let now = 1000;
+    const dateSpy = jest.spyOn(Date, "now").mockImplementation(() => now);
+
+    window.BG3InputController.movePlayer(1, 0);
+    await flushAsync();
+    now += 200;
+    window.BG3InputController.movePlayer(-1, 0);
+    await flushAsync();
+    now += 200;
+    window.BG3InputController.movePlayer(1, 0);
+    await flushAsync();
+
+    expect(fetchSpy.mock.calls.filter(([url]) => String(url).includes("/api/chat"))).toHaveLength(1);
+    dateSpy.mockRestore();
+  });
+
+  test("test_disarm_failure_journal_with_poison_trigger_renders_trigger_feedback", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    const api = await bootAppForTest();
+    const events = api.dispatchUIEventsFromResponse({
+      journal_events: [
+        "🔧 [解除陷阱失败] 阿斯代伦的工具滑脱。",
+        "[毒气陷阱] gas_trap_1 triggered",
+      ],
+      party_status: {
+        player: { status_effects: [{ type: "poisoned", duration: 3 }] },
+      },
+    }, {
+      party_status: {
+        player: { status_effects: [] },
+      },
+    });
+
+    expect(events.some((event) => event.type === "trap_triggered")).toBe(true);
+    expect(document.querySelector(".agent-signal-card--trap-triggered")).not.toBeNull();
+  });
+
+  test("test_trap_insight_response_does_not_auto_open_loot_modal_for_available_chest", async () => {
+    const fetchSpy = spyOnFetch().mockResolvedValue(mockResponse({
+      responses: ["Astarion notices a hidden gas mechanism."],
+      journal_events: ["[陷阱感知] astarion -> gas_trap_1"],
+      party_status: {},
+      environment_objects: {
+        gas_trap_1: { id: "gas_trap_1", type: "trap", status: "revealed", is_hidden: false },
+        chest_1: {
+          id: "chest_1",
+          name: "死灵法师的战利品箱",
+          type: "chest",
+          status: "open",
+          inventory: { lab_key: 1 },
+        },
+      },
+      player_inventory: {},
+      combat_state: {},
+    }));
+    const api = await bootAppForTest();
+    fetchSpy.mockClear();
+
+    await api.sendStructuredAction({
+      text: "Astarion checks the corridor",
+      intent: "INTERACT",
+      options: { target: "gas_trap_1", source: "trap_check" },
+    });
+    await flushAsync();
+
+    expect(document.getElementById("loot-modal").classList.contains("hidden")).toBe(true);
+    expect(document.querySelector(".agent-signal-card--trap-insight")).not.toBeNull();
+  });
+
+  test("test_explicit_loot_response_still_opens_loot_modal", async () => {
+    const fetchSpy = spyOnFetch().mockResolvedValue(mockResponse({
+      responses: [],
+      journal_events: [],
+      party_status: {},
+      environment_objects: {
+        chest_1: {
+          id: "chest_1",
+          name: "死灵法师的战利品箱",
+          type: "chest",
+          status: "open",
+          inventory: { lab_key: 1 },
+        },
+      },
+      player_inventory: {},
+      combat_state: {},
+    }));
+    const api = await bootAppForTest();
+    fetchSpy.mockClear();
+
+    await api.sendStructuredAction({
+      text: "我要搜刮 chest_1",
+      intent: "ui_action_loot",
+      options: { target: "chest_1", source: "ui_click" },
+    });
+    await flushAsync();
+
+    expect(document.getElementById("loot-modal").classList.contains("hidden")).toBe(false);
+    expect(document.getElementById("loot-title").textContent).toContain("死灵法师的战利品箱");
   });
 
   test("test_revealed_trap_overlay_is_amber", async () => {

@@ -181,12 +181,21 @@ async def run_eval_case(
             snapshot_payload: Dict[str, Any] = {}
             assertion_report = AssertionReport()
             try:
+                process_kwargs = {
+                    "user_input": str(step_payload.pop("user_input", "")),
+                    "intent": step_payload.pop("intent", None),
+                    "session_id": session_id,
+                    "character": step_payload.pop("character", None),
+                    "map_id": map_id,
+                }
+                target = step_payload.pop("target", None)
+                source = step_payload.pop("source", None)
+                if target is not None:
+                    process_kwargs["target"] = target
+                if source is not None:
+                    process_kwargs["source"] = source
                 response_payload = await service.process_chat_turn(
-                    user_input=str(step_payload.pop("user_input", "")),
-                    intent=step_payload.pop("intent", None),
-                    session_id=session_id,
-                    character=step_payload.pop("character", None),
-                    map_id=map_id,
+                    **process_kwargs,
                 )
                 snapshot_payload = await service.get_state_snapshot(
                     session_id=session_id,

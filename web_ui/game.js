@@ -343,6 +343,38 @@
       if (!this.scene || typeof this.scene.setTrapSenseMode !== "function") return;
       this.scene.setTrapSenseMode(enabled);
     },
+    refreshMapOnly(mapData, environmentObjects) {
+      const nextMapData = normalizeMapData(mapData);
+      this.latestState = {
+        ...safeObject(this.latestState),
+        environmentObjects: safeObject(environmentObjects),
+        mapData: nextMapData,
+      };
+      if (this.scene && typeof this.scene.refreshMapOnly === "function") {
+        this.scene.refreshMapOnly(nextMapData, safeObject(environmentObjects));
+      }
+    },
+    getLocalPartyTokenPositions() {
+      const out = {};
+      if (!this.scene || !this.scene.tokens) return out;
+      FOLLOW_COMPANIONS.forEach((id) => {
+        const token = this.scene.tokens.get(id);
+        const entity = safeObject(token && token.entity);
+        const data = safeObject(entity.data);
+        const source = normalizeId(data._projection_source || entity._projection_source);
+        if (!["local_party_trail", "local_party_follow", "visual_party_formation"].includes(source)) return;
+        const x = Math.round(Number(entity.x ?? data.x));
+        const y = Math.round(Number(entity.y ?? data.y));
+        if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+        out[id] = {
+          ...data,
+          x,
+          y,
+          _projection_source: source,
+        };
+      });
+      return out;
+    },
     resolveTrapOverlayEntries(environmentObjects) {
       return resolveTrapOverlayEntries(environmentObjects);
     },
@@ -849,7 +881,7 @@
     if (["disabled", "disarmed"].includes(status)) return "disabled";
     if (["triggered", "active", "burst"].includes(status)) return "triggered";
     if (["revealed", "detected", "visible"].includes(status)) return "revealed";
-    if (entity.is_hidden === false || entity.is_revealed === true || entity.discovered === true) return "revealed";
+    if (entity.is_revealed === true || entity.discovered === true || entity.is_discovered === true) return "revealed";
     return "";
   }
 
@@ -1119,6 +1151,20 @@
       if (options.mapChanged) {
         this.playMapTransition();
       }
+    }
+
+    refreshMapOnly(mapData, environmentObjects) {
+      this.mapData = normalizeMapData(mapData);
+      controller.latestState = {
+        ...safeObject(controller.latestState),
+        environmentObjects: safeObject(environmentObjects),
+        mapData: this.mapData,
+      };
+      this.handleResize({ width: this.scale.width, height: this.scale.height });
+      this.refreshInteractionHighlight();
+      this.drawTrapOverlays();
+      this.updateCameraBounds();
+      this.updateCameraFollow();
     }
 
     handleResize(gameSize) {
@@ -2370,38 +2416,69 @@
 
     applyDoorVisual(token, data) {
       const open = isDoorOpen(data);
-      const texture = open ? SPRITE_KEYS.labDoorOpen : SPRITE_KEYS.labDoorClosed;
       const changed = token.doorOpenState !== null && token.doorOpenState !== open;
       const width = Math.max(1, Number(data.w ?? data.width ?? data.size_w ?? data.tile_width) || 1);
       const height = Math.max(1, Number(data.h ?? data.height ?? data.size_h ?? data.tile_height) || 1);
+      const vertical = height > width;
+      const spanCells = Math.max(width, height);
+      const thicknessCells = Math.min(width, height);
+      const localWidth = Math.max(16, spanCells * 16);
+      const localHeight = Math.max(10, thicknessCells * 16);
+      const left = -localWidth / 2;
+      const top = -localHeight / 2;
       if (token.doorFrame) {
         token.doorFrame.clear();
-        token.doorFrame.setVisible(false);
+        token.doorFrame.setAlpha(1);
+        token.doorFrame.setAngle(vertical ? 90 : 0);
+        token.doorFrame.setVisible(true);
+        if (open) {
+          token.doorFrame.fillStyle(0x25140d, 0.7);
+          token.doorFrame.fillRect(left, top + localHeight * 0.38, localWidth, localHeight * 0.24);
+          token.doorFrame.fillStyle(0x7a3a1d, 1);
+          token.doorFrame.fillRect(left, top, 4, localHeight);
+          token.doorFrame.fillRect(left + localWidth - 4, top, 4, localHeight);
+          token.doorFrame.fillStyle(0xb77032, 0.95);
+          token.doorFrame.fillRect(left + 4, top + 1, localWidth - 8, 2);
+          token.doorFrame.fillRect(left + 4, top + localHeight - 3, localWidth - 8, 2);
+          token.doorFrame.fillStyle(0x4a2315, 0.9);
+          token.doorFrame.fillRect(left - 4, top + 1, 5, localHeight - 2);
+          token.doorFrame.fillRect(left + localWidth - 1, top + 1, 5, localHeight - 2);
+        } else {
+          token.doorFrame.fillStyle(0x522516, 1);
+          token.doorFrame.fillRect(left, top, localWidth, localHeight);
+          token.doorFrame.fillStyle(0x9a4c21, 1);
+          token.doorFrame.fillRect(left + 3, top + 2, localWidth - 6, localHeight - 4);
+          token.doorFrame.fillStyle(0x20120d, 1);
+          token.doorFrame.fillRect(left + 7, top + 4, localWidth - 14, localHeight - 8);
+          token.doorFrame.fillStyle(0xd0933e, 0.92);
+          for (let x = left + 10; x < left + localWidth - 8; x += 12) {
+            token.doorFrame.fillRect(x, top + 4, 2, localHeight - 8);
+          }
+          token.doorFrame.fillStyle(0xd7a64a, 1);
+          token.doorFrame.fillRect(left + localWidth - 12, top + localHeight * 0.36, 6, 6);
+        }
       }
-      token.sprite.setVisible(true);
-      token.sprite.setAngle(height > width ? 90 : 0);
-      token.sprite.setAlpha(open ? 0.82 : 1);
+      token.sprite.setVisible(false);
+      token.sprite.setAngle(0);
       if (token.lockBadge) token.lockBadge.setVisible(isLocked(data));
       token.doorOpenState = open;
       if (token.doorTween) {
         token.doorTween.stop();
         token.doorTween = null;
       }
-      if (!changed) {
-        token.sprite.setTexture(texture);
+      if (!changed || !token.doorFrame || prefersReducedMotion()) {
         return;
       }
       token.doorTween = this.tweens.add({
-        targets: token.sprite,
-        alpha: 0.34,
-        duration: 90,
+        targets: token.doorFrame,
+        alpha: open ? 0.45 : 0.55,
+        duration: 100,
         ease: "Sine.easeInOut",
         onComplete: () => {
-          token.sprite.setTexture(texture);
           token.doorTween = this.tweens.add({
-            targets: token.sprite,
-            alpha: open ? 0.82 : 1,
-            duration: 90,
+            targets: token.doorFrame,
+            alpha: 1,
+            duration: 140,
             ease: "Sine.easeInOut",
             onComplete: () => {
               token.doorTween = null;

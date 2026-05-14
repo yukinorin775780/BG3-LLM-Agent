@@ -748,7 +748,12 @@ class GameService:
                 status = str(obj.get("status", "")).strip().lower()
                 if entity_type == "trap" and (is_hidden or status == "hidden"):
                     continue
-                sanitized_payload[str(obj_id)] = obj
+                safe_obj = copy.deepcopy(obj)
+                if entity_type == "trap":
+                    for internal_key in ("detect_dc", "disarm_dc", "save_dc", "damage", "damage_type", "trigger_radius"):
+                        safe_obj.pop(internal_key, None)
+                    safe_obj["description"] = "可疑机关 · 具体结构需要靠近处理。"
+                sanitized_payload[str(obj_id)] = safe_obj
             payload = sanitized_payload
 
         entities = state.get("entities") or {}
@@ -804,8 +809,6 @@ class GameService:
                 entity_payload["is_open"] = bool(entity.get("is_open", False))
             if entity_type == "trap":
                 entity_payload["is_hidden"] = bool(entity.get("is_hidden", True))
-                entity_payload["detect_dc"] = entity.get("detect_dc")
-                entity_payload["disarm_dc"] = entity.get("disarm_dc")
             if entity_type == "loot_drop":
                 entity_payload["source_name"] = entity.get("source_name")
             payload[str(entity_id)] = entity_payload

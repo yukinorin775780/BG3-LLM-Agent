@@ -38,6 +38,7 @@ def test_necromancer_lab_map_instance_is_loaded_from_maps_directory():
     assert isinstance(map_data.get("spawns"), list)
     assert len(map_data["spawns"]) == 1
     assert "heavy_oak_door_1" in map_data["environment_objects"]
+    assert "door_b_to_d" in map_data["environment_objects"]
     assert "gas_trap_1" in map_data["environment_objects"]
     assert "chest_1" in map_data["environment_objects"]
     assert "necromancer_diary" in map_data["environment_objects"]
@@ -52,6 +53,7 @@ def test_world_init_builds_entities_from_prefab_spawns():
     player = entities["player"]
     gribbo = entities["gribbo"]
     heavy_oak_door_1 = entities["heavy_oak_door_1"]
+    door_b_to_d = entities["door_b_to_d"]
     gas_trap_1 = entities["gas_trap_1"]
 
     assert player["x"] == 2 and player["y"] == 2
@@ -63,6 +65,11 @@ def test_world_init_builds_entities_from_prefab_spawns():
     assert heavy_oak_door_1["entity_type"] == "door"
     assert heavy_oak_door_1["x"] == 14 and heavy_oak_door_1["y"] == 11
     assert heavy_oak_door_1["is_open"] is False
+
+    assert door_b_to_d["entity_type"] == "door"
+    assert door_b_to_d["x"] == 5 and door_b_to_d["y"] == 7
+    assert door_b_to_d["is_locked"] is True
+    assert door_b_to_d["key_required"] == "lab_key"
 
     assert gas_trap_1["entity_type"] == "trap"
     assert gas_trap_1["x"] == 4 and gas_trap_1["y"] == 6

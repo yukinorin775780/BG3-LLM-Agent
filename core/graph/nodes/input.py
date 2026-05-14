@@ -47,6 +47,8 @@ _GRIBBO_ATTACK_MARKERS = ("攻击 gribbo", "attack gribbo", "攻击格里布", "
 _TRAP_DISARM_ACTOR_MARKERS = ("阿斯代伦", "astarion")
 _TRAP_DISARM_TARGET_MARKERS = ("陷阱", "毒气", "gas_trap_1", "poison_trap", "trap")
 _TRAP_DISARM_ACTION_MARKERS = ("解除", "拆", "拆掉", "拆除", "disarm", "disable")
+_LAB_DOOR_MARKERS = ("door_b_to_d", "实验室门", "实验室重门", "lab door", "laboratory door")
+_LOCKPICK_MARKERS = ("撬锁", "开锁", "撬开", "解锁", "lockpick", "pick the lock", "unlock")
 _GRIBBO_MERCY_STANCE_MARKERS = (
     "怎么办",
     "怎么处理",
@@ -111,6 +113,12 @@ def _looks_like_astarion_trap_disarm(map_id: str, user_input: str) -> bool:
             or _contains_marker(user_input, ("gas_trap_1", "poison_trap"))
         )
     )
+
+
+def _looks_like_lab_door_lockpick(map_id: str, user_input: str) -> bool:
+    if not _is_necromancer_lab_map(map_id):
+        return False
+    return _contains_marker(user_input, _LAB_DOOR_MARKERS) and _contains_marker(user_input, _LOCKPICK_MARKERS)
 
 
 def _flag_bool(raw_value) -> bool:
@@ -196,6 +204,20 @@ def input_node(state: GameState) -> dict:
     }
 
     if not user_input:
+        if (
+            incoming_intent_key == "interact"
+            and incoming_source == "trap_trigger"
+            and incoming_target.lower() == "gas_trap_1"
+        ):
+            intent_context["action_target"] = "gas_trap_1"
+            intent_context["source"] = "trap_trigger"
+            return {
+                **base,
+                "intent": "TRIGGER_TRAP",
+                "target": "gas_trap_1",
+                "source": "trap_trigger",
+                "intent_context": intent_context,
+            }
         # 保留服务端传入的系统意图（如挂机闲聊），勿覆盖为 pending
         if incoming_intent_key in {"trigger_idle_banter", "init_sync"}:
             return {**base, "intent": incoming_intent}
@@ -215,6 +237,18 @@ def input_node(state: GameState) -> dict:
                 **base,
                 "intent": "DISARM",
                 "target": "gas_trap_1",
+                "source": "ui_text_normalized",
+                "intent_context": intent_context,
+            }
+        if _looks_like_lab_door_lockpick(map_id, user_input):
+            intent_context["action_actor"] = "astarion" if _contains_marker(user_input, _TRAP_DISARM_ACTOR_MARKERS) else "player"
+            intent_context["action_target"] = "door_b_to_d"
+            intent_context["source"] = "ui_text_normalized"
+            intent_context["action"] = "lockpick_lab_door"
+            return {
+                **base,
+                "intent": "UNLOCK",
+                "target": "door_b_to_d",
                 "source": "ui_text_normalized",
                 "intent_context": intent_context,
             }

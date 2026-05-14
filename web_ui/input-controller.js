@@ -50,6 +50,27 @@
     return x >= rx && x < rx + rw && y >= ry && y < ry + rh;
   }
 
+  function distanceToInteractable(interactable) {
+    const it = safeObj(interactable);
+    const ix = Math.round(Number(it.x) || 0);
+    const iy = Math.round(Number(it.y) || 0);
+    const iw = Math.max(1, Math.round(Number(it.w ?? it.width ?? safeObj(it.data).w ?? safeObj(it.data).width) || 1));
+    const ih = Math.max(1, Math.round(Number(it.h ?? it.height ?? safeObj(it.data).h ?? safeObj(it.data).height) || 1));
+    const px = Math.round(Number(playerPos.x) || 0);
+    const py = Math.round(Number(playerPos.y) || 0);
+    const dx = px < ix ? ix - px : (px >= ix + iw ? px - (ix + iw - 1) : 0);
+    const dy = py < iy ? iy - py : (py >= iy + ih ? py - (iy + ih - 1) : 0);
+    const rectDistance = dx + dy;
+    const cells = safeArr(it.interaction_cells || safeObj(it.data).interaction_cells);
+    if (!cells.length) return rectDistance;
+    const cellDistance = cells.reduce((best, cell) => {
+      const cx = Math.round(Number(safeObj(cell).x) || 0);
+      const cy = Math.round(Number(safeObj(cell).y) || 0);
+      return Math.min(best, Math.abs(px - cx) + Math.abs(py - cy));
+    }, Number.POSITIVE_INFINITY);
+    return Math.min(rectDistance, cellDistance);
+  }
+
   function isVisibleMovementCell(x, y) {
     const map = safeObj(normalizedMap);
     const rooms = safeArr(map.rooms);
@@ -193,7 +214,7 @@
     const candidates = safeArr(normalizedMap.interactables)
       .filter((it) => isTrapInteractable(it) && isTrapVisible(it))
       .map((it, index) => {
-        const distance = Math.abs(Number(it.x) - playerPos.x) + Math.abs(Number(it.y) - playerPos.y);
+        const distance = distanceToInteractable(it);
         return { it, index, distance };
       })
       .filter(({ distance }) => distance <= 1)
@@ -208,7 +229,7 @@
     if (!normalizedMap) return null;
     const candidates = safeArr(normalizedMap.interactables)
       .map((it, index) => {
-        const distance = Math.abs(Number(it.x) - playerPos.x) + Math.abs(Number(it.y) - playerPos.y);
+        const distance = distanceToInteractable(it);
         return { it, index, distance };
       })
       .filter(({ distance }) => distance <= 1)
