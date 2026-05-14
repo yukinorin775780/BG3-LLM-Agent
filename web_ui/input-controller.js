@@ -37,7 +37,30 @@
     if (!normalizedMap) return true;
     const { collision, width, height } = normalizedMap;
     if (x < 0 || y < 0 || x >= width || y >= height) return true;
+    if (!isVisibleMovementCell(x, y)) return true;
     return Boolean(collision && collision[y] && collision[y][x]);
+  }
+
+  function pointInRoom(x, y, room) {
+    const r = safeObj(room);
+    const rx = Number(r.x) || 0;
+    const ry = Number(r.y) || 0;
+    const rw = Math.max(1, Number(r.w) || 1);
+    const rh = Math.max(1, Number(r.h) || 1);
+    return x >= rx && x < rx + rw && y >= ry && y < ry + rh;
+  }
+
+  function isVisibleMovementCell(x, y) {
+    const map = safeObj(normalizedMap);
+    const rooms = safeArr(map.rooms);
+    if (!rooms.length) return true;
+    const visibleRoomIds = safeArr(map.visible_rooms || map.visibleRooms)
+      .map((roomId) => normalizeId(roomId))
+      .filter(Boolean);
+    if (!visibleRoomIds.length) return true;
+    const room = rooms.find((candidate) => pointInRoom(x, y, candidate));
+    if (!room) return false;
+    return visibleRoomIds.includes(normalizeId(safeObj(room).id));
   }
 
   function movePlayer(dx, dy) {

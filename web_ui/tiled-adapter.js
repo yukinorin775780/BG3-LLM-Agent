@@ -584,6 +584,8 @@
         id: normalizedIdentity.id || rawId,
         x: gx,
         y: gy,
+        w: gw,
+        h: gh,
         type: objType || "object",
         name: obj.name || props.name || "",
         label:
@@ -596,6 +598,8 @@
           ...props,
           name: obj.name || props.name || "",
           type: objType || "object",
+          w: gw,
+          h: gh,
         },
       });
       return;
@@ -608,6 +612,8 @@
         id: fallbackIdentity.id || obj.name,
         x: gx,
         y: gy,
+        w: gw,
+        h: gh,
         type: objType || "object",
         name: obj.name,
         label: obj.name,
@@ -617,6 +623,8 @@
           ...props,
           name: obj.name,
           type: objType || "object",
+          w: gw,
+          h: gh,
         },
       });
     }

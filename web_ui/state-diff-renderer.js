@@ -312,12 +312,17 @@
     const host = document.getElementById("director-trace-panel") || document.body;
     panel = document.createElement("section");
     panel.id = "world-state-diff-panel";
-    panel.className = "world-diff-panel is-collapsed";
+    panel.className = "world-diff-panel";
     panel.innerHTML =
-      '<button type="button" id="world-state-diff-toggle" class="world-diff-toggle" aria-expanded="false">' +
+      '<button type="button" id="world-state-diff-toggle" class="world-diff-toggle" aria-expanded="true">' +
       '<span>World State Diff</span><strong id="world-state-diff-badge" class="world-diff-badge">0</strong></button>' +
       '<div id="world-state-diff-body" class="world-diff-body" aria-live="polite"></div>';
-    host.appendChild(panel);
+    const inspector = host.querySelector(".xray-section--inspector");
+    if (inspector) {
+      host.insertBefore(panel, inspector);
+    } else {
+      host.appendChild(panel);
+    }
     body = panel.querySelector("#world-state-diff-body");
     badge = panel.querySelector("#world-state-diff-badge");
     toggle = panel.querySelector("#world-state-diff-toggle");
@@ -343,7 +348,7 @@
       if (!latestDiffs.length) {
         const empty = document.createElement("p");
         empty.className = "world-diff-empty";
-        empty.textContent = "No tracked technical state changes.";
+        empty.textContent = "No narrative state changes yet. Trigger diary, loot, trap, or Gribbo choices to see technical diffs.";
         body.appendChild(empty);
       } else {
         latestDiffs.forEach((entry) => {
@@ -376,7 +381,9 @@
     if (latestDiffs.length && options.autoExpand !== false) {
       setCollapsed(false);
       window.clearTimeout(autoTimer);
-      autoTimer = window.setTimeout(() => setCollapsed(true), Number(options.collapseAfterMs) || AUTO_COLLAPSE_MS);
+      if (options.autoCollapse === true) {
+        autoTimer = window.setTimeout(() => setCollapsed(true), Number(options.collapseAfterMs) || AUTO_COLLAPSE_MS);
+      }
     }
     return latestDiffs;
   }

@@ -25,6 +25,11 @@
   const SPRITE_KEYS = Object.freeze({
     tiles: "dungeon_tiles",
     actors: "dungeon_characters",
+    astarion: "showcase_actor_astarion",
+    shadowheart: "showcase_actor_shadowheart",
+    laezel: "showcase_actor_laezel",
+    labDoorClosed: "showcase_lab_door_closed",
+    labDoorOpen: "showcase_lab_door_open",
   });
 
   const SPRITE_SHEETS = Object.freeze({
@@ -40,6 +45,34 @@
     },
   });
 
+  const SPRITE_IMAGES = Object.freeze({
+    astarion: "assets/showcase/party_astarion_idle.png?v=party-20260514-j",
+    laezel: "assets/showcase/party_laezel_idle.png?v=party-20260514-j",
+    labDoorClosed: "assets/showcase/lab_door_closed.png?v=door-20260514-a",
+    labDoorOpen: "assets/showcase/lab_door_open.png?v=door-20260514-a",
+  });
+
+  const CUSTOM_SPRITE_SHEETS = Object.freeze({
+    shadowheart: {
+      path: "assets/showcase/party_shadowheart_idle_sheet.png?v=party-20260514-e",
+      frameWidth: 16,
+      frameHeight: 16,
+    },
+  });
+
+  const PARTY_TEXTURES = Object.freeze({
+    astarion: SPRITE_KEYS.astarion,
+    shadowheart: SPRITE_KEYS.shadowheart,
+    laezel: SPRITE_KEYS.laezel,
+    lae_zel: SPRITE_KEYS.laezel,
+  });
+
+  const PARTY_TEXTURE_SCALES = Object.freeze({
+    astarion: 0.78,
+    laezel: 0.78,
+    lae_zel: 0.78,
+  });
+
   const DEPTH_LAYERS = Object.freeze({
     floor: 0,
     ambience: 0.35,
@@ -48,6 +81,22 @@
     actors: 2,
     interactFx: 3,
   });
+
+  const FOG_OF_WAR = Object.freeze({
+    color: 0x020509,
+    alpha: 0.965,
+    cellBleed: 1.04,
+  });
+
+  const FOLLOW_COMPANIONS = Object.freeze(["astarion", "shadowheart", "laezel"]);
+  const FOLLOW_PROJECTION_SOURCES = Object.freeze(new Set([
+    "visual_party_formation",
+    "local_party_follow",
+    "local_party_trail",
+  ]));
+  const FOLLOW_TRAIL_MAX = 12;
+  const FOLLOW_SPACING_STEPS = 1;
+  const DEFAULT_FOLLOW_DIRECTION = Object.freeze({ x: 0, y: -1 });
 
   const TILE_FRAMES = Object.freeze({
     floor: [11, 12, 13, 21, 22, 23, 31, 32, 33, 61, 62, 63, 71, 72, 73],
@@ -111,6 +160,8 @@
     game: null,
     scene: null,
     latestState: FALLBACK_STATE,
+    localPartyTrail: [],
+    lastMoveDirection: { ...DEFAULT_FOLLOW_DIRECTION },
     update(partyStatus, environmentObjects, mapData) {
       const nextMapData = normalizeMapData(mapData);
       const previousMapId = normalizeId(this.latestState && this.latestState.mapData && this.latestState.mapData.id);
@@ -122,6 +173,9 @@
         environmentObjects: safeObject(environmentObjects),
         mapData: nextMapData,
       };
+      if (mapChanged) {
+        this.resetLocalPartyTrail();
+      }
       if (this.scene) {
         this.scene.syncState(this.latestState, { mapChanged });
       }
@@ -188,6 +242,8 @@
       if (!this.scene) return;
       const token = this.scene.tokens.get("player");
       if (!token) return;
+      const prevX = Math.round(Number(token.entity.x));
+      const prevY = Math.round(Number(token.entity.y));
       token.entity.x = gridX;
       token.entity.y = gridY;
       this.scene.moveToken(token, gridX, gridY, true);
@@ -197,6 +253,61 @@
         this.latestState.partyStatus.player.x = gridX;
         this.latestState.partyStatus.player.y = gridY;
       }
+      this.recordLocalPartyTrailPoint(prevX, prevY, {
+        x: Math.round(Number(gridX)) - prevX,
+        y: Math.round(Number(gridY)) - prevY,
+      });
+      this.moveCompanionsLocalFormation(gridX, gridY);
+    },
+    resetLocalPartyTrail() {
+      this.localPartyTrail = [];
+      this.lastMoveDirection = { ...DEFAULT_FOLLOW_DIRECTION };
+    },
+    recordLocalPartyTrailPoint(x, y, direction = {}) {
+      const point = { x: Math.round(Number(x)), y: Math.round(Number(y)) };
+      if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) return;
+      const dx = Math.sign(Math.round(Number(direction.x) || 0));
+      const dy = Math.sign(Math.round(Number(direction.y) || 0));
+      if (dx !== 0 || dy !== 0) {
+        this.lastMoveDirection = { x: dx, y: dy };
+      }
+      const first = safeObject(this.localPartyTrail[0]);
+      if (Math.round(Number(first.x)) !== point.x || Math.round(Number(first.y)) !== point.y) {
+        this.localPartyTrail = [point, ...safeArray(this.localPartyTrail)]
+          .slice(0, FOLLOW_TRAIL_MAX);
+      }
+    },
+    /** Move projected companion tokens locally without backend sync. */
+    moveCompanionsLocalFormation(playerX, playerY) {
+      if (!this.scene || !this.latestState || !this.latestState.partyStatus) return;
+      const nextParty = resolveLocalPartyFollowFormation(
+        this.latestState.partyStatus,
+        (this.latestState && this.latestState.mapData) || (this.scene && this.scene.mapData),
+        { x: playerX, y: playerY },
+        {
+          trail: this.localPartyTrail,
+          lastMoveDirection: this.lastMoveDirection,
+        },
+      );
+      this.latestState.partyStatus = nextParty;
+      FOLLOW_COMPANIONS.forEach((companionId) => {
+        const token = this.scene.tokens && this.scene.tokens.get(companionId);
+        const record = safeObject(nextParty[companionId]);
+        if (!token || !Number.isFinite(Number(record.x)) || !Number.isFinite(Number(record.y))) return;
+        if (normalizeId(record._projection_source) !== "local_party_trail") return;
+        const x = Math.round(Number(record.x));
+        const y = Math.round(Number(record.y));
+        token.entity.x = x;
+        token.entity.y = y;
+        token.entity.data = {
+          ...safeObject(token.entity.data),
+          ...record,
+          x,
+          y,
+          _projection_source: "local_party_trail",
+        };
+        this.scene.moveToken(token, x, y, true);
+      });
     },
     /** Get current player grid position */
     getPlayerGridPosition() {
@@ -234,6 +345,15 @@
     },
     resolveTrapOverlayEntries(environmentObjects) {
       return resolveTrapOverlayEntries(environmentObjects);
+    },
+    resolveFogOfWarCells(mapData) {
+      return resolveFogOfWarCells(mapData);
+    },
+    resolveLocalPartyFollowFormation(partyStatus, mapData, playerPosition, options) {
+      return resolveLocalPartyFollowFormation(partyStatus, mapData, playerPosition, options);
+    },
+    resolveLocalPartyTrailFormation(partyStatus, mapData, playerPosition, options) {
+      return resolveLocalPartyFollowFormation(partyStatus, mapData, playerPosition, options);
     },
     resize() {
       if (!this.game) return;
@@ -370,6 +490,223 @@
     };
   }
 
+  function cellInRoom(x, y, room) {
+    const r = safeObject(room);
+    const rx = Math.max(0, Math.round(Number(r.x) || 0));
+    const ry = Math.max(0, Math.round(Number(r.y) || 0));
+    const rw = Math.max(1, Math.round(Number(r.w) || 1));
+    const rh = Math.max(1, Math.round(Number(r.h) || 1));
+    return x >= rx && x < rx + rw && y >= ry && y < ry + rh;
+  }
+
+  function cellKey(x, y) {
+    return Math.round(Number(x)) + "," + Math.round(Number(y));
+  }
+
+  function isWithinMapBounds(coord, mapLike) {
+    const map = safeObject(mapLike);
+    const x = Math.round(Number(safeObject(coord).x));
+    const y = Math.round(Number(safeObject(coord).y));
+    return (
+      Number.isFinite(x)
+      && Number.isFinite(y)
+      && x >= 0
+      && y >= 0
+      && x < Math.max(1, Math.round(Number(map.width) || 1))
+      && y < Math.max(1, Math.round(Number(map.height) || 1))
+    );
+  }
+
+  function visibleRoomIdsForFollow(mapLike) {
+    const map = safeObject(mapLike);
+    return new Set(
+      safeArray(map.visible_rooms || map.visibleRooms)
+        .map((roomId) => normalizeId(roomId))
+        .filter(Boolean),
+    );
+  }
+
+  function isCoordInsideVisibleRoomsForFollow(coord, mapLike) {
+    const map = safeObject(mapLike);
+    const rooms = safeArray(map.rooms);
+    if (!rooms.length) return true;
+    const x = Math.round(Number(safeObject(coord).x));
+    const y = Math.round(Number(safeObject(coord).y));
+    const room = rooms.find((candidate) => cellInRoom(x, y, candidate));
+    if (!room) return false;
+    const visible = visibleRoomIdsForFollow(map);
+    if (!visible.size) return true;
+    return visible.has(normalizeId(safeObject(room).id));
+  }
+
+  function isWalkableFollowCell(mapLike, coord, occupiedCells) {
+    const map = normalizeMapData(mapLike);
+    const point = {
+      x: Math.round(Number(safeObject(coord).x)),
+      y: Math.round(Number(safeObject(coord).y)),
+    };
+    if (!isWithinMapBounds(point, map)) return false;
+    if (occupiedCells && occupiedCells.has(cellKey(point.x, point.y))) return false;
+    const collision = safeArray(map.collision);
+    if (Boolean(safeArray(collision[point.y])[point.x])) return false;
+    const grid = safeArray(map.grid);
+    const cell = String(safeArray(grid[point.y])[point.x] || ".").toUpperCase();
+    if (cell === "W" || cell === "#") return false;
+    return isCoordInsideVisibleRoomsForFollow(point, map);
+  }
+
+  function followSearchCandidates(desiredCell) {
+    const desired = {
+      x: Math.round(Number(safeObject(desiredCell).x)),
+      y: Math.round(Number(safeObject(desiredCell).y)),
+    };
+    const out = [desired];
+    for (let radius = 1; radius <= 4; radius += 1) {
+      for (let dy = -radius; dy <= radius; dy += 1) {
+        for (let dx = -radius; dx <= radius; dx += 1) {
+          if (Math.max(Math.abs(dx), Math.abs(dy)) !== radius) continue;
+          out.push({ x: desired.x + dx, y: desired.y + dy });
+        }
+      }
+    }
+    return out;
+  }
+
+  function findNearestWalkableFollowCell(mapLike, desiredCell, occupiedCells) {
+    const map = normalizeMapData(mapLike);
+    return followSearchCandidates(desiredCell).find((candidate) => (
+      isWalkableFollowCell(map, candidate, occupiedCells)
+    )) || null;
+  }
+
+  function isCompanionFollowControlled(companion) {
+    const record = safeObject(companion);
+    const source = normalizeId(record._projection_source);
+    const hasCoords = Number.isFinite(Number(record.x)) && Number.isFinite(Number(record.y));
+    return !hasCoords || FOLLOW_PROJECTION_SOURCES.has(source);
+  }
+
+  function normalizeTrailPoint(point) {
+    const record = safeObject(point);
+    const x = Math.round(Number(record.x));
+    const y = Math.round(Number(record.y));
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+    return { x, y };
+  }
+
+  function normalizeFollowDirection(direction) {
+    const record = safeObject(direction);
+    const x = Math.sign(Math.round(Number(record.x) || 0));
+    const y = Math.sign(Math.round(Number(record.y) || 0));
+    if (x === 0 && y === 0) return { ...DEFAULT_FOLLOW_DIRECTION };
+    return { x, y };
+  }
+
+  function fallbackLineDesiredCells(playerX, playerY, companionIndex, lastMoveDirection) {
+    const direction = normalizeFollowDirection(lastMoveDirection);
+    const distance = (companionIndex + 1) * FOLLOW_SPACING_STEPS;
+    return [
+      /* Behind the player based on the last local movement. */
+      { x: playerX - direction.x * distance, y: playerY - direction.y * distance },
+      /* Initial no-direction fallback: a single file below the player. */
+      { x: playerX, y: playerY + distance },
+      /* Side lanes only preserve a vertical line; they are not surround formation. */
+      { x: playerX - 1, y: playerY + companionIndex },
+      { x: playerX + 1, y: playerY + companionIndex },
+    ];
+  }
+
+  function findTrailTargetForCompanion(map, trail, occupied, companionIndex) {
+    const preferredIndex = companionIndex * FOLLOW_SPACING_STEPS;
+    for (let i = preferredIndex; i < trail.length; i += 1) {
+      const point = normalizeTrailPoint(trail[i]);
+      if (point && isWalkableFollowCell(map, point, occupied)) return point;
+    }
+    return null;
+  }
+
+  function findFallbackLineTarget(map, playerX, playerY, occupied, companionIndex, lastMoveDirection) {
+    const desiredCells = fallbackLineDesiredCells(playerX, playerY, companionIndex, lastMoveDirection);
+    for (const desired of desiredCells) {
+      if (isWalkableFollowCell(map, desired, occupied)) return desired;
+    }
+    return null;
+  }
+
+  function resolveLocalPartyFollowFormation(partyStatus, mapData, playerPosition, options = {}) {
+    const party = safeObject(partyStatus);
+    const map = normalizeMapData(mapData);
+    const player = safeObject(playerPosition);
+    const playerX = Math.round(Number(player.x));
+    const playerY = Math.round(Number(player.y));
+    if (!Number.isFinite(playerX) || !Number.isFinite(playerY)) return { ...party };
+
+    const next = { ...party };
+    const occupied = new Set([cellKey(playerX, playerY)]);
+    const trail = safeArray(safeObject(options).trail)
+      .map((point) => normalizeTrailPoint(point))
+      .filter(Boolean)
+      .slice(0, FOLLOW_TRAIL_MAX);
+    const lastMoveDirection = normalizeFollowDirection(safeObject(options).lastMoveDirection);
+
+    FOLLOW_COMPANIONS.forEach((companionId) => {
+      const record = safeObject(party[companionId]);
+      if (!Object.keys(record).length) return;
+      if (!isCompanionFollowControlled(record)) {
+        if (Number.isFinite(Number(record.x)) && Number.isFinite(Number(record.y))) {
+          occupied.add(cellKey(record.x, record.y));
+        }
+      }
+    });
+
+    FOLLOW_COMPANIONS.forEach((companionId) => {
+      const record = safeObject(party[companionId]);
+      if (!Object.keys(record).length || !isCompanionFollowControlled(record)) return;
+      const companionIndex = FOLLOW_COMPANIONS.indexOf(companionId);
+
+      let target = findTrailTargetForCompanion(map, trail, occupied, companionIndex);
+      if (!target) {
+        target = findFallbackLineTarget(map, playerX, playerY, occupied, companionIndex, lastMoveDirection);
+      }
+      if (!target) {
+        const currentX = Math.round(Number(record.x));
+        const currentY = Math.round(Number(record.y));
+        if (Number.isFinite(currentX) && Number.isFinite(currentY)) {
+          occupied.add(cellKey(currentX, currentY));
+        }
+        return;
+      }
+
+      occupied.add(cellKey(target.x, target.y));
+      next[companionId] = {
+        ...record,
+        x: target.x,
+        y: target.y,
+        _projection_source: "local_party_trail",
+      };
+    });
+
+    return next;
+  }
+
+  function resolveFogOfWarCells(rawMapData) {
+    const map = normalizeMapData(rawMapData);
+    const rooms = safeArray(map.rooms);
+    if (!rooms.length) return [];
+    const visibleRoomIds = new Set(
+      safeArray(map.visible_rooms).map((roomId) => normalizeId(roomId)).filter(Boolean),
+    );
+    const visibleRooms = rooms.filter((room) => visibleRoomIds.has(normalizeId(safeObject(room).id)));
+    const hidden = [];
+    for (let y = 0; y < map.height; y += 1) {
+      for (let x = 0; x < map.width; x += 1) {
+        const visible = visibleRooms.some((room) => cellInRoom(x, y, room));
+        if (!visible) hidden.push({ x, y });
+      }
+    }
+    return hidden;
+  }
+
   function normalizeGridData(rawGrid) {
     if (Array.isArray(rawGrid)) {
       if (rawGrid.every((row) => typeof row === "string")) {
@@ -469,6 +806,12 @@
     const num = Number(value);
     if (!Number.isFinite(num)) return fallback;
     return Math.max(0, Math.min(max - 1, Math.round(num)));
+  }
+
+  function visualCoord(value, fallback, max) {
+    const num = Number(value);
+    if (!Number.isFinite(num)) return fallback;
+    return Math.max(0, Math.min(max - 1, num));
   }
 
   function tokenKind(id, data, source) {
@@ -640,13 +983,18 @@
       const entity = safeObject(data);
       if (entity.x === undefined || entity.y === undefined) return;
       if (isTrap(id, entity) && isEntityHidden(entity)) return;
+      const kind = tokenKind(id, entity, "environment");
+      const width = Math.max(1, Number(entity.w ?? entity.width ?? entity.size_w ?? entity.tile_width) || 1);
+      const height = Math.max(1, Number(entity.h ?? entity.height ?? entity.size_h ?? entity.tile_height) || 1);
+      const x = kind === "door" ? visualCoord(Number(entity.x) + (width - 1) / 2, 0, map.width) : gridCoord(entity.x, 0, map.width);
+      const y = kind === "door" ? visualCoord(Number(entity.y) + (height - 1) / 2, 0, map.height) : gridCoord(entity.y, 0, map.height);
       entities.push({
         id,
         data: entity,
         source: "environment",
-        kind: tokenKind(id, entity, "environment"),
-        x: gridCoord(entity.x, 0, map.width),
-        y: gridCoord(entity.y, 0, map.height),
+        kind,
+        x,
+        y,
       });
     });
 
@@ -708,6 +1056,15 @@
       this.load.spritesheet(SPRITE_KEYS.actors, SPRITE_SHEETS.actors.path, {
         frameWidth: SPRITE_SHEETS.actors.frameWidth,
         frameHeight: SPRITE_SHEETS.actors.frameHeight,
+      });
+      Object.entries(SPRITE_IMAGES).forEach(([key, assetPath]) => {
+        this.load.image(SPRITE_KEYS[key], assetPath);
+      });
+      Object.entries(CUSTOM_SPRITE_SHEETS).forEach(([key, sheet]) => {
+        this.load.spritesheet(SPRITE_KEYS[key], sheet.path, {
+          frameWidth: sheet.frameWidth,
+          frameHeight: sheet.frameHeight,
+        });
       });
     }
 
@@ -940,58 +1297,18 @@
       const map = normalizeMapData(this.mapData);
       const rooms = Array.isArray(map.rooms) ? map.rooms : [];
       if (!rooms.length) return;
-      const visibleRoomIds = new Set(
-        (Array.isArray(map.visible_rooms) ? map.visible_rooms : []).map((roomId) => normalizeId(roomId)),
-      );
-      rooms.forEach((room) => {
-        const record = safeObject(room);
-        const roomId = normalizeId(record.id);
-        if (roomId && visibleRoomIds.has(roomId)) return;
-        const widthCells = Math.max(1, Number(record.w) || 1);
-        const heightCells = Math.max(1, Number(record.h) || 1);
-        const center = this.gridToWorld(
-          Number(record.x) + widthCells / 2 - 0.5,
-          Number(record.y) + heightCells / 2 - 0.5,
-        );
-        const fog = this.add.rectangle(
-          center.x,
-          center.y,
-          widthCells * this.board.cell,
-          heightCells * this.board.cell,
-          0x0a1015,
-          0.62,
-        ).setDepth(DEPTH_LAYERS.overlay + 0.02);
-        const fogInner = this.add.rectangle(
-          center.x,
-          center.y,
-          widthCells * this.board.cell * 0.92,
-          heightCells * this.board.cell * 0.92,
-          0x111923,
-          0.32,
-        ).setDepth(DEPTH_LAYERS.overlay + 0.021);
-        const rim = this.add.rectangle(
-          center.x,
-          center.y,
-          widthCells * this.board.cell,
-          heightCells * this.board.cell,
-        )
-          .setFillStyle(0x000000, 0)
-          .setStrokeStyle(2, 0x2f3f4f, 0.64)
-          .setDepth(DEPTH_LAYERS.overlay + 0.03);
-        const haze = this.add.ellipse(
-          center.x,
-          center.y,
-          widthCells * this.board.cell * 0.76,
-          heightCells * this.board.cell * 0.66,
-          0x1f2b37,
-          0.18,
-        ).setDepth(DEPTH_LAYERS.overlay + 0.025);
-        this.overlayLayer.add(fog);
-        this.overlayLayer.add(fogInner);
-        this.overlayLayer.add(haze);
-        this.overlayLayer.add(rim);
-        this.roomFogSprites.push(fog, fogInner, haze, rim);
+      const hiddenCells = resolveFogOfWarCells(map);
+      if (!hiddenCells.length) return;
+      const fog = this.add.graphics().setDepth(DEPTH_LAYERS.overlay + 0.02);
+      fog.fillStyle(FOG_OF_WAR.color, FOG_OF_WAR.alpha);
+      const size = this.board.cell * FOG_OF_WAR.cellBleed;
+      const offset = size * 0.5;
+      hiddenCells.forEach((cell) => {
+        const world = this.gridToWorld(cell.x, cell.y);
+        fog.fillRect(world.x - offset, world.y - offset, size, size);
       });
+      this.overlayLayer.add(fog);
+      this.roomFogSprites.push(fog);
     }
 
     drawTrapSenseHints() {
@@ -1818,7 +2135,7 @@
         neutral: DEPTH_LAYERS.actors + 1,
         object: DEPTH_LAYERS.actors,
         loot: DEPTH_LAYERS.actors,
-        door: DEPTH_LAYERS.actors,
+        door: DEPTH_LAYERS.actors - 0.05,
         trap: DEPTH_LAYERS.actors,
         chest: DEPTH_LAYERS.actors,
       };
@@ -1847,6 +2164,10 @@
 
     createToken(entity) {
       const container = this.add.container(0, 0);
+      const doorFrame = this.add.graphics();
+      doorFrame.setVisible(false);
+      const actorPixel = this.add.graphics();
+      actorPixel.setVisible(false);
       const sprite = this.add.image(0, 0, SPRITE_KEYS.actors, pickFrame(ACTOR_FRAMES.neutral, entity.id)).setOrigin(0.5);
       const poisonIcon = this.add.image(5, -6, SPRITE_KEYS.tiles, TILE_FRAMES.poison)
         .setOrigin(0.5)
@@ -1857,7 +2178,7 @@
         .setScale(0.52);
       lockBadge.setVisible(false);
 
-      container.add([sprite, poisonIcon, lockBadge]);
+      container.add([doorFrame, actorPixel, sprite, poisonIcon, lockBadge]);
       container.setDepth(this.kindDepth(entity.kind));
       return {
         container,
@@ -1870,6 +2191,8 @@
         trapTween: null,
         doorTween: null,
         doorOpenState: null,
+        doorFrame,
+        actorPixel,
         lockBadge,
         speechBubble: null,
         speechBubbleTimer: null,
@@ -1985,6 +2308,15 @@
 
     applyTokenVisual(token, entity) {
       this.resetTokenSpriteTransform(token);
+      token.sprite.setVisible(true);
+      if (token.doorFrame) {
+        token.doorFrame.clear();
+        token.doorFrame.setVisible(false);
+      }
+      if (token.actorPixel) {
+        token.actorPixel.clear();
+        token.actorPixel.setVisible(false);
+      }
       if (token.poisonIcon) token.poisonIcon.setVisible(false);
       if (token.lockBadge) token.lockBadge.setVisible(false);
 
@@ -2009,8 +2341,20 @@
         return;
       }
 
-      token.sprite.setTexture(SPRITE_KEYS.actors, this.resolveActorFrame(entity));
+      const actorTexture = PARTY_TEXTURES[normalizeId(entity.id)];
+      if (actorTexture) {
+        token.sprite.setTexture(actorTexture);
+      } else {
+        token.sprite.setTexture(SPRITE_KEYS.actors, this.resolveActorFrame(entity));
+      }
       this.applyStatusEffects(token, entity.data);
+      this.applyPartyTextureScale(token, entity);
+    }
+
+    applyPartyTextureScale(token, entity) {
+      const scale = PARTY_TEXTURE_SCALES[normalizeId(entity.id)];
+      if (!scale) return;
+      token.sprite.setScale(token.sprite.scaleX * scale, token.sprite.scaleY * scale);
     }
 
     applyTrapVisual(token, entity) {
@@ -2026,16 +2370,25 @@
 
     applyDoorVisual(token, data) {
       const open = isDoorOpen(data);
-      const frame = open ? TILE_FRAMES.doorOpen : TILE_FRAMES.doorClosed;
+      const texture = open ? SPRITE_KEYS.labDoorOpen : SPRITE_KEYS.labDoorClosed;
       const changed = token.doorOpenState !== null && token.doorOpenState !== open;
+      const width = Math.max(1, Number(data.w ?? data.width ?? data.size_w ?? data.tile_width) || 1);
+      const height = Math.max(1, Number(data.h ?? data.height ?? data.size_h ?? data.tile_height) || 1);
+      if (token.doorFrame) {
+        token.doorFrame.clear();
+        token.doorFrame.setVisible(false);
+      }
+      token.sprite.setVisible(true);
+      token.sprite.setAngle(height > width ? 90 : 0);
+      token.sprite.setAlpha(open ? 0.82 : 1);
+      if (token.lockBadge) token.lockBadge.setVisible(isLocked(data));
       token.doorOpenState = open;
       if (token.doorTween) {
         token.doorTween.stop();
         token.doorTween = null;
       }
       if (!changed) {
-        token.sprite.setTexture(SPRITE_KEYS.tiles, frame);
-        token.sprite.setAlpha(open ? 0.76 : 1);
+        token.sprite.setTexture(texture);
         return;
       }
       token.doorTween = this.tweens.add({
@@ -2044,10 +2397,10 @@
         duration: 90,
         ease: "Sine.easeInOut",
         onComplete: () => {
-          token.sprite.setTexture(SPRITE_KEYS.tiles, frame);
+          token.sprite.setTexture(texture);
           token.doorTween = this.tweens.add({
             targets: token.sprite,
-            alpha: open ? 0.76 : 1,
+            alpha: open ? 0.82 : 1,
             duration: 90,
             ease: "Sine.easeInOut",
             onComplete: () => {

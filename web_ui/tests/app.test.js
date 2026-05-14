@@ -173,6 +173,28 @@ function roomById(rooms, roomId) {
   return rooms.find((room) => room.id === roomId);
 }
 
+function buildFormationTestMap(overrides = {}) {
+  const width = Number(overrides.width) || 8;
+  const height = Number(overrides.height) || 8;
+  const collision = Array.from({ length: height }, () => Array.from({ length: width }, () => false));
+  (overrides.blocked || []).forEach(({ x, y }) => {
+    if (collision[y] && x >= 0 && x < width) collision[y][x] = true;
+  });
+  return {
+    id: "formation_test",
+    width,
+    height,
+    collision,
+    losBlockers: Array.from({ length: height }, () => Array.from({ length: width }, () => false)),
+    groundTypes: Array.from({ length: height }, () => Array.from({ length: width }, () => 0)),
+    rooms: [{ id: "room_a_spawn", x: 0, y: 0, w: width, h: height }],
+    visibleRooms: ["room_a_spawn"],
+    playerStart: { x: 4, y: 4 },
+    interactables: [],
+    obstacles: [],
+  };
+}
+
 describe("web_ui/app.js UI bindings", () => {
   beforeEach(() => {
     jest.resetModules();
@@ -210,6 +232,7 @@ describe("web_ui/app.js UI bindings", () => {
     const fetchSpy = spyOnFetch().mockResolvedValueOnce(
       mockResponse({
         last_node: "DM_NODE",
+        active_dialogue_target: "gribbo",
         entities: {
           gribbo: {
             dynamic_states: {
@@ -237,11 +260,44 @@ describe("web_ui/app.js UI bindings", () => {
     const inspector = document.getElementById("json-inspector");
     expect(inspector.textContent).toContain('"last_node": "DM_NODE"');
     expect(inspector.textContent).toContain('"current_value": 8');
+    const summary = document.getElementById("payload-summary");
+    expect(summary.textContent).toContain("/api/state");
+    expect(summary.textContent).toContain("Journal");
+    expect(summary.textContent).toContain("Entities");
 
     expect(fetchSpy).toHaveBeenCalledWith(
       expect.stringContaining("/api/state?session_id="),
       expect.objectContaining({ signal: expect.any(Object) })
     );
+  });
+
+  test("test_state_watcher_hidden_before_gribbo_context", async () => {
+    spyOnFetch().mockResolvedValueOnce(
+      mockResponse({
+        last_node: null,
+        entities: {
+          gribbo: {
+            dynamic_states: {
+              patience: { current_value: 15, max_value: 100 },
+              fear: { current_value: 5, max_value: 100 },
+            },
+          },
+        },
+        party_status: {},
+        environment_objects: {},
+        combat_state: {},
+        journal_events: [],
+      })
+    );
+
+    const api = await bootAppForTest();
+    await api.pollDialogueState();
+
+    const watcher = document.querySelector(".xray-section--state-watcher");
+    expect(watcher.classList.contains("is-hidden")).toBe(true);
+    const summary = document.getElementById("payload-summary");
+    expect(summary.textContent).toContain("Watcher");
+    expect(summary.textContent).toContain("none");
   });
 
   test("test_dialogue_modal_visibility", async () => {
@@ -329,6 +385,23 @@ describe("web_ui/app.js UI bindings", () => {
     if (window.BG3DirectorTrace) {
       expect(window.BG3DirectorTrace.getState()).toBe("idle");
     }
+  });
+
+  test("test_legacy_tactical_console_hidden_and_space_disabled_by_default", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    const api = await bootAppForTest();
+    const button = document.getElementById("tactical-toggle-btn");
+    const overlay = document.getElementById("tactical-pause-overlay");
+
+    expect(button.hidden).toBe(true);
+    expect(button.classList.contains("is-retired")).toBe(true);
+    expect(overlay.classList.contains("is-hidden")).toBe(true);
+
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: " ", code: "Space", bubbles: true }));
+    await flushAsync();
+
+    expect(api.state.tacticalOverlayOpen).toBe(false);
+    expect(overlay.classList.contains("is-hidden")).toBe(true);
   });
 
   test("test_map_id_in_payload", async () => {
@@ -780,6 +853,130 @@ describe("web_ui/app.js UI bindings", () => {
     expect(api.state.roomVisibleIds.has("room_exit")).toBe(true);
   });
 
+  test("test_fog_of_war_masks_non_visible_rooms_and_unmapped_cells", async () => {
+    loadNewModules();
+    const tacticalMap = loadGameHelpers();
+    const map = JSON.parse(fs.readFileSync(REAL_MAP_JSON_PATH, "utf8"));
+    const normalized = window.BG3TiledAdapter.normalizeTiledMap(map);
+
+    let fogCells = tacticalMap.resolveFogOfWarCells({
+      ...normalized,
+      visible_rooms: ["room_a_spawn"],
+    });
+    let fogSet = new Set(fogCells.map((cell) => cell.x + "," + cell.y));
+
+    expect(fogSet.has("4,18")).toBe(false);
+    expect(fogSet.has("6,8")).toBe(true);
+    expect(fogSet.has("10,10")).toBe(true);
+    expect(fogSet.has("3,3")).toBe(true);
+    expect(fogSet.has("20,3")).toBe(true);
+    expect(fogSet.has("0,0")).toBe(true);
+
+    fogCells = tacticalMap.resolveFogOfWarCells({
+      ...normalized,
+      visible_rooms: ["room_a_spawn", "room_b_corridor"],
+    });
+    fogSet = new Set(fogCells.map((cell) => cell.x + "," + cell.y));
+
+    expect(fogSet.has("6,8")).toBe(false);
+    expect(fogSet.has("10,10")).toBe(true);
+  });
+
+  test("test_wasd_cannot_enter_hidden_room_before_door_reveal", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    await bootAppForTest();
+    const nowSpy = jest.spyOn(Date, "now");
+    nowSpy.mockReturnValue(1000);
+    const map = {
+      width: 4,
+      height: 4,
+      collision: Array.from({ length: 4 }, () => Array(4).fill(false)),
+      interactables: [],
+      triggers: [],
+      rooms: [
+        { id: "room_a_spawn", x: 0, y: 2, w: 4, h: 2 },
+        { id: "room_b_corridor", x: 0, y: 0, w: 4, h: 2 },
+      ],
+      visible_rooms: ["room_a_spawn"],
+    };
+    window.BG3InputController.setMap(map);
+    window.BG3InputController.setPlayerPosition(1, 2);
+    window.BG3TacticalMap.movePlayerLocal.mockClear();
+
+    expect(window.BG3InputController.movePlayer(0, -1)).toBe(false);
+    expect(window.BG3InputController.getPlayerPosition()).toEqual({ x: 1, y: 2 });
+    expect(window.BG3TacticalMap.movePlayerLocal).not.toHaveBeenCalled();
+
+    nowSpy.mockReturnValue(1200);
+    window.BG3InputController.setMap({
+      ...map,
+      visible_rooms: ["room_a_spawn", "room_b_corridor"],
+    });
+
+    expect(window.BG3InputController.movePlayer(0, -1)).toBe(true);
+    expect(window.BG3InputController.getPlayerPosition()).toEqual({ x: 1, y: 1 });
+    expect(window.BG3TacticalMap.movePlayerLocal).toHaveBeenCalledWith(1, 1);
+    nowSpy.mockRestore();
+  });
+
+  test("test_visible_boundary_door_is_rendered_as_tactical_object", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    const api = await bootAppForTest();
+    const map = JSON.parse(fs.readFileSync(REAL_MAP_JSON_PATH, "utf8"));
+    const normalized = window.BG3TiledAdapter.normalizeTiledMap(map);
+    api.applyNormalizedMap(normalized, { source: "json" });
+    window.BG3TacticalMap.update.mockClear();
+
+    api.renderTacticalGrid({ player: { x: 4, y: 18, faction: "player" } }, {}, api.state.mapData);
+
+    const lastCall = window.BG3TacticalMap.update.mock.calls.at(-1);
+    const environment = lastCall[1] || {};
+    expect(environment.door_a_to_b).toBeDefined();
+    expect(environment.door_a_to_b.type).toBe("door");
+    expect(environment.door_a_to_b.w).toBe(2);
+    expect(environment.door_b_to_d).toBeUndefined();
+  });
+
+  test("test_e_opening_ab_door_is_local_reveal_not_backend_loot", async () => {
+    const fetchSpy = spyOnFetch().mockResolvedValue(
+      mockResponse({
+        responses: [],
+        journal_events: [],
+        party_status: {},
+        environment_objects: {},
+        player_inventory: { healing_potion: 2 },
+        combat_state: {},
+      })
+    );
+    const api = await bootAppForTest();
+    const map = JSON.parse(fs.readFileSync(REAL_MAP_JSON_PATH, "utf8"));
+    const normalized = window.BG3TiledAdapter.normalizeTiledMap(map);
+    api.applyNormalizedMap(normalized, { source: "json" });
+    api.state.partyStatus = {
+      player: { x: 5, y: 17, faction: "player" },
+      astarion: { name: "Astarion", faction: "party" },
+      shadowheart: { name: "Shadowheart", faction: "party" },
+      laezel: { name: "Lae'zel", faction: "party" },
+    };
+    window.BG3InputController.setPlayerPosition(5, 17);
+    window.BG3InputController.updateHint();
+    fetchSpy.mockClear();
+
+    window.BG3InputController.interact();
+    await flushAsync();
+
+    const chatCalls = fetchSpy.mock.calls.filter(([url]) => String(url).includes("/api/chat"));
+    expect(chatCalls.length).toBe(0);
+    expect(api.state.roomVisibleIds.has("room_b_corridor")).toBe(true);
+    expect(api.state.playerInventory.healing_potion).toBeUndefined();
+
+    api.renderTacticalGrid(api.state.partyStatus, api.state.environmentObjects, api.state.mapData);
+    const lastCall = window.BG3TacticalMap.update.mock.calls.at(-1);
+    const projectedParty = lastCall[0] || {};
+    expect(Object.keys(projectedParty).sort()).toEqual(["astarion", "laezel", "player", "shadowheart"]);
+    expect(lastCall[1].door_a_to_b.is_open).toBe(true);
+  });
+
   test("test_secret_door_and_room_c_visibility_gate", async () => {
     spyOnFetch().mockResolvedValue(mockResponse({}));
     const api = await bootAppForTest();
@@ -840,6 +1037,379 @@ describe("web_ui/app.js UI bindings", () => {
     expect(projectedParty.player.y).toBe(19);
     expect(api.state.partyStatus.player.x).toBe(2);
     expect(api.state.partyStatus.player.y).toBe(2);
+  });
+
+  test("test_party_projection_adds_visual_formation_for_companions_missing_coordinates", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    const api = await bootAppForTest();
+    api.applyNormalizedMap(buildFormationTestMap(), { source: "json" });
+
+    const sourceParty = {
+      player: { name: "玩家", faction: "player", x: 4, y: 4 },
+      astarion: { name: "Astarion", faction: "party" },
+      shadowheart: { name: "Shadowheart", faction: "party" },
+      laezel: { name: "Lae'zel", faction: "party" },
+    };
+    const projected = api.projectPartyStatusForTactical(sourceParty, api.state.mapData);
+
+    ["astarion", "shadowheart", "laezel"].forEach((id) => {
+      expect(Number.isFinite(projected[id].x)).toBe(true);
+      expect(Number.isFinite(projected[id].y)).toBe(true);
+      expect(projected[id]._projection_source).toBe("visual_party_formation");
+    });
+    expect(projected.astarion).toMatchObject({ x: 4, y: 5 });
+    expect(projected.shadowheart).toMatchObject({ x: 4, y: 6 });
+    expect(projected.laezel).toMatchObject({ x: 4, y: 7 });
+  });
+
+  test("test_party_projection_preserves_existing_companion_coordinates", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    const api = await bootAppForTest();
+    api.applyNormalizedMap(buildFormationTestMap(), { source: "json" });
+
+    const projected = api.projectPartyStatusForTactical({
+      player: { name: "玩家", faction: "player", x: 4, y: 4 },
+      astarion: { name: "Astarion", faction: "party", x: 2, y: 2 },
+      shadowheart: { name: "Shadowheart", faction: "party" },
+    }, api.state.mapData);
+
+    expect(projected.astarion.x).toBe(2);
+    expect(projected.astarion.y).toBe(2);
+    expect(projected.astarion._projection_source).toBeUndefined();
+    expect(projected.shadowheart._projection_source).toBe("visual_party_formation");
+  });
+
+  test("test_party_projection_rehomes_existing_companion_coordinates_outside_visible_room", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    const api = await bootAppForTest();
+    api.applyNormalizedMap({
+      ...buildFormationTestMap({ width: 10, height: 10 }),
+      rooms: [
+        { id: "room_a_spawn", x: 0, y: 0, w: 6, h: 6 },
+        { id: "hidden_room", x: 6, y: 6, w: 4, h: 4 },
+      ],
+      visibleRooms: ["room_a_spawn"],
+      playerStart: { x: 3, y: 3 },
+    }, { source: "json" });
+
+    const projected = api.projectPartyStatusForTactical({
+      player: { name: "玩家", faction: "player", x: 3, y: 3 },
+      astarion: { name: "Astarion", faction: "party", x: 8, y: 8 },
+    }, api.state.mapData);
+
+    expect(projected.astarion._projection_source).toBe("visual_party_formation");
+    expect(projected.astarion.x).not.toBe(8);
+    expect(projected.astarion.y).not.toBe(8);
+    expect(projected.astarion.x).toBeLessThan(6);
+    expect(projected.astarion.y).toBeLessThan(6);
+  });
+
+  test("test_party_projection_formation_does_not_overlap_player_and_stays_in_bounds", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    const api = await bootAppForTest();
+    api.applyNormalizedMap(buildFormationTestMap({
+      blocked: [{ x: 3, y: 3 }, { x: 5, y: 3 }],
+    }), { source: "json" });
+
+    const projected = api.projectPartyStatusForTactical({
+      player: { name: "玩家", faction: "player", x: 4, y: 4 },
+      astarion: { name: "Astarion", faction: "party" },
+      shadowheart: { name: "Shadowheart", faction: "party" },
+      laezel: { name: "Lae'zel", faction: "party" },
+    }, api.state.mapData);
+    const occupied = new Set(["4,4"]);
+
+    ["astarion", "shadowheart", "laezel"].forEach((id) => {
+      const key = projected[id].x + "," + projected[id].y;
+      expect(occupied.has(key)).toBe(false);
+      occupied.add(key);
+      expect(projected[id].x).toBeGreaterThanOrEqual(0);
+      expect(projected[id].y).toBeGreaterThanOrEqual(0);
+      expect(projected[id].x).toBeLessThan(api.state.mapData.width);
+      expect(projected[id].y).toBeLessThan(api.state.mapData.height);
+      expect(api.state.mapData.collision[projected[id].y][projected[id].x]).toBe(false);
+    });
+  });
+
+  test("test_party_projection_does_not_mutate_backend_payload", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    const api = await bootAppForTest();
+    api.applyNormalizedMap(buildFormationTestMap(), { source: "json" });
+
+    const sourceParty = {
+      player: { name: "玩家", faction: "player", x: 4, y: 4 },
+      astarion: { name: "Astarion", faction: "party" },
+      shadowheart: { name: "Shadowheart", faction: "party" },
+      laezel: { name: "Lae'zel", faction: "party" },
+    };
+    api.projectPartyStatusForTactical(sourceParty, api.state.mapData);
+
+    expect(sourceParty.astarion.x).toBeUndefined();
+    expect(sourceParty.shadowheart.x).toBeUndefined();
+    expect(sourceParty.laezel.x).toBeUndefined();
+  });
+
+  test("test_tactical_map_update_receives_four_party_tokens_after_projection", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    const api = await bootAppForTest();
+    api.applyNormalizedMap(buildFormationTestMap(), { source: "json" });
+    window.BG3TacticalMap.update.mockClear();
+
+    api.renderTacticalGrid({
+      player: { name: "玩家", faction: "player", x: 4, y: 4 },
+      astarion: { name: "Astarion", faction: "party" },
+      shadowheart: { name: "Shadowheart", faction: "party" },
+      laezel: { name: "Lae'zel", faction: "party" },
+    }, {}, api.state.mapData);
+
+    const lastCall = window.BG3TacticalMap.update.mock.calls.at(-1);
+    const projectedParty = lastCall[0] || {};
+    expect(Object.keys(projectedParty).sort()).toEqual(["astarion", "laezel", "player", "shadowheart"]);
+    expect(projectedParty.astarion._projection_source).toBe("visual_party_formation");
+    expect(projectedParty.shadowheart._projection_source).toBe("visual_party_formation");
+    expect(projectedParty.laezel._projection_source).toBe("visual_party_formation");
+  });
+
+  test("test_local_party_follow_uses_single_file_fallback_when_trail_is_empty", () => {
+    const tacticalMap = loadGameHelpers();
+    const map = buildFormationTestMap({ width: 8, height: 8 });
+    const party = {
+      player: { name: "玩家", faction: "player", x: 5, y: 4 },
+      astarion: { name: "Astarion", faction: "party", x: 3, y: 4, _projection_source: "visual_party_formation" },
+      shadowheart: { name: "Shadowheart", faction: "party", x: 5, y: 3, _projection_source: "visual_party_formation" },
+      laezel: { name: "Lae'zel", faction: "party", x: 4, y: 5, _projection_source: "visual_party_formation" },
+    };
+
+    const followed = tacticalMap.resolveLocalPartyFollowFormation(party, map, { x: 5, y: 4 });
+
+    expect(followed.astarion).toMatchObject({ x: 5, y: 5, _projection_source: "local_party_trail" });
+    expect(followed.shadowheart).toMatchObject({ x: 5, y: 6, _projection_source: "local_party_trail" });
+    expect(followed.laezel).toMatchObject({ x: 5, y: 7, _projection_source: "local_party_trail" });
+    expect(followed.astarion.x).not.toBe(4);
+    expect(followed.shadowheart.x).not.toBe(6);
+  });
+
+  test("test_move_player_local_updates_player_and_projected_companion_tokens", () => {
+    const tacticalMap = loadGameHelpers();
+    const map = buildFormationTestMap({ width: 8, height: 8 });
+    const moved = [];
+    const tokenFor = (id, data) => ({
+      entity: { id, data: { ...data }, x: data.x, y: data.y },
+    });
+    const tokens = new Map([
+      ["player", tokenFor("player", { x: 4, y: 4 })],
+      ["astarion", tokenFor("astarion", { x: 3, y: 4, _projection_source: "visual_party_formation" })],
+      ["shadowheart", tokenFor("shadowheart", { x: 5, y: 4, _projection_source: "visual_party_formation" })],
+      ["laezel", tokenFor("laezel", { x: 4, y: 5, _projection_source: "visual_party_formation" })],
+    ]);
+    tacticalMap.scene = {
+      tokens,
+      moveToken: jest.fn((token, x, y) => moved.push([token.entity.id, x, y])),
+      updateCameraFollow: jest.fn(),
+    };
+    tacticalMap.latestState = {
+      partyStatus: {
+        player: { x: 4, y: 4 },
+        astarion: { x: 3, y: 4, _projection_source: "visual_party_formation" },
+        shadowheart: { x: 5, y: 4, _projection_source: "visual_party_formation" },
+        laezel: { x: 4, y: 5, _projection_source: "visual_party_formation" },
+      },
+      environmentObjects: {},
+      mapData: map,
+    };
+
+    tacticalMap.movePlayerLocal(5, 4);
+
+    expect(tokens.get("player").entity.x).toBe(5);
+    expect(tokens.get("player").entity.y).toBe(4);
+    expect(tacticalMap.latestState.partyStatus.player).toMatchObject({ x: 5, y: 4 });
+    expect(tacticalMap.latestState.partyStatus.astarion).toMatchObject({ x: 4, y: 4, _projection_source: "local_party_trail" });
+    expect(tacticalMap.latestState.partyStatus.shadowheart).toMatchObject({ x: 3, y: 4, _projection_source: "local_party_trail" });
+    expect(tacticalMap.latestState.partyStatus.laezel).toMatchObject({ x: 2, y: 4, _projection_source: "local_party_trail" });
+    ["astarion", "shadowheart", "laezel"].forEach((id) => {
+      expect(tokens.get(id).entity.data._projection_source).toBe("local_party_trail");
+    });
+    expect(moved.map(([id]) => id).sort()).toEqual(["astarion", "laezel", "player", "shadowheart"]);
+  });
+
+  test("test_local_party_follow_keeps_single_file_after_three_steps", () => {
+    const tacticalMap = loadGameHelpers();
+    const map = buildFormationTestMap({ width: 10, height: 8 });
+    const tokenFor = (id, data) => ({
+      entity: { id, data: { ...data }, x: data.x, y: data.y },
+    });
+    tacticalMap.scene = {
+      tokens: new Map([
+        ["player", tokenFor("player", { x: 4, y: 4 })],
+        ["astarion", tokenFor("astarion", { x: 4, y: 5, _projection_source: "visual_party_formation" })],
+        ["shadowheart", tokenFor("shadowheart", { x: 4, y: 6, _projection_source: "visual_party_formation" })],
+        ["laezel", tokenFor("laezel", { x: 4, y: 7, _projection_source: "visual_party_formation" })],
+      ]),
+      moveToken: jest.fn(),
+      updateCameraFollow: jest.fn(),
+    };
+    tacticalMap.latestState = {
+      partyStatus: {
+        player: { x: 4, y: 4 },
+        astarion: { x: 4, y: 5, _projection_source: "visual_party_formation" },
+        shadowheart: { x: 4, y: 6, _projection_source: "visual_party_formation" },
+        laezel: { x: 4, y: 7, _projection_source: "visual_party_formation" },
+      },
+      environmentObjects: {},
+      mapData: map,
+    };
+
+    tacticalMap.movePlayerLocal(5, 4);
+    tacticalMap.movePlayerLocal(6, 4);
+    tacticalMap.movePlayerLocal(7, 4);
+
+    expect(tacticalMap.latestState.partyStatus.player).toMatchObject({ x: 7, y: 4 });
+    expect(tacticalMap.latestState.partyStatus.astarion).toMatchObject({ x: 6, y: 4 });
+    expect(tacticalMap.latestState.partyStatus.shadowheart).toMatchObject({ x: 5, y: 4 });
+    expect(tacticalMap.latestState.partyStatus.laezel).toMatchObject({ x: 4, y: 4 });
+  });
+
+  test("test_local_party_follow_turns_along_historical_path", () => {
+    const tacticalMap = loadGameHelpers();
+    const map = buildFormationTestMap({ width: 10, height: 10 });
+    const party = {
+      player: { x: 6, y: 3 },
+      astarion: { x: 5, y: 5, _projection_source: "local_party_trail" },
+      shadowheart: { x: 4, y: 5, _projection_source: "local_party_trail" },
+      laezel: { x: 3, y: 5, _projection_source: "local_party_trail" },
+    };
+    const followed = tacticalMap.resolveLocalPartyFollowFormation(party, map, { x: 6, y: 3 }, {
+      trail: [
+        { x: 6, y: 4 },
+        { x: 6, y: 5 },
+        { x: 5, y: 5 },
+        { x: 4, y: 5 },
+      ],
+      lastMoveDirection: { x: 0, y: -1 },
+    });
+
+    expect(followed.astarion).toMatchObject({ x: 6, y: 4 });
+    expect(followed.shadowheart).toMatchObject({ x: 6, y: 5 });
+    expect(followed.laezel).toMatchObject({ x: 5, y: 5 });
+  });
+
+  test("test_local_party_follow_avoids_collision_and_unrevealed_rooms", () => {
+    const tacticalMap = loadGameHelpers();
+    const map = {
+      ...buildFormationTestMap({
+        width: 6,
+        height: 4,
+        blocked: [{ x: 1, y: 1 }, { x: 3, y: 1 }, { x: 2, y: 2 }],
+      }),
+      rooms: [
+        { id: "room_a_spawn", x: 0, y: 0, w: 4, h: 4 },
+        { id: "hidden_room", x: 4, y: 0, w: 2, h: 4 },
+      ],
+      visibleRooms: ["room_a_spawn"],
+    };
+    const followed = tacticalMap.resolveLocalPartyFollowFormation({
+      player: { x: 2, y: 1 },
+      astarion: { x: 0, y: 0, _projection_source: "visual_party_formation" },
+      shadowheart: { x: 0, y: 1, _projection_source: "visual_party_formation" },
+      laezel: { x: 0, y: 2, _projection_source: "visual_party_formation" },
+    }, map, { x: 2, y: 1 }, {
+      trail: [
+        { x: 1, y: 1 },
+        { x: 2, y: 2 },
+        { x: 4, y: 1 },
+        { x: 0, y: 0 },
+        { x: 0, y: 1 },
+        { x: 0, y: 2 },
+      ],
+      lastMoveDirection: { x: 1, y: 0 },
+    });
+
+    ["astarion", "shadowheart", "laezel"].forEach((id) => {
+      expect(map.collision[followed[id].y][followed[id].x]).toBe(false);
+      expect(followed[id].x).toBeLessThan(4);
+    });
+  });
+
+  test("test_local_party_follow_preserves_backend_explicit_companion_coordinates", () => {
+    const tacticalMap = loadGameHelpers();
+    const map = buildFormationTestMap({ width: 8, height: 8 });
+    const party = {
+      player: { x: 4, y: 4 },
+      astarion: { x: 2, y: 2 },
+      shadowheart: { x: 5, y: 4, _projection_source: "local_party_follow" },
+    };
+
+    const followed = tacticalMap.resolveLocalPartyFollowFormation(party, map, { x: 5, y: 4 });
+
+    expect(followed.astarion).toEqual({ x: 2, y: 2 });
+    expect(followed.shadowheart._projection_source).toBe("local_party_trail");
+    expect(followed.shadowheart.x + "," + followed.shadowheart.y).not.toBe("5,4");
+  });
+
+  test("test_local_party_follow_does_not_call_chat_or_activate_trace", () => {
+    const fetchSpy = spyOnFetch().mockResolvedValue(mockResponse({}));
+    loadNewModules();
+    const tacticalMap = loadGameHelpers();
+    const map = buildFormationTestMap({ width: 8, height: 8 });
+    const tokens = new Map([
+      ["player", { entity: { id: "player", data: { x: 4, y: 4 }, x: 4, y: 4 } }],
+      ["astarion", { entity: { id: "astarion", data: { x: 3, y: 4, _projection_source: "visual_party_formation" }, x: 3, y: 4 } }],
+    ]);
+    tacticalMap.scene = {
+      tokens,
+      moveToken: jest.fn(),
+      updateCameraFollow: jest.fn(),
+    };
+    tacticalMap.latestState = {
+      partyStatus: {
+        player: { x: 4, y: 4 },
+        astarion: { x: 3, y: 4, _projection_source: "visual_party_formation" },
+      },
+      environmentObjects: {},
+      mapData: map,
+    };
+
+    tacticalMap.movePlayerLocal(5, 4);
+
+    expect(fetchSpy.mock.calls.filter(([url]) => String(url).includes("/api/chat"))).toHaveLength(0);
+    expect(window.BG3DirectorTrace.getState()).toBe("idle");
+  });
+
+  test("test_xray_panel_uses_scroll_safe_layout_contract", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    await bootAppForTest();
+
+    const panel = document.getElementById("director-trace-panel");
+    expect(panel.classList.contains("xray-panel--scroll-safe")).toBe(true);
+    expect(document.querySelector(".xray-section--node-trace")).not.toBeNull();
+    expect(document.querySelector(".xray-section--state-watcher")).not.toBeNull();
+    expect(document.querySelector(".xray-section--inspector")).not.toBeNull();
+    expect(document.querySelector(".payload-summary")).not.toBeNull();
+    expect(document.querySelector(".payload-raw")).not.toBeNull();
+
+    const css = fs.readFileSync(path.resolve(__dirname, "../style.css"), "utf8");
+    expect(css).toContain(".xray-panel--scroll-safe");
+    expect(css).toMatch(/\.xray-panel\s*\{[\s\S]*overflow-y:\s*auto/);
+    expect(css).toMatch(/\.node-timeline\s*\{[\s\S]*overflow-y:\s*auto/);
+    expect(css).toMatch(/\.node-timeline\s*\{[\s\S]*max-height:\s*clamp/);
+    expect(css).toMatch(/\.node-meta\s*\{[^}]*grid-row:\s*1;/);
+    expect(css).toContain("@media (max-height: 1200px)");
+    expect(css).toContain(".payload-summary");
+    expect(css).toContain(".payload-raw:not([open]) .json-inspector");
+    expect(css).toMatch(/\.world-diff-body\s*\{[\s\S]*max-height:\s*clamp/);
+    const xraySectionBlock = (css.match(/\.xray-section\s*\{[^}]*\}/) || [""])[0];
+    expect(xraySectionBlock).not.toContain("position: absolute");
+  });
+
+  test("test_xray_collapsed_hides_panel_and_keeps_map_expanded", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    const api = await bootAppForTest();
+
+    api.els.xrayToggleBtn.click();
+    await flushAsync();
+
+    expect(api.els.mainLayout.classList.contains("xray-collapsed")).toBe(true);
+    expect(api.els.xrayToggleBtn.getAttribute("aria-expanded")).toBe("false");
   });
 
   test("test_json_visual_map_structure_is_not_overridden_by_runtime_map_data", async () => {
@@ -1547,7 +2117,7 @@ describe("web_ui/app.js UI bindings", () => {
         combat_state: {},
       })
     );
-    const api = await bootAppForTest("http://localhost/?qa_test=1&qa_no_idle=1");
+    const api = await bootAppForTest("http://localhost/?qa_test=1&qa_no_idle=1&qa_rest_controls=1");
     const resetBtn = document.getElementById("new-timeline-btn");
     expect(resetBtn).not.toBeNull();
     expect(resetBtn.textContent).toContain("Reset Demo");
@@ -1562,6 +2132,26 @@ describe("web_ui/app.js UI bindings", () => {
     expect(chatCalls.length).toBe(1);
     expect(chatCalls[0].intent).toBe("init_sync");
     expect(chatCalls[0].session_id).toMatch(/^necromancer_lab_demo_\d+$/);
+  });
+
+  test("test_rest_controls_hidden_by_default_to_protect_bottom_dock", async () => {
+    spyOnFetch().mockResolvedValue(
+      mockResponse({
+        responses: [],
+        journal_events: [],
+        current_location: "死灵法师的废弃实验室",
+        party_status: {},
+        environment_objects: {},
+        player_inventory: {},
+        combat_state: {},
+      })
+    );
+    await bootAppForTest("http://localhost/?qa_test=1&qa_no_idle=1");
+    const restControls = document.getElementById("rest-controls");
+
+    expect(restControls).not.toBeNull();
+    expect(restControls.classList.contains("is-hidden")).toBe(true);
+    expect(restControls.getAttribute("aria-hidden")).toBe("true");
   });
 
   test("test_door_natural_language_normalizes_to_interact_target", async () => {

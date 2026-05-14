@@ -10,6 +10,7 @@
   const QA_NO_IDLE = QA_PARAMS.get("qa_no_idle") === "1" || window.__BG3_QA_NO_IDLE__ === true;
   const QA_MAP_DEBUG = QA_PARAMS.get("qa_map_debug") === "1" || window.__BG3_QA_MAP_DEBUG__ === true;
   const QA_SHOWCASE = QA_PARAMS.get("qa_showcase") === "1" || window.__BG3_QA_SHOWCASE__ === true;
+  const QA_REST_CONTROLS = QA_PARAMS.get("qa_rest_controls") === "1" || window.__BG3_QA_REST_CONTROLS__ === true;
   const IDLE_MS = 30000;
   const DIALOGUE_POLL_MS = 1800;
   const BACKEND_REQUEST_TIMEOUT_MS = Math.max(5000, Number(QA_PARAMS.get("qa_backend_timeout_ms")) || 12000);
@@ -69,6 +70,27 @@
   const ROOM_D = "room_d_lab";
   const ROOM_EXIT = "room_exit";
   const SECRET_DOOR_ID = "door_b_to_c";
+  const FORMATION_COMPANIONS = Object.freeze(["astarion", "shadowheart", "laezel"]);
+  const FORMATION_OFFSETS = Object.freeze({
+    astarion: [
+      { x: 0, y: 1 },
+      { x: 0, y: -1 },
+      { x: -1, y: 0 },
+      { x: 1, y: 0 },
+    ],
+    shadowheart: [
+      { x: 0, y: 2 },
+      { x: 0, y: -2 },
+      { x: -1, y: 1 },
+      { x: 1, y: 1 },
+    ],
+    laezel: [
+      { x: 0, y: 3 },
+      { x: 0, y: -3 },
+      { x: -1, y: 2 },
+      { x: 1, y: 2 },
+    ],
+  });
   const ROOM_LABELS = Object.freeze({
     room_a_spawn: "A 区",
     room_b_corridor: "毒气走廊",
@@ -111,6 +133,7 @@
     roomVisibleIds: new Set(),
     discoveredSecretDoorIds: new Set(),
     discoveredTrapIds: new Set(),
+    openedLocalDoorIds: new Set(),
     act1PerceptionResolved: false,
     speechRecognition: null,
     speechRecognitionSupported: Boolean(SpeechRecognition),
@@ -255,6 +278,7 @@
     fearBar: document.getElementById("fear-bar"),
     fearLabel: document.getElementById("fear-label"),
     fearValue: document.getElementById("fear-value"),
+    payloadSummary: document.getElementById("payload-summary"),
     jsonInspector: document.getElementById("json-inspector"),
     partyViewModal: document.getElementById("party-view-modal"),
     closePartyViewBtn: document.getElementById("close-party-view-btn"),
@@ -292,7 +316,8 @@
   }
 
   function setTacticalOverlay(open) {
-    state.tacticalOverlayOpen = Boolean(open);
+    const allowLegacyConsole = QA_PARAMS.get("qa_tactical_console") === "1" || window.__BG3_QA_TACTICAL_CONSOLE__ === true;
+    state.tacticalOverlayOpen = allowLegacyConsole && Boolean(open);
     if (els.tacticalOverlay) {
       els.tacticalOverlay.classList.toggle("is-hidden", !state.tacticalOverlayOpen);
       els.tacticalOverlay.classList.toggle("active", state.tacticalOverlayOpen);
@@ -304,6 +329,8 @@
   }
 
   function toggleTacticalOverlay() {
+    const allowLegacyConsole = QA_PARAMS.get("qa_tactical_console") === "1" || window.__BG3_QA_TACTICAL_CONSOLE__ === true;
+    if (!allowLegacyConsole) return;
     setTacticalOverlay(!state.tacticalOverlayOpen);
   }
 
@@ -1316,6 +1343,67 @@
     return state.roomVisibleIds.has(roomId);
   }
 
+  function visibleRoomIdsForMap(mapLike) {
+    const map = safeObject(mapLike);
+    const explicit = safeArray(map.visible_rooms || map.visibleRooms)
+      .map((roomId) => String(roomId || "").trim())
+      .filter(Boolean);
+    if (explicit.length) return new Set(explicit);
+    if (state.roomVisibleIds && state.roomVisibleIds.size) return new Set(Array.from(state.roomVisibleIds));
+    return new Set();
+  }
+
+  function isCoordInsideVisibleRoomsForFormation(coord, mapLike) {
+    const map = safeObject(mapLike);
+    const rooms = safeArray(map.rooms);
+    if (!rooms.length) return true;
+    const room = roomAtPosition(rooms, Number(safeObject(coord).x), Number(safeObject(coord).y));
+    if (!room) return false;
+    const visible = visibleRoomIdsForMap(map);
+    if (!visible.size) return true;
+    return visible.has(String(safeObject(room).id || "").trim());
+  }
+
+  function isWalkableFormationCell(mapLike, coord, occupiedCells) {
+    const map = safeObject(mapLike);
+    const point = {
+      x: Math.round(Number(safeObject(coord).x)),
+      y: Math.round(Number(safeObject(coord).y)),
+    };
+    if (!isWithinMapBounds(point, map)) return false;
+    const key = point.x + "," + point.y;
+    if (occupiedCells && occupiedCells.has(key)) return false;
+    const collision = safeArray(map.collision);
+    if (Boolean(safeArray(collision[point.y])[point.x])) return false;
+    const grid = safeArray(map.grid);
+    const cell = String(safeArray(grid[point.y])[point.x] || ".").toUpperCase();
+    if (cell === "W" || cell === "#") return false;
+    return isCoordInsideVisibleRoomsForFormation(point, map);
+  }
+
+  function formationSearchCandidates(desiredCell) {
+    const desired = {
+      x: Math.round(Number(safeObject(desiredCell).x)),
+      y: Math.round(Number(safeObject(desiredCell).y)),
+    };
+    const out = [desired];
+    for (let radius = 1; radius <= 4; radius += 1) {
+      for (let dy = -radius; dy <= radius; dy += 1) {
+        for (let dx = -radius; dx <= radius; dx += 1) {
+          if (Math.max(Math.abs(dx), Math.abs(dy)) !== radius) continue;
+          out.push({ x: desired.x + dx, y: desired.y + dy });
+        }
+      }
+    }
+    return out;
+  }
+
+  function findNearestWalkableFormationCell(mapLike, desiredCell, occupiedCells) {
+    return formationSearchCandidates(desiredCell).find((candidate) => (
+      isWalkableFormationCell(mapLike, candidate, occupiedCells)
+    )) || null;
+  }
+
   function getInputControllerPosition() {
     if (!window.BG3InputController || typeof window.BG3InputController.getPlayerPosition !== "function") {
       return null;
@@ -1758,6 +1846,7 @@
     state.act1PerceptionResolved = false;
     state.discoveredTrapIds = new Set();
     state.discoveredSecretDoorIds = new Set();
+    state.openedLocalDoorIds = new Set();
     resetRoomVisibility(map);
     state.normalizedMap = deriveVisibleNormalizedMap(map);
     state.mapData = mapDataFromNormalized({ ...map, visibleRooms: Array.from(state.roomVisibleIds) });
@@ -1803,6 +1892,44 @@
     if (key === "door_b_to_c") return revealRoom(ROOM_C);
     if (key === "exit_door" || key === "heavy_oak_door_1") return revealRoom(ROOM_EXIT);
     return false;
+  }
+
+  function mergePartyStatusResponse(previous, incoming) {
+    const prev = safeObject(previous);
+    const next = safeObject(incoming);
+    if (!Object.keys(next).length) return prev;
+    const merged = { ...prev };
+    Object.entries(next).forEach(([id, data]) => {
+      const key = String(id || "").trim();
+      if (!key) return;
+      merged[key] = {
+        ...safeObject(prev[key]),
+        ...safeObject(data),
+      };
+    });
+    return merged;
+  }
+
+  function handleLocalExplorationDoor(targetId) {
+    const key = normalizeId(targetId);
+    const isLocalDoor = key === "door_a_to_b"
+      || (key === "door_b_to_c" && state.discoveredSecretDoorIds.has("door_b_to_c"));
+    if (!isLocalDoor) return false;
+
+    const before = buildShowcaseSnapshot();
+    state.openedLocalDoorIds.add(key);
+    const revealed = revealRoomByDoorTarget(key);
+    refreshVisibilityProjection();
+    renderTacticalGrid(state.partyStatus, state.environmentObjects, state.mapData);
+    if (window.BG3HudRenderers && typeof window.BG3HudRenderers.showToast === "function") {
+      window.BG3HudRenderers.showToast("narration", "铁门打开，前方区域进入视野。", 1800);
+    }
+    if (revealed) {
+      updateWorldStateDiff(before, buildShowcaseSnapshot({
+        journal_events: ["[探索] " + key + " opened"],
+      }), { autoExpand: true });
+    }
+    return true;
   }
 
   function resolveAct1Perception() {
@@ -1861,18 +1988,30 @@
     const env = safeObject(environmentObjects);
     const fullMap = safeObject(state.fullNormalizedMap);
     const rooms = safeArray(fullMap.rooms);
-    if (!rooms.length) return env;
     const out = {};
-    Object.entries(env).forEach(([id, raw]) => {
+    const copyVisibleEntity = (id, raw, mapInteractable = null) => {
       const entity = safeObject(raw);
       const x = Number(entity.x);
       const y = Number(entity.y);
-      const mapInteractable = findMapInteractableById(fullMap, id);
+      if (rooms.length && (!Number.isFinite(x) || !Number.isFinite(y))) return;
       const roomIdFromMap = mapInteractable
         ? resolveRecordRoomId(mapInteractable, rooms)
         : (roomAtPosition(rooms, x, y) || {}).id;
-      if (!roomIdFromMap || state.roomVisibleIds.has(String(roomIdFromMap))) {
+      const mapData = safeObject(safeObject(mapInteractable).data);
+      const fromRoom = String(safeObject(mapInteractable).connects_from || mapData.connects_from || "").trim();
+      const toRoom = String(safeObject(mapInteractable).connects_to || mapData.connects_to || "").trim();
+      const type = normalizeId(entity.type || entity.kind || safeObject(mapInteractable).type || mapData.type);
+      const isDoorEntity = type === "door" || normalizeId(id).includes("door");
+      const isVisibleDoorBoundary = isDoorEntity && (
+        (fromRoom && state.roomVisibleIds.has(fromRoom))
+        || (toRoom && state.roomVisibleIds.has(toRoom))
+      );
+      if (!rooms.length || isVisibleDoorBoundary || !roomIdFromMap || state.roomVisibleIds.has(String(roomIdFromMap))) {
         const copy = { ...entity };
+        if (isVisibleDoorBoundary && state.openedLocalDoorIds.has(normalizeId(id))) {
+          copy.is_open = true;
+          copy.status = "open";
+        }
         const isTrapEntity = normalizeId(entity.type || entity.kind || "").includes("trap") || normalizeId(id).includes("trap");
         if (isTrapEntity) {
           const status = normalizeId(entity.status || entity.state || "");
@@ -1888,6 +2027,30 @@
         }
         out[id] = copy;
       }
+    };
+
+    Object.entries(env).forEach(([id, raw]) => {
+      copyVisibleEntity(id, raw, findMapInteractableById(fullMap, id));
+    });
+
+    safeArray(state.normalizedMap.interactables).forEach((item) => {
+      const record = safeObject(item);
+      const id = normalizeId(record.alias_id || safeObject(record.data).alias_id || record.id);
+      if (!id || out[id]) return;
+      const type = normalizeId(record.type || safeObject(record.data).type);
+      if (type !== "door" && !id.includes("door")) return;
+      copyVisibleEntity(id, {
+        ...safeObject(record.data),
+        ...record,
+        id,
+        type: "door",
+        kind: "door",
+        name: record.name || safeObject(record.data).name || id,
+        x: Number(record.x),
+        y: Number(record.y),
+        w: Number(record.w ?? record.width) || 1,
+        h: Number(record.h ?? record.height) || 1,
+      }, record);
     });
     return out;
   }
@@ -1941,12 +2104,119 @@
     return null;
   }
 
-  function projectPartyStatusForTactical(partyStatus) {
+  function tacticalFormationMapData(mapData) {
+    const provided = safeObject(mapData);
+    if (Number(provided.width) > 0 && Number(provided.height) > 0) return provided;
+    if (Number(safeObject(state.mapData).width) > 0 && Number(safeObject(state.mapData).height) > 0) {
+      return state.mapData;
+    }
+    const fullMap = safeObject(state.fullNormalizedMap);
+    if (Number(fullMap.width) > 0 && Number(fullMap.height) > 0) {
+      return mapDataFromNormalized({ ...fullMap, visibleRooms: Array.from(state.roomVisibleIds) });
+    }
+    return { width: 1, height: 1, grid: [["."]], collision: [[false]], rooms: [], visible_rooms: [] };
+  }
+
+  function addOccupiedCell(occupiedCells, data) {
+    const entity = safeObject(data);
+    const x = Number(entity.x);
+    const y = Number(entity.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    occupiedCells.add(Math.round(x) + "," + Math.round(y));
+  }
+
+  function buildFormationOccupiedCells(party, environmentObjects) {
+    const occupied = new Set();
+    Object.values(safeObject(party)).forEach((entry) => addOccupiedCell(occupied, entry));
+    Object.values(safeObject(environmentObjects)).forEach((entry) => {
+      const entity = safeObject(entry);
+      if (boolish(entity.is_hidden) || boolish(entity.hidden)) return;
+      addOccupiedCell(occupied, entity);
+    });
+    return occupied;
+  }
+
+  function firstFormationDesiredCell(playerPosition, companionId) {
+    const base = safeObject(playerPosition);
+    const offsets = safeArray(FORMATION_OFFSETS[companionId]);
+    const offset = offsets[0] || { x: 0, y: 0 };
+    return {
+      x: Math.round(Number(base.x)) + Number(offset.x || 0),
+      y: Math.round(Number(base.y)) + Number(offset.y || 0),
+    };
+  }
+
+  function projectCompanionFormationForTactical(partyStatus, mapData, playerPosition) {
+    const party = safeObject(partyStatus);
+    const projected = { ...party };
+    const map = tacticalFormationMapData(mapData);
+    const player = safeObject(playerPosition || projected.player);
+    const playerX = Number(player.x);
+    const playerY = Number(player.y);
+    if (!Number.isFinite(playerX) || !Number.isFinite(playerY)) return projected;
+    const occupied = buildFormationOccupiedCells({
+      ...projected,
+      astarion: hasUsableFormationCoord(projected.astarion, map) ? projected.astarion : {},
+      shadowheart: hasUsableFormationCoord(projected.shadowheart, map) ? projected.shadowheart : {},
+      laezel: hasUsableFormationCoord(projected.laezel, map) ? projected.laezel : {},
+    }, state.environmentObjects);
+    occupied.add(Math.round(playerX) + "," + Math.round(playerY));
+
+    FORMATION_COMPANIONS.forEach((companionId) => {
+      if (!Object.prototype.hasOwnProperty.call(projected, companionId)) return;
+      const companion = safeObject(projected[companionId]);
+      if (hasUsableFormationCoord(companion, map)) {
+        occupied.add(Math.round(Number(companion.x)) + "," + Math.round(Number(companion.y)));
+        return;
+      }
+
+      const offsets = safeArray(FORMATION_OFFSETS[companionId]);
+      let target = null;
+      for (const offset of offsets) {
+        const desired = {
+          x: Math.round(playerX) + Number(safeObject(offset).x || 0),
+          y: Math.round(playerY) + Number(safeObject(offset).y || 0),
+        };
+        target = findNearestWalkableFormationCell(map, desired, occupied);
+        if (target) break;
+      }
+      if (!target) {
+        target = findNearestWalkableFormationCell(map, firstFormationDesiredCell(player, companionId), occupied);
+      }
+      if (!target) return;
+      occupied.add(target.x + "," + target.y);
+      projected[companionId] = {
+        ...companion,
+        x: target.x,
+        y: target.y,
+        _projection_source: "visual_party_formation",
+      };
+    });
+
+    return projected;
+  }
+
+  function hasUsableFormationCoord(entity, mapLike) {
+    const data = safeObject(entity);
+    const x = Number(data.x);
+    const y = Number(data.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
+    const coord = { x: Math.round(x), y: Math.round(y) };
+    if (!isWithinMapBounds(coord, mapLike)) return false;
+    const collision = safeArray(safeObject(mapLike).collision);
+    if (Boolean(safeArray(collision[coord.y])[coord.x])) return false;
+    const grid = safeArray(safeObject(mapLike).grid);
+    const cell = String(safeArray(grid[coord.y])[coord.x] || ".").toUpperCase();
+    if (cell === "W" || cell === "#") return false;
+    return isCoordInsideVisibleRoomsForFormation(coord, mapLike);
+  }
+
+  function projectPartyStatusForTactical(partyStatus, mapData) {
     const party = safeObject(partyStatus);
     const projected = { ...party };
     const rawPlayer = safeObject(party.player);
     const coords = resolveTacticalPlayerCoordinates(rawPlayer);
-    if (!coords) return projected;
+    if (!coords) return projectCompanionFormationForTactical(projected, mapData, safeObject(projected.player));
     projected.player = {
       ...rawPlayer,
       x: coords.x,
@@ -1955,11 +2225,11 @@
       faction: rawPlayer.faction || "player",
       _projection_source: coords.source || "backend",
     };
-    return projected;
+    return projectCompanionFormationForTactical(projected, mapData, projected.player);
   }
 
   function renderTacticalGrid(partyStatus, environmentObjects, mapData) {
-    const projectedPartyStatus = projectPartyStatusForTactical(partyStatus);
+    const projectedPartyStatus = projectPartyStatusForTactical(partyStatus, mapData);
     const player = safeObject(projectedPartyStatus.player);
     if (window.BG3InputController && typeof window.BG3InputController.setPlayerPosition === "function") {
       const px = Number(player.x);
@@ -2443,8 +2713,9 @@
   function updateRestControls(combatState) {
     if (!els.restControls) return;
     const isExploration = !isCombatStateActive(combatState);
-    els.restControls.classList.toggle("is-hidden", !isExploration);
-    els.restControls.setAttribute("aria-hidden", String(!isExploration));
+    const visible = QA_REST_CONTROLS && isExploration;
+    els.restControls.classList.toggle("is-hidden", !visible);
+    els.restControls.setAttribute("aria-hidden", String(!visible));
   }
 
   function normalizeNodeName(nodeName) {
@@ -2602,6 +2873,59 @@
     });
   }
 
+  function countObjectKeys(value) {
+    return Object.keys(safeObject(value)).length;
+  }
+
+  function payloadInspectorSource(options = {}) {
+    const lastFetch = safeObject(state.mapDebugLastFetch);
+    const url = String(lastFetch.url || "");
+    if (url.includes("/api/state")) return "/api/state";
+    if (url.includes("/api/chat")) return "/api/chat";
+    if (options.intent || options.userLine) return "/api/chat";
+    return "local/bootstrap";
+  }
+
+  function renderPayloadSummary(payload, gameState, trace, watcher, options = {}) {
+    if (!els.payloadSummary) return;
+    const flags = safeObject(payload.flags || gameState.flags);
+    const entities = safeObject(gameState.entities || payload.entities || payload.party_status);
+    const party = safeObject(payload.party_status || gameState.party_status);
+    const env = safeObject(payload.environment_objects || gameState.environment_objects);
+    const journalEvents = safeArray(payload.journal_events || gameState.journal_events);
+    const uiEvents = safeArray(payload.ui_events || gameState.ui_events);
+    const responses = safeArray(payload.responses || gameState.responses);
+    const traceList = safeArray(trace).map(normalizeNodeName).filter(Boolean);
+    const lastNode = normalizeNodeName(payload.last_node || gameState.last_node || gameState.current_node || traceList[traceList.length - 1] || "");
+    const traceState = window.BG3DirectorTrace && typeof window.BG3DirectorTrace.getState === "function"
+      ? window.BG3DirectorTrace.getState()
+      : "idle";
+    const rows = [
+      ["Source", payloadInspectorSource(options)],
+      ["Trace", traceState + (lastNode ? " / " + lastNode : "")],
+      ["Watcher", watcher.targetId || "none"],
+      ["Responses", String(responses.length)],
+      ["Journal", String(journalEvents.length)],
+      ["UI Events", String(uiEvents.length)],
+      ["Entities", String(countObjectKeys(entities) || countObjectKeys(party))],
+      ["Flags", String(countObjectKeys(flags))],
+      ["Objects", String(countObjectKeys(env))],
+    ];
+
+    els.payloadSummary.innerHTML = "";
+    rows.forEach(([label, value]) => {
+      const item = document.createElement("div");
+      item.className = "payload-summary-row";
+      const key = document.createElement("span");
+      key.textContent = label;
+      const val = document.createElement("strong");
+      val.textContent = value;
+      item.appendChild(key);
+      item.appendChild(val);
+      els.payloadSummary.appendChild(item);
+    });
+  }
+
   function inferNodeTrace(data, userLine, intent) {
     if (window.BG3DirectorTrace && typeof window.BG3DirectorTrace.buildTraceNodes === "function") {
       return window.BG3DirectorTrace.buildTraceNodes(data, {
@@ -2730,7 +3054,43 @@
     return String(record.name || fallback || prettifyId(key));
   }
 
-  function resolveWatcherTarget(payload, gameState) {
+  function watcherContextActive(payload, gameState, options = {}) {
+    const intent = safeObject(gameState.intent_context || payload.intent_context);
+    const activeDialogueTarget = normalizeId(
+      payload.active_dialogue_target
+      || gameState.active_dialogue_target
+      || intent.action_target
+      || options.target
+      || "",
+    );
+    if (activeDialogueTarget === "gribbo") return true;
+    const uiEventTypes = safeArray(payload.ui_events || gameState.ui_events)
+      .map((event) => normalizeId(safeObject(event).type));
+    if (uiEventTypes.some((type) => (
+      type === "negotiation_leverage"
+      || type === "party_stance"
+      || type === "mercy_resolution"
+    ))) return true;
+    const text = [
+      options.userLine,
+      options.intent,
+      safeArray(payload.journal_events || gameState.journal_events).join(" "),
+      JSON.stringify(intent || {}),
+    ].join(" ");
+    return /\bgribbo\b|格里波|格里布|\[交涉筹码\]|\[站队\]|\[抉择\]|gribbo_elixir_truth|patience|paranoia/i.test(text);
+  }
+
+  function setWatcherSectionVisible(visible) {
+    const section = els.patienceBar && els.patienceBar.closest
+      ? els.patienceBar.closest(".xray-section--state-watcher")
+      : null;
+    if (section) section.classList.toggle("is-hidden", !visible);
+  }
+
+  function resolveWatcherTarget(payload, gameState, options = {}) {
+    if (!watcherContextActive(payload, gameState, options)) {
+      return { targetId: "", entity: {}, dynamicStates: {}, inactive: true };
+    }
     const entities = safeObject(gameState.entities || payload.entities);
     const activeDialogueTarget = normalizeId(
       payload.active_dialogue_target
@@ -2809,8 +3169,9 @@
     if (!els.jsonInspector) return;
     const payload = safeObject(data);
     const gameState = safeObject(payload.game_state || payload.gameState || payload);
-    const watcher = resolveWatcherTarget(payload, gameState);
+    const watcher = resolveWatcherTarget(payload, gameState, options);
     const watcherEntries = resolveWatcherEntries(watcher.dynamicStates);
+    setWatcherSectionVisible(!watcher.inactive && Boolean(watcher.targetId));
 
     if (els.patienceLabel) els.patienceLabel.textContent = watcherEntries.primary.label;
     if (els.fearLabel) els.fearLabel.textContent = watcherEntries.secondary.label;
@@ -2841,6 +3202,7 @@
           combat_state: payload.combat_state || gameState.combat_state || null,
           journal_events: payload.journal_events || gameState.journal_events || [],
         };
+    renderPayloadSummary(payload, gameState, trace, watcher, options);
     els.jsonInspector.textContent = JSON.stringify(inspectorPayload, null, 2);
   }
 
@@ -3444,7 +3806,7 @@
         player_inventory: prevInventorySnapshot,
         combat_state: state.combatState,
       };
-      state.partyStatus = safeObject(data.party_status);
+      state.partyStatus = mergePartyStatusResponse(prevPartySnapshot, data.party_status);
       state.environmentObjects = safeObject(data.environment_objects);
       state.playerInventory = safeObject(data.player_inventory);
       state.combatState = safeObject(data.combat_state);
@@ -4028,7 +4390,9 @@
   }
 
   function bindEvents() {
-    els.tacticalToggleBtn.addEventListener("click", toggleTacticalOverlay);
+    if (els.tacticalToggleBtn) {
+      els.tacticalToggleBtn.addEventListener("click", toggleTacticalOverlay);
+    }
     els.sendBtn.addEventListener("click", submitInput);
     els.userInput.addEventListener("keydown", (event) => {
       if (event.key === "Enter" && !event.shiftKey) {
@@ -4109,7 +4473,8 @@
         togglePartyView();
         return;
       }
-      if (event.code === "Space" || event.key === " ") {
+      const allowLegacyConsole = QA_PARAMS.get("qa_tactical_console") === "1" || window.__BG3_QA_TACTICAL_CONSOLE__ === true;
+      if (allowLegacyConsole && (event.code === "Space" || event.key === " ")) {
         event.preventDefault();
         toggleTacticalOverlay();
       }
@@ -4308,6 +4673,9 @@
           if (interactionTarget === "door_b_to_c" && !state.discoveredSecretDoorIds.has("door_b_to_c")) {
             discoverSecretDoor("door_b_to_c");
           }
+          if (handleLocalExplorationDoor(interactionTarget)) {
+            return;
+          }
           sendMessage(mapped.text || "", mapped.intent || null, mapped.character || null, {
             target: mapped.target || "",
             source: mapped.source || "interaction",
@@ -4355,6 +4723,9 @@
             });
             renderTacticalGrid(state.partyStatus, state.environmentObjects, state.mapData);
             updateMapDebug("loadMapById:resolved");
+            if (IS_QA_MODE) {
+              void pollDialogueState();
+            }
           }
           const isFallback = normalizeId(record.source) !== "json";
           if (IS_QA_MODE && isFallback && window.BG3HudRenderers && typeof window.BG3HudRenderers.showToast === "function") {
@@ -4547,6 +4918,10 @@
       revealRoomByDoorTarget,
       resolveAct1Perception,
       discoverSecretDoor,
+      projectPartyStatusForTactical,
+      projectCompanionFormationForTactical,
+      findNearestWalkableFormationCell,
+      renderTacticalGrid,
       updateMapDebug,
       collectMapDebugSnapshot,
       get demoScriptRunner() {

@@ -6,7 +6,7 @@
   <title>BG3 LLM | 废弃死灵实验室</title>
   <meta name="description" content="博德之门3 LLM Agent — 废弃死灵实验室 2.5D 可探索 Demo" />
   <link rel="icon" href="data:," />
-  <link rel="stylesheet" href="./style.css?v=20260513_2e" />
+  <link rel="stylesheet" href="./style.css?v=20260514_trail_follow" />
 </head>
 <body>
   <div id="main-layout" class="main-layout">
@@ -34,13 +34,13 @@
       </div>
     </div>
 
-    <!-- Tactical menu toggle -->
-    <button type="button" id="tactical-toggle-btn" class="tactical-toggle-btn" aria-controls="tactical-pause-overlay" aria-expanded="false">
+    <!-- Legacy tactical console remains in DOM for debug/manual fallback, but is not part of the playable first screen. -->
+    <button type="button" id="tactical-toggle-btn" class="tactical-toggle-btn is-retired" aria-controls="tactical-pause-overlay" aria-expanded="false" hidden>
       战术菜单 <span>Space</span>
     </button>
 
     <!-- Rest controls (exploration only) -->
-    <div id="rest-controls" class="rest-controls" aria-label="探索休整入口">
+    <div id="rest-controls" class="rest-controls is-hidden" aria-label="探索休整入口" aria-hidden="true">
       <button type="button" id="short-rest-btn" class="rest-btn" data-rest-type="short">
         <span>⛺</span> 短休 <small>Short Rest</small>
       </button>
@@ -106,7 +106,7 @@
       </div>
     </div>
 
-    <!-- Tactical pause overlay (old console as drawer) -->
+    <!-- Legacy tactical console (retired from normal play; bottom dock is the active command input). -->
     <div id="tactical-pause-overlay" class="tactical-pause-overlay is-hidden" aria-hidden="true">
       <div class="app-shell">
         <header class="topbar panel-frame">
@@ -230,14 +230,14 @@
     Director
   </button>
 
-  <aside id="director-trace-panel" class="xray-panel" aria-label="Director Trace Panel">
+  <aside id="director-trace-panel" class="xray-panel xray-panel--scroll-safe" aria-label="Director Trace Panel">
     <header class="xray-header">
       <p>AI Director Pipeline</p>
       <h2>Director Trace <span>Logic Tracer</span></h2>
       <div id="director-state-indicator" class="director-state-indicator director-state--idle">Director Idle · Local Exploration</div>
     </header>
 
-    <section class="xray-section">
+    <section class="xray-section xray-section--node-trace">
       <div class="xray-section-title">
         <span>01</span>
         <h3>Node Trace</h3>
@@ -252,7 +252,7 @@
       </ol>
     </section>
 
-    <section class="xray-section">
+    <section class="xray-section xray-section--state-watcher">
       <div class="xray-section-title">
         <span>02</span>
         <h3>State Watcher</h3>
@@ -278,21 +278,25 @@
         <span>03</span>
         <h3>Payload Inspector</h3>
       </div>
-      <pre id="json-inspector" class="json-inspector" aria-live="polite">{}</pre>
+      <div id="payload-summary" class="payload-summary" aria-live="polite"></div>
+      <details class="payload-raw" id="payload-raw-details">
+        <summary>Raw JSON</summary>
+        <pre id="json-inspector" class="json-inspector" aria-live="polite">{}</pre>
+      </details>
     </section>
   </aside>
   </div>
 
   <script src="./vendor/phaser-3.60.0.min.js" defer></script>
-  <script src="./necromancer-meta.js?v=20260513_2e" defer></script>
-  <script src="./tiled-adapter.js?v=20260513_2e" defer></script>
-  <script src="./ui-event-adapter.js?v=20260513_2e" defer></script>
-  <script src="./director-trace.js?v=20260513_2e" defer></script>
-  <script src="./state-diff-renderer.js?v=20260513_2e" defer></script>
-  <script src="./demo-script-runner.js?v=20260513_2e" defer></script>
-  <script src="./input-controller.js?v=20260513_2e" defer></script>
-  <script src="./hud-renderers.js?v=20260513_2e" defer></script>
-  <script src="./game.js?v=20260513_2e" defer></script>
-  <script src="./app.js?v=20260513_2e" defer></script>
+  <script src="./necromancer-meta.js?v=20260514_trail_follow" defer></script>
+  <script src="./tiled-adapter.js?v=20260514_trail_follow" defer></script>
+  <script src="./ui-event-adapter.js?v=20260514_trail_follow" defer></script>
+  <script src="./director-trace.js?v=20260514_trail_follow" defer></script>
+  <script src="./state-diff-renderer.js?v=20260514_trail_follow" defer></script>
+  <script src="./demo-script-runner.js?v=20260514_trail_follow" defer></script>
+  <script src="./input-controller.js?v=20260514_trail_follow" defer></script>
+  <script src="./hud-renderers.js?v=20260514_trail_follow" defer></script>
+  <script src="./game.js?v=20260514_trail_follow" defer></script>
+  <script src="./app.js?v=20260514_trail_follow" defer></script>
 </body>
 </html>

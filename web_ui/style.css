@@ -182,6 +182,11 @@ textarea {
   text-transform: uppercase;
 }
 
+.tactical-toggle-btn.is-retired,
+.tactical-toggle-btn[hidden] {
+  display: none !important;
+}
+
 .tactical-toggle-btn span {
   display: block;
   margin-top: 4px;
@@ -197,7 +202,7 @@ textarea {
 .rest-controls {
   position: absolute;
   right: 24px;
-  bottom: 24px;
+  bottom: 96px;
   z-index: 62;
   display: flex;
   gap: 10px;
@@ -507,9 +512,10 @@ textarea {
   width: 35vw;
   height: 100vh;
   min-width: 340px;
-  overflow: hidden;
-  display: grid;
-  grid-template-rows: auto auto auto minmax(0, 1fr);
+  overflow-x: hidden;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
   gap: 14px;
   padding: 22px;
   border-left: 4px ridge #8b7355;
@@ -520,6 +526,11 @@ textarea {
     linear-gradient(180deg, #2a1d14 0%, #130e0a 48%, #080706 100%);
   box-shadow: inset 20px 0 50px rgba(0, 0, 0, 0.36);
   transition: flex-basis 260ms ease, width 260ms ease, min-width 260ms ease, padding 260ms ease, opacity 180ms ease;
+}
+
+.xray-panel--scroll-safe {
+  contain: layout paint;
+  overscroll-behavior: contain;
 }
 
 .main-layout.xray-collapsed .xray-panel {
@@ -574,6 +585,7 @@ textarea {
 
 .xray-section {
   min-height: 0;
+  flex: 0 0 auto;
   padding: 14px;
   border: 1px solid rgba(139, 115, 85, 0.46);
   border-radius: 18px;
@@ -585,6 +597,28 @@ textarea {
 .xray-section--inspector {
   display: flex;
   flex-direction: column;
+  min-height: 180px;
+  max-height: 38vh;
+}
+
+.xray-section--node-trace {
+  display: flex;
+  flex: 0 0 auto;
+  min-height: 0;
+  max-height: none;
+  flex-direction: column;
+}
+
+.xray-section--node-trace .xray-section-title {
+  flex: 0 0 auto;
+}
+
+.xray-section--state-watcher {
+  flex: 0 0 auto;
+}
+
+.xray-section--state-watcher.is-hidden {
+  display: none;
 }
 
 .xray-section-title {
@@ -617,10 +651,15 @@ textarea {
 .node-timeline {
   position: relative;
   display: grid;
-  gap: 10px;
+  align-content: start;
+  gap: 7px;
   margin: 0;
-  padding: 0 0 0 20px;
+  padding: 0 4px 0 20px;
   list-style: none;
+  min-height: 0;
+  max-height: clamp(220px, 30vh, 360px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .node-timeline::before {
@@ -639,7 +678,8 @@ textarea {
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   column-gap: 10px;
-  padding: 9px 10px;
+  min-height: 38px;
+  padding: 7px 9px;
   border: 1px solid rgba(139, 115, 85, 0.34);
   border-radius: 12px;
   background: rgba(10, 9, 8, 0.44);
@@ -682,8 +722,9 @@ textarea {
 .node-timeline strong {
   grid-column: 1;
   display: block;
-  font-size: 0.78rem;
+  font-size: 0.72rem;
   letter-spacing: 0.08em;
+  line-height: 1.15;
 }
 
 .node-timeline small {
@@ -691,7 +732,8 @@ textarea {
   display: block;
   margin-top: 2px;
   color: #8e826e;
-  font-size: 0.68rem;
+  font-size: 0.58rem;
+  line-height: 1.15;
 }
 
 .node-timing {
@@ -773,7 +815,8 @@ textarea {
 
 .json-inspector {
   flex: 1 1 auto;
-  min-height: 0;
+  min-height: 160px;
+  max-height: 28vh;
   margin: 0;
   padding: 12px;
   overflow: auto;
@@ -784,6 +827,61 @@ textarea {
   font-size: 0.72rem;
   line-height: 1.55;
   white-space: pre-wrap;
+}
+
+.payload-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+  margin-bottom: 10px;
+}
+
+.payload-summary-row {
+  min-width: 0;
+  padding: 8px 9px;
+  border: 1px solid rgba(208, 171, 103, 0.2);
+  border-radius: 11px;
+  background:
+    linear-gradient(135deg, rgba(208, 171, 103, 0.055), rgba(0, 0, 0, 0.18)),
+    rgba(4, 6, 5, 0.42);
+}
+
+.payload-summary-row span {
+  display: block;
+  margin-bottom: 3px;
+  color: #9f8a67;
+  font-family: "SFMono-Regular", "Cascadia Code", "Fira Code", monospace;
+  font-size: 0.55rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.payload-summary-row strong {
+  display: block;
+  overflow: hidden;
+  color: #e8d6a6;
+  font-family: "SFMono-Regular", "Cascadia Code", "Fira Code", monospace;
+  font-size: 0.66rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.payload-raw {
+  min-height: 0;
+}
+
+.payload-raw summary {
+  cursor: pointer;
+  margin-bottom: 8px;
+  color: #9fcf90;
+  font-family: "SFMono-Regular", "Cascadia Code", "Fira Code", monospace;
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.payload-raw:not([open]) .json-inspector {
+  display: none;
 }
 
 .initiative-frame {
@@ -3299,22 +3397,24 @@ textarea {
    ═══════════════════════════════════════════════════════ */
 .node-timeline li.director-chain-node {
   grid-template-columns: minmax(0, 1fr) auto;
-  align-items: stretch;
+  align-items: center;
   overflow: hidden;
 }
 
 .node-copy {
   min-width: 0;
+  align-self: center;
 }
 
 .node-meta {
   grid-column: 2;
-  grid-row: 1 / span 3;
+  grid-row: 1;
   display: flex;
   flex-direction: column;
   align-items: flex-end;
   justify-content: center;
-  gap: 5px;
+  gap: 3px;
+  align-self: center;
 }
 
 .node-status {
@@ -3322,7 +3422,7 @@ textarea {
   align-items: center;
   justify-content: center;
   min-width: 64px;
-  padding: 2px 7px;
+  padding: 2px 6px;
   border-radius: 999px;
   border: 1px solid rgba(208, 171, 103, 0.28);
   color: #a99878;
@@ -3333,10 +3433,18 @@ textarea {
   text-transform: uppercase;
 }
 
+.node-meta .node-timing {
+  grid-column: auto;
+  grid-row: auto;
+  min-width: 52px;
+  padding: 2px 6px;
+  font-size: 0.56rem;
+}
+
 .node-io {
   grid-column: 1;
   display: block;
-  margin-top: 4px;
+  margin-top: 3px;
   overflow: hidden;
   color: #b9d6b2;
   font-family: "SFMono-Regular", "Cascadia Code", "Fira Code", monospace;
@@ -3344,6 +3452,49 @@ textarea {
   line-height: 1.35;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+@media (max-height: 1200px) {
+  .xray-panel {
+    gap: 10px;
+    padding-top: 18px;
+    padding-bottom: 18px;
+  }
+
+  .xray-header {
+    padding: 12px 14px 10px;
+  }
+
+  .xray-section {
+    padding: 12px;
+  }
+
+  .xray-section-title {
+    margin-bottom: 9px;
+  }
+
+  .node-timeline {
+    max-height: clamp(210px, 28vh, 320px);
+    gap: 6px;
+  }
+
+  .node-timeline li {
+    min-height: 34px;
+    padding: 6px 8px;
+  }
+
+  .node-timeline small {
+    display: none;
+  }
+
+  .node-timeline li.is-active small,
+  .node-timeline li.is-visited small {
+    display: block;
+  }
+
+  .node-io {
+    font-size: 0.56rem;
+  }
 }
 
 .node-output {
@@ -3413,6 +3564,7 @@ textarea {
 
 .world-diff-panel {
   min-height: 0;
+  flex: 0 0 auto;
   padding: 12px;
   border: 1px solid rgba(83, 137, 91, 0.36);
   border-radius: 18px;
@@ -3462,7 +3614,7 @@ textarea {
 .world-diff-body {
   display: grid;
   gap: 7px;
-  max-height: 210px;
+  max-height: clamp(92px, 16vh, 210px);
   margin-top: 10px;
   overflow: auto;
   transition: max-height 220ms ease, opacity 180ms ease, margin 180ms ease;
@@ -3565,7 +3717,9 @@ textarea {
 
 @media (prefers-reduced-motion: reduce) {
   .agent-signal-card,
-  .agent-signal-card::before {
+  .agent-signal-card::before,
+  .director-state--pending,
+  .node-timeline li.is-active::before {
     animation: none !important;
     transition: none !important;
   }
@@ -3576,6 +3730,7 @@ textarea {
   color: #738060;
   font-family: "SFMono-Regular", "Cascadia Code", "Fira Code", monospace;
   font-size: 0.66rem;
+  line-height: 1.45;
 }
 
 .showcase-controls {
@@ -3654,4 +3809,57 @@ textarea {
   .world-diff-body {
     max-height: 160px;
   }
+}
+
+/* Resolution safety override: keep the Director node chain readable on short/wide displays. */
+.xray-section--node-trace {
+  flex: 0 0 auto !important;
+}
+
+.xray-section--node-trace .node-timeline {
+  align-content: start !important;
+  gap: 5px !important;
+  max-height: none !important;
+  overflow: visible !important;
+}
+
+.xray-section--node-trace .node-timeline small {
+  display: none !important;
+}
+
+.xray-section--node-trace .node-timeline li {
+  min-height: 31px !important;
+  padding: 5px 8px !important;
+  align-items: center !important;
+}
+
+.xray-section--node-trace .node-timeline strong {
+  font-size: 0.68rem !important;
+  line-height: 1.05 !important;
+}
+
+.xray-section--node-trace .node-meta {
+  grid-row: 1 !important;
+  flex-direction: row !important;
+  gap: 4px !important;
+}
+
+.xray-section--node-trace .node-status {
+  min-width: 58px !important;
+  padding: 1px 6px !important;
+  font-size: 0.52rem !important;
+}
+
+.xray-section--node-trace .node-timing {
+  display: none !important;
+}
+
+.xray-section--node-trace .node-status--active .node-timing,
+.xray-section--node-trace .node-status--done .node-timing {
+  display: inline-flex !important;
+}
+
+.xray-section--node-trace .node-io {
+  margin-top: 2px !important;
+  font-size: 0.54rem !important;
 }
