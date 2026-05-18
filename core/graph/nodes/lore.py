@@ -34,6 +34,16 @@ LORE_TIMEOUT_FALLBACK = {
 DIARY_DECODE_DC = 14
 DIARY_AUTO_SUCCESS_INT = 14
 DIARY_AUTO_FAILURE_INT = 10
+READABLE_TARGET_ALIASES = {
+    "chemical_notes": "chemical_notes",
+    "药剂笔记": "chemical_notes",
+    "化学残页": "chemical_notes",
+    "化学笔记": "chemical_notes",
+    "iron_key_sketch": "iron_key_sketch",
+    "铁钥匙草图": "iron_key_sketch",
+    "重铁钥匙草图": "iron_key_sketch",
+    "钥匙草图": "iron_key_sketch",
+}
 
 
 def _normalize_id(value: Any) -> str:
@@ -89,6 +99,7 @@ def _resolve_readable_target(
     normalized_target = _normalize_id(target_id)
     if not normalized_target:
         return "", None
+    normalized_target = READABLE_TARGET_ALIASES.get(normalized_target, normalized_target)
 
     if normalized_target in environment_objects:
         target_obj = environment_objects.get(normalized_target)
@@ -100,11 +111,16 @@ def _resolve_readable_target(
             continue
         object_name = _normalize_id(object_data.get("name"))
         normalized_object_id = _normalize_id(object_id)
+        alias_ids = object_data.get("alias_ids")
+        if not isinstance(alias_ids, list):
+            alias_ids = [object_data.get("alias_id")]
+        normalized_aliases = {_normalize_id(alias) for alias in alias_ids if _normalize_id(alias)}
         if (
             normalized_target in object_name
             or object_name in normalized_target
             or normalized_target in normalized_object_id
             or normalized_object_id in normalized_target
+            or normalized_target in normalized_aliases
         ):
             return normalized_object_id, object_data
     return "", None
@@ -194,11 +210,29 @@ def _resolve_diary_check(
     actor: Dict[str, Any],
     int_score: int,
     skill: str,
+    context_gathered: bool = False,
 ) -> Dict[str, Any]:
     normalized_skill = _normalize_diary_skill(skill) or "intelligence"
     ability_bonus = _ability_modifier(int_score)
     skill_bonus = _extract_actor_skill_bonus(actor, skill=normalized_skill)
     modifier = ability_bonus + skill_bonus
+
+    if context_gathered:
+        context_bonus = 10
+        total = 10 + modifier + context_bonus
+        return {
+            "skill": normalized_skill,
+            "dc": DIARY_DECODE_DC,
+            "modifier": modifier + context_bonus,
+            "result": {
+                "raw_roll": 10,
+                "total": total,
+                "is_success": True,
+                "result_type": "CONTEXT_SUCCESS",
+                "context_bonus": context_bonus,
+            },
+            "is_success": True,
+        }
 
     if int_score >= DIARY_AUTO_SUCCESS_INT:
         return {
@@ -294,14 +328,24 @@ def _build_diary_resolution(
         intent_context=intent_context if isinstance(intent_context, dict) else {},
         user_input=user_input,
     )
-    check = _resolve_diary_check(actor=actor, int_score=int_score, skill=skill)
+    flags = dict(state.get("flags") or {})
+    context_gathered = bool(flags.get("act3_diary_context_gathered", False))
+    check = _resolve_diary_check(
+        actor=actor,
+        int_score=int_score,
+        skill=skill,
+        context_gathered=context_gathered,
+    )
     is_success = bool(check.get("is_success"))
     turn_index = int(state.get("turn_count") or 0)
     location_id = str(state.get("current_location") or "necromancer_lab")
 
-    flags = dict(state.get("flags") or {})
     flags["necromancer_lab_diary_read"] = True
     flags["necromancer_lab_diary_decoded"] = is_success
+    flags["act3_secret_study_entered"] = True
+    flags["act3_diary_read"] = True
+    flags["act3_diary_decoded"] = is_success
+    flags["act3_gribbo_potion_truth_known"] = is_success
 
     participants = [actor_id]
     entities = state.get("entities") if isinstance(state.get("entities"), dict) else {}
@@ -326,12 +370,14 @@ def _build_diary_resolution(
                 "reason": "diary_decoded_party_hint",
             },
         }
+        flags["act3_heavy_key_hint_known"] = True
+        flags["act3_party_knows_gribbo_truth"] = True
 
         private_text = (
             "我读懂了：Gribbo 因实验药剂变得聪明但极不稳定，毒气陷阱会触发他的警觉，"
             "逃生关键是 heavy_iron_key。日记末尾写着“解药配方其实就在……”却被血迹打断。"
         )
-        party_text = "队伍确认：毒气陷阱与 Gribbo 警觉联动，heavy_iron_key 是逃离实验室的关键。"
+        party_text = "队伍确认：Gribbo、实验药剂、毒气陷阱与 heavy_iron_key 互相连接，钥匙是逃离实验室的关键。"
         pending_events = [
             _build_memory_event(
                 event_id=f"lore:diary:{actor_id}:{turn_index}:private",
@@ -360,9 +406,12 @@ def _build_diary_resolution(
             "最后一页留下“解药配方其实就在……”的中断线索。"
         )
         monologue = "这本血污日记把机关全写死了，只差最后那半句解药配方。"
+        objective_update = "[目标更新] 找到 Gribbo。他持有重铁钥匙，并且知道毒气防线的真相。"
     else:
         flags.pop("necromancer_lab_antidote_formula_fragment_known", None)
         flags.pop("necromancer_lab_key_hint_known", None)
+        flags.pop("act3_party_knows_gribbo_truth", None)
+        flags.pop("act3_heavy_key_hint_known", None)
         fragment_text = "我只辨认出碎片词句：地精、箱子、毒气，没法拼出完整线索。"
         pending_events = [
             _build_memory_event(
@@ -378,6 +427,7 @@ def _build_diary_resolution(
         ]
         narrator_text = "他只从血污字迹里看出零碎词句：地精、箱子、毒气，仍无法解读完整危险知识。"
         monologue = "字迹像被酸液灼过，只剩地精、箱子、毒气几个词。"
+        objective_update = "[目标更新] 找到持钥匙的地精。书房笔记暗示他和毒气有关。"
 
     latest_roll = {
         "intent": "READ",
@@ -394,6 +444,7 @@ def _build_diary_resolution(
         "narrator_text": narrator_text,
         "character_monologue": monologue,
         "decoded": is_success,
+        "objective_update": objective_update,
     }
 
 
@@ -611,7 +662,10 @@ def lore_node(state: GameState) -> Dict[str, Any]:
         flags_patch = dict(diary_resolution.get("flags") or flags_patch)
         pending_events = list(diary_resolution.get("pending_events") or [])
         latest_roll = dict(diary_resolution.get("latest_roll") or latest_roll)
+        objective_update = str(diary_resolution.get("objective_update") or "").strip()
+        extra_journal_events: list[str] = []
     else:
+        extra_journal_events = []
         actor_profile = _extract_actor_personality(actor)
         read_payload = _generate_read_payload(
             actor_name=actor_name,
@@ -629,6 +683,24 @@ def lore_node(state: GameState) -> Dict[str, Any]:
                 title=title,
                 raw_text=raw_text,
             )["narrator_text"]
+        objective_update = ""
+        if resolved_target_id == "chemical_notes" or lore_id == "necromancer_chemical_notes":
+            flags_patch["act3_chemical_notes_seen"] = True
+            flags_patch["act3_secret_study_entered"] = True
+            flags_patch["act3_diary_context_gathered"] = True
+            flags_patch["act3_diary_context_bonus"] = 10
+            objective_update = "[书房观察] shadowheart -> necromancy_pollution"
+            extra_journal_events.append("[线索整合] chemical_notes -> diary_context")
+            extra_journal_events.append("这些药剂笔记让日记里的术语变得可读。")
+        elif resolved_target_id == "iron_key_sketch" or lore_id == "necromancer_iron_key_sketch":
+            flags_patch["act3_key_sketch_seen"] = True
+            flags_patch["act3_heavy_key_hint_known"] = True
+            flags_patch["act3_secret_study_entered"] = True
+            flags_patch["act3_diary_context_gathered"] = True
+            flags_patch["act3_diary_context_bonus"] = 10
+            objective_update = "[书房观察] astarion -> practical_clues"
+            extra_journal_events.append("[线索整合] iron_key_sketch -> diary_context")
+            extra_journal_events.append("钥匙草图把日记里的逃生线索串了起来。")
     base_lore_text = raw_text
     final_output = (
         f"📜 [原文] {base_lore_text}\n\n"
@@ -636,8 +708,13 @@ def lore_node(state: GameState) -> Dict[str, Any]:
         f"💬 [独白] {character_monologue}"
     )
 
+    journal_events = [final_output]
+    if objective_update:
+        journal_events.append(objective_update)
+    journal_events.extend(extra_journal_events)
+
     patch: Dict[str, Any] = {
-        "journal_events": [final_output],
+        "journal_events": journal_events,
         "entities": entities,
         "environment_objects": environment_objects,
         "flags": flags_patch,

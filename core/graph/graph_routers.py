@@ -187,6 +187,8 @@ def route_after_mechanics(state: GameState) -> MECHANICS_ROUTE:
     intent = str(state.get("intent", "chat")).lower()
     intent_context = state.get("intent_context") or {}
     skill = str(intent_context.get("skill", "")).lower()
+    if isinstance(intent_context, dict) and intent_context.get("gribbo_boss_resolution_context"):
+        return "narration"
 
     # 对人社交博弈 → NPC 说话
     if intent in SOCIAL_INTENTS:

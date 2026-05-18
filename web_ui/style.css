@@ -3256,6 +3256,38 @@ textarea {
   box-shadow: 0 16px 38px rgba(0, 0, 0, 0.42), 0 0 24px rgba(174, 48, 38, 0.18);
 }
 
+.agent-signal-card--boss-intro,
+.agent-signal-card--boss-strategy {
+  border-color: rgba(108, 188, 116, 0.62);
+  background:
+    radial-gradient(circle at 100% 0%, rgba(90, 171, 96, 0.18), transparent 36%),
+    linear-gradient(135deg, rgba(24, 49, 38, 0.97), rgba(43, 25, 13, 0.94));
+  box-shadow: 0 16px 38px rgba(0, 0, 0, 0.42), 0 0 24px rgba(92, 176, 82, 0.14);
+}
+
+.agent-signal-card--boss-route {
+  border-color: rgba(214, 174, 91, 0.72);
+  background:
+    radial-gradient(circle at 100% 0%, rgba(214, 174, 91, 0.2), transparent 34%),
+    linear-gradient(135deg, rgba(47, 37, 19, 0.97), rgba(13, 15, 12, 0.94));
+}
+
+.agent-signal-card--boss-route.boss-route-failed,
+.agent-signal-card--poison-valve.poison-valve-triggered {
+  border-color: rgba(205, 67, 54, 0.76);
+  background:
+    radial-gradient(circle at 100% 0%, rgba(77, 164, 86, 0.2), transparent 34%),
+    linear-gradient(135deg, rgba(73, 20, 16, 0.98), rgba(13, 30, 17, 0.94));
+  box-shadow: 0 16px 38px rgba(0, 0, 0, 0.44), 0 0 28px rgba(196, 43, 31, 0.22);
+}
+
+.agent-signal-card--poison-valve.poison-valve-disabled {
+  border-color: rgba(132, 160, 139, 0.62);
+  background:
+    radial-gradient(circle at 100% 0%, rgba(104, 138, 111, 0.16), transparent 34%),
+    linear-gradient(135deg, rgba(30, 42, 34, 0.96), rgba(13, 14, 12, 0.94));
+}
+
 .stance-value--mercy {
   color: #d9e7ff !important;
 }
@@ -3708,6 +3740,18 @@ textarea {
   border-color: rgba(196, 167, 92, 0.5);
   background:
     linear-gradient(135deg, rgba(42, 45, 58, 0.54), rgba(55, 24, 20, 0.52));
+}
+
+.world-diff-row--boss_signal,
+.world-diff-row.boss-signal-diff {
+  border-color: rgba(108, 188, 116, 0.52);
+  background:
+    linear-gradient(135deg, rgba(24, 62, 42, 0.54), rgba(57, 28, 17, 0.52));
+}
+
+.world-diff-row--boss_signal code,
+.world-diff-row.boss-signal-diff code {
+  color: #c8f2b7;
 }
 
 .world-diff-row--mercy_signal code,

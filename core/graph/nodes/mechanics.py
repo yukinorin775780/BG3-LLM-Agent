@@ -20,7 +20,10 @@ def mechanics_node(state: GameState) -> dict:
 
     print(f"⚙️ Mechanics Node: Processing {intent} (is_probing_secret={is_probing_secret})...")
     normalized_intent = str(intent).strip().upper()
-    if normalized_intent == "ATTACK":
+    intent_context = state.get("intent_context") if isinstance(state, dict) else {}
+    if isinstance(intent_context, dict) and intent_context.get("gribbo_boss_resolution_context"):
+        result = mechanics.execute_gribbo_boss_resolution_action(state)
+    elif normalized_intent == "ATTACK":
         result = mechanics.execute_attack_action(state)
     elif normalized_intent == "SHOVE":
         result = mechanics.execute_shove_action(state)

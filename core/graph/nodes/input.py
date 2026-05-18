@@ -9,6 +9,7 @@ from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 
 from core.graph.graph_state import GameState
+from core.campaigns.necromancer_lab import detect_secret_study_entry_context
 from core.graph.nodes.utils import _entity_snapshot, default_entities, first_entity_id
 from core.systems import mechanics
 from core.systems.inventory import get_registry
@@ -41,14 +42,51 @@ _READ_DIARY_MARKERS = (
     "necromancer_diary",
     "diary",
 )
+_STUDY_CONTEXT_READ_MARKERS = ("阅读", "调查", "查看", "read", "inspect", "check")
+_CHEMICAL_NOTES_MARKERS = ("chemical_notes", "药剂笔记", "化学残页", "化学笔记")
+_IRON_KEY_SKETCH_MARKERS = ("iron_key_sketch", "铁钥匙草图", "重铁钥匙草图", "钥匙草图")
 _GRIBBO_TARGET_MARKERS = ("gribbo", "格里布", "格里波", "地精", "boss")
 _GRIBBO_NEGOTIATION_MARKERS = ("日记", "药剂", "灵药", "死灵", "实验", "解药", "钥匙", "真相")
 _GRIBBO_ATTACK_MARKERS = ("攻击 gribbo", "attack gribbo", "攻击格里布", "攻击格里波", "攻击地精")
 _TRAP_DISARM_ACTOR_MARKERS = ("阿斯代伦", "astarion")
 _TRAP_DISARM_TARGET_MARKERS = ("陷阱", "毒气", "gas_trap_1", "poison_trap", "trap")
 _TRAP_DISARM_ACTION_MARKERS = ("解除", "拆", "拆掉", "拆除", "disarm", "disable")
-_LAB_DOOR_MARKERS = ("door_b_to_d", "实验室门", "实验室重门", "lab door", "laboratory door")
+_LAB_DOOR_MARKERS = (
+    "door_b_to_d",
+    "b-d",
+    "bd门",
+    "b_d",
+    "实验室门",
+    "实验室重门",
+    "通往实验室",
+    "重门",
+    "lab door",
+    "laboratory door",
+)
 _LOCKPICK_MARKERS = ("撬锁", "开锁", "撬开", "解锁", "lockpick", "pick the lock", "unlock")
+_NEGATIVE_LOCKPICK_MARKERS = (
+    "不要撬锁",
+    "别撬锁",
+    "不撬锁",
+    "不要开锁",
+    "先别撬",
+    "do not lockpick",
+    "don't lockpick",
+    "without lockpicking",
+)
+_DOOR_INSPECT_MARKERS = ("检查", "查看", "看看", "观察", "试试", "推门", "开门", "打开", "inspect", "check", "look", "open")
+_DOOR_GUIDANCE_QUESTION_MARKERS = (
+    "怎么",
+    "如何",
+    "怎么办",
+    "能打开",
+    "能不能打开",
+    "需要什么",
+    "要什么",
+    "钥匙在哪",
+    "where",
+    "how",
+)
 _GRIBBO_MERCY_STANCE_MARKERS = (
     "怎么办",
     "怎么处理",
@@ -89,6 +127,18 @@ def _looks_like_read_diary_text(map_id: str, user_input: str) -> bool:
     return _is_necromancer_lab_map(map_id) and _contains_marker(user_input, _READ_DIARY_MARKERS)
 
 
+def _resolve_study_context_read_target(map_id: str, user_input: str) -> str:
+    if not _is_necromancer_lab_map(map_id):
+        return ""
+    if not _contains_marker(user_input, _STUDY_CONTEXT_READ_MARKERS):
+        return ""
+    if _contains_marker(user_input, _IRON_KEY_SKETCH_MARKERS):
+        return "iron_key_sketch"
+    if _contains_marker(user_input, _CHEMICAL_NOTES_MARKERS):
+        return "chemical_notes"
+    return ""
+
+
 def _looks_like_gribbo_diary_negotiation(map_id: str, user_input: str) -> bool:
     if not _is_necromancer_lab_map(map_id):
         return False
@@ -118,7 +168,21 @@ def _looks_like_astarion_trap_disarm(map_id: str, user_input: str) -> bool:
 def _looks_like_lab_door_lockpick(map_id: str, user_input: str) -> bool:
     if not _is_necromancer_lab_map(map_id):
         return False
+    if _contains_marker(user_input, _LAB_DOOR_MARKERS) and _contains_marker(user_input, _NEGATIVE_LOCKPICK_MARKERS):
+        return False
     return _contains_marker(user_input, _LAB_DOOR_MARKERS) and _contains_marker(user_input, _LOCKPICK_MARKERS)
+
+
+def _looks_like_lab_door_inspect(map_id: str, user_input: str) -> bool:
+    if not _is_necromancer_lab_map(map_id):
+        return False
+    if _contains_marker(user_input, _LAB_DOOR_MARKERS) and _contains_marker(user_input, _NEGATIVE_LOCKPICK_MARKERS):
+        return True
+    return (
+        _contains_marker(user_input, _LAB_DOOR_MARKERS)
+        and _contains_marker(user_input, _DOOR_INSPECT_MARKERS)
+        and not _contains_marker(user_input, _DOOR_GUIDANCE_QUESTION_MARKERS)
+    )
 
 
 def _flag_bool(raw_value) -> bool:
@@ -228,6 +292,37 @@ def input_node(state: GameState) -> dict:
         read_target_key = incoming_target.lower()
         read_target_missing = not read_target_key or read_target_key in {"unknown", "null", "none"}
         map_id = str((state.get("map_data") or {}).get("id") or "").strip().lower()
+        study_context_target = _resolve_study_context_read_target(map_id, user_input)
+        if study_context_target and (read_target_missing or read_target_key in _CHEMICAL_NOTES_MARKERS or read_target_key in _IRON_KEY_SKETCH_MARKERS):
+            intent_context["action_target"] = study_context_target
+            intent_context["source"] = incoming_source or "act3_study_context"
+            return {
+                **base,
+                "intent": "READ",
+                "target": study_context_target,
+                "source": incoming_source or "act3_study_context",
+                "intent_context": intent_context,
+            }
+        if is_read_intent and not read_target_missing:
+            intent_context.setdefault("action_target", read_target_key)
+            intent_context.setdefault("source", incoming_source or "text_input")
+            return {
+                **base,
+                "intent": "READ",
+                "target": incoming_target,
+                "source": incoming_source or "text_input",
+                "intent_context": intent_context,
+            }
+        if detect_secret_study_entry_context(state, user_input, intent_context):
+            intent_context["action_target"] = "cracked_wall"
+            intent_context["source"] = "ui_text_normalized"
+            return {
+                **base,
+                "intent": "INTERACT",
+                "target": "cracked_wall",
+                "source": "ui_text_normalized",
+                "intent_context": intent_context,
+            }
         if _looks_like_astarion_trap_disarm(map_id, user_input):
             intent_context["action_actor"] = "astarion"
             intent_context["action_target"] = "gas_trap_1"
@@ -248,6 +343,17 @@ def input_node(state: GameState) -> dict:
             return {
                 **base,
                 "intent": "UNLOCK",
+                "target": "door_b_to_d",
+                "source": "ui_text_normalized",
+                "intent_context": intent_context,
+            }
+        if _looks_like_lab_door_inspect(map_id, user_input):
+            intent_context["action_target"] = "door_b_to_d"
+            intent_context["source"] = "ui_text_normalized"
+            intent_context["action"] = "inspect_lab_door"
+            return {
+                **base,
+                "intent": "INTERACT",
                 "target": "door_b_to_d",
                 "source": "ui_text_normalized",
                 "intent_context": intent_context,

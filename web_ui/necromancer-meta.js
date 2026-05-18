@@ -44,6 +44,8 @@
     exit_door: "出口门",
     heavy_oak_door_1: "通往地表的沉重大门",
     necromancer_diary: "血污日记",
+    chemical_notes: "化学残页",
+    iron_key_sketch: "重铁钥匙草图",
     study_chest: "旧木箱",
     chest_1: "死灵法师的战利品箱",
   };
@@ -70,16 +72,21 @@
     },
     {
       act: 3,
-      title: "Gribbo 交涉",
-      summary: "Astarion 插话，选择站队，好感度变化与 Gribbo hostile 转变。",
-      keywords: ["gribbo", "交涉", "站队", "插话", "hostile"],
+      title: "秘密书房",
+      summary: "墙后露出一间狭窄书房，日记与残页把 Gribbo、钥匙和毒气真相串在一起。",
+      keywords: ["秘密书房", "room_c_secret_study", "act3_secret_study", "cracked_wall", "diary"],
     },
     {
       act: 4,
-      title: "逃离实验室",
-      summary: "搜刮 heavy_iron_key，钥匙入包，开门，Demo Cleared。",
+      title: "Gribbo Lab",
+      summary: "Gribbo 攥着沉重铁钥匙，身后的毒气罐低声翻滚。",
       keywords: [
+        "act4_boss_room_entered",
+        "gribbo_confrontation_started",
+        "Boss Encounter",
+        "Boss方案",
         "heavy_iron_key",
+        "poison_valve",
         "heavy_oak_door",
         "开门",
         "escape",
@@ -96,7 +103,17 @@
 
     if (
       f.necromancer_lab_escape_complete ||
+      f.demo_cleared ||
       /demo.*cleared|通关/i.test(text)
+    ) {
+      return 4;
+    }
+    if (
+      f.act4_boss_room_entered ||
+      f.act4_gribbo_confrontation_started ||
+      f.act4_heavy_iron_key_obtained ||
+      f.act4_final_exit_opened ||
+      /\[boss encounter\]|\[boss方案\]|\[boss解决\]|\[偷钥匙失败\]|\[毒气泄漏\]|act4_/i.test(text)
     ) {
       return 4;
     }
@@ -106,6 +123,14 @@
       /gribbo.*hostile|gribbo.*战斗/i.test(text)
     ) {
       return 4;
+    }
+    if (
+      f.act3_secret_study_entered ||
+      f.act3_secret_study_discovered ||
+      f.act3_diary_read ||
+      /\[秘密书房\]|room_c_secret_study|cracked_wall/i.test(text)
+    ) {
+      return 3;
     }
     if (
       f.necromancer_lab_gribbo_negotiation_started ||

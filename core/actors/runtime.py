@@ -143,6 +143,30 @@ def _build_trap_insight_metadata(*, actor_id: str, context: Dict[str, Any]) -> D
     }
 
 
+def _secret_study_observation_context(actor_view: ActorView) -> Dict[str, Any]:
+    payload = actor_view.intent_context.get("secret_study_observation_context")
+    if not isinstance(payload, dict):
+        return {}
+    if str(payload.get("topic") or "").strip().lower() != "secret_study_observation":
+        return {}
+    return dict(payload)
+
+
+def _build_secret_study_observation_metadata(*, actor_id: str, context: Dict[str, Any]) -> Dict[str, Any]:
+    if not context:
+        return {}
+    observations = context.get("observations") if isinstance(context.get("observations"), dict) else {}
+    clue = str(observations.get(actor_id) or "").strip()
+    if not clue:
+        return {}
+    return {
+        "topic": "secret_study_observation",
+        "actor_id": actor_id,
+        "clue": clue,
+        "location_id": str(context.get("location_id") or "room_c_secret_study"),
+    }
+
+
 def _memory_echo_context(actor_view: ActorView) -> Dict[str, Any]:
     payload = actor_view.intent_context.get("memory_echo_context")
     if not isinstance(payload, dict):
@@ -183,6 +207,29 @@ def _gribbo_mercy_context(actor_view: ActorView) -> Dict[str, Any]:
     if str(payload.get("topic") or "").strip().lower() != "gribbo_mercy":
         return {}
     return dict(payload)
+
+
+def _gribbo_boss_strategy_context(actor_view: ActorView) -> Dict[str, Any]:
+    payload = actor_view.intent_context.get("gribbo_boss_strategy_context")
+    if not isinstance(payload, dict):
+        return {}
+    if str(payload.get("topic") or "").strip().lower() != "gribbo_boss_strategy":
+        return {}
+    return dict(payload)
+
+
+def _build_gribbo_boss_strategy_metadata(*, actor_id: str, context: Dict[str, Any]) -> Dict[str, Any]:
+    if not context:
+        return {}
+    stance = dict(context.get("stances") or {}).get(actor_id)
+    if not stance:
+        return {}
+    return {
+        "topic": "gribbo_boss_strategy",
+        "stance": str(stance),
+        "actor_id": actor_id,
+        "target_id": str(context.get("target_id") or "gribbo"),
+    }
 
 
 def _gribbo_mercy_stance(*, actor_id: str, context: Dict[str, Any]) -> str:
@@ -731,12 +778,14 @@ class TemplateActorRuntime:
         act4_post_combat_context = _detect_act4_post_combat_context(actor_view)
         key_guidance_context = _key_guidance_context(actor_view)
         trap_awareness_context = _trap_awareness_context(actor_view)
+        secret_study_observation_context = _secret_study_observation_context(actor_view)
         diary_negotiation_context = _diary_negotiation_context(actor_view)
         memory_echo_context = _memory_echo_context(actor_view)
         gribbo_mercy_context = _gribbo_mercy_context(actor_view)
+        gribbo_boss_strategy_context = _gribbo_boss_strategy_context(actor_view)
         if diary_negotiation_context:
             social_action = {}
-        if gribbo_mercy_context:
+        if gribbo_mercy_context or gribbo_boss_strategy_context:
             social_action = {}
             choice_context = ""
         spoken_text = self._compose_reply(
@@ -747,9 +796,11 @@ class TemplateActorRuntime:
             act4_post_combat_context=act4_post_combat_context,
             key_guidance_context=key_guidance_context,
             trap_awareness_context=trap_awareness_context,
+            secret_study_observation_context=secret_study_observation_context,
             diary_negotiation_context=diary_negotiation_context,
             memory_echo_context=memory_echo_context,
             gribbo_mercy_context=gribbo_mercy_context,
+            gribbo_boss_strategy_context=gribbo_boss_strategy_context,
         )
         spoke_payload: Dict[str, Any] = {"text": spoken_text}
         guidance_metadata = _build_key_guidance_metadata(
@@ -764,6 +815,12 @@ class TemplateActorRuntime:
         )
         if trap_metadata:
             spoke_payload["trap_insight"] = trap_metadata
+        study_metadata = _build_secret_study_observation_metadata(
+            actor_id=self.actor_id,
+            context=secret_study_observation_context,
+        )
+        if study_metadata:
+            spoke_payload["secret_study_observation"] = study_metadata
         memory_metadata = _build_memory_echo_metadata(
             actor_id=self.actor_id,
             context=memory_echo_context,
@@ -776,6 +833,12 @@ class TemplateActorRuntime:
         )
         if mercy_metadata:
             spoke_payload["gribbo_mercy"] = mercy_metadata
+        strategy_metadata = _build_gribbo_boss_strategy_metadata(
+            actor_id=self.actor_id,
+            context=gribbo_boss_strategy_context,
+        )
+        if strategy_metadata:
+            spoke_payload["gribbo_boss_strategy"] = strategy_metadata
         events = [
             DomainEvent(
                 event_id=_new_event_id(),
@@ -956,9 +1019,11 @@ class TemplateActorRuntime:
         act4_post_combat_context: bool = False,
         key_guidance_context: Dict[str, Any] | None = None,
         trap_awareness_context: Dict[str, Any] | None = None,
+        secret_study_observation_context: Dict[str, Any] | None = None,
         diary_negotiation_context: Dict[str, Any] | None = None,
         memory_echo_context: Dict[str, Any] | None = None,
         gribbo_mercy_context: Dict[str, Any] | None = None,
+        gribbo_boss_strategy_context: Dict[str, Any] | None = None,
     ) -> str:
         memory_prefix = ""
         if self.actor_id == "astarion" and memory_echo_context:
@@ -992,6 +1057,15 @@ class TemplateActorRuntime:
             if self.actor_id == "laezel":
                 return "先救弱者会耗掉追击窗口。"
             return "先救平民可以，但别失去节奏。"
+
+        if gribbo_boss_strategy_context:
+            if self.actor_id == "astarion":
+                return "他害怕得快把钥匙捏碎了。给我一个机会，我能从他手里把钥匙弄出来。"
+            if self.actor_id == "shadowheart":
+                return "他被这里的东西毁了。逼太狠，毒气罐可能会先炸。"
+            if self.actor_id == "laezel":
+                return "杀掉守门人，拿走钥匙，打开门。"
+            return "钥匙、毒气和 Gribbo 的恐惧绑在一起。先选路线。"
 
         if gribbo_mercy_context:
             phase = str(gribbo_mercy_context.get("phase") or "stance").strip()
@@ -1047,6 +1121,15 @@ class TemplateActorRuntime:
                 base = "停。地面有毒气压力板，旁边还有可疑喷口。别再往前踩；我可以解除 gas_trap_1。"
                 return f"{memory_prefix}{base}" if memory_prefix else base
             return "Astarion 看到了陷阱，先别继续往前。"
+
+        if secret_study_observation_context:
+            if self.actor_id == "astarion":
+                return "钥匙、路线、账本、逃生口全写在这些边角里。这里不是书房，是某人给自己留的退路。"
+            if self.actor_id == "shadowheart":
+                return "毒、死亡、意志控制混在一起。这里的药剂不是治疗，是把活物拖向死灵术的缰绳。"
+            if self.actor_id == "laezel":
+                return "足够了。线索已经指向钥匙和地精，继续翻纸只会浪费战斗前的时间。"
+            return "书房里留下了足够多的线索。"
 
         if diary_negotiation_context:
             if self.actor_id == "shadowheart":

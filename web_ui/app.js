@@ -196,6 +196,9 @@
     "necromancer_diary",
     "diary",
   ];
+  const STUDY_CONTEXT_READ_MARKERS = ["阅读", "调查", "查看", "read", "inspect", "check"];
+  const CHEMICAL_NOTES_MARKERS = ["chemical_notes", "药剂笔记", "化学残页", "化学笔记"];
+  const IRON_KEY_SKETCH_MARKERS = ["iron_key_sketch", "铁钥匙草图", "重铁钥匙草图", "钥匙草图"];
   const GRIBBO_TARGET_MARKERS = ["gribbo", "格里布", "格里波", "地精", "boss"];
   const GRIBBO_NEGOTIATION_MARKERS = ["日记", "药剂", "灵药", "死灵", "实验", "解药", "钥匙", "真相"];
   const EXPLICIT_ATTACK_MARKERS = ["攻击", "打", "砍", "射击", "attack", "strike", "shoot"];
@@ -204,6 +207,10 @@
   const TRAP_DISARM_ACTION_MARKERS = ["解除", "拆除", "拆掉", "disarm", "disable"];
   const TRAP_DISARM_TARGET_MARKERS = ["陷阱", "机关", "毒气", "gas_trap_1", "poison_trap", "trap"];
   const TRAP_DISARM_ACTOR_MARKERS = ["阿斯代伦", "astarion"];
+  const BOSS_STRATEGY_MARKERS = ["怎么处理他", "怎么处理", "怎么办", "方案", "策略", "处理 gribbo", "deal with him", "strategy"];
+  const BOSS_STEAL_KEY_MARKERS = ["偷钥匙", "偷 heavy_iron_key", "偷铁钥匙", "steal key", "steal heavy_iron_key"];
+  const BOSS_DIARY_TRUTH_MARKERS = ["日记真相", "用日记", "真相说服", "说服他", "truth negotiation", "diary truth"];
+  const BOSS_ASSAULT_MARKERS = ["动手", "杀了他", "解决他", "攻击 gribbo", "lae’zel 解决他", "lae'zel 解决他", "laezel 解决他", "莱埃泽尔解决他", "assault", "attack gribbo"];
 
   function readQaNumber(name, fallback) {
     const value = Number(QA_PARAMS.get(name));
@@ -543,7 +550,7 @@
       return {
         text: "阅读 " + targetId,
         intent: "READ",
-        target: "necromancer_diary",
+        target: targetId,
         source: "interaction",
       };
     }
@@ -705,6 +712,18 @@
       const key = String(marker || "");
       return key && (userLine.includes(key) || userLineLower.includes(key.toLowerCase()));
     });
+    const hasStudyContextReadVerb = STUDY_CONTEXT_READ_MARKERS.some((marker) => {
+      const key = String(marker || "");
+      return key && (userLine.includes(key) || userLineLower.includes(key.toLowerCase()));
+    });
+    const hasChemicalNotesText = isNecromancerLab && CHEMICAL_NOTES_MARKERS.some((marker) => {
+      const key = String(marker || "");
+      return key && (userLine.includes(key) || userLineLower.includes(key.toLowerCase()));
+    });
+    const hasIronKeySketchText = isNecromancerLab && IRON_KEY_SKETCH_MARKERS.some((marker) => {
+      const key = String(marker || "");
+      return key && (userLine.includes(key) || userLineLower.includes(key.toLowerCase()));
+    });
     const hasGribboNegotiationText = isNecromancerLab
       && GRIBBO_TARGET_MARKERS.some((marker) => {
         const key = String(marker || "");
@@ -730,6 +749,16 @@
       && TRAP_DISARM_ACTION_MARKERS.some((marker) => userLine.includes(marker) || userLineLower.includes(String(marker).toLowerCase()))
       && TRAP_DISARM_TARGET_MARKERS.some((marker) => userLine.includes(marker) || userLineLower.includes(String(marker).toLowerCase()))
       && TRAP_DISARM_ACTOR_MARKERS.some((marker) => userLine.includes(marker) || userLineLower.includes(String(marker).toLowerCase()));
+    const hasBossStrategyText = isNecromancerLab
+      && BOSS_STRATEGY_MARKERS.some((marker) => userLine.includes(marker) || userLineLower.includes(String(marker).toLowerCase()))
+      && (/他|gribbo|格里布|格里波|boss/i.test(userLine));
+    const hasBossStealText = isNecromancerLab
+      && TRAP_DISARM_ACTOR_MARKERS.some((marker) => userLine.includes(marker) || userLineLower.includes(String(marker).toLowerCase()))
+      && BOSS_STEAL_KEY_MARKERS.some((marker) => userLine.includes(marker) || userLineLower.includes(String(marker).toLowerCase()));
+    const hasBossDiaryTruthText = isNecromancerLab
+      && BOSS_DIARY_TRUTH_MARKERS.some((marker) => userLine.includes(marker) || userLineLower.includes(String(marker).toLowerCase()));
+    const hasBossAssaultText = isNecromancerLab
+      && BOSS_ASSAULT_MARKERS.some((marker) => userLine.includes(marker) || userLineLower.includes(String(marker).toLowerCase()));
     const normalizedIntent = String(resolvedIntent || "").trim().toUpperCase();
     const hasDoorOpenSemantics = shouldRouteDoorInteractText(userLine);
     const isExplicitNonDialogue = isExplicitAttack || isExplicitLoot || isExplicitMove || hasDoorOpenSemantics;
@@ -740,6 +769,87 @@
     const resolvedDoorTarget = shouldBackfillDoorTarget
       ? resolveDoorTargetFromWorldContext(userLine)
       : "";
+
+    if (hasStudyContextReadVerb && (hasChemicalNotesText || hasIronKeySketchText)) {
+      resolvedIntent = "READ";
+      resolvedTarget = hasIronKeySketchText ? "iron_key_sketch" : "chemical_notes";
+      resolvedSource = "act3_study_context";
+      return {
+        userLine,
+        intentValue: resolvedIntent,
+        target: resolvedTarget,
+        source: resolvedSource,
+        intentContext: {
+          action_target: resolvedTarget,
+          source: resolvedSource,
+        },
+      };
+    }
+
+    if (hasBossStrategyText) {
+      resolvedIntent = "CHAT";
+      resolvedTarget = "gribbo";
+      resolvedSource = "boss_strategy";
+      return {
+        userLine,
+        intentValue: resolvedIntent,
+        target: resolvedTarget,
+        source: resolvedSource,
+        intentContext: { boss_strategy_request: true },
+      };
+    }
+
+    if (hasBossStealText) {
+      resolvedIntent = "INTERACT";
+      resolvedTarget = "gribbo";
+      resolvedSource = "boss_steal_key";
+      return {
+        userLine,
+        intentValue: resolvedIntent,
+        target: resolvedTarget,
+        source: resolvedSource,
+        actor: "astarion",
+        intentContext: {
+          boss_route: "astarion_steal",
+          action_actor: "astarion",
+          action_target: "heavy_iron_key",
+          source: "boss_steal_key",
+        },
+      };
+    }
+
+    if (hasBossDiaryTruthText) {
+      resolvedIntent = "CHAT";
+      resolvedTarget = "gribbo";
+      resolvedSource = "boss_diary_truth";
+      return {
+        userLine,
+        intentValue: resolvedIntent,
+        target: resolvedTarget,
+        source: resolvedSource,
+        intentContext: {
+          act4_diary_truth: true,
+          boss_route: "negotiation",
+        },
+      };
+    }
+
+    if (hasBossAssaultText) {
+      resolvedIntent = "ATTACK";
+      resolvedTarget = "gribbo";
+      resolvedSource = "boss_assault";
+      return {
+        userLine,
+        intentValue: resolvedIntent,
+        target: resolvedTarget,
+        source: resolvedSource,
+        actor: /lae[’'`]?zel|莱埃泽尔/i.test(userLine) ? "laezel" : "",
+        intentContext: {
+          boss_route: "assault",
+          source: "boss_assault",
+        },
+      };
+    }
 
     if (hasGribboNegotiationText && !isExplicitAttack) {
       resolvedIntent = "CHAT";
@@ -1767,7 +1877,7 @@
     if (type === "door" || id.includes("door")) {
       coreText = describeDoorHint(target, mapRecord);
     } else if (id === "necromancer_diary" || type === "readable") {
-      coreText = "E 阅读：血污日记";
+      coreText = "E 阅读：" + targetName;
     } else if (id === "gribbo" || type === "npc" || type === "character") {
       coreText = "E 对话：" + targetName;
     } else if (type === "chest" || type === "loot" || type === "container" || id === "study_chest" || id === "chest_1") {
@@ -1801,6 +1911,32 @@
 
   function updateExplorationActProgress() {
     if (!window.BG3HudRenderers || typeof window.BG3HudRenderers.updateActProgress !== "function") return;
+    const flags = safeObject(state.worldFlags);
+    if (
+      state.roomVisibleIds.has(ROOM_D)
+      || flags.act4_boss_room_entered === true
+      || flags.act4_gribbo_confrontation_started === true
+      || flags.act4_heavy_iron_key_obtained === true
+      || flags.act4_final_exit_opened === true
+    ) {
+      window.BG3HudRenderers.updateActProgress(
+        4,
+        "Gribbo 攥着沉重铁钥匙，身后的毒气罐低声翻滚。"
+      );
+      return;
+    }
+    if (
+      state.roomVisibleIds.has(ROOM_C)
+      || flags.act3_secret_study_entered === true
+      || flags.act3_secret_study_discovered === true
+      || flags.act3_diary_read === true
+    ) {
+      window.BG3HudRenderers.updateActProgress(
+        3,
+        "墙后露出一间狭窄书房，日记与残页把 Gribbo、钥匙和毒气真相串在一起。"
+      );
+      return;
+    }
     if (state.roomVisibleIds.has(ROOM_B)) {
       window.BG3HudRenderers.updateActProgress(
         2,
@@ -1848,6 +1984,30 @@
     });
   }
 
+  function valveAliases(valveId) {
+    const key = normalizeId(valveId);
+    const aliases = new Set([key || "poison_valve", "poison_valve", "potion_tank"]);
+    return Array.from(aliases).filter(Boolean);
+  }
+
+  function markPoisonValveSignal(valveId, status = "triggered") {
+    const normalizedStatus = normalizeId(status) || "triggered";
+    valveAliases(valveId).forEach((id) => {
+      const existing = safeObject(state.environmentObjects[id]);
+      if (!Object.keys(existing).length) return;
+      state.environmentObjects[id] = {
+        ...existing,
+        status: normalizedStatus,
+        is_hidden: false,
+        is_revealed: true,
+        discovered: true,
+      };
+    });
+    if (window.BG3TacticalMap && typeof window.BG3TacticalMap.refreshMapOnly === "function") {
+      window.BG3TacticalMap.refreshMapOnly(state.mapData, state.environmentObjects);
+    }
+  }
+
   function refreshWorldFlags(data = {}) {
     const payload = safeObject(data);
     const gameState = safeObject(payload.game_state);
@@ -1856,6 +2016,32 @@
       ...safeObject(gameState.flags),
       ...safeObject(payload.flags),
     };
+    const flags = safeObject(state.worldFlags);
+    const journalBlob = [
+      ...safeArray(payload.journal_events),
+      ...safeArray(gameState.journal_events),
+    ].join("\n");
+    const hasSecretStudyRevealSignal = Boolean(
+      flags.act3_secret_study_entered === true
+      || flags.act3_secret_study_discovered === true
+      || flags.act2_secret_study_route_unlocked === true
+      || /\[秘密书房\]\s*cracked_wall\s*->\s*room_c_secret_study/i.test(journalBlob)
+    );
+    if (hasSecretStudyRevealSignal) {
+      discoverSecretDoor("door_b_to_c");
+      revealRoomByDoorTarget("door_b_to_c");
+      refreshVisibilityProjection();
+    }
+    if (flags.act4_boss_room_entered === true || flags.act4_gribbo_confrontation_started === true) {
+      revealRoom(ROOM_D);
+    }
+    if (flags.act4_poison_valve_triggered === true || flags.act4_lab_poison_leak === true) {
+      markPoisonValveSignal("poison_valve", "triggered");
+    }
+    if (flags.act4_poison_valve_disabled === true) {
+      markPoisonValveSignal("poison_valve", "disabled");
+    }
+    updateExplorationActProgress();
   }
 
   function hasTrapRevealFlag() {
@@ -2181,7 +2367,11 @@
       renderTacticalGrid(state.partyStatus, state.environmentObjects, state.mapData);
     }
     if (window.BG3HudRenderers && typeof window.BG3HudRenderers.showToast === "function") {
-      window.BG3HudRenderers.showToast("narration", "铁门打开，前方区域进入视野。", 1800);
+      window.BG3HudRenderers.showToast(
+        "narration",
+        key === "door_b_to_c" ? "墙后露出一间秘密书房。" : "铁门打开，前方区域进入视野。",
+        1800
+      );
     }
     if (revealed) {
       updateWorldStateDiff(before, buildShowcaseSnapshot({
@@ -4420,12 +4610,40 @@
     });
   }
 
+  function getMapFocusTarget() {
+    return els.mapContainer
+      || document.getElementById("map-stage")
+      || document.getElementById("game-viewport")
+      || document.body;
+  }
+
+  function restoreMapInputFocus(reason = "map_focus") {
+    const active = document.activeElement;
+    if (active && typeof active.blur === "function" && isEditableTarget(active)) {
+      active.blur();
+    }
+    const target = getMapFocusTarget();
+    if (target && target !== document.body && typeof target.focus === "function") {
+      if (!target.hasAttribute("tabindex")) {
+        target.setAttribute("tabindex", "-1");
+      }
+      try {
+        target.focus({ preventScroll: true });
+      } catch (_error) {
+        target.focus();
+      }
+    }
+    state.lastMapInputFocusReason = String(reason || "map_focus");
+  }
+
   function submitInput() {
     const text = els.userInput.value.trim();
     if (!text) return;
     els.userInput.value = "";
     clearTransientInteractionContext({ keepDialogueTarget: true });
-    sendMessage(text, null, null, { source: "text_input" });
+    restoreMapInputFocus("text_send_start");
+    return sendMessage(text, null, null, { source: "text_input" })
+      .finally(() => restoreMapInputFocus("text_send_done"));
   }
 
   function queueCommand(command) {
@@ -4460,10 +4678,11 @@
     const text = String(els.dialogueInput.value || "").trim();
     if (!text) return;
     els.dialogueInput.value = "";
-    sendMessage(text, null, null, {
+    restoreMapInputFocus("dialogue_send_start");
+    return sendMessage(text, null, null, {
       source: "dialogue_input",
       target: normalizeId(state.activeDialogueTarget),
-    });
+    }).finally(() => restoreMapInputFocus("dialogue_send_done"));
   }
 
   function updatePttButtonState() {
@@ -4656,11 +4875,13 @@
     if (els.tacticalToggleBtn) {
       els.tacticalToggleBtn.addEventListener("click", toggleTacticalOverlay);
     }
-    els.sendBtn.addEventListener("click", submitInput);
+    els.sendBtn.addEventListener("click", () => {
+      void submitInput();
+    });
     els.userInput.addEventListener("keydown", (event) => {
       if (event.key === "Enter" && !event.shiftKey) {
         event.preventDefault();
-        submitInput();
+        void submitInput();
       }
     });
 
@@ -4679,13 +4900,21 @@
       els.pttMicBtn.addEventListener("touchend", handlePttPressEnd, { passive: false });
       els.pttMicBtn.addEventListener("touchcancel", handlePttPressEnd, { passive: false });
     }
-    els.dialogueSendBtn.addEventListener("click", submitDialogueInput);
+    els.dialogueSendBtn.addEventListener("click", () => {
+      void submitDialogueInput();
+    });
     els.dialogueAttackBtn.addEventListener("click", interruptDialogueWithAttack);
     els.dialogueInput.addEventListener("keydown", (event) => {
       if (event.key === "Enter") {
         event.preventDefault();
-        submitDialogueInput();
+        void submitDialogueInput();
       }
+    });
+    [els.mapContainer, document.getElementById("map-stage")].forEach((target) => {
+      if (!target) return;
+      target.addEventListener("pointerdown", () => {
+        restoreMapInputFocus("map_pointer");
+      });
     });
     els.xrayToggleBtn.addEventListener("click", toggleXrayPanel);
     els.logFilterBar.addEventListener("click", handleLogFilterClick);
@@ -4834,7 +5063,9 @@
     if (!text) return;
     els.dockInput.value = "";
     clearTransientInteractionContext({ keepDialogueTarget: true });
-    sendMessage(text, null, null, { source: "dock_input" });
+    restoreMapInputFocus("dock_send_start");
+    return sendMessage(text, null, null, { source: "dock_input" })
+      .finally(() => restoreMapInputFocus("dock_send_done"));
   }
 
   async function startNewTimeline() {
@@ -4870,12 +5101,14 @@
       els.dockInput.addEventListener("keydown", (event) => {
         if (event.key === "Enter") {
           event.preventDefault();
-          submitDockInput();
+          void submitDockInput();
         }
       });
     }
     if (els.dockSendBtn) {
-      els.dockSendBtn.addEventListener("click", submitDockInput);
+      els.dockSendBtn.addEventListener("click", () => {
+        void submitDockInput();
+      });
     }
   }
 
@@ -5066,11 +5299,12 @@
 
     if (s === "trigger_zone" || i === "trigger_zone") return true;
     if (s === "trap_trigger") return true;
+    if (s.startsWith("boss_")) return true;
     if (s === "interaction") return true;
     if (i === "companion_interrupt") return true;
     if (s === "dialogue_input") return true;
 
-    if (n === "READ" || n === "INTERACT" || n === "CHAT") return true;
+    if (n === "READ" || n === "INTERACT" || n === "CHAT" || n === "ATTACK") return true;
     if (/dialogue|choice|talk|speak|converse/i.test(i)) return true;
     return false;
   }
@@ -5096,6 +5330,13 @@
       if (ev.type === "trap_triggered") {
         markBackendTrapSignal(ev.trapId || "gas_trap_1", "triggered");
       }
+      if (ev.type === "boss_intro" || ev.type === "boss_strategy" || ev.type === "boss_route") {
+        revealRoom(ROOM_D);
+        updateExplorationActProgress();
+      }
+      if (ev.type === "poison_valve") {
+        markPoisonValveSignal(ev.valveId || "poison_valve", ev.status || "triggered");
+      }
       if (ev.type === "trap_insight" && window.BG3TacticalMap && typeof window.BG3TacticalMap.playTrapDiscoveryHighlight === "function") {
         window.BG3TacticalMap.playTrapDiscoveryHighlight([ev.trapId || "gas_trap_1"]);
       }
@@ -5111,6 +5352,22 @@
           });
         }
         if (typeof window.BG3TacticalMap.playStatusDamage === "function") {
+          safeArray(ev.affectedActors).forEach((actorId) => window.BG3TacticalMap.playStatusDamage(actorId, "中毒"));
+        }
+      }
+      if (ev.type === "poison_valve" && window.BG3TacticalMap) {
+        const status = normalizeId(ev.status || "");
+        const valve = safeObject(state.environmentObjects[ev.valveId || "poison_valve"]) || safeObject(state.environmentObjects.potion_tank);
+        if (status === "triggered" && typeof window.BG3TacticalMap.playTrapHazardPulse === "function") {
+          window.BG3TacticalMap.playTrapHazardPulse({
+            id: ev.valveId || "poison_valve",
+            x: Number(valve.x) || 0,
+            y: Number(valve.y) || 0,
+            w: Number(valve.w || valve.width) || 1,
+            h: Number(valve.h || valve.height) || 1,
+          });
+        }
+        if (status === "triggered" && typeof window.BG3TacticalMap.playStatusDamage === "function") {
           safeArray(ev.affectedActors).forEach((actorId) => window.BG3TacticalMap.playStatusDamage(actorId, "中毒"));
         }
       }
@@ -5179,6 +5436,9 @@
       boot,
       sendMessage,
       sendStructuredAction,
+      submitInput,
+      submitDockInput,
+      restoreMapInputFocus,
       startNewTimeline,
       buildChatPayload,
       pollDialogueState,

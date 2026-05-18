@@ -197,6 +197,138 @@ _GRIBBO_EXECUTE_CHOICE_MARKERS = (
     "解决他",
     "别留活口",
 )
+_GRIBBO_BOSS_INTRO_MARKERS = (
+    "和 gribbo 谈谈",
+    "和gribbo谈谈",
+    "和格里布谈谈",
+    "和格里波谈谈",
+    "靠近 gribbo",
+    "靠近格里布",
+    "靠近格里波",
+    "进入实验室",
+    "进入实验室房间",
+    "进入 boss房",
+    "进入boss房",
+    "boss房",
+    "boss room",
+    "laboratory",
+    "lab",
+)
+_GRIBBO_BOSS_ROOM_INTRO_MARKERS = (
+    "进入实验室",
+    "进入实验室房间",
+    "进入 boss房",
+    "进入boss房",
+    "boss房",
+    "boss room",
+    "laboratory",
+    "lab",
+)
+_GRIBBO_BOSS_STRATEGY_MARKERS = (
+    "我们怎么处理他",
+    "怎么处理他",
+    "队友们有什么建议",
+    "队友有什么建议",
+    "队友怎么看",
+    "怎么拿钥匙",
+    "如何拿钥匙",
+    "怎么拿到钥匙",
+    "what should we do",
+    "how do we get the key",
+)
+_GRIBBO_TRUTH_NEGOTIATION_MARKERS = (
+    "我知道药剂对你做了什么",
+    "你不是守卫，你是实验品",
+    "把钥匙给我，我们带你离开",
+    "用日记真相说服 gribbo",
+    "用日记真相说服格里布",
+    "用日记真相说服格里波",
+    "日记真相",
+    "真相说服",
+    "把钥匙给我",
+    "钥匙给我",
+    "交出钥匙",
+    "实验品",
+    "药剂对你做了什么",
+    "带你离开",
+    "truth",
+    "experiment",
+    "potion",
+)
+_GRIBBO_STEAL_KEY_MARKERS = (
+    "阿斯代伦，偷钥匙",
+    "阿斯代伦偷钥匙",
+    "astarion, steal the key",
+    "astarion steal the key",
+    "趁他说话拿钥匙",
+    "偷钥匙",
+    "steal the key",
+)
+_GRIBBO_ASSAULT_MARKERS = (
+    "动手",
+    "杀了他",
+    "别让他碰阀门",
+    "lae'zel，解决他",
+    "lae’zel，解决他",
+    "laezel，解决他",
+    "lae'zel, finish him",
+    "attack gribbo",
+    "kill gribbo",
+)
+_GRIBBO_THREAT_MARKERS = (
+    "威胁",
+    "恐吓",
+    "再不交钥匙就",
+    "intimidate",
+    "threaten",
+)
+_POISON_VALVE_DISARM_MARKERS = (
+    "阿斯代伦，关掉阀门",
+    "阿斯代伦关掉阀门",
+    "关掉阀门",
+    "关闭阀门",
+    "解除毒气阀",
+    "disarm poison_valve",
+    "disable poison valve",
+    "shut the valve",
+)
+_SECRET_STUDY_ENTRY_TEXT_MARKERS = (
+    "调查墙壁",
+    "检查墙壁",
+    "敲墙",
+    "敲墙壁",
+    "找暗门",
+    "寻找暗门",
+    "进入书房",
+    "进入秘密书房",
+    "打开暗门",
+    "推开暗门",
+    "cracked wall",
+    "cracked_wall",
+    "secret study",
+    "secret door",
+    "hidden door",
+)
+_SECRET_STUDY_ENTRY_TARGETS = frozenset({"door_b_to_c", "cracked_wall"})
+_STUDY_OBSERVATION_MARKERS = (
+    "调查书桌",
+    "检查书桌",
+    "看看这间书房",
+    "看看这里",
+    "队友们看看",
+    "让 shadowheart 看看这里",
+    "shadowheart 看看",
+    "让 astarion 找有用的东西",
+    "astarion 找有用",
+    "lae’zel 怎么看",
+    "lae'zel 怎么看",
+    "laezel 怎么看",
+    "书房怎么看",
+    "study desk",
+    "inspect desk",
+    "search the study",
+)
+_STUDY_OBSERVATION_TARGETS = frozenset({"room_c_secret_study", "study_desk", "desk", "writing_desk"})
 
 
 def _safe_dict(value: Any) -> Dict[str, Any]:
@@ -369,6 +501,185 @@ def _decoded_diary_from_memory(state: Mapping[str, Any]) -> bool:
     return has_diary_truth and has_gribbo_context and has_leverage_context
 
 
+def _act4_diary_truth_available(state: Mapping[str, Any]) -> bool:
+    flags = _safe_dict(state.get("flags"))
+    return (
+        _flag_bool(flags.get("necromancer_lab_diary_decoded"))
+        or _flag_bool(flags.get("act3_gribbo_potion_truth_known"))
+        or _decoded_diary_from_memory(state)
+    )
+
+
+def _act4_boss_context_active(
+    state: Mapping[str, Any],
+    intent_context: Optional[Mapping[str, Any]] = None,
+) -> bool:
+    flags = _safe_dict(state.get("flags"))
+    if (
+        _flag_bool(flags.get("act4_gribbo_confrontation_started"))
+        or _flag_bool(flags.get("act4_boss_encounter_started"))
+        or _flag_bool(flags.get("act4_boss_room_entered"))
+    ):
+        return True
+
+    ctx = _safe_dict(intent_context)
+    target = _normalize_id(
+        ctx.get("action_target")
+        or state.get("target")
+        or state.get("active_dialogue_target")
+    )
+    if target == "gribbo":
+        return True
+    if target in {"room_d_lab", "boss_room", "laboratory"}:
+        return True
+
+    current_room = _normalize_id(
+        ctx.get("current_room")
+        or state.get("current_room")
+        or state.get("current_room_id")
+    )
+    return current_room in {"room_d_lab", "boss_room", "laboratory"}
+
+
+def _text_contains_any(user_input: str, markers: tuple[str, ...]) -> bool:
+    text = str(user_input or "").strip()
+    lowered = text.lower()
+    return any(marker in text or marker in lowered for marker in markers)
+
+
+def detect_gribbo_boss_intro_context(
+    state: Mapping[str, Any],
+    user_input: str,
+    intent_context: Optional[Mapping[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    normalized_state = _safe_dict(state)
+    if _map_id(normalized_state) != "necromancer_lab":
+        return None
+    entities = _safe_dict(normalized_state.get("entities"))
+    if not _safe_dict(entities.get("gribbo")):
+        return None
+
+    flags = _safe_dict(normalized_state.get("flags"))
+    if _flag_bool(flags.get("act4_gribbo_confrontation_started")):
+        return None
+
+    ctx = _safe_dict(intent_context)
+    text = str(user_input or normalized_state.get("user_input") or "").strip()
+    text_has_intro_marker = _text_contains_any(text, _GRIBBO_BOSS_INTRO_MARKERS)
+    text_has_diary_pressure = _text_contains_any(text, _DIARY_NEGOTIATION_MARKERS)
+    if text_has_diary_pressure and not text_has_intro_marker:
+        return None
+    explicit_action_target = _normalize_id(ctx.get("action_target") or normalized_state.get("target"))
+    target = _normalize_id(explicit_action_target or normalized_state.get("active_dialogue_target"))
+    intent = _normalize_id(normalized_state.get("intent")).upper()
+    explicit_target = explicit_action_target == "gribbo" and intent in {"CHAT", "START_DIALOGUE", "DIALOGUE_REPLY", "APPROACH", "MOVE", ""}
+    explicit_room = explicit_action_target in {"room_d_lab", "boss_room", "laboratory"}
+    if not (explicit_target or explicit_room or text_has_intro_marker):
+        return None
+
+    return {
+        "topic": "gribbo_boss_intro",
+        "target_id": "gribbo",
+        "diary_truth_available": _act4_diary_truth_available(normalized_state),
+    }
+
+
+def detect_gribbo_boss_strategy_context(
+    state: Mapping[str, Any],
+    user_input: str,
+    intent_context: Optional[Mapping[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    normalized_state = _safe_dict(state)
+    if _map_id(normalized_state) != "necromancer_lab":
+        return None
+    if not _safe_dict(_safe_dict(normalized_state.get("entities")).get("gribbo")):
+        return None
+    if _gribbo_in_mercy_window(normalized_state):
+        return None
+    text = str(user_input or "").strip()
+    if not text or not _text_contains_any(text, _GRIBBO_BOSS_STRATEGY_MARKERS):
+        return None
+    ctx = _safe_dict(intent_context)
+    if not _act4_boss_context_active(normalized_state, ctx):
+        return None
+    target = _normalize_id(
+        ctx.get("action_target")
+        or normalized_state.get("target")
+        or normalized_state.get("active_dialogue_target")
+    )
+    if target and target not in {"gribbo", "heavy_oak_door_1", "door_b_to_d"}:
+        return None
+    return {
+        "topic": "gribbo_boss_strategy",
+        "target_id": "gribbo",
+        "stances": {
+            "astarion": "steal_key",
+            "shadowheart": "contain_corruption",
+            "laezel": "execute",
+        },
+    }
+
+
+def detect_gribbo_boss_resolution_context(
+    state: Mapping[str, Any],
+    user_input: str,
+    intent_context: Optional[Mapping[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    normalized_state = _safe_dict(state)
+    if _map_id(normalized_state) != "necromancer_lab":
+        return None
+    if not _safe_dict(_safe_dict(normalized_state.get("entities")).get("gribbo")):
+        return None
+
+    text = str(user_input or normalized_state.get("user_input") or "").strip()
+    if not text:
+        return None
+    flags = _safe_dict(normalized_state.get("flags"))
+    truth_available = _act4_diary_truth_available(normalized_state)
+    ctx = _safe_dict(intent_context)
+
+    route = ""
+    if _text_contains_any(text, _POISON_VALVE_DISARM_MARKERS):
+        route = "disarm_poison_valve"
+    elif _text_contains_any(text, _GRIBBO_STEAL_KEY_MARKERS):
+        route = "astarion_steal"
+    elif _text_contains_any(text, _GRIBBO_ASSAULT_MARKERS):
+        route = "assault"
+    elif _text_contains_any(text, _GRIBBO_TRUTH_NEGOTIATION_MARKERS):
+        route = "truth_negotiation"
+    elif _text_contains_any(text, _GRIBBO_THREAT_MARKERS):
+        route = "over_threat"
+    if not route:
+        return None
+    if route == "truth_negotiation" and not truth_available:
+        return None
+    if route in {"truth_negotiation", "over_threat"} and not _act4_boss_context_active(normalized_state, ctx):
+        return None
+
+    return {
+        "topic": "gribbo_boss_resolution",
+        "route": route,
+        "target_id": "gribbo",
+        "truth_available": truth_available,
+        "has_truth_advantage": truth_available and route == "truth_negotiation",
+        "force_success": (
+            _flag_bool(flags.get("necromancer_lab_force_steal_key_success"))
+            if route == "astarion_steal"
+            else _flag_bool(flags.get("necromancer_lab_force_assault_success"))
+            if route == "assault"
+            else _flag_bool(flags.get("necromancer_lab_force_truth_negotiation_success"))
+        ),
+        "force_failure": (
+            _flag_bool(flags.get("necromancer_lab_force_steal_key_failure"))
+            if route == "astarion_steal"
+            else _flag_bool(flags.get("necromancer_lab_force_assault_failure"))
+            if route == "assault"
+            else _flag_bool(flags.get("necromancer_lab_force_truth_negotiation_failure"))
+        ),
+        "requested_actor": _normalize_id(ctx.get("action_actor") or ""),
+    }
+
+
 def detect_diary_negotiation_context(
     state: Mapping[str, Any],
     user_input: str,
@@ -391,8 +702,7 @@ def detect_diary_negotiation_context(
     flags = _safe_dict(normalized_state.get("flags"))
     decoded_diary = (
         _flag_bool(flags.get("necromancer_lab_diary_decoded"))
-        or _flag_bool(flags.get("necromancer_lab_antidote_formula_fragment_known"))
-        or _flag_bool(flags.get("necromancer_lab_key_hint_known"))
+        or _flag_bool(flags.get("act3_gribbo_potion_truth_known"))
         or _decoded_diary_from_memory(normalized_state)
     )
     evidence = []
@@ -416,6 +726,95 @@ def detect_diary_negotiation_context(
         "fear_current": fear,
         "paranoia_current": paranoia,
         "pressure_hint": "用 necromancer_diary 中的死灵狂暴灵药真相压迫 Gribbo，但不要直接赠送钥匙或强制开战。",
+    }
+
+
+def detect_secret_study_entry_context(
+    state: Mapping[str, Any],
+    user_input: str,
+    intent_context: Optional[Mapping[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    """
+    Detect Act3 Secret Study discovery after the Act2 failed lockpick hint.
+    This helper is read-only; mechanics owns mutation and journal writes.
+    """
+    normalized_state = _safe_dict(state)
+    if _map_id(normalized_state) != "necromancer_lab":
+        return None
+
+    flags = _safe_dict(normalized_state.get("flags"))
+    route_unlocked = _flag_bool(flags.get("act2_secret_study_hint_given")) or _flag_bool(
+        flags.get("act2_secret_study_route_unlocked")
+    )
+    if not route_unlocked:
+        return None
+
+    ctx = _safe_dict(intent_context)
+    target = _normalize_id(
+        ctx.get("action_target")
+        or normalized_state.get("target")
+        or ctx.get("target")
+    )
+    text = str(user_input or normalized_state.get("user_input") or "").strip()
+    lowered = text.lower()
+    explicit_target = target in _SECRET_STUDY_ENTRY_TARGETS
+    explicit_text = bool(text) and any(marker in text or marker in lowered for marker in _SECRET_STUDY_ENTRY_TEXT_MARKERS)
+    if not explicit_target and not explicit_text:
+        return None
+
+    return {
+        "topic": "secret_study_entry",
+        "target_id": target if explicit_target else "cracked_wall",
+        "from_room": "room_b_corridor",
+        "to_room": "room_c_secret_study",
+        "journal_line": "[秘密书房] cracked_wall -> room_c_secret_study",
+        "narration": "墙后的冷风带着纸灰味……狭窄书房暴露出来。",
+    }
+
+
+def detect_secret_study_observation_context(
+    state: Mapping[str, Any],
+    user_input: str,
+    intent_context: Optional[Mapping[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    """
+    Detect the companion observation beat inside the revealed Secret Study.
+    """
+    normalized_state = _safe_dict(state)
+    if _map_id(normalized_state) != "necromancer_lab":
+        return None
+
+    flags = _safe_dict(normalized_state.get("flags"))
+    entered = (
+        _flag_bool(flags.get("act3_secret_study_entered"))
+        or _flag_bool(flags.get("act3_secret_study_discovered"))
+        or _flag_bool(flags.get("room_c_secret_study_entered"))
+        or _flag_bool(flags.get("room_c_secret_study_discovered"))
+    )
+    if not entered:
+        return None
+
+    ctx = _safe_dict(intent_context)
+    target = _normalize_id(
+        ctx.get("action_target")
+        or normalized_state.get("target")
+        or ctx.get("target")
+    )
+    text = str(user_input or normalized_state.get("user_input") or "").strip()
+    lowered = text.lower()
+    explicit_target = target in _STUDY_OBSERVATION_TARGETS
+    explicit_text = bool(text) and any(marker in text or marker in lowered for marker in _STUDY_OBSERVATION_MARKERS)
+    if not explicit_target and not explicit_text:
+        return None
+
+    return {
+        "topic": "secret_study_observation",
+        "location_id": "room_c_secret_study",
+        "observations": {
+            "astarion": "practical_clues",
+            "shadowheart": "necromancy_pollution",
+            "laezel": "tactical_impatience",
+        },
     }
 
 
@@ -758,8 +1157,7 @@ def detect_gribbo_mercy_context(
 
     diary_decoded = (
         _flag_bool(flags.get("necromancer_lab_diary_decoded"))
-        or _flag_bool(flags.get("necromancer_lab_antidote_formula_fragment_known"))
-        or _flag_bool(flags.get("necromancer_lab_key_hint_known"))
+        or _flag_bool(flags.get("act3_gribbo_potion_truth_known"))
         or _decoded_diary_from_memory(normalized_state)
     )
     memory_type = _detect_astarion_history_type(normalized_state) or "none"

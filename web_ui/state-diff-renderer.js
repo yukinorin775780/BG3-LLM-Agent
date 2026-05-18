@@ -102,8 +102,11 @@
       ...safeArr(src.journal_events),
       ...safeArr(gameState.journal_events),
     ];
-    const flags = synthesizeMercyFlags(
-      synthesizeMemoryEchoFlags(safeObj(src.flags || gameState.flags || {}), journalEvents),
+    const flags = synthesizeAct4BossFlags(
+      synthesizeMercyFlags(
+        synthesizeMemoryEchoFlags(safeObj(src.flags || gameState.flags || {}), journalEvents),
+        journalEvents
+      ),
       journalEvents
     );
     const inventory = inventoryMap(src.player_inventory || src.playerInventory || gameState.player_inventory || {});
@@ -183,6 +186,14 @@
     return /^necromancer_lab_gribbo_(?:mercy_window|mercy_resolved|spared|executed|key_available)$/.test(String(key || ""));
   }
 
+  function isAct3StudyFlag(key) {
+    return /^act3_(?:secret_study_entered|diary_read|diary_decoded|gribbo_potion_truth_known|party_knows_gribbo_truth)$/.test(String(key || ""));
+  }
+
+  function isAct4BossFlag(key) {
+    return /^act4_(?:boss_room_entered|gribbo_confrontation_started|diary_truth_available|heavy_iron_key_obtained|poison_valve_triggered|lab_poison_leak|poison_valve_disabled|astarion_steal_key_success|negotiation_success|assault_success|final_exit_opened)$/.test(String(key || ""));
+  }
+
   function synthesizeMemoryEchoFlags(flags, journalEvents) {
     const out = { ...safeObj(flags) };
     safeArr(journalEvents).forEach((line) => {
@@ -211,6 +222,34 @@
     return out;
   }
 
+  function synthesizeAct4BossFlags(flags, journalEvents) {
+    const out = { ...safeObj(flags) };
+    safeArr(journalEvents).forEach((line) => {
+      const text = String(line || "");
+      if (/\[Boss Encounter\]\s*gribbo_confrontation_started/i.test(text)) {
+        out.act4_boss_room_entered = true;
+        out.act4_gribbo_confrontation_started = true;
+      }
+      if (/\[Boss方案\]\s*[a-z0-9_'’\-]+\s*->\s*(steal_key|contain_corruption|execute)/i.test(text)) {
+        out.act4_boss_room_entered = true;
+      }
+      const route = text.match(/\[Boss解决\]\s*(negotiation|astarion_steal|assault)\s*->\s*([a-z0-9_\-]+)/i);
+      if (route) {
+        if (String(route[1]).toLowerCase() === "negotiation") out.act4_negotiation_success = true;
+        if (String(route[1]).toLowerCase() === "astarion_steal") out.act4_astarion_steal_key_success = true;
+        if (String(route[1]).toLowerCase() === "assault") out.act4_assault_success = true;
+        if (/heavy_iron_key|key_surrendered/i.test(route[2])) out.act4_heavy_iron_key_obtained = true;
+      }
+      if (/\[偷钥匙失败\]\s*astarion\s*->\s*gribbo_alerted/i.test(text)) {
+        out.act4_poison_valve_triggered = true;
+      }
+      if (/\[毒气泄漏\]\s*(poison_valve|potion_tank)\s*->\s*lab_poison/i.test(text)) {
+        out.act4_lab_poison_leak = true;
+      }
+    });
+    return out;
+  }
+
   function diffSnapshots(previousRaw, nextRaw) {
     const prev = normalizeSnapshot(previousRaw);
     const next = normalizeSnapshot(nextRaw);
@@ -226,7 +265,7 @@
       if (!valuesEqual(before, after)) {
         const type = isTrapFlag(key)
           ? "trap_signal"
-          : (isMemoryEchoFlag(key) ? "memory_echo_signal" : (isMercyFlag(key) ? "mercy_signal" : "flags"));
+          : (isMemoryEchoFlag(key) ? "memory_echo_signal" : (isMercyFlag(key) ? "mercy_signal" : (isAct4BossFlag(key) ? "boss_signal" : (isAct3StudyFlag(key) ? "act3_study_signal" : "flags"))));
         pushDiff(out, type, "flags." + key + " = " + JSON.stringify(after));
       }
     });
@@ -252,11 +291,12 @@
       const nextStatus = String(actor.status || "").trim();
       if (nextStatus && nextStatus !== prevStatus) {
         const isTrap = id === "gas_trap_1" || /trap/i.test(id);
+        const isBossContext = Object.keys(next.flags).some(isAct4BossFlag) || Object.keys(prev.flags).some(isAct4BossFlag);
         const isMercyTarget = id === "gribbo";
         const statusLabel = prevStatus
           ? label + ".status " + prevStatus + " -> " + nextStatus
           : label + ".status += " + nextStatus;
-        pushDiff(out, isTrap ? "trap_signal" : (isMercyTarget ? "mercy_signal" : "status"), statusLabel);
+        pushDiff(out, isTrap ? "trap_signal" : (isMercyTarget ? (isBossContext ? "boss_signal" : "mercy_signal") : "status"), statusLabel);
       }
 
       const prevEffects = new Set(safeArr(before.status_effects).map(String));
@@ -266,7 +306,8 @@
 
       const prevFaction = String(before.faction || "");
       if (actor.faction && prevFaction && actor.faction !== prevFaction) {
-        pushDiff(out, id === "gribbo" ? "mercy_signal" : "hostility", label + ".faction = " + actor.faction);
+        const isBossContext = Object.keys(next.flags).some(isAct4BossFlag) || Object.keys(prev.flags).some(isAct4BossFlag);
+        pushDiff(out, id === "gribbo" ? (isBossContext ? "boss_signal" : "mercy_signal") : "hostility", label + ".faction = " + actor.faction);
       }
 
       const prevSignals = safeObj(before.agentSignals);
@@ -365,6 +406,12 @@
           }
           if (normalizeId(entry.type) === "mercy_signal") {
             row.classList.add("mercy-signal-diff");
+          }
+          if (normalizeId(entry.type) === "boss_signal") {
+            row.classList.add("agent-signal-diff", "boss-signal-diff");
+          }
+          if (normalizeId(entry.type) === "act3_study_signal") {
+            row.classList.add("agent-signal-diff");
           }
           const sigil = document.createElement("span");
           sigil.className = "world-diff-sigil";

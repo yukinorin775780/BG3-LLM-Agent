@@ -1,6 +1,7 @@
 import asyncio
 
 from core.graph.nodes.actor_invocation import actor_invocation_node
+from core.graph.nodes.dm import dm_node
 from core.graph.nodes.event_drain import event_drain_node
 from core.graph.nodes.input import input_node
 from core.systems import mechanics
@@ -80,6 +81,33 @@ def test_act2_astarion_disarm_success_sets_act2_flags():
     assert result["environment_objects"]["gas_trap_1"]["status"] == "disabled"
 
 
+def test_act2_corridor_move_near_lab_door_does_not_trigger_act4_poison_valve():
+    state = _reveal_trap_with_astarion(_lab_state())
+    disarmed = mechanics.execute_disarm_action(
+        {
+            **state,
+            "intent": "DISARM",
+            "intent_context": {
+                "action_actor": "astarion",
+                "action_target": "gas_trap_1",
+            },
+        }
+    )
+    move_result = mechanics.execute_move_action(
+        {
+            **state,
+            **disarmed,
+            "intent": "MOVE",
+            "intent_context": {"action_actor": "player", "action_target": "4,8"},
+        }
+    )
+
+    assert move_result["entities"]["player"]["x"] == 4
+    assert move_result["entities"]["player"]["y"] == 8
+    assert move_result["environment_objects"]["poison_valve"]["status"] == "armed"
+    assert not any("poison_valve" in line or "毒气阀门" in line for line in move_result["journal_events"])
+
+
 def test_act2_astarion_disarm_failure_triggers_poison_state():
     state = _reveal_trap_with_astarion(_lab_state())
     state["flags"]["necromancer_lab_force_trap_disarm_failure"] = True
@@ -147,8 +175,94 @@ def test_corridor_lab_door_interact_without_key_reports_key_gate():
 
     assert result["flags"]["act2_corridor_exit_door_inspected"] is True
     assert result["flags"]["act2_corridor_exit_requires_key"] is True
+    assert result["flags"]["act2_secret_study_hint_given"] is True
+    assert result["flags"]["act2_secret_study_route_unlocked"] is True
     assert result["raw_roll_data"]["result"]["result_type"] == "MISSING_KEY"
     assert any("lab_key" in line for line in result["journal_events"])
+    assert any("书房" in line or "入口" in line for line in result["journal_events"])
+
+
+def test_corridor_lab_door_check_does_not_auto_lockpick_when_dm_returns_unlock():
+    state = _lab_state()
+    state["entities"]["player"]["x"] = 5
+    state["entities"]["player"]["y"] = 8
+    state["player_inventory"].pop("lab_key", None)
+
+    result = mechanics.execute_unlock_action(
+        {
+            **state,
+            "user_input": "检查 B-D 门。",
+            "intent": "UNLOCK",
+            "intent_context": {
+                "action_actor": "player",
+                "action_target": "door_b_to_d",
+            },
+        }
+    )
+
+    assert result["flags"]["act2_corridor_exit_door_inspected"] is True
+    assert result["flags"]["act2_corridor_exit_requires_key"] is True
+    assert result["flags"]["act2_secret_study_hint_given"] is True
+    assert result["flags"]["act2_secret_study_route_unlocked"] is True
+    assert "act2_corridor_exit_lockpick_attempted" not in result["flags"]
+    assert result["raw_roll_data"]["result"]["result_type"] == "INSPECT_REQUIRES_EXPLICIT_LOCKPICK"
+
+
+def test_input_routes_lab_door_check_to_interact_not_unlock():
+    patch = input_node(
+        {
+            **_lab_state(),
+            "user_input": "检查 B-D 门。",
+            "intent": "chat",
+        }
+    )
+
+    assert patch["intent"] == "INTERACT"
+    assert patch["target"] == "door_b_to_d"
+    assert patch["intent_context"]["action"] == "inspect_lab_door"
+
+
+def test_negative_lockpick_text_downgrades_to_inspect():
+    state = _lab_state()
+    state["entities"]["player"]["x"] = 5
+    state["entities"]["player"]["y"] = 8
+    state["player_inventory"].pop("lab_key", None)
+    text = "检查 door_b_to_d，不要撬锁。"
+
+    input_patch = input_node({**state, "user_input": text, "intent": "chat"})
+    dm_patch = asyncio.run(dm_node({**state, "user_input": text, "intent": "chat"}))
+    result = mechanics.execute_unlock_action(
+        {
+            **state,
+            "user_input": text,
+            "intent": "UNLOCK",
+            "intent_context": {
+                "action_actor": "player",
+                "action_target": "door_b_to_d",
+            },
+        }
+    )
+
+    assert input_patch["intent"] == "INTERACT"
+    assert input_patch["target"] == "door_b_to_d"
+    assert dm_patch["intent"] == "INTERACT"
+    assert dm_patch["intent_context"]["action_target"] == "door_b_to_d"
+    assert result["raw_roll_data"]["result"]["result_type"] == "INSPECT_REQUIRES_EXPLICIT_LOCKPICK"
+    assert "act2_corridor_exit_lockpick_attempted" not in result["flags"]
+
+
+def test_explicit_lockpick_still_routes_to_unlock():
+    patch = input_node(
+        {
+            **_lab_state(),
+            "user_input": "Astarion lockpick the door_b_to_d door.",
+            "intent": "chat",
+        }
+    )
+
+    assert patch["intent"] == "UNLOCK"
+    assert patch["target"] == "door_b_to_d"
+    assert patch["intent_context"]["action"] == "lockpick_lab_door"
 
 
 def test_corridor_lab_door_lockpick_success_skips_secret_study():

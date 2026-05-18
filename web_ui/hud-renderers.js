@@ -98,6 +98,15 @@
       dead: "Dead",
       neutralized: "Neutralized",
       defeated: "Defeated",
+      steal_key: "Steal Key",
+      contain_corruption: "Contain Corruption",
+      key_surrendered: "Key Surrendered",
+      heavy_iron_key: "Heavy Iron Key",
+      gribbo_alerted: "Gribbo Alerted",
+      gribbo_defeated: "Gribbo Defeated",
+      lab_poison: "Lab Poison",
+      valve_disabled: "Valve Disabled",
+      final_exit_opened: "Final Exit Opened",
     };
     if (mapped[raw.toLowerCase()]) return mapped[raw.toLowerCase()];
     return raw.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
@@ -281,6 +290,79 @@
       { label: "Key Path", value: result === "spared" && e.keyAvailable ? "Key path remains available." : "" },
     ]);
     appendAgentSignalCard(card, 6000);
+  }
+
+  function strategyRows(strategies) {
+    return (Array.isArray(strategies) ? strategies : [])
+      .filter((entry) => entry && entry.actor)
+      .map((entry) => ({
+        label: actorLabel(entry.actor),
+        value: titleLabel(entry.plan),
+      }));
+  }
+
+  function renderBossIntroCard(event) {
+    const e = event && typeof event === "object" ? event : {};
+    const rows = [
+      { label: "Encounter", value: "Gribbo Confrontation" },
+      { label: "Gribbo", value: e.keyHolder === false ? "" : "Key Holder" },
+      { label: "Poison Valve", value: e.poisonValvePresent === false ? "" : "Present" },
+      { label: "Diary", value: e.diaryTruthAvailable ? "Diary Truth Available" : "" },
+    ];
+    const card = buildAgentSignalCard("boss-intro", "Gribbo Confrontation", "⚗", rows);
+    appendAgentSignalCard(card, 6200);
+  }
+
+  function renderBossStrategyCard(event) {
+    const e = event && typeof event === "object" ? event : {};
+    const rows = strategyRows(e.strategies);
+    const card = buildAgentSignalCard("boss-strategy", "Boss Strategy", "♟", rows.length ? rows : [
+      { label: "Party", value: "Debating routes" },
+    ]);
+    appendAgentSignalCard(card, 6400);
+  }
+
+  function bossRouteTitle(event) {
+    const e = event && typeof event === "object" ? event : {};
+    const route = String(e.route || "").toLowerCase();
+    const result = String(e.result || "").toLowerCase();
+    if (route === "negotiation" || result === "key_surrendered") return "Negotiation Success";
+    if (route === "astarion_steal" && (result === "heavy_iron_key" || !e.failed)) return "Astarion Stole the Key";
+    if (e.failed || result === "gribbo_alerted") return "Steal Failed";
+    if (route === "assault" || result === "gribbo_defeated") return "Assault Success";
+    if (route === "final_exit" || result === "final_exit_opened") return "Final Exit Opened";
+    return "Boss Route Updated";
+  }
+
+  function renderBossRouteCard(event) {
+    const e = event && typeof event === "object" ? event : {};
+    const failed = Boolean(e.failed) || String(e.result || "").toLowerCase() === "gribbo_alerted";
+    const card = buildAgentSignalCard("boss-route" + (failed ? " boss-route-failed" : ""), bossRouteTitle(e), failed ? "!" : "✓", [
+      { label: "Route", value: titleLabel(e.route) },
+      { label: "Result", value: failed ? "Poison Valve Triggered" : titleLabel(e.result) },
+      { label: "Actor", value: e.actor ? actorLabel(e.actor) : "" },
+    ]);
+    appendAgentSignalCard(card, failed ? 6600 : 5800);
+  }
+
+  function renderPoisonValveCard(event) {
+    const e = event && typeof event === "object" ? event : {};
+    const status = String(e.status || "").toLowerCase();
+    const triggered = status === "triggered" || status === "leaking";
+    const affected = Array.isArray(e.affectedActors) && e.affectedActors.length
+      ? e.affectedActors.map(actorLabel).join(" / ")
+      : "";
+    const card = buildAgentSignalCard(
+      triggered ? "poison-valve poison-valve-triggered" : "poison-valve poison-valve-disabled",
+      triggered ? "Poison Gas Released" : "Poison Valve Disabled",
+      triggered ? "☠" : "✓",
+      [
+        { label: "Valve", value: e.valveId || "poison_valve" },
+        { label: "State", value: titleLabel(status || e.result) },
+        { label: "Affected", value: affected },
+      ]
+    );
+    appendAgentSignalCard(card, triggered ? 6600 : 5200);
   }
 
   /* ── Toast System ── */
@@ -524,8 +606,13 @@
         case "memory_echo": renderMemoryEchoCard(ev); break;
         case "party_stance": renderPartyStanceCard(ev); break;
         case "mercy_resolution": renderMercyResolutionCard(ev); break;
+        case "boss_intro": renderBossIntroCard(ev); break;
+        case "boss_strategy": renderBossStrategyCard(ev); break;
+        case "boss_route": renderBossRouteCard(ev); break;
+        case "poison_valve": renderPoisonValveCard(ev); break;
         case "companion_guidance": renderCompanionGuidanceCard(ev); break;
         case "negotiation_leverage": renderNegotiationLeverageCard(ev); break;
+        case "secret_study_discovered": showToast("narration", ev.text || "墙后露出一间秘密书房。", 2600); break;
         case "demo_cleared": showDemoClearedBanner(); break;
         default: break;
       }
@@ -540,6 +627,7 @@
     renderNegotiationLeverageCard, renderTrapInsightCard,
     renderTrapDisarmedCard, renderTrapTriggeredCard, renderMemoryEchoCard,
     renderPartyStanceCard, renderMercyResolutionCard,
+    renderBossIntroCard, renderBossStrategyCard, renderBossRouteCard, renderPoisonValveCard,
     dispatchUIEvents,
   });
 })();

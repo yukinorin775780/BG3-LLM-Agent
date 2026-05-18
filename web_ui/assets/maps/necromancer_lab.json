@@ -2943,6 +2943,68 @@
         },
         {
           "id": 10,
+          "name": "chemical_notes",
+          "type": "readable",
+          "x": 448,
+          "y": 352,
+          "width": 32,
+          "height": 32,
+          "properties": [
+            {
+              "name": "name",
+              "value": "化学残页"
+            },
+            {
+              "name": "lore_id",
+              "value": "necromancer_chemical_notes"
+            },
+            {
+              "name": "description",
+              "value": "药剂批注把毒、死亡和意志控制写在同一页。"
+            },
+            {
+              "name": "alias_id",
+              "value": "chemical_notes"
+            },
+            {
+              "name": "room_id",
+              "value": "room_c_secret_study"
+            }
+          ]
+        },
+        {
+          "id": 18,
+          "name": "iron_key_sketch",
+          "type": "readable",
+          "x": 384,
+          "y": 416,
+          "width": 32,
+          "height": 32,
+          "properties": [
+            {
+              "name": "name",
+              "value": "重铁钥匙草图"
+            },
+            {
+              "name": "lore_id",
+              "value": "necromancer_iron_key_sketch"
+            },
+            {
+              "name": "description",
+              "value": "草图把 Gribbo、钥匙和路线标在同一条逃生线上。"
+            },
+            {
+              "name": "alias_id",
+              "value": "iron_key_sketch"
+            },
+            {
+              "name": "room_id",
+              "value": "room_c_secret_study"
+            }
+          ]
+        },
+        {
+          "id": 19,
           "name": "study_chest",
           "type": "chest",
           "x": 416,

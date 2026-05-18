@@ -17,6 +17,9 @@
   function safeArr(v) {
     return Array.isArray(v) ? v : [];
   }
+  function normalizeId(value) {
+    return String(value || "").trim().toLowerCase();
+  }
 
   /* ── Regex patterns for inference ── */
   const RE_LOS_BLOCKED =
@@ -42,10 +45,16 @@
   const RE_TRAP_DISARMED_SIGNAL = /\[陷阱解除\]\s*([a-z0-9_\-]+)\s*->\s*([a-z0-9_\-]+)/i;
   const RE_POISON_TRAP_TRIGGER_SIGNAL = /\[毒气陷阱\]\s*([a-z0-9_\-]+)\s*(?:triggered|触发)/i;
   const RE_MEMORY_ECHO_SIGNAL = /\[记忆回响\]\s*([a-z0-9_\-]+)\s*->\s*(rebuked_by_player|sided_with_player)/i;
+  const RE_SECRET_STUDY_SIGNAL = /\[秘密书房\]\s*cracked_wall\s*->\s*room_c_secret_study/i;
   const RE_MEMORY_ECHO_REBUKE_TOKEN = /现在又需要我|闭嘴|记住这笔账|记住.*账|need me now|now you need me|shut up|remember.*this/i;
   const RE_MEMORY_ECHO_COMPLICITY_TOKEN = /默契|一起嘲笑|共谋|shared cruelty|cruelty shared|complicit|conspiracy/i;
   const RE_PARTY_STANCE_SIGNAL = /\[站队\]\s*([a-z0-9_'’\-]+)\s*->\s*(mercy|execute|resentful|mocking)/i;
   const RE_MERCY_RESOLUTION_SIGNAL = /\[抉择\]\s*(gribbo|格里博|格里布|格里波)\s*->\s*(spared|executed)/i;
+  const RE_BOSS_INTRO_SIGNAL = /\[Boss Encounter\]\s*gribbo_confrontation_started/i;
+  const RE_BOSS_STRATEGY_SIGNAL = /\[Boss方案\]\s*([a-z0-9_'’\-]+)\s*->\s*(steal_key|contain_corruption|execute)/i;
+  const RE_BOSS_ROUTE_SIGNAL = /\[Boss解决\]\s*(negotiation|astarion_steal|assault)\s*->\s*([a-z0-9_\-]+)/i;
+  const RE_BOSS_STEAL_FAILED_SIGNAL = /\[偷钥匙失败\]\s*([a-z0-9_'’\-]+)\s*->\s*(gribbo_alerted)/i;
+  const RE_POISON_VALVE_SIGNAL = /\[毒气泄漏\]\s*(poison_valve|potion_tank)\s*->\s*(lab_poison)/i;
 
   /* ══════════════════════════════════════════════════════
    *  normalizeRollEvent(raw)
@@ -175,12 +184,14 @@
     inferMemoryEchoEvents(prev, data, events);
     inferMercyResolutionFromFlags(prev, data, events);
     inferTrapSignalEvents(prev, data, events);
+    inferBossEventsFromFlags(prev, data, events);
     inferNegotiationFromFlags(prev, data, events);
     inferNegotiationEffects(prev, data, events);
     dedupePartyStanceEvents(events);
     dedupeMercyResolutionEvents(events);
     dedupeMemoryEchoEvents(events);
     dedupeTrapSignalEvents(events);
+    dedupeBossEvents(events);
 
     return events;
   }
@@ -217,7 +228,8 @@
     }
     if (type === "companion_guidance" || type === "negotiation_leverage" || type === "memory_echo"
       || type === "party_stance" || type === "mercy_resolution"
-      || type === "trap_insight" || type === "trap_disarmed" || type === "trap_triggered") {
+      || type === "trap_insight" || type === "trap_disarmed" || type === "trap_triggered"
+      || type === "boss_intro" || type === "boss_strategy" || type === "boss_route" || type === "poison_valve") {
       return e;
     }
     return e;
@@ -243,6 +255,12 @@
     if (memoryEcho) {
       events.push(memoryEcho);
     }
+    if (RE_SECRET_STUDY_SIGNAL.test(text) || /墙后露出一间秘密书房|act3_secret_study/i.test(text)) {
+      events.push({
+        type: "secret_study_discovered",
+        text: "墙后露出一间秘密书房。",
+      });
+    }
 
     const partyStance = parsePartyStanceSignal(text);
     if (partyStance) {
@@ -252,6 +270,11 @@
     const mercyResolution = parseMercyResolutionSignal(text);
     if (mercyResolution) {
       events.push(mercyResolution);
+    }
+
+    const bossSignal = parseBossSignal(text);
+    if (bossSignal) {
+      events.push(bossSignal);
     }
 
     /* LoS blocked */
@@ -696,6 +719,256 @@
       if (event.raw && !kept.raw) kept.raw = event.raw;
       if (event.keyAvailable === true) kept.keyAvailable = true;
       events.splice(index, 1);
+    }
+  }
+
+  function normalizeBossPlan(value) {
+    const raw = String(value || "").trim().toLowerCase();
+    if (["steal_key", "contain_corruption", "execute"].includes(raw)) return raw;
+    return raw || "unknown";
+  }
+
+  function parseBossSignal(text) {
+    const raw = String(text || "");
+    if (RE_BOSS_INTRO_SIGNAL.test(raw)) {
+      return {
+        type: "boss_intro",
+        targetId: "gribbo",
+        keyHolder: true,
+        poisonValvePresent: true,
+        diaryTruthAvailable: /diary_truth_available|日记|真相/i.test(raw),
+        source: "journal",
+        raw,
+      };
+    }
+    const strategy = raw.match(RE_BOSS_STRATEGY_SIGNAL);
+    if (strategy) {
+      return {
+        type: "boss_strategy",
+        targetId: "gribbo",
+        strategies: [{
+          actor: normalizeStanceActor(strategy[1]),
+          plan: normalizeBossPlan(strategy[2]),
+        }],
+        source: "journal",
+        raw,
+      };
+    }
+    const route = raw.match(RE_BOSS_ROUTE_SIGNAL);
+    if (route) {
+      return {
+        type: "boss_route",
+        targetId: "gribbo",
+        route: String(route[1] || "").trim().toLowerCase(),
+        result: String(route[2] || "").trim().toLowerCase(),
+        source: "journal",
+        raw,
+      };
+    }
+    const stealFailed = raw.match(RE_BOSS_STEAL_FAILED_SIGNAL);
+    if (stealFailed) {
+      return {
+        type: "boss_route",
+        targetId: "gribbo",
+        route: "astarion_steal",
+        result: String(stealFailed[2] || "gribbo_alerted").trim().toLowerCase(),
+        actor: normalizeStanceActor(stealFailed[1]),
+        failed: true,
+        poisonValveTriggered: true,
+        source: "journal",
+        raw,
+      };
+    }
+    const valve = raw.match(RE_POISON_VALVE_SIGNAL);
+    if (valve) {
+      return {
+        type: "poison_valve",
+        valveId: normalizeId(valve[1] || "poison_valve"),
+        status: "triggered",
+        result: String(valve[2] || "lab_poison").trim().toLowerCase(),
+        source: "journal",
+        raw,
+      };
+    }
+    return null;
+  }
+
+  function hasBossRouteEvent(events, route, result) {
+    return events.some((event) => (
+      event
+      && event.type === "boss_route"
+      && (!route || String(event.route || "").toLowerCase() === route)
+      && (!result || String(event.result || "").toLowerCase() === result)
+    ));
+  }
+
+  function hasPoisonValveEvent(events, status) {
+    return events.some((event) => (
+      event
+      && event.type === "poison_valve"
+      && (!status || String(event.status || "").toLowerCase() === status)
+    ));
+  }
+
+  function pushBossIntroEvent(events, flags, source, raw) {
+    const existing = events.find((event) => event && event.type === "boss_intro");
+    if (existing) {
+      if (flagBool(flags.act4_diary_truth_available)) existing.diaryTruthAvailable = true;
+      if (source === "journal") existing.source = "journal";
+      if (raw && !existing.raw) existing.raw = raw;
+      return;
+    }
+    events.push({
+      type: "boss_intro",
+      targetId: "gribbo",
+      keyHolder: true,
+      poisonValvePresent: true,
+      diaryTruthAvailable: flagBool(flags.act4_diary_truth_available),
+      source: source || "state",
+      raw: raw || "",
+    });
+  }
+
+  function inferBossEventsFromFlags(previousState, currentState, events) {
+    const prevFlags = stateFlags(previousState);
+    const currFlags = stateFlags(currentState);
+    if (
+      flagChangedToTrue(prevFlags, currFlags, "act4_boss_room_entered")
+      || flagChangedToTrue(prevFlags, currFlags, "act4_gribbo_confrontation_started")
+    ) {
+      pushBossIntroEvent(events, currFlags, "state", "act4_gribbo_confrontation_started=true");
+    } else if (events.some((event) => event && event.type === "boss_intro")) {
+      events.forEach((event) => {
+        if (event && event.type === "boss_intro" && flagBool(currFlags.act4_diary_truth_available)) {
+          event.diaryTruthAvailable = true;
+        }
+      });
+    }
+
+    if (flagChangedToTrue(prevFlags, currFlags, "act4_negotiation_success") && !hasBossRouteEvent(events, "negotiation")) {
+      events.push({ type: "boss_route", targetId: "gribbo", route: "negotiation", result: "key_surrendered", source: "state" });
+    }
+    if (flagChangedToTrue(prevFlags, currFlags, "act4_astarion_steal_key_success") && !hasBossRouteEvent(events, "astarion_steal", "heavy_iron_key")) {
+      events.push({ type: "boss_route", targetId: "gribbo", route: "astarion_steal", result: "heavy_iron_key", actor: "astarion", source: "state" });
+    }
+    if (flagChangedToTrue(prevFlags, currFlags, "act4_assault_success") && !hasBossRouteEvent(events, "assault")) {
+      events.push({ type: "boss_route", targetId: "gribbo", route: "assault", result: "gribbo_defeated", source: "state" });
+    }
+    if (flagChangedToTrue(prevFlags, currFlags, "act4_heavy_iron_key_obtained") && !hasBossRouteEvent(events, "key_obtained")) {
+      events.push({ type: "boss_route", targetId: "gribbo", route: "key_obtained", result: "heavy_iron_key", source: "state" });
+    }
+    if (flagChangedToTrue(prevFlags, currFlags, "act4_final_exit_opened") && !hasBossRouteEvent(events, "final_exit")) {
+      events.push({ type: "boss_route", targetId: "exit_door", route: "final_exit", result: "final_exit_opened", source: "state" });
+    }
+    if (
+      (flagChangedToTrue(prevFlags, currFlags, "act4_poison_valve_triggered")
+        || flagChangedToTrue(prevFlags, currFlags, "act4_lab_poison_leak"))
+      && !hasPoisonValveEvent(events, "triggered")
+    ) {
+      events.push({
+        type: "poison_valve",
+        valveId: "poison_valve",
+        status: "triggered",
+        result: "lab_poison",
+        affectedActors: inferPoisonedActors(previousState, currentState),
+        source: "state",
+      });
+    }
+    if (flagChangedToTrue(prevFlags, currFlags, "act4_poison_valve_disabled") && !hasPoisonValveEvent(events, "disabled")) {
+      events.push({
+        type: "poison_valve",
+        valveId: "poison_valve",
+        status: "disabled",
+        result: "valve_disabled",
+        source: "state",
+      });
+    }
+  }
+
+  function mergeBossStrategies(existing, incoming) {
+    const byActor = new Map();
+    safeArr(existing).forEach((entry) => {
+      const item = safeObj(entry);
+      const actor = normalizeStanceActor(item.actor);
+      if (!actor) return;
+      byActor.set(actor, { actor, plan: normalizeBossPlan(item.plan) });
+    });
+    safeArr(incoming).forEach((entry) => {
+      const item = safeObj(entry);
+      const actor = normalizeStanceActor(item.actor);
+      if (!actor) return;
+      byActor.set(actor, { actor, plan: normalizeBossPlan(item.plan) });
+    });
+    return Array.from(byActor.values());
+  }
+
+  function dedupeBossEvents(events) {
+    const firstStrategyIndexByTarget = new Map();
+    const seenRoutes = new Map();
+    const seenValves = new Map();
+    let introIndex = -1;
+    for (let index = 0; index < events.length; index += 1) {
+      const event = events[index];
+      if (!event || !event.type) continue;
+      if (event.type === "boss_intro") {
+        if (introIndex < 0) {
+          introIndex = index;
+          continue;
+        }
+        const kept = events[introIndex];
+        if (event.diaryTruthAvailable) kept.diaryTruthAvailable = true;
+        if (event.source === "journal") kept.source = "journal";
+        if (event.raw && !kept.raw) kept.raw = event.raw;
+        events.splice(index, 1);
+        index -= 1;
+        continue;
+      }
+      if (event.type === "boss_strategy") {
+        const target = String(event.targetId || "gribbo").toLowerCase();
+        if (!firstStrategyIndexByTarget.has(target)) {
+          firstStrategyIndexByTarget.set(target, index);
+          event.targetId = target;
+          event.strategies = mergeBossStrategies([], event.strategies);
+          continue;
+        }
+        const kept = events[firstStrategyIndexByTarget.get(target)];
+        kept.strategies = mergeBossStrategies(kept.strategies, event.strategies);
+        if (event.raw) kept.raw = [kept.raw, event.raw].filter(Boolean).join("\n");
+        events.splice(index, 1);
+        index -= 1;
+        continue;
+      }
+      if (event.type === "boss_route") {
+        const key = [event.route || "", event.result || ""].map((v) => String(v).toLowerCase()).join(":");
+        if (!seenRoutes.has(key)) {
+          seenRoutes.set(key, index);
+          continue;
+        }
+        const kept = events[seenRoutes.get(key)];
+        if (event.failed) kept.failed = true;
+        if (event.poisonValveTriggered) kept.poisonValveTriggered = true;
+        if (event.source === "journal") kept.source = "journal";
+        if (event.raw && !kept.raw) kept.raw = event.raw;
+        events.splice(index, 1);
+        index -= 1;
+        continue;
+      }
+      if (event.type === "poison_valve") {
+        const key = [event.valveId || "poison_valve", event.status || ""].map((v) => String(v).toLowerCase()).join(":");
+        if (!seenValves.has(key)) {
+          seenValves.set(key, index);
+          continue;
+        }
+        const kept = events[seenValves.get(key)];
+        kept.affectedActors = Array.from(new Set([
+          ...safeArr(kept.affectedActors).map(String),
+          ...safeArr(event.affectedActors).map(String),
+        ].filter(Boolean)));
+        if (event.source === "journal") kept.source = "journal";
+        if (event.raw && !kept.raw) kept.raw = event.raw;
+        events.splice(index, 1);
+        index -= 1;
+      }
     }
   }
 

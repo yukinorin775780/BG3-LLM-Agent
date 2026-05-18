@@ -225,7 +225,25 @@
      <property name="room_id" value="room_c_secret_study" />
    </properties>
   </object>
-  <object id="10" name="study_chest" type="chest" x="416" y="384" width="32" height="32">
+  <object id="10" name="chemical_notes" type="readable" x="448" y="352" width="32" height="32">
+   <properties>
+     <property name="name" value="化学残页" />
+     <property name="lore_id" value="necromancer_chemical_notes" />
+     <property name="description" value="药剂批注把毒、死亡和意志控制写在同一页。" />
+     <property name="alias_id" value="chemical_notes" />
+     <property name="room_id" value="room_c_secret_study" />
+   </properties>
+  </object>
+  <object id="18" name="iron_key_sketch" type="readable" x="384" y="416" width="32" height="32">
+   <properties>
+     <property name="name" value="重铁钥匙草图" />
+     <property name="lore_id" value="necromancer_iron_key_sketch" />
+     <property name="description" value="草图把 Gribbo、钥匙和路线标在同一条逃生线上。" />
+     <property name="alias_id" value="iron_key_sketch" />
+     <property name="room_id" value="room_c_secret_study" />
+   </properties>
+  </object>
+  <object id="19" name="study_chest" type="chest" x="416" y="384" width="32" height="32">
    <properties>
      <property name="name" value="旧木箱" />
      <property name="is_locked" type="bool" value="false" />

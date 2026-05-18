@@ -170,6 +170,10 @@ def test_lore_node_diary_success_sets_flags_and_memory_events(monkeypatch):
 
     assert flags["necromancer_lab_diary_read"] is True
     assert flags["necromancer_lab_diary_decoded"] is True
+    assert flags["act3_diary_read"] is True
+    assert flags["act3_diary_decoded"] is True
+    assert flags["act3_gribbo_potion_truth_known"] is True
+    assert flags["act3_party_knows_gribbo_truth"] is True
     assert flags["necromancer_lab_key_hint_known"]["visibility"]["scope"] == "party"
     assert flags["necromancer_lab_antidote_formula_fragment_known"]["visibility"]["scope"] == "actor"
 
@@ -195,6 +199,9 @@ def test_lore_node_diary_failure_sets_decoded_false_without_full_knowledge(monke
 
     assert flags["necromancer_lab_diary_read"] is True
     assert flags["necromancer_lab_diary_decoded"] is False
+    assert flags["act3_diary_read"] is True
+    assert flags["act3_diary_decoded"] is False
+    assert flags["act3_gribbo_potion_truth_known"] is False
     assert "necromancer_lab_key_hint_known" not in flags
     assert "解药配方其实就在" not in text
     assert "heavy_iron_key" not in text

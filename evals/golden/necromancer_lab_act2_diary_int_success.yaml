@@ -41,7 +41,7 @@ steps:
           game_state.latest_roll.skill: arcana
           game_state.latest_roll.result.is_success: true
           game_state.actor_runtime_state.player.memory_notes.0: 我读懂了：Gribbo 因实验药剂变得聪明但极不稳定，毒气陷阱会触发他的警觉，逃生关键是 heavy_iron_key。日记末尾写着“解药配方其实就在……”却被血迹打断。
-          game_state.actor_runtime_state.__party_shared__.memory_notes.0: 队伍确认：毒气陷阱与 Gribbo 警觉联动，heavy_iron_key 是逃离实验室的关键。
+          game_state.actor_runtime_state.__party_shared__.memory_notes.0: 队伍确认：Gribbo、实验药剂、毒气陷阱与 heavy_iron_key 互相连接，钥匙是逃离实验室的关键。
         contains:
           game_state.journal_events:
             - "🧠 [记忆] player 记录了一条私有记忆。"

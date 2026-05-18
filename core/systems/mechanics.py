@@ -9,9 +9,15 @@ import logging
 import random
 import re
 from typing import Any, Dict, List, Optional, Tuple
+from uuid import uuid4
 
-from core.campaigns.necromancer_lab import detect_poison_trap_trigger_context
+from core.campaigns.necromancer_lab import (
+    detect_gribbo_boss_resolution_context,
+    detect_poison_trap_trigger_context,
+    detect_secret_study_entry_context,
+)
 from core.engine.physics import DEBUG_ALWAYS_PASS_CHECKS
+from core.events.models import DomainEvent, event_to_dict
 from core.systems.dice import roll_d20
 from core.systems.inventory import get_registry
 from core.systems.maps import get_map_data
@@ -2103,6 +2109,386 @@ def _trigger_trap_entity(
     return logs
 
 
+def _new_domain_event_id() -> str:
+    return f"evt_{uuid4().hex}"
+
+
+def _domain_flag_event(*, actor_id: str, turn_index: int, key: str, value: Any = True) -> Dict[str, Any]:
+    return event_to_dict(
+        DomainEvent(
+            event_id=_new_domain_event_id(),
+            event_type="world_flag_changed",
+            actor_id=actor_id,
+            turn_index=turn_index,
+            visibility="party",
+            payload={"key": key, "value": bool(value)},
+        )
+    )
+
+
+def _domain_affection_event(*, actor_id: str, turn_index: int, target_actor_id: str, delta: int, reason: str) -> Dict[str, Any]:
+    return event_to_dict(
+        DomainEvent(
+            event_id=_new_domain_event_id(),
+            event_type="actor_affection_changed",
+            actor_id=actor_id,
+            turn_index=turn_index,
+            visibility="party",
+            payload={"target_actor_id": target_actor_id, "delta": int(delta), "reason": reason},
+        )
+    )
+
+
+def _domain_item_transfer_event(
+    *,
+    actor_id: str,
+    turn_index: int,
+    from_entity: str,
+    to_entity: str,
+    item_id: str,
+    quantity: int,
+    reason: str,
+) -> Dict[str, Any]:
+    return event_to_dict(
+        DomainEvent(
+            event_id=_new_domain_event_id(),
+            event_type="actor_item_transaction_requested",
+            actor_id=actor_id,
+            turn_index=turn_index,
+            visibility="party",
+            payload={
+                "social_action": {
+                    "action_type": "item_transfer",
+                    "actor_id": actor_id,
+                    "target_actor_id": to_entity,
+                    "item_id": item_id,
+                    "quantity": int(quantity),
+                    "accepted": True,
+                    "reason": reason,
+                },
+                "transaction": {
+                    "transaction_type": "transfer",
+                    "from_entity": from_entity,
+                    "to_entity": to_entity,
+                    "item": item_id,
+                    "quantity": int(quantity),
+                    "accepted": True,
+                    "reason": reason,
+                },
+            },
+        )
+    )
+
+
+def _domain_negotiation_event(
+    *,
+    actor_id: str,
+    turn_index: int,
+    target_actor_id: str,
+    reason: str,
+    status_set: str = "",
+    faction_set: str = "",
+    force_hostile: bool = False,
+) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {
+        "target_actor_id": target_actor_id,
+        "reason": reason,
+        "force_hostile": force_hostile,
+        "trigger_combat": False,
+    }
+    if status_set:
+        payload["status_set"] = status_set
+    if faction_set:
+        payload["faction_set"] = faction_set
+    return event_to_dict(
+        DomainEvent(
+            event_id=_new_domain_event_id(),
+            event_type="actor_negotiation_outcome_requested",
+            actor_id=actor_id,
+            turn_index=turn_index,
+            visibility="party",
+            payload=payload,
+        )
+    )
+
+
+def _party_actor_ids_in_room(entities: Dict[str, Any]) -> List[str]:
+    actor_ids: List[str] = []
+    for actor_id in ("player", "astarion", "shadowheart", "laezel"):
+        entity = entities.get(actor_id)
+        if not isinstance(entity, dict) or not _is_alive_entity(entity):
+            continue
+        actor_ids.append(actor_id)
+    return actor_ids or ["player"]
+
+
+def _ensure_poison_valve_object(environment_objects: Dict[str, Any], entities: Dict[str, Any]) -> Dict[str, Any]:
+    valve = environment_objects.get("poison_valve")
+    if not isinstance(valve, dict):
+        valve = entities.get("poison_valve")
+    if not isinstance(valve, dict):
+        valve = {
+            "id": "poison_valve",
+            "type": "trap",
+            "entity_type": "trap",
+            "name": "毒气阀门",
+            "status": "armed",
+            "is_hidden": False,
+            "x": 6,
+            "y": 9,
+        }
+        environment_objects["poison_valve"] = valve
+    return valve
+
+
+def _trigger_act4_poison_valve(
+    *,
+    entities: Dict[str, Any],
+    environment_objects: Dict[str, Any],
+    flags: Dict[str, Any],
+    trigger_actor_id: str,
+) -> List[str]:
+    valve = _ensure_poison_valve_object(environment_objects, entities)
+    valve["status"] = "triggered"
+    valve["is_hidden"] = False
+    flags["act4_poison_valve_intact"] = True
+    flags["act4_poison_valve_triggered"] = True
+    flags["act4_lab_poison_leak"] = True
+    logs = ["[毒气泄漏] poison_valve -> lab_poison"]
+    if trigger_actor_id == "gribbo":
+        logs.append("[毒气泄漏] gribbo -> poison_valve")
+    for actor_id in _party_actor_ids_in_room(entities):
+        entity = entities.get(actor_id)
+        if not isinstance(entity, dict):
+            continue
+        if _apply_poisoned_once(entity, duration=3):
+            logs.append(f"🤢 [状态] {_display_entity_name(entity, actor_id)} 获得 中毒（3 回合）。")
+    return logs
+
+
+def execute_gribbo_boss_resolution_action(state: Any) -> Dict[str, Any]:
+    entities = copy.deepcopy(state.get("entities") or {})
+    environment_objects = copy.deepcopy(state.get("environment_objects") or {})
+    player_inventory = copy.deepcopy(state.get("player_inventory") or {})
+    flags = dict(state.get("flags") or {})
+    map_data = copy.deepcopy(state.get("map_data")) if isinstance(state.get("map_data"), dict) else {}
+    intent_context = state.get("intent_context") if isinstance(state.get("intent_context"), dict) else {}
+    context = detect_gribbo_boss_resolution_context(
+        {
+            **(state if isinstance(state, dict) else {}),
+            "entities": entities,
+            "environment_objects": environment_objects,
+            "player_inventory": player_inventory,
+            "flags": flags,
+            "map_data": map_data,
+        },
+        str(state.get("user_input") or ""),
+        intent_context,
+    )
+    actor_id = _normalize_entity_id(intent_context.get("action_actor") or "player") or "player"
+    if not context:
+        return {
+            "journal_events": [],
+            "entities": entities,
+            "environment_objects": environment_objects,
+            "player_inventory": player_inventory,
+            "flags": flags,
+            "map_data": map_data,
+            "raw_roll_data": _build_action_result(
+                intent="ACTION",
+                actor=actor_id,
+                target=str(intent_context.get("action_target") or "gribbo"),
+                is_success=False,
+                result_type="NO_BOSS_CONTEXT",
+            ),
+        }
+
+    route = str(context.get("route") or "").strip()
+    turn_index = int(state.get("turn_count") or 0)
+    pending_events: List[Dict[str, Any]] = []
+    journal_events: List[str] = []
+    force_success = bool(context.get("force_success", False))
+    force_failure = bool(context.get("force_failure", False))
+
+    if route == "disarm_poison_valve":
+        actor_id = "astarion"
+        valve = _ensure_poison_valve_object(environment_objects, entities)
+        success = not bool(flags.get("necromancer_lab_force_poison_valve_disarm_failure", False))
+        if success:
+            valve["status"] = "disabled"
+            flags["act4_poison_valve_disabled"] = True
+            flags["act4_lab_poison_leak"] = False
+            journal_events.append("[毒气阀门] astarion -> disabled")
+        else:
+            flags["act4_poison_valve_disabled"] = False
+            journal_events.append("[毒气阀门失败] astarion -> poison_valve")
+        return {
+            "journal_events": journal_events,
+            "entities": entities,
+            "environment_objects": environment_objects,
+            "player_inventory": player_inventory,
+            "flags": flags,
+            "map_data": map_data,
+            "raw_roll_data": _build_action_result(
+                intent="ACTION",
+                actor=actor_id,
+                target="poison_valve",
+                is_success=success,
+                result_type="SUCCESS" if success else "FAIL",
+                extra={"dc": 14, "modifier": 3},
+            ),
+        }
+
+    if route == "over_threat":
+        gribbo = entities.get("gribbo")
+        if isinstance(gribbo, dict):
+            gribbo["faction"] = "hostile"
+        journal_events.extend(_trigger_act4_poison_valve(entities=entities, environment_objects=environment_objects, flags=flags, trigger_actor_id="gribbo"))
+        return {
+            "journal_events": journal_events,
+            "entities": entities,
+            "environment_objects": environment_objects,
+            "player_inventory": player_inventory,
+            "flags": flags,
+            "map_data": map_data,
+            "raw_roll_data": _build_action_result(intent="ACTION", actor="player", target="gribbo", is_success=False, result_type="OVER_THREAT_POISON"),
+        }
+
+    if route == "truth_negotiation":
+        actor_id = "player"
+        truth_available = bool(context.get("truth_available", False))
+        dc = 10 if truth_available else 17
+        modifier = 2
+        roll = roll_d20(dc=dc, modifier=modifier, roll_type="advantage" if truth_available else "normal")
+        success = bool(roll.get("is_success", False))
+        if force_success:
+            success = True
+        if force_failure:
+            success = False
+        pending_events.append(_domain_flag_event(actor_id=actor_id, turn_index=turn_index, key="act4_truth_negotiation_available", value=truth_available))
+        if success:
+            pending_events.extend(
+                [
+                    _domain_negotiation_event(actor_id=actor_id, turn_index=turn_index, target_actor_id="gribbo", reason="act4_truth_negotiation_success", status_set="spared", faction_set="neutralized"),
+                    _domain_item_transfer_event(actor_id=actor_id, turn_index=turn_index, from_entity="gribbo", to_entity="player", item_id="heavy_iron_key", quantity=1, reason="act4_truth_negotiation_key_surrender"),
+                    _domain_flag_event(actor_id=actor_id, turn_index=turn_index, key="act4_heavy_iron_key_obtained", value=True),
+                    _domain_flag_event(actor_id=actor_id, turn_index=turn_index, key="act4_gribbo_spared", value=True),
+                    _domain_flag_event(actor_id=actor_id, turn_index=turn_index, key="act4_negotiation_success", value=True),
+                    _domain_affection_event(actor_id=actor_id, turn_index=turn_index, target_actor_id="shadowheart", delta=1, reason="act4_truth_negotiation"),
+                    _domain_affection_event(actor_id=actor_id, turn_index=turn_index, target_actor_id="laezel", delta=-1, reason="act4_truth_negotiation"),
+                ]
+            )
+            journal_events.append("[Boss解决] negotiation -> key_surrendered")
+        else:
+            pending_events.append(_domain_flag_event(actor_id=actor_id, turn_index=turn_index, key="act4_negotiation_success", value=False))
+            gribbo = entities.get("gribbo")
+            if isinstance(gribbo, dict):
+                gribbo["faction"] = "hostile"
+            journal_events.extend(_trigger_act4_poison_valve(entities=entities, environment_objects=environment_objects, flags=flags, trigger_actor_id="gribbo"))
+        return {
+            "journal_events": journal_events,
+            "entities": entities,
+            "environment_objects": environment_objects,
+            "player_inventory": player_inventory,
+            "flags": flags,
+            "map_data": map_data,
+            "pending_events": pending_events,
+            "raw_roll_data": {"intent": "PERSUASION", "actor": actor_id, "target": "gribbo", "dc": dc, "modifier": modifier, "result": {**roll, "is_success": success}},
+        }
+
+    if route == "astarion_steal":
+        actor_id = "astarion"
+        astarion = entities.get("astarion") if isinstance(entities.get("astarion"), dict) else {}
+        dex_mod = calculate_ability_modifier(_get_ability_score(astarion, "DEX", 16)) + 2
+        dc = 13
+        roll = roll_d20(dc=dc, modifier=dex_mod, roll_type="normal")
+        success = bool(roll.get("is_success", False))
+        if force_success:
+            success = True
+        if force_failure:
+            success = False
+        pending_events.append(_domain_flag_event(actor_id=actor_id, turn_index=turn_index, key="act4_astarion_steal_key_attempted", value=True))
+        if success:
+            pending_events.extend(
+                [
+                    _domain_flag_event(actor_id=actor_id, turn_index=turn_index, key="act4_astarion_steal_key_success", value=True),
+                    _domain_flag_event(actor_id=actor_id, turn_index=turn_index, key="act4_heavy_iron_key_obtained", value=True),
+                    _domain_item_transfer_event(actor_id=actor_id, turn_index=turn_index, from_entity="gribbo", to_entity="player", item_id="heavy_iron_key", quantity=1, reason="act4_astarion_steal_key"),
+                    _domain_affection_event(actor_id=actor_id, turn_index=turn_index, target_actor_id="astarion", delta=1, reason="act4_steal_key"),
+                    _domain_negotiation_event(actor_id=actor_id, turn_index=turn_index, target_actor_id="gribbo", reason="act4_astarion_steal_success", faction_set="hostile"),
+                ]
+            )
+            journal_events.append("[Boss解决] astarion_steal -> heavy_iron_key")
+        else:
+            pending_events.append(_domain_flag_event(actor_id=actor_id, turn_index=turn_index, key="act4_astarion_steal_key_success", value=False))
+            gribbo = entities.get("gribbo")
+            if isinstance(gribbo, dict):
+                gribbo["faction"] = "hostile"
+            journal_events.append("[偷钥匙失败] astarion -> gribbo_alerted")
+            journal_events.extend(_trigger_act4_poison_valve(entities=entities, environment_objects=environment_objects, flags=flags, trigger_actor_id="gribbo"))
+        return {
+            "journal_events": journal_events,
+            "entities": entities,
+            "environment_objects": environment_objects,
+            "player_inventory": player_inventory,
+            "flags": flags,
+            "map_data": map_data,
+            "pending_events": pending_events,
+            "raw_roll_data": {"intent": "SLEIGHT_OF_HAND", "actor": actor_id, "target": "gribbo", "dc": dc, "modifier": dex_mod, "result": {**roll, "is_success": success}},
+        }
+
+    if route == "assault":
+        actor_id = "laezel"
+        dc = 11
+        modifier = 4
+        roll = roll_d20(dc=dc, modifier=modifier, roll_type="normal")
+        success = bool(roll.get("is_success", False))
+        if force_success:
+            success = True
+        if force_failure:
+            success = False
+        pending_events.append(_domain_flag_event(actor_id=actor_id, turn_index=turn_index, key="act4_assault_attempted", value=True))
+        if success:
+            pending_events.extend(
+                [
+                    _domain_flag_event(actor_id=actor_id, turn_index=turn_index, key="act4_assault_success", value=True),
+                    _domain_flag_event(actor_id=actor_id, turn_index=turn_index, key="world_necromancer_lab_gribbo_defeated", value=True),
+                    _domain_flag_event(actor_id=actor_id, turn_index=turn_index, key="act4_heavy_iron_key_obtained", value=True),
+                    _domain_negotiation_event(actor_id=actor_id, turn_index=turn_index, target_actor_id="gribbo", reason="act4_assault_success", status_set="dead", faction_set="defeated"),
+                    _domain_item_transfer_event(actor_id=actor_id, turn_index=turn_index, from_entity="gribbo", to_entity="player", item_id="heavy_iron_key", quantity=1, reason="act4_assault_loot_key"),
+                    _domain_affection_event(actor_id=actor_id, turn_index=turn_index, target_actor_id="laezel", delta=1, reason="act4_assault"),
+                    _domain_affection_event(actor_id=actor_id, turn_index=turn_index, target_actor_id="shadowheart", delta=-1, reason="act4_assault"),
+                ]
+            )
+            journal_events.append("[Boss解决] assault -> gribbo_defeated")
+        else:
+            pending_events.append(_domain_flag_event(actor_id=actor_id, turn_index=turn_index, key="act4_assault_success", value=False))
+            gribbo = entities.get("gribbo")
+            if isinstance(gribbo, dict):
+                gribbo["faction"] = "hostile"
+            journal_events.extend(_trigger_act4_poison_valve(entities=entities, environment_objects=environment_objects, flags=flags, trigger_actor_id="gribbo"))
+        return {
+            "journal_events": journal_events,
+            "entities": entities,
+            "environment_objects": environment_objects,
+            "player_inventory": player_inventory,
+            "flags": flags,
+            "map_data": map_data,
+            "pending_events": pending_events,
+            "raw_roll_data": {"intent": "ATTACK", "actor": actor_id, "target": "gribbo", "dc": dc, "modifier": modifier, "result": {**roll, "is_success": success}},
+        }
+
+    return {
+        "journal_events": [],
+        "entities": entities,
+        "environment_objects": environment_objects,
+        "player_inventory": player_inventory,
+        "flags": flags,
+        "map_data": map_data,
+        "raw_roll_data": _build_action_result(intent="ACTION", actor=actor_id, target="gribbo", is_success=False, result_type="UNKNOWN_ROUTE"),
+    }
+
+
 def _evaluate_traps_after_move(
     *,
     entities: Dict[str, Any],
@@ -2137,6 +2523,12 @@ def _evaluate_traps_after_move(
         if normalized_id == "gas_trap_1" and isinstance(flags, dict) and (
             bool(flags.get("necromancer_lab_poison_trap_disarmed", False))
             or bool(flags.get("necromancer_lab_poison_trap_triggered", False))
+        ):
+            continue
+        if normalized_id == "poison_valve" and isinstance(flags, dict) and not (
+            bool(flags.get("act4_gribbo_confrontation_started", False))
+            or bool(flags.get("act4_boss_encounter_started", False))
+            or bool(flags.get("act4_boss_room_entered", False))
         ):
             continue
         trap_pairs.append((normalized_id, entity))
@@ -2651,6 +3043,49 @@ def _sync_object_state(
 def _mark_lab_corridor_door_base_flags(flags: Dict[str, Any]) -> None:
     flags["act2_corridor_exit_door_inspected"] = True
     flags["act2_corridor_exit_requires_key"] = True
+
+
+def _mark_secret_study_hint(flags: Dict[str, Any]) -> None:
+    flags["act2_secret_study_hint_given"] = True
+    flags["act2_secret_study_route_unlocked"] = True
+
+
+def _is_explicit_lab_lockpick_attempt(state: Any, intent_context: Dict[str, Any]) -> bool:
+    action = str(intent_context.get("action") or "").strip().lower()
+    source = str(intent_context.get("source") or "").strip().lower()
+    user_input = str(state.get("user_input") or "") if isinstance(state, dict) else ""
+    lowered = user_input.lower()
+    negative_markers = (
+        "不要撬锁",
+        "别撬锁",
+        "不撬锁",
+        "不要开锁",
+        "先别撬",
+        "do not lockpick",
+        "don't lockpick",
+        "without lockpicking",
+    )
+    door_markers = (
+        "door_b_to_d",
+        "b-d",
+        "bd门",
+        "b_d",
+        "实验室门",
+        "实验室重门",
+        "通往实验室",
+        "重门",
+        "lab door",
+        "laboratory door",
+    )
+    if any(marker in user_input or marker in lowered for marker in negative_markers) and any(
+        marker in user_input or marker in lowered for marker in door_markers
+    ):
+        return False
+    if action == "lockpick_lab_door" or source in {"lockpick", "ui_lockpick", "lockpick_button"}:
+        return True
+    if not user_input:
+        return True
+    return any(marker in user_input or marker in lowered for marker in ("撬锁", "开锁", "撬开", "解锁", "lockpick", "pick the lock"))
 
 
 def _flags_dict(state: Any) -> Dict[str, Any]:
@@ -6150,6 +6585,50 @@ def execute_interact_action(state: Any) -> Dict[str, Any]:
 
     actor_id = _normalize_entity_id(intent_context.get("action_actor", "player")) or "player"
     target_query = str(intent_context.get("action_target", "") or "").strip()
+    secret_study_context = detect_secret_study_entry_context(
+        state if isinstance(state, dict) else {},
+        str(state.get("user_input") or "") if isinstance(state, dict) else "",
+        intent_context if isinstance(intent_context, dict) else {},
+    )
+    if secret_study_context:
+        flags = dict(state.get("flags") or {})
+        flags["act3_secret_study_entered"] = True
+        flags["act3_secret_study_discovered"] = True
+        flags["act3_cracked_wall_found"] = True
+        flags["room_c_secret_study_discovered"] = True
+        flags["room_c_secret_study_entered"] = True
+
+        for reveal_id in ("door_b_to_c", "cracked_wall"):
+            _sync_object_state(
+                entities=entities,
+                environment_objects=environment_objects,
+                target_id=reveal_id,
+                updates={"status": "discovered", "is_hidden": False, "is_open": True},
+            )
+        if isinstance(entities.get("door_b_to_c"), dict):
+            entities["door_b_to_c"]["status"] = "open"
+            entities["door_b_to_c"]["is_open"] = True
+            entities["door_b_to_c"]["is_locked"] = False
+        _sync_door_state_to_map(map_data=map_data, entities=entities)
+
+        return {
+            "journal_events": [
+                str(secret_study_context.get("journal_line") or "[秘密书房] cracked_wall -> room_c_secret_study"),
+                str(secret_study_context.get("narration") or "墙后的冷风带着纸灰味……狭窄书房暴露出来。"),
+            ],
+            "entities": entities,
+            "environment_objects": environment_objects,
+            "map_data": map_data,
+            "flags": flags,
+            "raw_roll_data": _build_action_result(
+                intent="INTERACT",
+                actor=actor_id,
+                target=str(secret_study_context.get("target_id") or target_query or "cracked_wall"),
+                is_success=True,
+                result_type="SECRET_STUDY_DISCOVERED",
+                extra={"to_room": "room_c_secret_study"},
+            ),
+        }
     turn_lock = _reject_if_not_active_turn(
         state=state,
         intent="INTERACT",
@@ -6250,9 +6729,11 @@ def execute_interact_action(state: Any) -> Dict[str, Any]:
             player_inventory=player_inventory,
         )
         if not has_lab_key:
+            _mark_secret_study_hint(flags)
             return {
                 "journal_events": [
-                    "🚪 [系统] 实验室重门需要 lab_key；也可以尝试 DC 15 撬锁。"
+                    "🚪 [系统] 实验室重门需要 lab_key；也可以明确尝试 DC 15 撬锁。",
+                    "🕯️ [线索] 门框附近有冷风，旁边墙面传来空响；附近可能还有通往书房的入口。",
                 ],
                 "entities": entities,
                 "environment_objects": environment_objects,
@@ -6355,15 +6836,35 @@ def execute_interact_action(state: Any) -> Dict[str, Any]:
     if normalized_target_id == "heavy_oak_door_1":
         door["is_open"] = True
         door["status"] = "open"
+        _sync_object_state(
+            entities=entities,
+            environment_objects=environment_objects,
+            target_id=target_id,
+            updates={"is_locked": False, "is_open": True, "status": "open"},
+        )
         _sync_door_state_to_map(map_data=map_data, entities=entities)
         flags = dict(state.get("flags") or {})
         flags["necromancer_lab_escape_complete"] = True
         flags["content_sprint_1_complete"] = True
+        flags["act4_final_exit_opened"] = True
+        closing_line = ""
+        if bool(flags.get("act4_lab_poison_leak", False)):
+            closing_line = 'Astarion “下次我们可以试试不把实验室弄成毒锅。”'
+        elif bool(flags.get("act4_negotiation_success", False)):
+            closing_line = 'Shadowheart “有些牢笼不是用铁做的……”'
+        elif bool(flags.get("act4_astarion_steal_key_success", False)):
+            closing_line = 'Astarion “不流血，不讲道德，只是专业。”'
+        elif bool(flags.get("act4_assault_success", False)):
+            closing_line = 'Lae’zel “门开了。迟来的效率，仍然是效率。”'
+        journal_events = [
+            "🚪 [系统] 伴随着沉重的摩擦声，大门被推开了！一缕阳光照进地下室... **[DEMO CLEARED]**"
+        ]
+        if closing_line:
+            journal_events.append(closing_line)
         payload = {
-            "journal_events": [
-                "🚪 [系统] 伴随着沉重的摩擦声，大门被推开了！一缕阳光照进地下室... **[DEMO CLEARED]**"
-            ],
+            "journal_events": journal_events,
             "entities": entities,
+            "environment_objects": environment_objects,
             "map_data": map_data,
             "flags": flags,
             "demo_cleared": True,
@@ -6897,6 +7398,26 @@ def execute_unlock_action(state: Any) -> Dict[str, Any]:
     if _is_necromancer_lab_map(state) and _is_lab_corridor_door(target_id):
         flags = dict(state.get("flags") or {})
         _mark_lab_corridor_door_base_flags(flags)
+        if not _is_explicit_lab_lockpick_attempt(state, intent_context if isinstance(intent_context, dict) else {}):
+            _mark_secret_study_hint(flags)
+            return {
+                "journal_events": [
+                    "🚪 [系统] 实验室重门需要 lab_key；也可以明确尝试 DC 15 撬锁。",
+                    "🕯️ [线索] 门框附近有冷风，旁边墙面传来空响；附近可能还有通往书房的入口。",
+                ],
+                "entities": entities,
+                "environment_objects": environment_objects,
+                "map_data": map_data,
+                "flags": flags,
+                "raw_roll_data": _build_action_result(
+                    intent="UNLOCK",
+                    actor=actor_id,
+                    target=target_id,
+                    is_success=False,
+                    result_type="INSPECT_REQUIRES_EXPLICIT_LOCKPICK",
+                    extra={"key_required": "lab_key", "lockpick_dc": _coerce_int(target_obj.get("lockpick_dc"), 15)},
+                ),
+            }
         flags["act2_corridor_exit_lockpick_attempted"] = True
         lockpick_dc = max(
             1,
@@ -6969,8 +7490,7 @@ def execute_unlock_action(state: Any) -> Dict[str, Any]:
 
         flags["act2_corridor_exit_lockpick_success"] = False
         flags["act2_lockpick_success_route_to_boss"] = False
-        flags["act2_secret_study_hint_given"] = True
-        flags["act2_secret_study_route_unlocked"] = True
+        _mark_secret_study_hint(flags)
         return {
             "journal_events": [
                 f"🔒 [撬锁失败] {actor_name} 没能撬开实验室重门 (1d20: {total} vs DC {lockpick_dc})。",

@@ -247,6 +247,11 @@
     if (types.has("trap_insight") || /\[陷阱感知\]|gas_trap_1.*revealed|poison_trap_revealed/i.test(blob)) parts.push("trap_reveal");
     if (types.has("trap_disarmed") || /\[陷阱解除\]|gas_trap_1.*disabled|poison_trap_disarmed/i.test(blob)) parts.push("trap_disarmed");
     if (types.has("trap_triggered") || /\[毒气陷阱\]|gas_trap_1.*triggered|poisoned|中毒/i.test(blob)) parts.push("trap_triggered");
+    if (types.has("boss_intro") || /\[Boss Encounter\]|act4_gribbo_confrontation_started|act4_boss_room_entered/i.test(blob)) parts.push("boss_intro");
+    if (types.has("boss_strategy") || /\[Boss方案\]|boss_strategy/i.test(blob)) parts.push("boss_strategy");
+    if (types.has("boss_route") || /\[Boss解决\]|\[偷钥匙失败\]|act4_(?:negotiation_success|astarion_steal_key_success|assault_success|heavy_iron_key_obtained|final_exit_opened)/i.test(blob)) parts.push("boss_route");
+    if (types.has("poison_valve") || /\[毒气泄漏\]|act4_(?:poison_valve_triggered|lab_poison_leak|poison_valve_disabled)|poison_valve|potion_tank/i.test(blob)) parts.push("poison_valve");
+    if (/\[秘密书房\]|act3_secret_study|cracked_wall|room_c_secret_study/i.test(blob)) parts.push("secret_study_discovery");
     const aff = blob.match(/affection[^\d+\-]*([+\-]\s*\d+)/i) || blob.match(/好感度?\s*([+\-]\s*\d+)/);
     if (aff) parts.push("affection " + aff[1].replace(/\s/g, ""));
     if (/combat_active|initiative_order|战斗|hostile|敌对/i.test(blob)) parts.push("combat/hostility");
@@ -269,6 +274,11 @@
     if (types.has("trap_insight") || /\[陷阱感知\]/i.test(blob)) out.push("Trap Insight Card");
     if (types.has("trap_disarmed") || /\[陷阱解除\]/i.test(blob)) out.push("Trap Disarmed Card");
     if (types.has("trap_triggered") || /\[毒气陷阱\]|poisoned|中毒/i.test(blob)) out.push("Trap Triggered Card");
+    if (types.has("boss_intro") || /\[Boss Encounter\]/i.test(blob)) out.push("Boss Intro Card");
+    if (types.has("boss_strategy") || /\[Boss方案\]/i.test(blob)) out.push("Boss Strategy Card");
+    if (types.has("boss_route") || /\[Boss解决\]|\[偷钥匙失败\]/i.test(blob)) out.push("Boss Route Card");
+    if (types.has("poison_valve") || /\[毒气泄漏\]|poison_valve|potion_tank/i.test(blob)) out.push("Poison Valve Card");
+    if (/\[秘密书房\]|act3_secret_study|cracked_wall|room_c_secret_study/i.test(blob)) out.push("Secret Study Toast");
     if (types.has("demo_cleared") || /demo_cleared|DEMO CLEARED/i.test(blob)) out.push("Demo Banner");
     if (types.has("trap_discovered") || types.has("trap_triggered") || /陷阱|trap/i.test(blob)) out.push("Trap HUD");
     return out.join(", ") || "HUD events";
@@ -303,12 +313,16 @@
     const blob = textBlob(payload, opts.userLine, opts.intent);
     const intentKey = normalizeId(opts.intent || safeObj(gameState.intent_context).fallback_intent || "");
     const isDiaryRead = intentKey === "read" && /necromancer_diary|diary|日记|读日记|阅读日记/i.test(blob);
+    const isSecretStudyDiscovery = /\[秘密书房\]|secret_study_discovery|act3_secret_study|cracked_wall|room_c_secret_study/i.test(blob);
     const isGribboDiaryNegotiation =
       /(chat|start_dialogue|dialogue_reply)/i.test(intentKey)
       && /gribbo|格里布|格里波|地精|boss/i.test(blob)
       && /diary|日记|药剂|灵药|死灵|实验|解药|钥匙|真相|gribbo_elixir_truth|diary_negotiation/i.test(blob);
     if (isDiaryRead || isGribboDiaryNegotiation) {
       return ["player_input", "dm_router", "actor_view_filter", "actor_runtime", "domain_event", "event_drain", "ui_events"];
+    }
+    if (isSecretStudyDiscovery) {
+      return ["player_input", "dm_router", "domain_event", "event_drain", "ui_events"];
     }
     const nodes = ["player_input", "dm_router", "actor_view_filter"];
     const types = eventTypes(payload, events);
@@ -318,16 +332,20 @@
       || /\[记忆回响\]|rebuked_by_player|sided_with_player|astarion_memory_echo|rebuke_echo|complicity_echo/i.test(blob);
     const hasMercySignal = types.some((type) => ["party_stance", "mercy_resolution"].includes(type))
       || /\[站队\]|\[抉择\]|gribbo_mercy|gribbo_spared|gribbo_executed|mercy_resolved/i.test(blob);
+    const hasBossSignal = types.some((type) => ["boss_intro", "boss_strategy", "boss_route", "poison_valve"].includes(type))
+      || /\[Boss Encounter\]|\[Boss方案\]|\[Boss解决\]|\[偷钥匙失败\]|\[毒气泄漏\]|act4_/i.test(blob);
     const needsParty = /gribbo|astarion|dialogue|party|好感|affection|combat|initiative|台词|对话/i.test(blob)
       || types.includes("trap_insight")
-      || types.includes("party_stance");
-    const needsDomain = /memory|记忆|item|transfer|获得|搜刮|flag|demo_cleared|combat|hostile|affection|状态|status|EventDrain|\[交涉筹码\]/i.test(blob)
+      || types.includes("party_stance")
+      || hasBossSignal;
+    const needsDomain = /memory|记忆|item|transfer|获得|搜刮|flag|demo_cleared|combat|hostile|affection|状态|status|EventDrain|\[交涉筹码\]|\[秘密书房\]|act3_secret_study|cracked_wall/i.test(blob)
       || hasTrapSignal
       || hasMemoryEcho
+      || hasBossSignal
       || types.includes("mercy_resolution")
       || /\[抉择\]|gribbo_spared|gribbo_executed|mercy_resolved/i.test(blob)
       || types.some((type) => ["memory_added", "memory_echo", "item_gained", "affection_delta", "status_changed", "demo_cleared", "negotiation_leverage"].includes(type));
-    if (needsParty || needsDomain || hasMemoryEcho || hasMercySignal) nodes.push("actor_runtime");
+    if (needsParty || needsDomain || hasMemoryEcho || hasMercySignal || hasBossSignal) nodes.push("actor_runtime");
     if (needsDomain) nodes.push("domain_event", "event_drain");
     nodes.push("ui_events");
     return Array.from(new Set(nodes));
@@ -391,6 +409,33 @@
       details.ui_events.signal = "agent_signal";
     }
     if (types.has("trap_disarmed") || types.has("trap_triggered") || /\[陷阱解除\]|\[毒气陷阱\]/i.test(blob)) {
+      details.dm_router.signal = "agent_signal";
+      details.domain_event.signal = "agent_signal";
+      details.event_drain.signal = "agent_signal";
+      details.ui_events.signal = "agent_signal";
+    }
+    if (types.has("boss_intro") || /\[Boss Encounter\]|act4_gribbo_confrontation_started|act4_boss_room_entered/i.test(blob)) {
+      details.dm_router.signal = "agent_signal";
+      details.actor_runtime.signal = "agent_signal";
+      details.domain_event.signal = "agent_signal";
+      details.event_drain.signal = "agent_signal";
+      details.ui_events.signal = "agent_signal";
+      details.actor_runtime.output = "Boss confrontation / key holder";
+    }
+    if (types.has("boss_strategy") || /\[Boss方案\]|boss_strategy/i.test(blob)) {
+      details.dm_router.signal = "agent_signal";
+      details.actor_runtime.signal = "agent_signal";
+      details.ui_events.signal = "agent_signal";
+      details.actor_runtime.output = "Party Coordinator / boss routes";
+    }
+    if (types.has("boss_route") || /\[Boss解决\]|\[偷钥匙失败\]|act4_(?:negotiation_success|astarion_steal_key_success|assault_success|heavy_iron_key_obtained|final_exit_opened)/i.test(blob)) {
+      details.player_input.signal = "agent_signal";
+      details.dm_router.signal = "agent_signal";
+      details.domain_event.signal = "agent_signal";
+      details.event_drain.signal = "agent_signal";
+      details.ui_events.signal = "agent_signal";
+    }
+    if (types.has("poison_valve") || /\[毒气泄漏\]|act4_(?:poison_valve_triggered|lab_poison_leak|poison_valve_disabled)|poison_valve|potion_tank/i.test(blob)) {
       details.dm_router.signal = "agent_signal";
       details.domain_event.signal = "agent_signal";
       details.event_drain.signal = "agent_signal";

@@ -448,6 +448,7 @@ class GameService:
         for key in (
             "pending_events",
             "entities",
+            "environment_objects",
             "player_inventory",
             "flags",
             "journal_events",

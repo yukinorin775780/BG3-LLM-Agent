@@ -176,6 +176,23 @@ function roomById(rooms, roomId) {
   return rooms.find((room) => room.id === roomId);
 }
 
+function loadRealNecromancerMap() {
+  const map = JSON.parse(fs.readFileSync(REAL_MAP_JSON_PATH, "utf8"));
+  return window.BG3TiledAdapter.normalizeTiledMap(map);
+}
+
+function emptyTurnResponse(overrides = {}) {
+  return {
+    responses: [],
+    journal_events: [],
+    party_status: {},
+    environment_objects: {},
+    player_inventory: {},
+    combat_state: {},
+    ...overrides,
+  };
+}
+
 function buildFormationTestMap(overrides = {}) {
   const width = Number(overrides.width) || 8;
   const height = Number(overrides.height) || 8;
@@ -464,6 +481,74 @@ describe("web_ui/app.js UI bindings", () => {
     if (window.BG3DirectorTrace) {
       expect(window.BG3DirectorTrace.getState()).toBe("idle");
     }
+  });
+
+  test("test_text_send_restores_wasd_map_movement_focus", async () => {
+    const fetchSpy = spyOnFetch().mockResolvedValue(mockResponse({}));
+    const api = await bootAppForTest();
+    api.applyNormalizedMap(buildFormationTestMap(), { source: "json" });
+    fetchSpy.mockClear();
+    window.BG3TacticalMap.movePlayerLocal.mockClear();
+
+    api.els.userInput.focus();
+    api.els.userInput.value = "阿斯代伦，检查前方";
+    await api.submitInput();
+    await flushAsync();
+    window.BG3TacticalMap.movePlayerLocal.mockClear();
+    const beforeMoveCalls = window.BG3TacticalMap.movePlayerLocal.mock.calls.length;
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "w", bubbles: true, cancelable: true }));
+
+    expect(api.state.lastMapInputFocusReason).toBe("text_send_done");
+    expect(window.BG3TacticalMap.movePlayerLocal.mock.calls.length).toBeGreaterThan(beforeMoveCalls);
+    expect(fetchSpy.mock.calls.filter(([url]) => String(url).includes("/api/chat"))).toHaveLength(1);
+  });
+
+  test("test_text_send_failure_still_restores_wasd_map_movement_focus", async () => {
+    spyOnFetch().mockRejectedValue(new Error("network down"));
+    const api = await bootAppForTest();
+    api.applyNormalizedMap(buildFormationTestMap(), { source: "json" });
+    window.BG3TacticalMap.movePlayerLocal.mockClear();
+
+    api.els.userInput.focus();
+    api.els.userInput.value = "失败也要恢复焦点";
+    await api.submitInput();
+    await flushAsync();
+    const beforeMoveCalls = window.BG3TacticalMap.movePlayerLocal.mock.calls.length;
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "w", bubbles: true, cancelable: true }));
+
+    expect(api.state.lastMapInputFocusReason).toBe("text_send_done");
+    expect(window.BG3TacticalMap.movePlayerLocal.mock.calls.length).toBeGreaterThan(beforeMoveCalls);
+  });
+
+  test("test_map_click_restores_wasd_movement_focus", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    const api = await bootAppForTest();
+    api.applyNormalizedMap(buildFormationTestMap(), { source: "json" });
+    window.BG3TacticalMap.movePlayerLocal.mockClear();
+
+    api.els.userInput.focus();
+    api.els.mapContainer.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+    const beforeMoveCalls = window.BG3TacticalMap.movePlayerLocal.mock.calls.length;
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "w", bubbles: true, cancelable: true }));
+
+    expect(api.state.lastMapInputFocusReason).toBe("map_pointer");
+    expect(window.BG3TacticalMap.movePlayerLocal.mock.calls.length).toBeGreaterThan(beforeMoveCalls);
+  });
+
+  test("test_input_focused_blocks_wasd_until_blur", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    const api = await bootAppForTest();
+    api.applyNormalizedMap(buildFormationTestMap(), { source: "json" });
+    window.BG3TacticalMap.movePlayerLocal.mockClear();
+
+    api.els.userInput.focus();
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "w", bubbles: true, cancelable: true }));
+    expect(window.BG3TacticalMap.movePlayerLocal).not.toHaveBeenCalled();
+
+    api.els.userInput.blur();
+    const beforeMoveCalls = window.BG3TacticalMap.movePlayerLocal.mock.calls.length;
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "w", bubbles: true, cancelable: true }));
+    expect(window.BG3TacticalMap.movePlayerLocal.mock.calls.length).toBeGreaterThan(beforeMoveCalls);
   });
 
   test("test_legacy_tactical_console_hidden_and_space_disabled_by_default", async () => {
@@ -898,8 +983,7 @@ describe("web_ui/app.js UI bindings", () => {
   test("test_room_visibility_initial_only_a_and_progressive_reveal", async () => {
     spyOnFetch().mockResolvedValue(mockResponse({}));
     const api = await bootAppForTest();
-    const map = JSON.parse(fs.readFileSync(REAL_MAP_JSON_PATH, "utf8"));
-    const normalized = window.BG3TiledAdapter.normalizeTiledMap(map);
+    const normalized = loadRealNecromancerMap();
     api.applyNormalizedMap(normalized, { source: "json" });
 
     expect(Array.from(api.state.roomVisibleIds)).toEqual(["room_a_spawn"]);
@@ -930,6 +1014,121 @@ describe("web_ui/app.js UI bindings", () => {
     expect(api.revealRoomByDoorTarget("heavy_oak_door_1")).toBe(true);
     api.refreshVisibilityProjection();
     expect(api.state.roomVisibleIds.has("room_exit")).toBe(true);
+  });
+
+  test("test_act3_backend_secret_study_flag_reveals_room_c_without_room_d", async () => {
+    const fetchSpy = spyOnFetch().mockResolvedValue(mockResponse({}));
+    const api = await bootAppForTest("http://localhost/?qa_test=1&qa_no_idle=1");
+    api.applyNormalizedMap(loadRealNecromancerMap(), { source: "json" });
+    expect(api.state.roomVisibleIds.has("room_c_secret_study")).toBe(false);
+    expect(api.state.roomVisibleIds.has("room_d_lab")).toBe(false);
+
+    fetchSpy.mockResolvedValueOnce(mockResponse(emptyTurnResponse({
+      game_state: { flags: { act3_secret_study_entered: true } },
+    })));
+    await api.sendMessage("墙后露出一间秘密书房。", "chat");
+    await flushAsync();
+
+    expect(api.state.roomVisibleIds.has("room_c_secret_study")).toBe(true);
+    expect(api.state.roomVisibleIds.has("room_d_lab")).toBe(false);
+    expect(api.state.mapData.visible_rooms).toContain("room_c_secret_study");
+  });
+
+  test("test_act3_secret_study_journal_reveals_room_c", async () => {
+    const fetchSpy = spyOnFetch().mockResolvedValue(mockResponse({}));
+    const api = await bootAppForTest("http://localhost/?qa_test=1&qa_no_idle=1");
+    api.applyNormalizedMap(loadRealNecromancerMap(), { source: "json" });
+
+    fetchSpy.mockResolvedValueOnce(mockResponse(emptyTurnResponse({
+      journal_events: ["[秘密书房] cracked_wall -> room_c_secret_study"],
+    })));
+    await api.sendMessage("调查裂墙。", "chat");
+    await flushAsync();
+
+    expect(api.state.roomVisibleIds.has("room_c_secret_study")).toBe(true);
+    expect(api.state.roomVisibleIds.has("room_d_lab")).toBe(false);
+  });
+
+  test("test_act3_room_c_reveal_makes_study_context_interactables_visible", async () => {
+    const fetchSpy = spyOnFetch().mockResolvedValue(mockResponse({}));
+    const api = await bootAppForTest("http://localhost/?qa_test=1&qa_no_idle=1");
+    api.applyNormalizedMap(loadRealNecromancerMap(), { source: "json" });
+
+    fetchSpy.mockResolvedValueOnce(mockResponse(emptyTurnResponse({
+      game_state: { flags: { act2_secret_study_route_unlocked: true } },
+    })));
+    await api.sendMessage("检查实验室重门。", "chat");
+    await flushAsync();
+
+    const interactableIds = api.state.normalizedMap.interactables.map((it) => it.id);
+    expect(interactableIds).toEqual(expect.arrayContaining([
+      "chemical_notes",
+      "iron_key_sketch",
+      "necromancer_diary",
+      "chest_1",
+    ]));
+    expect(api.state.normalizedMap.spawns.map((spawn) => spawn.id)).not.toContain("gribbo");
+  });
+
+  test("test_act3_study_context_text_routes_to_read_payloads", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    const api = await bootAppForTest("http://localhost/?qa_test=1&qa_no_idle=1");
+
+    const chemical = api.buildChatPayload("阅读 chemical_notes", null, null, { source: "text_input" }).payload;
+    expect(chemical).toMatchObject({
+      intent: "READ",
+      target: "chemical_notes",
+      source: "act3_study_context",
+    });
+    expect(chemical.intent_context).toMatchObject({ action_target: "chemical_notes" });
+
+    const sketch = api.buildChatPayload("查看铁钥匙草图", null, null, { source: "text_input" }).payload;
+    expect(sketch).toMatchObject({
+      intent: "READ",
+      target: "iron_key_sketch",
+      source: "act3_study_context",
+    });
+    expect(sketch.intent_context).toMatchObject({ action_target: "iron_key_sketch" });
+  });
+
+  test("test_act3_context_signal_keeps_act_card_on_act3", async () => {
+    const fetchSpy = spyOnFetch().mockResolvedValue(mockResponse({}));
+    const api = await bootAppForTest("http://localhost/?qa_test=1&qa_no_idle=1");
+    api.applyNormalizedMap(loadRealNecromancerMap(), { source: "json" });
+
+    fetchSpy.mockResolvedValueOnce(mockResponse(emptyTurnResponse({
+      journal_events: ["[线索整合] chemical_notes -> diary_context"],
+      game_state: {
+        flags: {
+          act3_secret_study_entered: true,
+          act3_diary_context_gathered: true,
+          act3_chemical_notes_seen: true,
+        },
+      },
+    })));
+    await api.sendMessage("阅读 chemical_notes", null);
+    await flushAsync();
+
+    expect(document.getElementById("act-title").textContent).toContain("Act 3");
+    expect(document.getElementById("act-title").textContent).not.toContain("Act 4");
+  });
+
+  test("test_room_c_highlight_prefers_study_readable_not_hidden_or_boss_objects", async () => {
+    const fetchSpy = spyOnFetch().mockResolvedValue(mockResponse({}));
+    const api = await bootAppForTest("http://localhost/?qa_test=1&qa_no_idle=1");
+    api.applyNormalizedMap(loadRealNecromancerMap(), { source: "json" });
+
+    fetchSpy.mockResolvedValueOnce(mockResponse(emptyTurnResponse({
+      game_state: { flags: { act3_secret_study_discovered: true } },
+    })));
+    await api.sendMessage("进入秘密书房。", "chat");
+    await flushAsync();
+
+    window.BG3InputController.setPlayerPosition(14, 11);
+    const highlighted = window.BG3InputController.getCurrentHighlightedInteractable();
+    expect(highlighted.id).toBe("chemical_notes");
+    expect(api.state.normalizedMap.spawns.map((spawn) => spawn.id)).not.toContain("gribbo");
+    expect(api.state.roomVisibleIds.has("room_d_lab")).toBe(false);
   });
 
   test("test_fog_of_war_masks_non_visible_rooms_and_unmapped_cells", async () => {
@@ -3934,6 +4133,219 @@ describe("web_ui/app.js UI bindings", () => {
       expect.objectContaining({ type: "memory_echo" }),
       expect.objectContaining({ type: "party_stance" }),
       expect.objectContaining({ type: "mercy_resolution" }),
+    ]));
+  });
+
+  test("test_boss_intro_journal_derives_ui_event", async () => {
+    loadNewModules();
+    const event = window.BG3UIEventAdapter.extractUIEvents({
+      journal_events: ["[Boss Encounter] gribbo_confrontation_started"],
+    }).find((candidate) => candidate.type === "boss_intro");
+    expect(event).toMatchObject({
+      type: "boss_intro",
+      targetId: "gribbo",
+      keyHolder: true,
+      poisonValvePresent: true,
+      source: "journal",
+    });
+  });
+
+  test("test_boss_strategy_journals_merge_into_one_event", async () => {
+    loadNewModules();
+    const events = window.BG3UIEventAdapter.extractUIEvents({
+      journal_events: [
+        "[Boss方案] astarion -> steal_key",
+        "[Boss方案] shadowheart -> contain_corruption",
+        "[Boss方案] laezel -> execute",
+      ],
+    });
+    const strategies = events.filter((event) => event.type === "boss_strategy");
+    expect(strategies).toHaveLength(1);
+    expect(strategies[0].strategies).toEqual(expect.arrayContaining([
+      { actor: "astarion", plan: "steal_key" },
+      { actor: "shadowheart", plan: "contain_corruption" },
+      { actor: "laezel", plan: "execute" },
+    ]));
+  });
+
+  test("test_boss_route_journals_derive_route_events", async () => {
+    loadNewModules();
+    const events = window.BG3UIEventAdapter.extractUIEvents({
+      journal_events: [
+        "[Boss解决] negotiation -> key_surrendered",
+        "[Boss解决] astarion_steal -> heavy_iron_key",
+        "[偷钥匙失败] astarion -> gribbo_alerted",
+        "[Boss解决] assault -> gribbo_defeated",
+      ],
+    });
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "boss_route", route: "negotiation", result: "key_surrendered" }),
+      expect.objectContaining({ type: "boss_route", route: "astarion_steal", result: "heavy_iron_key" }),
+      expect.objectContaining({ type: "boss_route", route: "astarion_steal", result: "gribbo_alerted", failed: true }),
+      expect.objectContaining({ type: "boss_route", route: "assault", result: "gribbo_defeated" }),
+    ]));
+  });
+
+  test("test_poison_valve_journal_and_flag_derive_ui_event", async () => {
+    loadNewModules();
+    const journalEvent = window.BG3UIEventAdapter.extractUIEvents({
+      journal_events: ["[毒气泄漏] poison_valve -> lab_poison"],
+    }).find((event) => event.type === "poison_valve");
+    const flagEvent = window.BG3UIEventAdapter.extractUIEvents({
+      flags: { act4_poison_valve_triggered: true },
+    }, {
+      flags: {},
+    }).find((event) => event.type === "poison_valve");
+    expect(journalEvent).toMatchObject({ valveId: "poison_valve", status: "triggered", result: "lab_poison" });
+    expect(flagEvent).toMatchObject({ valveId: "poison_valve", status: "triggered" });
+  });
+
+  test("test_hud_renders_boss_cards", async () => {
+    loadNewModules();
+    jest.useFakeTimers();
+    window.BG3HudRenderers.renderBossIntroCard({ type: "boss_intro", diaryTruthAvailable: true });
+    window.BG3HudRenderers.renderBossStrategyCard({
+      type: "boss_strategy",
+      strategies: [
+        { actor: "astarion", plan: "steal_key" },
+        { actor: "shadowheart", plan: "contain_corruption" },
+        { actor: "laezel", plan: "execute" },
+      ],
+    });
+    window.BG3HudRenderers.renderBossRouteCard({ type: "boss_route", route: "negotiation", result: "key_surrendered" });
+    expect(document.querySelector(".agent-signal-card--boss-intro").textContent).toContain("Diary Truth Available");
+    expect(document.querySelector(".agent-signal-card--boss-strategy").textContent).toContain("Steal Key");
+    expect(document.querySelector(".agent-signal-card--boss-route").textContent).toContain("Negotiation Success");
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+  });
+
+  test("test_poison_valve_overlay_statuses", async () => {
+    const tacticalMap = loadGameHelpers();
+    const entries = tacticalMap.resolveTrapOverlayEntries({
+      poison_valve: { id: "poison_valve", type: "poison_valve", x: 8, y: 4, status: "intact" },
+      potion_tank: { id: "potion_tank", type: "potion_tank", x: 9, y: 4, status: "triggered" },
+      safe_valve: { id: "safe_valve", type: "poison_valve", x: 10, y: 4, status: "disabled" },
+    });
+    expect(entries).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "poison_valve", kind: "poison_valve", status: "intact", label: "VALVE" }),
+      expect.objectContaining({ id: "potion_tank", kind: "poison_valve", status: "triggered", label: "LEAK" }),
+      expect.objectContaining({ id: "safe_valve", kind: "poison_valve", status: "disabled", label: "SAFE" }),
+    ]));
+  });
+
+  test("test_state_diff_highlights_act4_boss_flags_gribbo_and_key", async () => {
+    loadNewModules();
+    const diffs = window.BG3StateDiffRenderer.diffSnapshots({
+      flags: {},
+      player_inventory: {},
+      environment_objects: {
+        gribbo: { id: "gribbo", name: "Gribbo", status: "alive", faction: "hostile" },
+      },
+      party_status: { shadowheart: { name: "Shadowheart", affection: 0 } },
+    }, {
+      flags: {
+        act4_boss_room_entered: true,
+        act4_diary_truth_available: true,
+        act4_negotiation_success: true,
+        act4_heavy_iron_key_obtained: true,
+      },
+      player_inventory: { heavy_iron_key: 1 },
+      environment_objects: {
+        gribbo: { id: "gribbo", name: "Gribbo", status: "spared", faction: "neutralized" },
+      },
+      party_status: { shadowheart: { name: "Shadowheart", affection: 2 } },
+    });
+    expect(diffs).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "boss_signal", label: "flags.act4_boss_room_entered = true" }),
+      expect.objectContaining({ type: "boss_signal", label: "flags.act4_diary_truth_available = true" }),
+      expect.objectContaining({ type: "boss_signal", label: "Gribbo.status alive -> spared" }),
+      expect.objectContaining({ type: "boss_signal", label: "Gribbo.faction = neutralized" }),
+      expect.objectContaining({ type: "inventory", label: "player.inventory += heavy_iron_key" }),
+      expect.objectContaining({ type: "affection", label: "Shadowheart.affection +2" }),
+    ]));
+    window.BG3StateDiffRenderer.renderDiffs(diffs, { autoExpand: false });
+    expect(document.querySelector(".world-diff-row--boss_signal.boss-signal-diff")).not.toBeNull();
+  });
+
+  test("test_director_trace_boss_signals_activate_expected_nodes", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    await bootAppForTest("http://localhost/?qa_test=1");
+    const nodes = window.BG3DirectorTrace.buildTraceNodes({}, {
+      userLine: "阿斯代伦偷钥匙",
+      intent: "INTERACT",
+      uiEvents: [{ type: "boss_route", route: "astarion_steal", result: "heavy_iron_key" }],
+    });
+    expect(nodes).toEqual(expect.arrayContaining(["dm_router", "actor_runtime", "domain_event", "event_drain", "ui_events"]));
+    window.BG3DirectorTrace.activateTrace(nodes, {
+      animate: false,
+      uiEvents: [{ type: "boss_route", route: "astarion_steal", result: "heavy_iron_key" }],
+    });
+    expect(document.querySelector('li[data-node="domain_event"]').classList.contains("is-agent-signal")).toBe(true);
+    expect(document.querySelector('li[data-node="ui_events"]').classList.contains("is-agent-signal")).toBe(true);
+  });
+
+  test("test_boss_text_routing_normalizes_actions", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    const api = await bootAppForTest("http://localhost/?qa_test=1&map_id=necromancer_lab");
+    expect(api.buildChatPayload("我们怎么处理他？", "", "").payload).toMatchObject({
+      intent: "CHAT",
+      target: "gribbo",
+      source: "boss_strategy",
+    });
+    expect(api.buildChatPayload("阿斯代伦偷钥匙", "", "").payload).toMatchObject({
+      intent: "INTERACT",
+      target: "gribbo",
+      source: "boss_steal_key",
+      character: "astarion",
+    });
+    expect(api.buildChatPayload("用日记真相说服他", "", "").payload).toMatchObject({
+      intent: "CHAT",
+      target: "gribbo",
+      source: "boss_diary_truth",
+    });
+    expect(api.buildChatPayload("Lae'zel 解决他", "", "").payload).toMatchObject({
+      intent: "ATTACK",
+      target: "gribbo",
+      source: "boss_assault",
+      character: "laezel",
+    });
+  });
+
+  test("test_boss_intro_dispatch_updates_act_card_to_act4", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    const api = await bootAppForTest("http://localhost/?qa_test=1&map_id=necromancer_lab");
+    api.dispatchUIEventsFromResponse({
+      journal_events: ["[Boss Encounter] gribbo_confrontation_started"],
+      flags: { act4_boss_room_entered: true, act4_gribbo_confrontation_started: true },
+    }, { flags: {} });
+    expect(document.body.textContent).toContain("Act 4");
+    expect(document.body.textContent).toContain("Gribbo 攥着沉重铁钥匙");
+  });
+
+  test("test_act4_boss_signals_do_not_break_existing_agent_signals", async () => {
+    loadNewModules();
+    const events = window.BG3UIEventAdapter.extractUIEvents({
+      journal_events: [
+        "[队友建议] Astarion topic=lab_key 找钥匙",
+        "[交涉筹码] diary_evidence -> gribbo_elixir_truth",
+        "[陷阱感知] astarion -> gas_trap_1",
+        "[记忆回响] astarion -> sided_with_player",
+        "[站队] shadowheart -> mercy",
+        "[抉择] gribbo -> spared",
+        "[Boss Encounter] gribbo_confrontation_started",
+        "[Boss方案] astarion -> steal_key",
+      ],
+    });
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "companion_guidance" }),
+      expect.objectContaining({ type: "negotiation_leverage" }),
+      expect.objectContaining({ type: "trap_insight" }),
+      expect.objectContaining({ type: "memory_echo" }),
+      expect.objectContaining({ type: "party_stance" }),
+      expect.objectContaining({ type: "mercy_resolution" }),
+      expect.objectContaining({ type: "boss_intro" }),
+      expect.objectContaining({ type: "boss_strategy" }),
     ]));
   });
 });

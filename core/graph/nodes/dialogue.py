@@ -13,6 +13,7 @@ from langchain_core.messages import AIMessage
 from characters.loader import CharacterLoader
 from core.actors import ActorScopedMemoryProvider, build_actor_view
 from core.actors.views import ActorView
+from core.campaigns import detect_gribbo_boss_intro_context
 from core.events.models import DomainEvent, event_to_dict
 from core.events.store import append_pending_events
 from core.graph.graph_state import GameState
@@ -329,6 +330,45 @@ def dialogue_node(state: GameState) -> Dict[str, Any]:
             }
         target = entities.get(target_id, {})
         target_name = _display_entity_name(target_id, target if isinstance(target, dict) else {})
+        boss_intro_context = detect_gribbo_boss_intro_context(
+            {
+                **dict(state or {}),
+                "entities": entities,
+                "target": target_id,
+                "intent_context": intent_context if isinstance(intent_context, dict) else {},
+            },
+            str(state.get("user_input") or ""),
+            intent_context if isinstance(intent_context, dict) else {},
+        )
+        if target_id == "gribbo" and boss_intro_context:
+            flags = dict(state.get("flags") or {})
+            flags["act4_boss_room_entered"] = True
+            flags["act4_gribbo_confrontation_started"] = True
+            flags["act4_poison_valve_intact"] = True
+            flags["act4_poison_valve_triggered"] = False
+            flags["act4_lab_poison_leak"] = False
+            truth_available = bool(boss_intro_context.get("diary_truth_available", False))
+            if truth_available:
+                flags["act4_diary_truth_available"] = True
+            response_text = "不许再靠近！钥匙是我的，门也是我的。主人说过，谁也不能出去。"
+            if truth_available:
+                response_text = (
+                    response_text
+                    + " 你读懂的日记让药剂、实验品和钥匙之间的真相成了可以质问他的机会。"
+                )
+            return {
+                "journal_events": [
+                    "💬 你走向了 Gribbo 准备交涉...",
+                    "[Boss Encounter] gribbo_confrontation_started",
+                ],
+                "entities": entities,
+                "flags": flags,
+                "active_dialogue_target": target_id,
+                "speaker_queue": [],
+                "current_speaker": target_id,
+                "speaker_responses": [(target_id, response_text)],
+                "messages": [AIMessage(content=format_history_message(target_id, response_text), name=target_id)],
+            }
         return {
             "journal_events": [f"💬 你走向了 {target_name} 准备交涉..."],
             "entities": entities,

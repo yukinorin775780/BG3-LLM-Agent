@@ -47,6 +47,45 @@ environment_objects:
     save_dc: 13
     trigger_radius: 0
     alias_ids: ["poison_trap_1", "poison_trap_2"]
+  - id: "poison_valve"
+    type: "trap"
+    name: "毒气阀门"
+    position: [6, 9]
+    is_hidden: false
+    detect_dc: 10
+    disarm_dc: 14
+    damage: "1d6"
+    damage_type: "poison"
+    save_dc: 13
+    trigger_radius: 2
+    status: "armed"
+    alias_ids: ["valve", "poison_valve"]
+  - id: "potion_tank"
+    type: "object"
+    name: "炼金药剂罐"
+    position: [7, 9]
+    status: "unstable"
+    alias_ids: ["alchemical_tank", "potion_tank"]
+  - id: "door_b_to_c"
+    type: "door"
+    name: "隐藏书房侧门"
+    position: [8, 7]
+    is_open: false
+    is_locked: false
+    is_hidden: true
+    status: "hidden"
+    detect_dc: 14
+    connects_from: "room_b_corridor"
+    connects_to: "room_c_secret_study"
+    alias_ids: ["secret_study_door"]
+  - id: "cracked_wall"
+    type: "object"
+    name: "开裂的墙壁"
+    position: [8, 7]
+    status: "hidden"
+    is_hidden: true
+    room_id: "room_b_corridor"
+    alias_ids: ["hollow_wall", "secret_study_wall"]
   - id: "chest_1"
     type: "locked_chest"
     name: "死灵法师的战利品箱"
@@ -63,6 +102,19 @@ environment_objects:
     name: "沾满血污的日记本"
     position: [3, 3]
     lore_id: "necromancer_diary_1"
+    room_id: "room_c_secret_study"
+  - id: "chemical_notes"
+    type: "readable"
+    name: "化学残页"
+    position: [15, 4]
+    lore_id: "necromancer_chemical_notes"
+    room_id: "room_c_secret_study"
+  - id: "iron_key_sketch"
+    type: "readable"
+    name: "重铁钥匙草图"
+    position: [16, 3]
+    lore_id: "necromancer_iron_key_sketch"
+    room_id: "room_c_secret_study"
 spawns:
   - prefab: "characters/gribbo.yaml"
     instance_id: "gribbo"

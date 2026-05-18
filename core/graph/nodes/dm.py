@@ -16,10 +16,15 @@ from core.campaigns import (
     ACT4_POST_COMBAT_BANTER,
     detect_astarion_memory_echo_context,
     detect_diary_negotiation_context,
+    detect_gribbo_boss_intro_context,
+    detect_gribbo_boss_resolution_context,
+    detect_gribbo_boss_strategy_context,
     detect_gribbo_mercy_context,
     detect_key_guidance_context,
     detect_lab_act3_choice,
     detect_lab_act4_post_combat_banter,
+    detect_secret_study_entry_context,
+    detect_secret_study_observation_context,
     detect_study_chest_loot_context,
     detect_trap_awareness_context,
 )
@@ -48,14 +53,72 @@ _READ_DIARY_MARKERS = (
     "necromancer_diary",
     "diary",
 )
+_STUDY_CONTEXT_READ_MARKERS = ("阅读", "调查", "查看", "read", "inspect", "check")
+_CHEMICAL_NOTES_MARKERS = ("chemical_notes", "药剂笔记", "化学残页", "化学笔记")
+_IRON_KEY_SKETCH_MARKERS = ("iron_key_sketch", "铁钥匙草图", "重铁钥匙草图", "钥匙草图")
 _GRIBBO_TARGET_MARKERS = ("gribbo", "格里布", "格里波", "地精", "boss")
 _GRIBBO_NEGOTIATION_MARKERS = ("日记", "药剂", "灵药", "死灵", "实验", "解药", "钥匙", "真相")
 _GRIBBO_ATTACK_MARKERS = ("攻击 gribbo", "attack gribbo", "攻击格里布", "攻击格里波", "攻击地精")
 _TRAP_DISARM_ACTOR_MARKERS = ("阿斯代伦", "astarion")
 _TRAP_DISARM_TARGET_MARKERS = ("陷阱", "毒气", "gas_trap_1", "poison_trap", "trap")
 _TRAP_DISARM_ACTION_MARKERS = ("解除", "拆", "拆掉", "拆除", "disarm", "disable")
-_LAB_DOOR_MARKERS = ("door_b_to_d", "实验室门", "实验室重门", "lab door", "laboratory door")
+_LAB_DOOR_MARKERS = (
+    "door_b_to_d",
+    "b-d",
+    "bd门",
+    "b_d",
+    "实验室门",
+    "实验室重门",
+    "通往实验室",
+    "重门",
+    "lab door",
+    "laboratory door",
+)
 _LOCKPICK_MARKERS = ("撬锁", "开锁", "撬开", "解锁", "lockpick", "pick the lock", "unlock")
+_NEGATIVE_LOCKPICK_MARKERS = (
+    "不要撬锁",
+    "别撬锁",
+    "不撬锁",
+    "不要开锁",
+    "先别撬",
+    "do not lockpick",
+    "don't lockpick",
+    "without lockpicking",
+)
+_DOOR_INSPECT_MARKERS = ("检查", "查看", "看看", "观察", "试试", "推门", "开门", "打开", "inspect", "check", "look", "open")
+_DOOR_GUIDANCE_QUESTION_MARKERS = (
+    "怎么",
+    "如何",
+    "怎么办",
+    "能打开",
+    "能不能打开",
+    "需要什么",
+    "要什么",
+    "钥匙在哪",
+    "where",
+    "how",
+)
+
+
+def _has_scripted_necromancer_reason(analysis: dict) -> bool:
+    reason = str((analysis or {}).get("reason") or "").strip()
+    return reason.startswith(("scripted_necromancer_lab_", "scripted_diary_negotiation_"))
+
+
+def _looks_like_gribbo_boss_room_intro_text(user_input: str) -> bool:
+    return _contains_marker(
+        user_input,
+        (
+            "进入实验室",
+            "进入实验室房间",
+            "进入 boss房",
+            "进入boss房",
+            "boss房",
+            "boss room",
+            "laboratory",
+            "lab",
+        ),
+    )
 
 
 def _apply_act3_necromancer_lab_override(*, state: GameState, analysis: dict) -> dict:
@@ -114,6 +177,114 @@ def _apply_act4_necromancer_lab_override(*, state: GameState, analysis: dict) ->
     return overridden
 
 
+def _apply_gribbo_boss_intro_override(*, state: GameState, analysis: dict) -> dict:
+    if _has_scripted_necromancer_reason(analysis):
+        return analysis
+    existing_action = str((analysis or {}).get("action_type") or "").strip().upper()
+    if existing_action in {"DISARM", "LOOT", "READ", "INTERACT", "MOVE", "APPROACH", "TRIGGER_TRAP", "ATTACK", "CAST_SPELL", "UNLOCK"}:
+        return analysis
+    if not str((analysis or {}).get("action_type") or "").strip():
+        # Let plain talk-to-Gribbo turns reach DM analysis; the dialogue node
+        # still starts the Act 4 intro when DM chooses START_DIALOGUE.
+        if not _looks_like_gribbo_boss_room_intro_text(str(state.get("user_input") or "")):
+            return analysis
+    if str(state.get("active_dialogue_target") or "").strip().lower() == "gribbo":
+        return analysis
+    user_input = str(state.get("user_input") or "")
+    state_target = str(state.get("target") or "").strip().lower()
+    if state_target == "gribbo" and not _contains_marker(
+        user_input,
+        ("谈谈", "靠近", "进入实验室", "boss", "boss房", "laboratory", "lab"),
+    ):
+        return analysis
+    existing_context = (analysis or {}).get("intent_context")
+    if isinstance(existing_context, dict) and existing_context.get("diary_negotiation_context"):
+        return analysis
+
+    context = detect_gribbo_boss_intro_context(
+        dict(state or {}),
+        str(state.get("user_input") or ""),
+        (analysis or {}).get("intent_context") if isinstance((analysis or {}).get("intent_context"), dict) else {},
+    )
+    if not context:
+        return analysis
+
+    overridden = dict(analysis or {})
+    overridden["action_type"] = "START_DIALOGUE"
+    overridden["action_actor"] = "player"
+    overridden["action_target"] = "gribbo"
+    overridden["reason"] = "act4_gribbo_boss_intro"
+    overridden["responders"] = ["gribbo"]
+    intent_context = dict(overridden.get("intent_context") or {})
+    intent_context["gribbo_boss_intro_context"] = context
+    overridden["intent_context"] = intent_context
+    return overridden
+
+
+def _apply_gribbo_boss_strategy_override(*, state: GameState, analysis: dict) -> dict:
+    if _has_scripted_necromancer_reason(analysis):
+        return analysis
+    existing_action = str((analysis or {}).get("action_type") or "").strip().upper()
+    if existing_action in {"DISARM", "LOOT", "READ", "INTERACT", "MOVE", "APPROACH", "TRIGGER_TRAP", "ATTACK", "CAST_SPELL", "UNLOCK"}:
+        return analysis
+    context = detect_gribbo_boss_strategy_context(
+        dict(state or {}),
+        str(state.get("user_input") or ""),
+        (analysis or {}).get("intent_context") if isinstance((analysis or {}).get("intent_context"), dict) else {},
+    )
+    if not context:
+        return analysis
+    overridden = dict(analysis or {})
+    overridden["action_type"] = "CHAT"
+    overridden["action_actor"] = "player"
+    overridden["action_target"] = "gribbo"
+    overridden["reason"] = "act4_gribbo_boss_strategy"
+    overridden["responders"] = ["astarion", "shadowheart", "laezel"]
+    intent_context = dict(overridden.get("intent_context") or {})
+    intent_context["gribbo_boss_strategy_context"] = context
+    overridden["intent_context"] = intent_context
+    return overridden
+
+
+def _apply_gribbo_boss_resolution_override(*, state: GameState, analysis: dict) -> dict:
+    if _has_scripted_necromancer_reason(analysis):
+        return analysis
+    context = detect_gribbo_boss_resolution_context(
+        dict(state or {}),
+        str(state.get("user_input") or ""),
+        (analysis or {}).get("intent_context") if isinstance((analysis or {}).get("intent_context"), dict) else {},
+    )
+    if not context:
+        return analysis
+
+    route = str(context.get("route") or "").strip()
+    actor = "player"
+    target = "gribbo"
+    if route in {"astarion_steal", "disarm_poison_valve"}:
+        actor = "astarion"
+    elif route == "assault":
+        actor = "laezel"
+    if route == "disarm_poison_valve":
+        target = "poison_valve"
+
+    overridden = dict(analysis or {})
+    overridden["action_type"] = "ACTION"
+    overridden["action_actor"] = actor
+    overridden["action_target"] = target
+    overridden["difficulty_class"] = 12
+    overridden["reason"] = f"act4_gribbo_boss_{route}"
+    overridden["responders"] = []
+    intent_context = dict(overridden.get("intent_context") or {})
+    if route == "truth_negotiation":
+        intent_context.pop("diary_negotiation_context", None)
+        intent_context.pop("diary_negotiation_hint", None)
+    intent_context["gribbo_boss_resolution_context"] = context
+    intent_context["action_actor"] = actor
+    intent_context["action_target"] = target
+    overridden["intent_context"] = intent_context
+    return overridden
+
+
 def _apply_key_guidance_override(*, state: GameState, analysis: dict) -> dict:
     existing_action = str((analysis or {}).get("action_type") or "").strip().upper()
     if existing_action in {"DISARM", "LOOT", "READ", "INTERACT", "MOVE", "APPROACH", "TRIGGER_TRAP", "ATTACK", "CAST_SPELL", "UNLOCK"}:
@@ -139,6 +310,14 @@ def _apply_key_guidance_override(*, state: GameState, analysis: dict) -> dict:
 
 
 def _apply_diary_negotiation_override(*, state: GameState, analysis: dict) -> dict:
+    existing_action = str((analysis or {}).get("action_type") or "").strip().upper()
+    if existing_action in {"DISARM", "LOOT", "READ", "INTERACT", "MOVE", "APPROACH", "TRIGGER_TRAP", "ATTACK", "CAST_SPELL", "UNLOCK"}:
+        return analysis
+    existing_context = (analysis or {}).get("intent_context")
+    if isinstance(existing_context, dict) and existing_context.get("gribbo_boss_intro_context"):
+        return analysis
+    if isinstance(existing_context, dict) and existing_context.get("gribbo_boss_resolution_context"):
+        return analysis
     context = detect_diary_negotiation_context(
         dict(state or {}),
         str(state.get("user_input") or ""),
@@ -189,10 +368,15 @@ def _apply_trap_disarm_override(*, state: GameState, analysis: dict) -> dict:
 
 def _apply_trap_awareness_override(*, state: GameState, analysis: dict) -> dict:
     existing_action = str((analysis or {}).get("action_type") or "").strip().upper()
-    if existing_action in {"DISARM", "TRIGGER_TRAP"}:
+    if existing_action in {"DISARM", "LOOT", "READ", "INTERACT", "MOVE", "APPROACH", "TRIGGER_TRAP", "ATTACK", "CAST_SPELL", "UNLOCK"}:
+        return analysis
+    action_target = str((analysis or {}).get("action_target") or "").strip().lower()
+    analysis_context = (analysis or {}).get("intent_context")
+    if action_target == "gribbo":
+        return analysis
+    if isinstance(analysis_context, dict) and analysis_context.get("diary_negotiation_context"):
         return analysis
     source = str(state.get("source") or "").strip().lower()
-    analysis_context = (analysis or {}).get("intent_context")
     if isinstance(analysis_context, dict):
         source = str(analysis_context.get("source") or source).strip().lower()
     if existing_action == "INTERACT" and source == "trap_trigger":
@@ -217,6 +401,58 @@ def _apply_trap_awareness_override(*, state: GameState, analysis: dict) -> dict:
     overridden["responders"] = ["astarion"]
     intent_context = dict(overridden.get("intent_context") or {})
     intent_context["trap_awareness_context"] = context
+    overridden["intent_context"] = intent_context
+    return overridden
+
+
+def _apply_secret_study_entry_override(*, state: GameState, analysis: dict) -> dict:
+    if not _is_necromancer_lab(state):
+        return analysis
+    existing_action = str((analysis or {}).get("action_type") or "").strip().upper()
+    if existing_action in {"DISARM", "LOOT", "READ", "MOVE", "APPROACH", "TRIGGER_TRAP", "ATTACK", "CAST_SPELL", "UNLOCK"}:
+        return analysis
+    context = detect_secret_study_entry_context(
+        dict(state or {}),
+        str(state.get("user_input") or ""),
+        (analysis or {}).get("intent_context") if isinstance((analysis or {}).get("intent_context"), dict) else {},
+    )
+    if not context:
+        return analysis
+
+    overridden = dict(analysis or {})
+    overridden["action_type"] = "INTERACT"
+    overridden["action_actor"] = "player"
+    overridden["action_target"] = str(context.get("target_id") or "cracked_wall")
+    overridden["reason"] = "secret_study_discovery"
+    overridden["responders"] = []
+    intent_context = dict(overridden.get("intent_context") or {})
+    intent_context["secret_study_entry_context"] = context
+    overridden["intent_context"] = intent_context
+    return overridden
+
+
+def _apply_secret_study_observation_override(*, state: GameState, analysis: dict) -> dict:
+    if not _is_necromancer_lab(state):
+        return analysis
+    existing_action = str((analysis or {}).get("action_type") or "").strip().upper()
+    if existing_action in {"DISARM", "LOOT", "READ", "INTERACT", "MOVE", "APPROACH", "TRIGGER_TRAP", "ATTACK", "CAST_SPELL", "UNLOCK"}:
+        return analysis
+    context = detect_secret_study_observation_context(
+        dict(state or {}),
+        str(state.get("user_input") or ""),
+        (analysis or {}).get("intent_context") if isinstance((analysis or {}).get("intent_context"), dict) else {},
+    )
+    if not context:
+        return analysis
+
+    overridden = dict(analysis or {})
+    overridden["action_type"] = "CHAT"
+    overridden["action_actor"] = "player"
+    overridden["action_target"] = "room_c_secret_study"
+    overridden["reason"] = "secret_study_companion_observation"
+    overridden["responders"] = ["astarion", "shadowheart", "laezel"]
+    intent_context = dict(overridden.get("intent_context") or {})
+    intent_context["secret_study_observation_context"] = context
     overridden["intent_context"] = intent_context
     return overridden
 
@@ -309,6 +545,16 @@ def _looks_like_read_diary_text(user_input: str) -> bool:
     return _contains_marker(user_input, _READ_DIARY_MARKERS)
 
 
+def _resolve_study_context_read_target(user_input: str) -> str:
+    if not _contains_marker(user_input, _STUDY_CONTEXT_READ_MARKERS):
+        return ""
+    if _contains_marker(user_input, _IRON_KEY_SKETCH_MARKERS):
+        return "iron_key_sketch"
+    if _contains_marker(user_input, _CHEMICAL_NOTES_MARKERS):
+        return "chemical_notes"
+    return ""
+
+
 def _looks_like_gribbo_diary_negotiation(user_input: str) -> bool:
     return _contains_marker(user_input, _GRIBBO_TARGET_MARKERS) and _contains_marker(
         user_input,
@@ -321,7 +567,19 @@ def _looks_like_explicit_gribbo_attack(user_input: str) -> bool:
 
 
 def _looks_like_lab_door_lockpick(user_input: str) -> bool:
+    if _contains_marker(user_input, _LAB_DOOR_MARKERS) and _contains_marker(user_input, _NEGATIVE_LOCKPICK_MARKERS):
+        return False
     return _contains_marker(user_input, _LAB_DOOR_MARKERS) and _contains_marker(user_input, _LOCKPICK_MARKERS)
+
+
+def _looks_like_lab_door_inspect(user_input: str) -> bool:
+    if _contains_marker(user_input, _LAB_DOOR_MARKERS) and _contains_marker(user_input, _NEGATIVE_LOCKPICK_MARKERS):
+        return True
+    return (
+        _contains_marker(user_input, _LAB_DOOR_MARKERS)
+        and _contains_marker(user_input, _DOOR_INSPECT_MARKERS)
+        and not _contains_marker(user_input, _DOOR_GUIDANCE_QUESTION_MARKERS)
+    )
 
 
 def _apply_necromancer_lab_ui_text_fallback(*, state: GameState, analysis: dict) -> dict:
@@ -334,6 +592,20 @@ def _apply_necromancer_lab_ui_text_fallback(*, state: GameState, analysis: dict)
     intent_context = out.get("intent_context") if isinstance(out.get("intent_context"), dict) else {}
     action_target = str(out.get("action_target") or incoming_target or "").strip().lower()
     target_missing = not action_target or action_target in {"unknown", "null", "none"}
+    if str(out.get("action_type") or "").strip().upper() == "READ" and not target_missing:
+        return analysis
+
+    study_context_target = _resolve_study_context_read_target(user_input)
+    if study_context_target and (target_missing or action_target in set(_CHEMICAL_NOTES_MARKERS) or action_target in set(_IRON_KEY_SKETCH_MARKERS)):
+        out["action_type"] = "READ"
+        out["action_actor"] = "player"
+        out["action_target"] = study_context_target
+        out["reason"] = "ui_text_act3_study_context_read"
+        out["responders"] = []
+        intent_context = dict(intent_context)
+        intent_context["source"] = "act3_study_context"
+        out["intent_context"] = intent_context
+        return out
 
     if _looks_like_read_diary_text(user_input) and target_missing:
         out["action_type"] = "READ"
@@ -358,7 +630,35 @@ def _apply_necromancer_lab_ui_text_fallback(*, state: GameState, analysis: dict)
         out["intent_context"] = intent_context
         return out
 
+    if _looks_like_lab_door_inspect(user_input):
+        out["action_type"] = "INTERACT"
+        out["action_actor"] = "player"
+        out["action_target"] = "door_b_to_d"
+        out["reason"] = "ui_text_lab_door_inspect"
+        out["responders"] = []
+        intent_context = dict(intent_context)
+        intent_context["source"] = "ui_text_normalized"
+        intent_context["action"] = "inspect_lab_door"
+        out["intent_context"] = intent_context
+        return out
+
     if _looks_like_explicit_gribbo_attack(user_input):
+        return out
+    if _contains_marker(
+        user_input,
+        (
+            "进入实验室",
+            "和 gribbo 谈谈",
+            "和gribbo谈谈",
+            "和格里布谈谈",
+            "和格里波谈谈",
+            "靠近 gribbo",
+            "靠近格里布",
+            "靠近格里波",
+            "boss房",
+            "boss room",
+        ),
+    ):
         return out
     if not _looks_like_gribbo_diary_negotiation(user_input):
         return out
@@ -681,6 +981,10 @@ async def dm_node(state: GameState) -> dict:
         fallback_speaker=fallback_speaker,
     )
     if isinstance(structured_analysis, dict):
+        structured_analysis = _apply_gribbo_boss_intro_override(
+            state=state,
+            analysis=structured_analysis,
+        )
         structured_analysis = _apply_necromancer_lab_ui_text_fallback(
             state=state,
             analysis=structured_analysis,
@@ -689,7 +993,27 @@ async def dm_node(state: GameState) -> dict:
             state=state,
             analysis=structured_analysis,
         )
+        structured_analysis = _apply_gribbo_boss_resolution_override(
+            state=state,
+            analysis=structured_analysis,
+        )
+        structured_analysis = _apply_gribbo_boss_strategy_override(
+            state=state,
+            analysis=structured_analysis,
+        )
+        structured_analysis = _apply_gribbo_boss_intro_override(
+            state=state,
+            analysis=structured_analysis,
+        )
         structured_analysis = _apply_trap_disarm_override(
+            state=state,
+            analysis=structured_analysis,
+        )
+        structured_analysis = _apply_secret_study_entry_override(
+            state=state,
+            analysis=structured_analysis,
+        )
+        structured_analysis = _apply_secret_study_observation_override(
             state=state,
             analysis=structured_analysis,
         )
@@ -726,11 +1050,22 @@ async def dm_node(state: GameState) -> dict:
             analysis=structured_analysis,
         )
     else:
+        boss_intro_fast_path = _apply_gribbo_boss_intro_override(
+            state=state,
+            analysis={},
+        )
+        if (
+            isinstance(boss_intro_fast_path, dict)
+            and str(boss_intro_fast_path.get("action_type") or "").strip()
+        ):
+            structured_analysis = boss_intro_fast_path
         ui_text_fast_path = _apply_necromancer_lab_ui_text_fallback(
             state=state,
             analysis={},
         )
         if (
+            not structured_analysis
+            and
             isinstance(ui_text_fast_path, dict)
             and str(ui_text_fast_path.get("action_type") or "").strip()
         ):
@@ -746,6 +1081,26 @@ async def dm_node(state: GameState) -> dict:
             and str(study_chest_loot_fast_path.get("action_type") or "").strip()
         ):
             structured_analysis = study_chest_loot_fast_path
+        boss_resolution_fast_path = _apply_gribbo_boss_resolution_override(
+            state=state,
+            analysis=structured_analysis or {},
+        )
+        if (
+            isinstance(boss_resolution_fast_path, dict)
+            and str(boss_resolution_fast_path.get("action_type") or "").strip()
+            and boss_resolution_fast_path is not (structured_analysis or {})
+        ):
+            structured_analysis = boss_resolution_fast_path
+        boss_strategy_fast_path = _apply_gribbo_boss_strategy_override(
+            state=state,
+            analysis=structured_analysis or {},
+        )
+        if (
+            isinstance(boss_strategy_fast_path, dict)
+            and str(boss_strategy_fast_path.get("action_type") or "").strip()
+            and boss_strategy_fast_path is not (structured_analysis or {})
+        ):
+            structured_analysis = boss_strategy_fast_path
         trap_disarm_fast_path = _apply_trap_disarm_override(
             state=state,
             analysis={},
@@ -756,6 +1111,26 @@ async def dm_node(state: GameState) -> dict:
             and str(trap_disarm_fast_path.get("action_type") or "").strip()
         ):
             structured_analysis = trap_disarm_fast_path
+        secret_study_entry_fast_path = _apply_secret_study_entry_override(
+            state=state,
+            analysis=structured_analysis or {},
+        )
+        if (
+            isinstance(secret_study_entry_fast_path, dict)
+            and str(secret_study_entry_fast_path.get("action_type") or "").strip()
+            and secret_study_entry_fast_path is not (structured_analysis or {})
+        ):
+            structured_analysis = secret_study_entry_fast_path
+        secret_study_observation_fast_path = _apply_secret_study_observation_override(
+            state=state,
+            analysis=structured_analysis or {},
+        )
+        if (
+            isinstance(secret_study_observation_fast_path, dict)
+            and str(secret_study_observation_fast_path.get("action_type") or "").strip()
+            and secret_study_observation_fast_path is not (structured_analysis or {})
+        ):
+            structured_analysis = secret_study_observation_fast_path
         diary_negotiation_fast_path = _apply_diary_negotiation_override(
             state=state,
             analysis={},
@@ -855,6 +1230,10 @@ async def dm_node(state: GameState) -> dict:
             state=state,
             analysis=analysis if isinstance(analysis, dict) else {},
         )
+        analysis = _apply_gribbo_boss_intro_override(
+            state=state,
+            analysis=analysis if isinstance(analysis, dict) else {},
+        )
         analysis = _apply_necromancer_lab_ui_text_fallback(
             state=state,
             analysis=analysis if isinstance(analysis, dict) else {},
@@ -863,7 +1242,23 @@ async def dm_node(state: GameState) -> dict:
             state=state,
             analysis=analysis if isinstance(analysis, dict) else {},
         )
+        analysis = _apply_gribbo_boss_resolution_override(
+            state=state,
+            analysis=analysis if isinstance(analysis, dict) else {},
+        )
+        analysis = _apply_gribbo_boss_strategy_override(
+            state=state,
+            analysis=analysis if isinstance(analysis, dict) else {},
+        )
         analysis = _apply_trap_disarm_override(
+            state=state,
+            analysis=analysis if isinstance(analysis, dict) else {},
+        )
+        analysis = _apply_secret_study_entry_override(
+            state=state,
+            analysis=analysis if isinstance(analysis, dict) else {},
+        )
+        analysis = _apply_secret_study_observation_override(
             state=state,
             analysis=analysis if isinstance(analysis, dict) else {},
         )
@@ -968,8 +1363,13 @@ async def dm_node(state: GameState) -> dict:
             "diary_negotiation_context": dict(analysis_intent_context.get("diary_negotiation_context") or {}),
             "study_chest_loot_context": dict(analysis_intent_context.get("study_chest_loot_context") or {}),
             "trap_awareness_context": dict(analysis_intent_context.get("trap_awareness_context") or {}),
+            "secret_study_entry_context": dict(analysis_intent_context.get("secret_study_entry_context") or {}),
+            "secret_study_observation_context": dict(analysis_intent_context.get("secret_study_observation_context") or {}),
             "memory_echo_context": dict(analysis_intent_context.get("memory_echo_context") or {}),
             "gribbo_mercy_context": dict(analysis_intent_context.get("gribbo_mercy_context") or {}),
+            "gribbo_boss_intro_context": dict(analysis_intent_context.get("gribbo_boss_intro_context") or {}),
+            "gribbo_boss_strategy_context": dict(analysis_intent_context.get("gribbo_boss_strategy_context") or {}),
+            "gribbo_boss_resolution_context": dict(analysis_intent_context.get("gribbo_boss_resolution_context") or {}),
             "action": str(analysis_intent_context.get("action") or "").strip(),
             "source": str(analysis_intent_context.get("source") or state.get("source") or "").strip().lower(),
         },

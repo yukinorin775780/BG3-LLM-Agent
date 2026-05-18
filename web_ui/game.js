@@ -865,6 +865,20 @@
     return type === "trap" || key.includes("trap");
   }
 
+  function isPoisonValve(id, data) {
+    const entity = safeObject(data);
+    const key = normalizeId(id);
+    const type = normalizeId(entity.type || entity.kind || entity.object_type || entity.category);
+    return key === "poison_valve"
+      || key === "potion_tank"
+      || key.includes("poison_valve")
+      || key.includes("potion_tank")
+      || key.includes("poison_tank")
+      || type === "poison_valve"
+      || type === "potion_tank"
+      || type === "poison_tank";
+  }
+
   function isEntityHidden(data) {
     const entity = safeObject(data);
     const hidden = entity.is_hidden ?? entity.hidden;
@@ -883,6 +897,14 @@
     if (["revealed", "detected", "visible"].includes(status)) return "revealed";
     if (entity.is_revealed === true || entity.discovered === true || entity.is_discovered === true) return "revealed";
     return "";
+  }
+
+  function poisonValveStatus(data) {
+    const entity = safeObject(data);
+    const status = normalizeId(entity.status || entity.state);
+    if (["disabled", "safe", "sealed"].includes(status)) return "disabled";
+    if (["triggered", "leaking", "active", "burst"].includes(status)) return "triggered";
+    return "intact";
   }
 
   function resolveTrapOverlayEntries(environmentObjects) {
@@ -910,6 +932,30 @@
         fill,
         alpha: status === "triggered" ? 0.28 : 0.18,
         label: status === "disabled" ? "DISARMED" : (status === "triggered" ? "POISON" : "TRAP"),
+      });
+    });
+    Object.entries(safeObject(environmentObjects)).forEach(([id, raw]) => {
+      const entity = safeObject(raw);
+      if (!isPoisonValve(id, entity)) return;
+      if (isEntityHidden(entity)) return;
+      const status = poisonValveStatus(entity);
+      const x = Number(entity.x);
+      const y = Number(entity.y);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+      const w = Math.max(1, Math.round(Number(entity.w ?? entity.width ?? entity.size_w ?? entity.tile_width) || 1));
+      const h = Math.max(1, Math.round(Number(entity.h ?? entity.height ?? entity.size_h ?? entity.tile_height) || 1));
+      entries.push({
+        id: normalizeId(id),
+        kind: "poison_valve",
+        x,
+        y,
+        w,
+        h,
+        status,
+        color: status === "disabled" ? 0x8fa194 : (status === "triggered" ? 0xc84a35 : 0x66b875),
+        fill: status === "disabled" ? 0x28302a : (status === "triggered" ? 0x4a1712 : 0x183821),
+        alpha: status === "triggered" ? 0.22 : 0.12,
+        label: status === "disabled" ? "SAFE" : (status === "triggered" ? "LEAK" : "VALVE"),
       });
     });
     return entries;
@@ -1399,8 +1445,9 @@
       const reducedMotion = prefersReducedMotion();
       entries.forEach((entry) => {
         const center = this.gridToWorld(entry.x + entry.w / 2 - 0.5, entry.y + entry.h / 2 - 0.5);
-        const width = entry.w * this.board.cell * 0.94;
-        const height = entry.h * this.board.cell * 0.94;
+        const isValve = entry.kind === "poison_valve";
+        const width = entry.w * this.board.cell * (isValve ? 0.58 : 0.94);
+        const height = entry.h * this.board.cell * (isValve ? 0.58 : 0.94);
         const fill = this.add.rectangle(center.x, center.y, width, height, entry.fill, entry.alpha)
           .setDepth(DEPTH_LAYERS.overlay + 0.24);
         const rim = this.add.rectangle(center.x, center.y, width, height)

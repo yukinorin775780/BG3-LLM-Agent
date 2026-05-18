@@ -64,6 +64,11 @@ def _apply_actor_spoke(
                 continue
             trap["is_hidden"] = False
             trap["status"] = "revealed"
+    study_observation = event.payload.get("secret_study_observation") if isinstance(event.payload, dict) else None
+    if isinstance(study_observation, dict) and str(study_observation.get("topic") or "") == "secret_study_observation":
+        clue = str(study_observation.get("clue") or "").strip()
+        if clue:
+            journal_events.append(f"[书房观察] {speaker_id} -> {clue}")
     memory_echo = event.payload.get("memory_echo") if isinstance(event.payload, dict) else None
     if isinstance(memory_echo, dict) and str(memory_echo.get("topic") or "") == "memory_echo":
         memory_type = str(memory_echo.get("memory_type") or "").strip()
@@ -79,6 +84,11 @@ def _apply_actor_spoke(
         stance = str(gribbo_mercy.get("stance") or "").strip()
         if stance:
             journal_events.append(f"[站队] {speaker_id} -> {stance}")
+    gribbo_boss_strategy = event.payload.get("gribbo_boss_strategy") if isinstance(event.payload, dict) else None
+    if isinstance(gribbo_boss_strategy, dict) and str(gribbo_boss_strategy.get("topic") or "") == "gribbo_boss_strategy":
+        stance = str(gribbo_boss_strategy.get("stance") or "").strip()
+        if stance:
+            journal_events.append(f"[Boss方案] {speaker_id} -> {stance}")
     return text
 
 
@@ -218,9 +228,9 @@ def _apply_actor_negotiation_outcome(
         target["faction"] = "hostile"
 
     reason = str(payload.get("reason") or "").strip().lower()
+    status_set = str(payload.get("status_set") or "").strip()
+    faction_set = str(payload.get("faction_set") or "").strip()
     if reason in {"gribbo_mercy_spared", "gribbo_mercy_executed"}:
-        status_set = str(payload.get("status_set") or "").strip()
-        faction_set = str(payload.get("faction_set") or "").strip()
         if status_set:
             target["status"] = status_set
         if faction_set:
@@ -236,6 +246,21 @@ def _apply_actor_negotiation_outcome(
             journal_events.append("[抉择] gribbo -> spared")
         else:
             journal_events.append("[抉择] gribbo -> executed")
+        return {}
+    if reason in {
+        "act4_truth_negotiation_success",
+        "act4_assault_success",
+        "act4_astarion_steal_success",
+        "act4_astarion_steal_failure",
+    }:
+        if status_set:
+            target["status"] = status_set
+        if faction_set:
+            target["faction"] = faction_set
+        if reason == "act4_truth_negotiation_success":
+            journal_events.append("[Boss解决] negotiation -> key_surrendered")
+        elif reason == "act4_assault_success":
+            journal_events.append("[Boss解决] assault -> gribbo_defeated")
         return {}
     if reason == "diary_evidence_pressure":
         journal_events.append("[交涉筹码] diary_evidence -> gribbo_elixir_truth")
@@ -388,17 +413,19 @@ def apply_domain_events(state: Dict[str, Any], events: List[DomainEvent]) -> Sta
                 journal_events.append(f"❌ [社交物品] {event.actor_id} 的交易事件缺失 transaction payload。")
                 continue
 
-            if transaction.accepted and transaction.transaction_type in {"transfer", "return", "consume"}:
-                item_transfers = [item_transaction_to_transfer_payload(transaction)]
-                hp_changes = list(event.payload.get("hp_changes") or [])
-                physics_events = apply_physics(
-                    entities,
+        if transaction.accepted and transaction.transaction_type in {"transfer", "return", "consume"}:
+            item_transfers = [item_transaction_to_transfer_payload(transaction)]
+            hp_changes = list(event.payload.get("hp_changes") or [])
+            physics_events = apply_physics(
+                entities,
                     player_inventory,
                     item_transfers=item_transfers,
-                    hp_changes=hp_changes,
-                )
-                journal_events.extend(physics_events)
-                continue
+                hp_changes=hp_changes,
+            )
+            journal_events.extend(physics_events)
+            if transaction.item == "heavy_iron_key" and transaction.from_entity == "gribbo":
+                journal_events.append("[物品转移] gribbo -> player heavy_iron_key")
+            continue
 
             action_label = social_action.action_type if social_action else "gift_reject"
             rejected_reason = transaction.reason or "rejected"
