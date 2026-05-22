@@ -24,6 +24,7 @@ ALLOWED_TELEMETRY_EVENTS = frozenset(
         "action_result",
         "reflection_enqueued",
         "reflection_processed",
+        "client_player_position_ignored",
     }
 )
 

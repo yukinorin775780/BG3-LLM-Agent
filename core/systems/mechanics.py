@@ -2235,7 +2235,8 @@ def _ensure_poison_valve_object(environment_objects: Dict[str, Any], entities: D
             "status": "armed",
             "is_hidden": False,
             "x": 6,
-            "y": 9,
+            "y": 4,
+            "room_id": "room_d_lab",
         }
         environment_objects["poison_valve"] = valve
     return valve

@@ -44,7 +44,7 @@ determinism:
         item_transfers: []
         hp_changes: []
         action_actor: player
-        action_target: 13,11
+        action_target: 17,4
       - action_type: INTERACT
         difficulty_class: 0
         reason: scripted_necromancer_lab_open_door_after_approach
@@ -95,14 +95,14 @@ steps:
               transaction_event_count: 1
               transaction_accepted_count: 1
   - id: approach_heavy_oak_door
-    user_input: 移动到 13,11。
+    user_input: 移动到 17,4。
     intent: chat
     expected:
       state:
         equals:
           game_state.map_data.id: necromancer_lab
-          game_state.entities.player.x: 13
-          game_state.entities.player.y: 11
+          game_state.entities.player.x: 17
+          game_state.entities.player.y: 4
   - id: open_heavy_oak_door_and_clear_demo
     user_input: 用 heavy_iron_key 打开 heavy_oak_door_1。
     intent: chat

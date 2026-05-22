@@ -156,8 +156,8 @@
         summary: "Open exit_door and show completion banner.",
         run: async () => {
           if (typeof app.sendMessage === "function") {
-            await app.sendMessage("移动到 13,11", "MOVE", null, {
-              target: "13,11",
+            await app.sendMessage("移动到 17,4", "MOVE", null, {
+              target: "17,4",
               source: "text_input",
               skipIdleReset: true,
             });

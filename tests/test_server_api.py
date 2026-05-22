@@ -56,6 +56,8 @@ def test_chat_endpoint_delegates_to_service_and_preserves_response_schema():
         map_id="necromancer_lab",
         target=None,
         source=None,
+        client_player_position=None,
+        player_position=None,
     )
 
 
@@ -135,6 +137,8 @@ def test_chat_endpoint_forwards_target_and_source_to_game_service():
                 "map_id": "necromancer_lab",
                 "target": "heavy_oak_door_1",
                 "source": "interaction",
+                "client_player_position": {"x": 17, "y": 4},
+                "player_position": [17, 4],
             },
         )
     finally:
@@ -149,6 +153,8 @@ def test_chat_endpoint_forwards_target_and_source_to_game_service():
         map_id="necromancer_lab",
         target="heavy_oak_door_1",
         source="interaction",
+        client_player_position={"x": 17, "y": 4},
+        player_position=[17, 4],
     )
 
 

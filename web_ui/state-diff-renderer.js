@@ -187,7 +187,7 @@
   }
 
   function isAct3StudyFlag(key) {
-    return /^act3_(?:secret_study_entered|diary_read|diary_decoded|gribbo_potion_truth_known|party_knows_gribbo_truth)$/.test(String(key || ""));
+    return /^act3_(?:secret_study_entered|secret_study_discovered|chemical_notes_seen|key_sketch_seen|diary_context_gathered|diary_read|diary_decoded|gribbo_potion_truth_known|heavy_key_hint_known|party_knows_gribbo_truth)$/.test(String(key || ""));
   }
 
   function isAct4BossFlag(key) {

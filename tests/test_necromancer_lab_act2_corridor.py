@@ -104,7 +104,13 @@ def test_act2_corridor_move_near_lab_door_does_not_trigger_act4_poison_valve():
 
     assert move_result["entities"]["player"]["x"] == 4
     assert move_result["entities"]["player"]["y"] == 8
-    assert move_result["environment_objects"]["poison_valve"]["status"] == "armed"
+    poison_valve = move_result["environment_objects"]["poison_valve"]
+    potion_tank = move_result["environment_objects"]["potion_tank"]
+    assert poison_valve["status"] == "armed"
+    assert poison_valve.get("room_id") == "room_d_lab"
+    assert potion_tank.get("room_id") == "room_d_lab"
+    assert poison_valve["y"] < 8
+    assert potion_tank["y"] < 8
     assert not any("poison_valve" in line or "毒气阀门" in line for line in move_result["journal_events"])
 
 

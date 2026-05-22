@@ -14,6 +14,7 @@ const HUD_RENDERERS_PATH = path.resolve(__dirname, "../hud-renderers.js");
 const GAME_JS_PATH = path.resolve(__dirname, "../game.js");
 const REAL_MAP_JSON_PATH = path.resolve(__dirname, "../assets/maps/necromancer_lab.json");
 const REAL_MAP_TMX_PATH = path.resolve(__dirname, "../../data/maps/necromancer_lab.tmx");
+const BARK_BUILD_ID = "20260521_owner_release_v9";
 
 function extractBodyMarkup(htmlText) {
   const match = String(htmlText).match(/<body[^>]*>([\s\S]*?)<\/body>/i);
@@ -318,11 +319,97 @@ describe("web_ui/app.js UI bindings", () => {
     delete window.BG3InputController;
     delete window.BG3HudRenderers;
     delete window.__BG3_FORCE_REAL_MAP_LOAD__;
+    delete window.__BG3_BARK_BUILD_ID__;
+    delete window.__BG3_QA_STATE__;
+    if (document.documentElement) {
+      delete document.documentElement.dataset.barkBuild;
+    }
   });
 
   /* ═══════════════════════════════════════════
      EXISTING TESTS (preserved from Sprint 0)
      ═══════════════════════════════════════════ */
+
+  test("test_index_static_resources_use_current_bark_build_version", () => {
+    const html = fs.readFileSync(INDEX_HTML_PATH, "utf8");
+    expect(html).toContain(`style.css?v=${BARK_BUILD_ID}`);
+    expect(html).toContain(`ui-event-adapter.js?v=${BARK_BUILD_ID}`);
+    expect(html).toContain(`hud-renderers.js?v=${BARK_BUILD_ID}`);
+    expect(html).toContain(`app.js?v=${BARK_BUILD_ID}`);
+    expect(html).toContain(`director-trace.js?v=${BARK_BUILD_ID}`);
+    expect(html).toContain(`state-diff-renderer.js?v=${BARK_BUILD_ID}`);
+    expect(html).not.toContain("20260514_act2_playability_polish");
+  });
+
+  test("test_app_boot_exposes_bark_build_marker", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    await bootAppForTest("http://localhost/?qa_test=1&qa_map_debug=1");
+
+    expect(window.__BG3_BARK_BUILD_ID__).toBe(BARK_BUILD_ID);
+    expect(document.documentElement.dataset.barkBuild).toBe(BARK_BUILD_ID);
+  });
+
+  test("test_qa_debug_state_includes_bark_self_check", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    const api = await bootAppForTest("http://localhost/?qa_test=1&qa_map_debug=1");
+
+    api.updateMapDebug("unit_test");
+
+    expect(window.__BG3_QA_STATE__).toMatchObject({
+      barkBuild: BARK_BUILD_ID,
+      hasCompanionBarkRenderer: true,
+      hasExtractSpeechBarks: true,
+    });
+    expect(api.collectMapDebugSnapshot("unit_test")).toMatchObject({
+      barkBuild: BARK_BUILD_ID,
+      hasCompanionBarkRenderer: true,
+      hasExtractSpeechBarks: true,
+    });
+  });
+
+  test("test_skip_log_update_chat_response_still_dispatches_companion_bark", async () => {
+    const fetchSpy = spyOnFetch().mockResolvedValue(
+      mockResponse({
+        responses: [],
+        journal_events: ["[陷阱感知] astarion -> gas_trap_1"],
+        party_status: {},
+        environment_objects: {
+          gas_trap_1: { id: "gas_trap_1", type: "trap", status: "revealed", is_hidden: false },
+        },
+        combat_state: {},
+      })
+    );
+    const api = await bootAppForTest();
+    fetchSpy.mockClear();
+
+    await api.sendMessage("进入毒气走廊", "CHAT", null, { skipLogUpdate: true });
+    await flushAsync();
+
+    const bark = document.querySelector(".companion-bark--astarion");
+    expect(bark).not.toBeNull();
+    expect(bark.textContent).toContain("Astarion");
+    window.BG3HudRenderers.skipCurrentCompanionBark();
+    expect(bark.textContent).toMatch(/trap|陷阱/i);
+  });
+
+  test("test_init_sync_response_does_not_dispatch_companion_bark", async () => {
+    const fetchSpy = spyOnFetch().mockResolvedValue(
+      mockResponse({
+        responses: [{ speaker: "astarion", text: "附近有陷阱，小心。" }],
+        journal_events: ["[陷阱感知] astarion -> gas_trap_1"],
+        party_status: {},
+        environment_objects: {},
+        combat_state: {},
+      })
+    );
+    const api = await bootAppForTest();
+    fetchSpy.mockClear();
+
+    await api.sendMessage("", "init_sync", null, { skipLogUpdate: true });
+    await flushAsync();
+
+    expect(document.querySelector(".companion-bark")).toBeNull();
+  });
 
   test("test_xray_panel_updates", async () => {
     const fetchSpy = spyOnFetch().mockResolvedValueOnce(
@@ -683,6 +770,7 @@ describe("web_ui/app.js UI bindings", () => {
     expect(api.isNarrativeRequest("dialogue", "", "interaction")).toBe(true);
     expect(api.isNarrativeRequest("companion_interrupt", "", "")).toBe(true);
     expect(api.isNarrativeRequest("INTERACT", "", "text_input")).toBe(true);
+    expect(api.isNarrativeRequest("DISARM", "", "ui_text_normalized")).toBe(true);
   });
 
   test("test_blocked_by_creates_los_event", async () => {
@@ -839,6 +927,7 @@ describe("web_ui/app.js UI bindings", () => {
 
     const corridor = result.triggers.find((trigger) => trigger.id === "act1_corridor_approach");
     expect(corridor).toBeDefined();
+    expect(String(corridor.data.trigger_text || "")).not.toMatch(/绿色|毒雾|酸液|poison|gas|acid/i);
 
     const poisonTrap = result.triggers.find((trigger) => trigger.id === "poison_trap_1");
     expect(poisonTrap).toBeDefined();
@@ -896,9 +985,12 @@ describe("web_ui/app.js UI bindings", () => {
 
     const rawExitDoor = getMapObject(map, "interactables", "exit_door");
     const exitDoorProps = flattenTiledProps(rawExitDoor);
+    expect(rawExitDoor.x / map.tilewidth).toBe(18);
+    expect(rawExitDoor.y / map.tileheight).toBe(3);
     expect(exitDoorProps.alias_id).toBe("heavy_oak_door_1");
     expect(exitDoorProps.key_required).toBe("heavy_iron_key");
     expect(exitDoorProps.requires_flag).toBe("world_necromancer_lab_gribbo_defeated");
+    expect(exitDoorProps.room_id).toBe("room_exit");
 
     const studyRoom = roomById(rooms, "room_c_secret_study");
     const diary = normalized.interactables.find((item) => item.id === "necromancer_diary");
@@ -977,6 +1069,9 @@ describe("web_ui/app.js UI bindings", () => {
     expect(Number(doorD.data.lockpick_dc)).toBe(15);
     expect(exitDoor.data.key_required).toBe("heavy_iron_key");
     expect(exitDoor.data.requires_flag).toBe("world_necromancer_lab_gribbo_defeated");
+    expect(exitDoor.data.room_id).toBe("room_exit");
+    expect(exitDoor.x).toBe(18);
+    expect(exitDoor.y).toBe(3);
     expect(exitDoor.source_id).toBe("exit_door");
   });
 
@@ -1049,6 +1144,21 @@ describe("web_ui/app.js UI bindings", () => {
     expect(api.state.roomVisibleIds.has("room_d_lab")).toBe(false);
   });
 
+  test("test_nested_state_secret_study_flag_reveals_room_c", async () => {
+    const fetchSpy = spyOnFetch().mockResolvedValue(mockResponse({}));
+    const api = await bootAppForTest("http://localhost/?qa_test=1&qa_no_idle=1");
+    api.applyNormalizedMap(loadRealNecromancerMap(), { source: "json" });
+
+    fetchSpy.mockResolvedValueOnce(mockResponse(emptyTurnResponse({
+      state: { flags: { act3_secret_study_discovered: true } },
+    })));
+    await api.sendMessage("发现暗门。", "chat");
+    await flushAsync();
+
+    expect(api.state.roomVisibleIds.has("room_c_secret_study")).toBe(true);
+    expect(api.state.mapData.visible_rooms).toContain("room_c_secret_study");
+  });
+
   test("test_act3_room_c_reveal_makes_study_context_interactables_visible", async () => {
     const fetchSpy = spyOnFetch().mockResolvedValue(mockResponse({}));
     const api = await bootAppForTest("http://localhost/?qa_test=1&qa_no_idle=1");
@@ -1061,13 +1171,139 @@ describe("web_ui/app.js UI bindings", () => {
     await flushAsync();
 
     const interactableIds = api.state.normalizedMap.interactables.map((it) => it.id);
+    const mapDataInteractableIds = api.state.mapData.interactables.map((it) => it.id);
     expect(interactableIds).toEqual(expect.arrayContaining([
       "chemical_notes",
       "iron_key_sketch",
       "necromancer_diary",
       "chest_1",
     ]));
+    expect(mapDataInteractableIds).toEqual(expect.arrayContaining([
+      "chemical_notes",
+      "iron_key_sketch",
+      "necromancer_diary",
+      "chest_1",
+    ]));
     expect(api.state.normalizedMap.spawns.map((spawn) => spawn.id)).not.toContain("gribbo");
+  });
+
+  test("test_e_interact_door_b_to_c_reveals_room_c_and_study_interactables", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    const api = await bootAppForTest("http://localhost/?qa_test=1&qa_no_idle=1");
+    api.applyNormalizedMap(loadRealNecromancerMap(), { source: "json" });
+    api.revealRoomByDoorTarget("door_a_to_b");
+    api.discoverSecretDoor("door_b_to_c");
+    api.refreshVisibilityProjection();
+
+    expect(api.state.roomVisibleIds.has("room_c_secret_study")).toBe(false);
+    expect(api.handleLocalExplorationDoor("door_b_to_c")).toBe(true);
+
+    const interactableIds = api.state.normalizedMap.interactables.map((it) => it.id);
+    expect(api.state.roomVisibleIds.has("room_c_secret_study")).toBe(true);
+    expect(api.state.mapData.visible_rooms).toContain("room_c_secret_study");
+    expect(interactableIds).toEqual(expect.arrayContaining([
+      "chemical_notes",
+      "iron_key_sketch",
+      "necromancer_diary",
+      "chest_1",
+    ]));
+    expect(window.BG3TacticalMap.refreshMapOnly).toHaveBeenCalled();
+    expect(api.collectMapDebugSnapshot("unit").roomVisibleIds).toContain("room_c_secret_study");
+  });
+
+  test("test_text_open_secret_door_routes_to_door_b_to_c_when_current_interactable_is_secret_door", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    const api = await bootAppForTest("http://localhost/?qa_test=1&qa_no_idle=1");
+    api.applyNormalizedMap(loadRealNecromancerMap(), { source: "json" });
+    api.revealRoomByDoorTarget("door_a_to_b");
+    api.discoverSecretDoor("door_b_to_c");
+    api.state.currentInteractable = "door_b_to_c";
+    api.state.currentIntent = "INTERACT";
+
+    const { payload } = api.buildChatPayload("打开暗门", null, null, { source: "text_input" });
+
+    expect(payload).toMatchObject({
+      intent: "INTERACT",
+      target: "door_b_to_c",
+    });
+  });
+
+  test("test_blocked_text_secret_door_interact_does_not_reveal_room_c", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({
+      journal_events: ["❌ [交互] 隐藏书房侧门 距离过远，需相邻才能交互。"],
+      map_data: { visible_rooms: ["room_a_spawn", "room_b_corridor"] },
+    }));
+    const api = await bootAppForTest("http://localhost/?qa_test=1&qa_no_idle=1");
+    api.applyNormalizedMap(loadRealNecromancerMap(), { source: "json" });
+    api.revealRoomByDoorTarget("door_a_to_b");
+    api.discoverSecretDoor("door_b_to_c");
+    api.refreshVisibilityProjection();
+    api.state.currentInteractable = "door_b_to_c";
+    api.state.currentIntent = "INTERACT";
+
+    await api.sendStructuredAction({ text: "打开暗门", intent: null, options: { source: "text_input" } });
+    await flushAsync();
+
+    expect(api.state.roomVisibleIds.has("room_c_secret_study")).toBe(false);
+    expect(api.state.mapData.visible_rooms).not.toContain("room_c_secret_study");
+    expect(api.state.mapData.interactables.map((it) => it.id)).not.toContain("chemical_notes");
+  });
+
+  test("test_missing_key_lab_door_response_does_not_reveal_room_d", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({
+      journal_events: [
+        "🚪 [系统] 实验室重门需要 lab_key；也可以明确尝试 DC 15 撬锁。",
+        "🕯️ [线索] 门框附近有冷风，旁边墙面传来空响；附近可能还有通往书房的入口。",
+      ],
+      flags: {
+        act2_secret_study_route_unlocked: true,
+        act2_secret_study_hint_given: true,
+      },
+      latest_roll: {
+        intent: "INTERACT",
+        target: "door_b_to_d",
+        result: { is_success: false, result_type: "MISSING_KEY" },
+      },
+      map_data: { visible_rooms: ["room_a_spawn", "room_b_corridor"] },
+    }));
+    const api = await bootAppForTest("http://localhost/?qa_test=1&qa_no_idle=1");
+    api.applyNormalizedMap(loadRealNecromancerMap(), { source: "json" });
+    api.revealRoomByDoorTarget("door_a_to_b");
+    api.refreshVisibilityProjection();
+
+    await api.sendStructuredAction({ text: "检查 B-D 门。", intent: null, options: { source: "text_input" } });
+    await flushAsync();
+
+    expect(api.state.roomVisibleIds.has("room_d_lab")).toBe(false);
+    expect(api.state.mapData.visible_rooms).not.toContain("room_d_lab");
+    expect(api.state.roomVisibleIds.has("room_c_secret_study")).toBe(true);
+  });
+
+  test("test_state_poll_with_stale_visible_rooms_does_not_drop_local_room_c_reveal", async () => {
+    const fetchSpy = spyOnFetch().mockResolvedValue(mockResponse({}));
+    const api = await bootAppForTest("http://localhost/?qa_test=1&qa_no_idle=1");
+    api.applyNormalizedMap(loadRealNecromancerMap(), { source: "json" });
+    api.revealRoomByDoorTarget("door_a_to_b");
+    api.discoverSecretDoor("door_b_to_c");
+    api.revealRoomByDoorTarget("door_b_to_c");
+    api.refreshVisibilityProjection();
+    expect(api.state.roomVisibleIds.has("room_c_secret_study")).toBe(true);
+
+    fetchSpy.mockResolvedValueOnce(mockResponse({
+      party_status: {},
+      environment_objects: {},
+      combat_state: {},
+      map_data: { visible_rooms: ["room_a_spawn", "room_b_corridor"] },
+      journal_events: [],
+      flags: {},
+    }));
+    await api.pollDialogueState();
+    await flushAsync();
+
+    expect(api.state.roomVisibleIds.has("room_c_secret_study")).toBe(true);
+    expect(api.state.mapData.visible_rooms).toContain("room_c_secret_study");
+    expect(api.state.normalizedMap.interactables.map((it) => it.id)).toContain("chemical_notes");
+    expect(api.state.mapData.interactables.map((it) => it.id)).toContain("chemical_notes");
   });
 
   test("test_act3_study_context_text_routes_to_read_payloads", async () => {
@@ -1863,6 +2099,219 @@ describe("web_ui/app.js UI bindings", () => {
     expect(api.els.xrayToggleBtn.getAttribute("aria-expanded")).toBe("false");
   });
 
+  test("test_director_timeline_local_movement_renders_compact_idle_trace", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    await bootAppForTest("http://localhost/?qa_test=1");
+
+    if (window.BG3InputController) {
+      window.BG3InputController.movePlayer(1, 0);
+    }
+    await flushAsync();
+
+    const panel = document.getElementById("director-trace-panel");
+    const mode = document.getElementById("director-trace-mode");
+    const summary = document.getElementById("director-trace-summary");
+    const visibleNodes = Array.from(document.querySelectorAll("#director-node-timeline li[data-node]"))
+      .filter((node) => !node.hidden);
+
+    expect(window.BG3DirectorTrace.getState()).toBe("idle");
+    expect(panel.classList.contains("director-trace--idle")).toBe(true);
+    expect(mode.textContent).toBe("LOCAL EXPLORATION");
+    expect(summary.textContent).toContain("WASD");
+    expect(visibleNodes.map((node) => node.dataset.node)).toEqual(["player_input"]);
+  });
+
+  test("test_director_timeline_trap_insight_summary_highlights_actor_runtime_ui", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    await bootAppForTest();
+
+    const uiEvents = [{ type: "trap_insight", actor: "astarion", trapId: "gas_trap_1" }];
+    const nodes = window.BG3DirectorTrace.buildTraceNodes({}, { uiEvents, userLine: "检查走廊", intent: "CHAT" });
+    window.BG3DirectorTrace.activateTrace(nodes, { uiEvents, animate: false, autoIdleMs: 999999 });
+    await flushAsync();
+
+    expect(document.getElementById("director-trace-mode").textContent).toBe("AGENT RESPONSE");
+    expect(document.getElementById("director-trace-summary").textContent).toContain("Astarion noticed");
+    expect(document.querySelector('[data-node="actor_runtime"]').classList.contains("is-agent-signal")).toBe(true);
+    expect(document.querySelector('[data-node="ui_events"]').classList.contains("is-agent-signal")).toBe(true);
+  });
+
+  test("test_director_timeline_trap_disarmed_highlights_mechanics_eventdrain_ui", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    await bootAppForTest();
+
+    const data = { journal_events: ["[陷阱解除] astarion -> gas_trap_1", "EventDrain gas_trap_1 status disabled"] };
+    const uiEvents = [{ type: "trap_disarmed", actor: "astarion", trapId: "gas_trap_1" }];
+    const nodes = window.BG3DirectorTrace.buildTraceNodes(data, { uiEvents, userLine: "阿斯代伦，解除陷阱", intent: "DISARM" });
+    window.BG3DirectorTrace.activateTrace(nodes, { data, uiEvents, userLine: "阿斯代伦，解除陷阱", intent: "DISARM", animate: false, autoIdleMs: 999999 });
+    await flushAsync();
+
+    expect(document.getElementById("director-trace-mode").textContent).toBe("PHYSICS / EVENTDRAIN");
+    expect(document.getElementById("director-trace-summary").textContent).toContain("Trap disabled");
+    expect(document.querySelector('[data-node="domain_event"]').classList.contains("is-agent-signal")).toBe(true);
+    expect(document.querySelector('[data-node="event_drain"]').classList.contains("is-agent-signal")).toBe(true);
+    expect(document.querySelector('[data-node="ui_events"]').classList.contains("is-agent-signal")).toBe(true);
+  });
+
+  test("test_director_timeline_diary_context_highlights_memory_eventdrain", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    await bootAppForTest();
+
+    const data = {
+      journal_events: [
+        "[线索整合] chemical_notes -> diary_context",
+        "[交涉筹码] diary_evidence -> gribbo_elixir_truth",
+        "EventDrain memory_update x2",
+      ],
+    };
+    const uiEvents = [{ type: "negotiation_leverage", evidence: "diary_evidence", targetId: "gribbo" }];
+    const nodes = window.BG3DirectorTrace.buildTraceNodes(data, { uiEvents, userLine: "阅读 necromancer_diary", intent: "READ" });
+    window.BG3DirectorTrace.activateTrace(nodes, { data, uiEvents, userLine: "阅读 necromancer_diary", intent: "READ", animate: false, autoIdleMs: 999999 });
+    await flushAsync();
+
+    expect(document.getElementById("director-trace-summary").textContent).toContain("Diary context");
+    expect(document.querySelector('[data-node="domain_event"]').textContent).toContain("negotiation_leverage");
+    expect(document.querySelector('[data-node="event_drain"]').classList.contains("is-agent-signal")).toBe(true);
+  });
+
+  test("test_director_timeline_diary_context_ignores_sticky_trap_disarmed_flag", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    await bootAppForTest();
+
+    const data = {
+      game_state: {
+        flags: {
+          necromancer_lab_poison_trap_disarmed: true,
+          act3_diary_decoded: true,
+        },
+      },
+      journal_events: [
+        "[线索整合] chemical_notes -> diary_context",
+        "[交涉筹码] diary_evidence -> gribbo_elixir_truth",
+      ],
+    };
+    const uiEvents = [{ type: "negotiation_leverage", evidence: "diary_evidence", targetId: "gribbo" }];
+    const nodes = window.BG3DirectorTrace.buildTraceNodes(data, { uiEvents, userLine: "阅读 necromancer_diary", intent: "READ" });
+    window.BG3DirectorTrace.activateTrace(nodes, { data, uiEvents, userLine: "阅读 necromancer_diary", intent: "READ", animate: false, autoIdleMs: 999999 });
+    await flushAsync();
+
+    const summary = document.getElementById("director-trace-summary").textContent;
+    expect(summary).toContain("Diary context");
+    expect(summary).not.toContain("Trap disabled");
+  });
+
+  test("test_director_timeline_boss_strategy_highlights_actor_runtime_party_coordinator", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    await bootAppForTest();
+
+    const data = { journal_events: ["[Boss方案] astarion -> steal_key", "[Boss方案] shadowheart -> contain_corruption", "[Boss方案] laezel -> execute"] };
+    const uiEvents = [{ type: "boss_strategy", strategies: [] }];
+    const nodes = window.BG3DirectorTrace.buildTraceNodes(data, { uiEvents, userLine: "我们怎么处理他？", intent: "CHAT" });
+    window.BG3DirectorTrace.activateTrace(nodes, { data, uiEvents, userLine: "我们怎么处理他？", intent: "CHAT", animate: false, autoIdleMs: 999999 });
+    await flushAsync();
+
+    expect(document.getElementById("director-trace-summary").textContent).toContain("Three companions");
+    const actorRuntime = document.querySelector('[data-node="actor_runtime"]');
+    expect(actorRuntime.classList.contains("is-agent-signal")).toBe(true);
+    expect(actorRuntime.textContent).toContain("Party Coordinator");
+  });
+
+  test("test_director_timeline_final_exit_highlights_mechanics_eventdrain_ui", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    await bootAppForTest();
+
+    const data = { journal_events: ["act4_final_exit_opened", "DEMO CLEARED", "EventDrain heavy_iron_key"] };
+    const uiEvents = [{ type: "demo_cleared" }];
+    const nodes = window.BG3DirectorTrace.buildTraceNodes(data, { uiEvents, userLine: "打开最终出口", intent: "OPEN" });
+    window.BG3DirectorTrace.activateTrace(nodes, { data, uiEvents, userLine: "打开最终出口", intent: "OPEN", animate: false, autoIdleMs: 999999 });
+    await flushAsync();
+
+    expect(document.getElementById("director-trace-summary").textContent).toContain("Heavy iron key");
+    expect(document.querySelector('[data-node="domain_event"]').classList.contains("is-agent-signal")).toBe(true);
+    expect(document.querySelector('[data-node="event_drain"]').classList.contains("is-agent-signal")).toBe(true);
+    expect(document.querySelector('[data-node="ui_events"]').classList.contains("is-agent-signal")).toBe(true);
+  });
+
+  test("test_director_timeline_final_exit_overrides_stale_boss_and_trap_summary", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    await bootAppForTest();
+
+    const data = {
+      game_state: {
+        flags: {
+          necromancer_lab_poison_trap_disarmed: true,
+          act4_boss_room_entered: true,
+          act4_gribbo_confrontation_started: true,
+          act4_final_exit_opened: true,
+        },
+      },
+      latest_roll: {
+        intent: "INTERACT",
+        target: "heavy_oak_door_1",
+        result: { is_success: true, result_type: "SUCCESS" },
+        demo_cleared: true,
+      },
+      journal_events: [
+        "[Boss方案] astarion -> steal_key",
+        "🚪 [系统] **[DEMO CLEARED]**",
+      ],
+    };
+    const uiEvents = [{ type: "demo_cleared" }];
+    const nodes = window.BG3DirectorTrace.buildTraceNodes(data, { uiEvents, userLine: "用钥匙打开出口门", intent: "INTERACT" });
+    window.BG3DirectorTrace.activateTrace(nodes, { data, uiEvents, userLine: "用钥匙打开出口门", intent: "INTERACT", animate: false, autoIdleMs: 999999 });
+    await flushAsync();
+
+    const summary = document.getElementById("director-trace-summary").textContent;
+    expect(summary).toContain("Heavy iron key");
+    expect(summary).not.toContain("Trap disabled");
+    expect(summary).not.toContain("Three companions");
+  });
+
+  test("test_director_timeline_skipped_nodes_muted_and_payload_inspector_collapsed", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    await bootAppForTest();
+
+    window.BG3DirectorTrace.activateTrace(["player_input", "ui_events"], {
+      data: { journal_events: ["brief ui feedback"] },
+      animate: false,
+      autoIdleMs: 999999,
+    });
+    await flushAsync();
+
+    expect(document.querySelector('[data-node="dm_router"]').classList.contains("node-status--skipped")).toBe(true);
+    expect(document.querySelector(".payload-raw").open).toBe(false);
+    const css = fs.readFileSync(path.resolve(__dirname, "../style.css"), "utf8");
+    expect(css).toContain(".xray-section--node-trace .node-status--skipped");
+    expect(css).toMatch(/\.xray-section--node-trace \.node-explanation\s*\{[\s\S]*-webkit-line-clamp:\s*2/);
+  });
+
+  test("test_director_timeline_long_explanation_truncates_safely_and_sections_do_not_overlap", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    await bootAppForTest();
+
+    const longExplanation = "A very long route explanation that should remain readable by clamping the text to two lines instead of expanding the right rail into overlapping debug panels.";
+    window.BG3DirectorTrace.activateTrace(["player_input", "dm_router", "ui_events"], {
+      details: {
+        player_input: { explanation: "Player input.", input: "ask", output: "CHAT" },
+        dm_router: { explanation: longExplanation, input: "ask party", output: "route selected" },
+        ui_events: { explanation: "UI feedback.", input: "events", output: "card" },
+      },
+      animate: false,
+      autoIdleMs: 999999,
+    });
+    await flushAsync();
+
+    const explanation = document.querySelector('[data-node="dm_router"] .node-explanation');
+    expect(explanation.title).toBe(longExplanation);
+    expect(explanation.textContent).toBe(longExplanation);
+    const css = fs.readFileSync(path.resolve(__dirname, "../style.css"), "utf8");
+    const xraySectionBlock = (css.match(/\.xray-section\s*\{[^}]*\}/) || [""])[0];
+    expect(xraySectionBlock).not.toContain("position: absolute");
+    expect(document.querySelector(".xray-section--node-trace")).not.toBeNull();
+    expect(document.querySelector(".xray-section--state-watcher")).not.toBeNull();
+    expect(document.querySelector(".xray-section--inspector")).not.toBeNull();
+  });
+
   test("test_json_visual_map_structure_is_not_overridden_by_runtime_map_data", async () => {
     const fetchSpy = spyOnFetch().mockResolvedValue(
       mockResponse({
@@ -2169,6 +2618,42 @@ describe("web_ui/app.js UI bindings", () => {
     expect(chatCalls.some((payload) => payload.intent === "trigger_idle_banter")).toBe(false);
   });
 
+  test("test_owner_acceptance_qa_no_idle_syncs_initial_state_without_replaying_stale_diffs", async () => {
+    const fetchSpy = spyOnFetch().mockResolvedValue(
+      mockResponse({
+        responses: [],
+        journal_events: [],
+        current_location: "废弃死灵实验室",
+        flags: {
+          necromancer_lab_poison_trap_disarmed: true,
+          act3_diary_decoded: true,
+        },
+        party_status: {},
+        environment_objects: {
+          gas_trap_1: { id: "gas_trap_1", status: "disabled" },
+        },
+        player_inventory: {
+          healing_potion: 2,
+        },
+        combat_state: {},
+      })
+    );
+
+    const api = await bootAppForTest("http://localhost/?qa_no_idle=1");
+
+    const chatCalls = fetchSpy.mock.calls
+      .filter(([url]) => String(url).includes("/api/chat"))
+      .map(([, req]) => JSON.parse(req.body));
+    expect(chatCalls.length).toBe(1);
+    expect(chatCalls[0].intent).toBe("init_sync");
+
+    const baseline = api.buildShowcaseSnapshot();
+    expect(baseline.flags.necromancer_lab_poison_trap_disarmed).toBe(true);
+    expect(baseline.player_inventory.healing_potion).toBe(2);
+    expect(baseline.environment_objects.gas_trap_1.status).toBe("disabled");
+    expect(document.getElementById("world-state-diff-badge").textContent).toBe("0");
+  });
+
   test("test_interactable_type_maps_to_structured_intent_target", async () => {
     const fetchSpy = spyOnFetch().mockResolvedValue(
       mockResponse({
@@ -2296,9 +2781,30 @@ describe("web_ui/app.js UI bindings", () => {
 
     expect(payload.intent).toBe("CHAT");
     expect(payload.target).toBe("gribbo");
-    expect(payload.source).toBe("ui_text_normalized");
-    expect(payload.intent_context).toEqual({ diary_negotiation_hint: true });
+    expect(payload.source).toBe("boss_diary_truth");
+    expect(payload.intent_context).toEqual({ act4_diary_truth: true, boss_route: "negotiation" });
     expect(payload.intent).not.toBe("USE_ITEM");
+  });
+
+  test("test_implicit_truth_negotiation_without_gribbo_name_routes_to_gribbo", async () => {
+    const api = await bootAppForTest();
+
+    const { payload } = api.buildChatPayload(
+      "我知道药剂对你做了什么。你不是守卫，你是实验品。把钥匙给我，我们带你离开。",
+      null,
+      null,
+      { source: "text_input" }
+    );
+
+    expect(payload).toMatchObject({
+      intent: "CHAT",
+      target: "gribbo",
+      source: "boss_diary_truth",
+      intent_context: {
+        act4_diary_truth: true,
+        boss_route: "negotiation",
+      },
+    });
   });
 
   test("test_active_dialogue_target_gribbo_forces_chat_target_on_plain_text", async () => {
@@ -2368,6 +2874,74 @@ describe("web_ui/app.js UI bindings", () => {
     expect(payload.player_position).toEqual([6, 15]);
   });
 
+  test("test_final_exit_text_payload_includes_latest_local_player_grid_position", async () => {
+    const api = await bootAppForTest();
+    window.BG3TacticalMap.getPlayerGridPosition.mockReturnValue({ x: 16, y: 4 });
+    const first = api.buildChatPayload(
+      "用 heavy_iron_key 打开 heavy_oak_door_1。",
+      null,
+      null,
+      { source: "text_input" }
+    ).payload;
+    window.BG3TacticalMap.getPlayerGridPosition.mockReturnValue({ x: 17, y: 4 });
+
+    const { payload } = api.buildChatPayload(
+      "用 heavy_iron_key 打开 heavy_oak_door_1。",
+      null,
+      null,
+      { source: "text_input" }
+    );
+
+    expect(first.client_player_position).toEqual({ x: 16, y: 4 });
+    expect(payload).toMatchObject({
+      intent: "INTERACT",
+      target: "heavy_oak_door_1",
+      source: "text_input",
+      client_player_position: { x: 17, y: 4 },
+      player_position: [17, 4],
+    });
+  });
+
+  test("test_necromancer_lab_natural_move_text_routes_to_adjacent_door_tiles", async () => {
+    const api = await bootAppForTest();
+
+    expect(api.buildChatPayload("靠近 B-D 实验室重门。", null, null, { source: "text_input" }).payload)
+      .toMatchObject({
+        intent: "MOVE",
+        target: "4,8",
+        source: "ui_text_move",
+      });
+
+    expect(api.buildChatPayload("打开 A-B 门，进入走廊入口。", null, null, { source: "text_input" }).payload)
+      .toMatchObject({
+        intent: "INTERACT",
+        target: "door_a_to_b",
+      });
+
+    expect(api.buildChatPayload("移动到 17,4", null, null, { source: "text_input" }).payload)
+      .toMatchObject({
+        intent: "MOVE",
+        target: "17,4",
+        source: "ui_text_move",
+      });
+  });
+
+  test("test_final_exit_open_text_overrides_active_gribbo_dialogue_target", async () => {
+    const api = await bootAppForTest();
+    api.state.activeDialogueTarget = "gribbo";
+    window.BG3TacticalMap.getPlayerGridPosition.mockReturnValue({ x: 17, y: 4 });
+
+    const { payload } = api.buildChatPayload("用钥匙打开出口门。", null, null, { source: "text_input" });
+
+    expect(payload).toMatchObject({
+      intent: "INTERACT",
+      target: "heavy_oak_door_1",
+      source: "text_input",
+      client_player_position: { x: 17, y: 4 },
+      player_position: [17, 4],
+    });
+  });
+
   test("test_interaction_hint_target_matches_e_payload_target", async () => {
     const fetchSpy = spyOnFetch().mockResolvedValue(
       mockResponse({
@@ -2398,10 +2972,11 @@ describe("web_ui/app.js UI bindings", () => {
       interactables: [{ id: "heavy_oak_door_1", type: "door", x: 3, y: 2, name: "大门" }],
     });
     window.BG3InputController.setPlayerPosition(2, 2);
+    window.BG3TacticalMap.getPlayerGridPosition.mockReturnValue({ x: 2, y: 2 });
     window.BG3InputController.updateHint();
 
     const hintText = String(document.getElementById("interaction-hint").textContent || "");
-    expect(hintText).toContain("E 打开门");
+    expect(hintText).toContain("E 打开出口门");
     expect(hintText).toContain("[heavy_oak_door_1]");
 
     window.BG3InputController.interact();
@@ -2411,6 +2986,39 @@ describe("web_ui/app.js UI bindings", () => {
     const payload = JSON.parse(chatCall[1].body);
     expect(payload.intent).toBe("INTERACT");
     expect(payload.target).toBe("heavy_oak_door_1");
+    expect(payload.client_player_position).toEqual({ x: 2, y: 2 });
+    expect(payload.player_position).toEqual([2, 2]);
+  });
+
+  test("test_wasd_local_move_does_not_call_chat_until_interaction", async () => {
+    const fetchSpy = spyOnFetch().mockResolvedValue(
+      mockResponse({
+        responses: [],
+        journal_events: [],
+        current_location: "测试场景",
+        party_status: {},
+        environment_objects: {},
+        player_inventory: {},
+        combat_state: {},
+      })
+    );
+    await bootAppForTest();
+    fetchSpy.mockClear();
+
+    window.BG3InputController.setMap({
+      width: 20,
+      height: 14,
+      collision: Array.from({ length: 14 }, () => Array(20).fill(false)),
+      losBlockers: Array.from({ length: 14 }, () => Array(20).fill(false)),
+      triggers: [],
+      spawns: [],
+      interactables: [],
+    });
+    window.BG3InputController.setPlayerPosition(2, 2);
+
+    expect(window.BG3InputController.movePlayer(1, 0)).toBe(true);
+    const chatCalls = fetchSpy.mock.calls.filter(([url]) => String(url).includes("/api/chat"));
+    expect(chatCalls).toHaveLength(0);
   });
 
   test("test_hidden_trap_does_not_steal_e_interaction_target", async () => {
@@ -3183,6 +3791,1096 @@ describe("web_ui/app.js UI bindings", () => {
     window.matchMedia = previousMatchMedia;
   });
 
+  test("test_companion_bark_renders_astarion_trap_warning_compact", async () => {
+    loadNewModules();
+    jest.useFakeTimers();
+    window.BG3HudRenderers.dispatchUIEvents([{
+      type: "trap_insight",
+      actor: "astarion",
+      trapId: "gas_trap_1",
+    }]);
+    const bark = document.querySelector(".companion-bark--astarion");
+    expect(bark).not.toBeNull();
+    expect(bark.textContent).toContain("Astarion");
+    expect(bark.textContent).toContain("thinking");
+    expect(bark.textContent).not.toContain("Hidden gas trap");
+    jest.advanceTimersByTime(420);
+    expect(bark.classList.contains("is-typing")).toBe(true);
+    expect(bark.querySelector(".companion-bark-text").textContent.length).toBeGreaterThan(0);
+    window.BG3HudRenderers.skipCurrentCompanionBark();
+    expect(bark.textContent).toContain("Hidden gas trap");
+    expect(document.querySelector(".companion-bark-container--compact")).not.toBeNull();
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+  });
+
+  test("test_three_companion_barks_stack_without_overlap_and_cap_at_three", async () => {
+    loadNewModules();
+    jest.useFakeTimers();
+    window.BG3HudRenderers.dispatchCompanionBarks([
+      { speaker: "astarion", text: "Astarion line." },
+      { speaker: "shadowheart", text: "Shadowheart line." },
+      { speaker: "laezel", text: "Lae'zel line." },
+      { speaker: "gribbo", text: "Gribbo line." },
+    ]);
+    const host = document.querySelector(".companion-bark-container");
+    const barks = Array.from(document.querySelectorAll(".companion-bark"));
+    expect(host.classList.contains("companion-bark-container--compact")).toBe(true);
+    expect(barks).toHaveLength(1);
+    expect(barks[0].dataset.speaker).toBe("astarion");
+    window.BG3HudRenderers.skipCurrentCompanionBark();
+    window.BG3HudRenderers.skipCurrentCompanionBark();
+    expect(document.querySelectorAll(".companion-bark")).toHaveLength(1);
+    expect(document.querySelector(".companion-bark").dataset.speaker).toBe("shadowheart");
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+  });
+
+  test("test_same_speaker_bark_updates_existing_entry", async () => {
+    loadNewModules();
+    jest.useFakeTimers();
+    window.BG3HudRenderers.renderCompanionBark({ speaker: "astarion", text: "First warning." });
+    window.BG3HudRenderers.renderCompanionBark({ speaker: "astarion", text: "Second warning." });
+    const barks = document.querySelectorAll(".companion-bark--astarion");
+    expect(barks).toHaveLength(1);
+    window.BG3HudRenderers.skipCurrentCompanionBark();
+    expect(barks[0].textContent).toContain("First warning.");
+    window.BG3HudRenderers.skipCurrentCompanionBark();
+    const next = document.querySelector(".companion-bark--astarion");
+    window.BG3HudRenderers.skipCurrentCompanionBark();
+    expect(next.textContent).toContain("Second warning.");
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+  });
+
+  test("test_pending_same_speaker_bark_updates_existing_pending_entry", async () => {
+    loadNewModules();
+    jest.useFakeTimers();
+    window.BG3HudRenderers.dispatchCompanionBarks([
+      { speaker: "astarion", text: "First active." },
+      { speaker: "shadowheart", text: "Old pending." },
+      { speaker: "shadowheart", text: "Updated pending." },
+    ]);
+    window.BG3HudRenderers.skipCurrentCompanionBark();
+    window.BG3HudRenderers.skipCurrentCompanionBark();
+    const bark = document.querySelector(".companion-bark--shadowheart");
+    window.BG3HudRenderers.skipCurrentCompanionBark();
+    expect(bark.textContent).toContain("Updated pending.");
+    expect(bark.textContent).not.toContain("Old pending.");
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+  });
+
+  test("test_lower_priority_same_speaker_bark_does_not_overwrite_pending_signal", async () => {
+    loadNewModules();
+    jest.useFakeTimers();
+    window.BG3HudRenderers.dispatchCompanionBarks([
+      { speaker: "astarion", text: "Current trap warning.", priority: 9 },
+      { speaker: "astarion", text: "Mechanism handled.", priority: 8 },
+      { speaker: "astarion", text: "Generic acknowledgement.", priority: 0 },
+    ]);
+    window.BG3HudRenderers.skipCurrentCompanionBark();
+    window.BG3HudRenderers.skipCurrentCompanionBark();
+    const bark = document.querySelector(".companion-bark--astarion");
+    window.BG3HudRenderers.skipCurrentCompanionBark();
+    expect(bark.textContent).toContain("Mechanism handled.");
+    expect(bark.textContent).not.toContain("Generic acknowledgement.");
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+  });
+
+  test("test_reduced_motion_companion_bark_renders_full_text_immediately", async () => {
+    loadNewModules();
+    const previousMatchMedia = window.matchMedia;
+    window.matchMedia = jest.fn().mockImplementation((query) => ({
+      matches: query === "(prefers-reduced-motion: reduce)",
+      media: query,
+      addListener: jest.fn(),
+      removeListener: jest.fn(),
+      addEventListener: jest.fn(),
+      removeEventListener: jest.fn(),
+      dispatchEvent: jest.fn(),
+    }));
+    jest.useFakeTimers();
+    window.BG3HudRenderers.renderCompanionBark({ speaker: "astarion", text: "Full sentence immediately." });
+    const bark = document.querySelector(".companion-bark");
+    expect(bark.textContent).toContain("Full sentence immediately.");
+    expect(bark.classList.contains("is-typing")).toBe(false);
+    expect(bark.classList.contains("is-reduced-motion")).toBe(true);
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+    window.matchMedia = previousMatchMedia;
+  });
+
+  test("test_space_skip_current_bark_to_full_text", async () => {
+    loadNewModules();
+    jest.useFakeTimers();
+    window.BG3HudRenderers.renderCompanionBark({ speaker: "astarion", text: "Skip me now." });
+    const bark = document.querySelector(".companion-bark");
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true, cancelable: true }));
+    expect(bark.textContent).toContain("Skip me now.");
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+  });
+
+  test("test_click_bark_skips_current_bark_to_full_text", async () => {
+    loadNewModules();
+    jest.useFakeTimers();
+    window.BG3HudRenderers.renderCompanionBark({ speaker: "shadowheart", text: "Click skip." });
+    const bark = document.querySelector(".companion-bark--shadowheart");
+    bark.click();
+    expect(bark.textContent).toContain("Click skip.");
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+  });
+
+  test("test_thinking_state_transitions_to_typing_within_600ms", async () => {
+    loadNewModules();
+    jest.useFakeTimers();
+    window.BG3HudRenderers.renderCompanionBark({ speaker: "astarion", text: "Thinking ends quickly." });
+    const bark = document.querySelector(".companion-bark");
+    expect(bark.classList.contains("is-thinking")).toBe(true);
+    jest.advanceTimersByTime(601);
+    expect(bark.classList.contains("is-thinking")).toBe(false);
+    expect(bark.classList.contains("is-typing")).toBe(true);
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+  });
+
+  test("test_high_priority_trap_triggered_bark_interrupts_lower_priority_queue", async () => {
+    loadNewModules();
+    jest.useFakeTimers();
+    window.BG3HudRenderers.renderCompanionBark({ speaker: "shadowheart", text: "Low priority line.", priority: 1 });
+    window.BG3HudRenderers.dispatchUIEvents([{ type: "trap_triggered", trapId: "gas_trap_1" }]);
+    const bark = document.querySelector(".companion-bark");
+    expect(bark.dataset.speaker).toBe("gribbo");
+    window.BG3HudRenderers.skipCurrentCompanionBark();
+    expect(bark.textContent).toContain("Poison gas");
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+  });
+
+  test("test_long_bark_text_is_truncated_before_typewriter_layout", async () => {
+    loadNewModules();
+    jest.useFakeTimers();
+    const longText = "A".repeat(180);
+    window.BG3HudRenderers.renderCompanionBark({ speaker: "astarion", text: longText });
+    const bark = document.querySelector(".companion-bark");
+    window.BG3HudRenderers.skipCurrentCompanionBark();
+    expect(bark.querySelector(".companion-bark-text").textContent.length).toBeLessThanOrEqual(118);
+    expect(bark.querySelector(".companion-bark-text").textContent.endsWith("...")).toBe(true);
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+  });
+
+  test("test_typewriter_does_not_call_chat_api", async () => {
+    const fetchSpy = spyOnFetch().mockResolvedValue(mockResponse({}));
+    loadNewModules();
+    jest.useFakeTimers();
+    window.BG3HudRenderers.renderCompanionBark({ speaker: "astarion", text: "No network." });
+    jest.advanceTimersByTime(1400);
+    expect(fetchSpy.mock.calls.some(([url]) => String(url).includes("/api/chat"))).toBe(false);
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+  });
+
+  test("test_typewriter_key_skip_ignored_while_text_input_focused", async () => {
+    loadNewModules();
+    jest.useFakeTimers();
+    const input = document.createElement("input");
+    document.body.appendChild(input);
+    input.focus();
+    window.BG3HudRenderers.renderCompanionBark({ speaker: "astarion", text: "Do not skip while typing." });
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true, cancelable: true }));
+    expect(document.querySelector(".companion-bark").textContent).not.toContain("Do not skip while typing.");
+    input.blur();
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true, cancelable: true }));
+    expect(document.querySelector(".companion-bark").textContent).toContain("Do not skip while typing.");
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+  });
+
+  test("test_companion_bark_legacy_immediate_update_is_no_longer_used_for_normal_motion", async () => {
+    loadNewModules();
+    jest.useFakeTimers();
+    window.BG3HudRenderers.renderCompanionBark({ speaker: "astarion", text: "Second warning." });
+    const barks = document.querySelectorAll(".companion-bark--astarion");
+    expect(barks).toHaveLength(1);
+    expect(barks[0].textContent).not.toContain("Second warning.");
+    window.BG3HudRenderers.skipCurrentCompanionBark();
+    expect(barks[0].textContent).toContain("Second warning.");
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+  });
+
+  test("test_actor_spoke_event_uses_companion_bark_renderer_after_dom_refresh", async () => {
+    loadNewModules();
+    jest.useFakeTimers();
+    window.BG3HudRenderers.renderCompanionBark({ speaker: "astarion", text: "Old detached bark." });
+    document.querySelector(".companion-bark").remove();
+
+    window.BG3HudRenderers.dispatchUIEvents([{
+      type: "actor_spoke",
+      speaker: "astarion",
+      text: "Fresh bark after refresh.",
+    }]);
+
+    const barks = document.querySelectorAll(".companion-bark--astarion");
+    expect(barks).toHaveLength(1);
+    window.BG3HudRenderers.skipCurrentCompanionBark();
+    expect(barks[0].textContent).toContain("Fresh bark after refresh.");
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+  });
+
+  test("test_realistic_act2_trap_perception_payload_dispatches_bark", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    const api = await bootAppForTest();
+    jest.useFakeTimers();
+    api.triggerSpeechBubbles({
+      responses: [{ speaker: "astarion", text: "附近有陷阱，小心。" }],
+      journal_events: ["[陷阱感知] astarion -> gas_trap_1"],
+    }, { skipUIEvents: true });
+    const bark = document.querySelector(".companion-bark--astarion");
+    expect(bark).not.toBeNull();
+    expect(bark.textContent).toContain("Astarion");
+    window.BG3HudRenderers.skipCurrentCompanionBark();
+    expect(bark.textContent).toContain("附近有陷阱");
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+  });
+
+  test("test_realistic_trap_disarm_journal_dispatches_astarion_bark", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    const api = await bootAppForTest();
+    jest.useFakeTimers();
+    api.triggerSpeechBubbles({
+      journal_events: ["[陷阱解除] astarion -> gas_trap_1"],
+    }, { skipUIEvents: true });
+    const bark = document.querySelector(".companion-bark--astarion");
+    expect(bark).not.toBeNull();
+    window.BG3HudRenderers.skipCurrentCompanionBark();
+    expect(bark.textContent).toContain("处理好了");
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+  });
+
+  test("test_realistic_act3_study_journals_queue_three_companion_barks", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    const api = await bootAppForTest();
+    jest.useFakeTimers();
+    api.triggerSpeechBubbles({
+      journal_events: [
+        "[书房观察] astarion -> key_sketch",
+        "[书房观察] shadowheart -> necromancy",
+        "[书房观察] laezel -> exit_plan",
+      ],
+    }, { skipUIEvents: true });
+    expect(document.querySelectorAll(".companion-bark")).toHaveLength(1);
+    expect(document.querySelector(".companion-bark--astarion")).not.toBeNull();
+    window.BG3HudRenderers.skipCurrentCompanionBark();
+    expect(document.querySelector(".companion-bark--astarion").textContent).toContain("钥匙草图");
+    window.BG3HudRenderers.skipCurrentCompanionBark();
+    expect(document.querySelector(".companion-bark--shadowheart")).not.toBeNull();
+    window.BG3HudRenderers.skipCurrentCompanionBark();
+    expect(document.querySelector(".companion-bark--shadowheart").textContent).toContain("死灵气息");
+    window.BG3HudRenderers.skipCurrentCompanionBark();
+    expect(document.querySelector(".companion-bark--laezel")).not.toBeNull();
+    window.BG3HudRenderers.skipCurrentCompanionBark();
+    expect(document.querySelector(".companion-bark--laezel").textContent).toContain("开门");
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+  });
+
+  test("test_realistic_act4_boss_strategy_journals_queue_in_party_order", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    const api = await bootAppForTest();
+    jest.useFakeTimers();
+    api.triggerSpeechBubbles({
+      journal_events: [
+        "[Boss方案] shadowheart -> contain_corruption",
+        "[Boss方案] laezel -> execute",
+        "[Boss方案] astarion -> steal_key",
+      ],
+    }, { skipUIEvents: true });
+    expect(document.querySelector(".companion-bark--astarion")).not.toBeNull();
+    window.BG3HudRenderers.skipCurrentCompanionBark();
+    expect(document.querySelector(".companion-bark--astarion").textContent).toContain("钥匙");
+    window.BG3HudRenderers.skipCurrentCompanionBark();
+    expect(document.querySelector(".companion-bark--shadowheart")).not.toBeNull();
+    window.BG3HudRenderers.skipCurrentCompanionBark();
+    expect(document.querySelector(".companion-bark--shadowheart").textContent).toContain("毒气罐");
+    window.BG3HudRenderers.skipCurrentCompanionBark();
+    expect(document.querySelector(".companion-bark--laezel")).not.toBeNull();
+    window.BG3HudRenderers.skipCurrentCompanionBark();
+    expect(document.querySelector(".companion-bark--laezel").textContent).toContain("杀掉");
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+  });
+
+  test("test_ui_event_boss_strategy_payload_alone_extracts_barks", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    const api = await bootAppForTest();
+    const barks = api.extractSpeechBarks({
+      ui_events: [{
+        type: "boss_strategy",
+        strategies: [
+          { actor: "astarion", plan: "steal_key" },
+          { actor: "shadowheart", plan: "contain_corruption" },
+          { actor: "laezel", plan: "execute" },
+        ],
+      }],
+    });
+    expect(barks.map((bark) => bark.speaker)).toEqual(["astarion", "shadowheart", "laezel"]);
+  });
+
+  test("test_response_and_journal_same_bark_are_deduped", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    const api = await bootAppForTest();
+    const barks = api.extractSpeechBarks({
+      responses: [{ speaker: "astarion", text: "附近有陷阱，小心。" }],
+      journal_events: ["[陷阱感知] astarion -> gas_trap_1"],
+    }, { skipUIEvents: true });
+    expect(barks.filter((bark) => bark.speaker === "astarion" && bark.text === "附近有陷阱，小心。")).toHaveLength(1);
+  });
+
+  test("test_companion_bark_uses_compact_style_not_modal_title_style", async () => {
+    loadNewModules();
+    jest.useFakeTimers();
+    window.BG3HudRenderers.renderCompanionBark({ speaker: "shadowheart", text: "Keep your voice down." });
+    const bark = document.querySelector(".companion-bark");
+    expect(bark).not.toBeNull();
+    expect(bark.querySelector(".companion-bark-speaker")).not.toBeNull();
+    expect(bark.querySelector(".companion-bark-text")).not.toBeNull();
+    expect(bark.querySelector("h1,h2,h3,.agent-signal-card-title")).toBeNull();
+    expect(document.querySelector(".dialogue-overlay:not(.hidden)")).toBeNull();
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+  });
+
+  test("test_bark_does_not_block_keyboard_input", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    const api = await bootAppForTest();
+    api.applyNormalizedMap(buildFormationTestMap(), { source: "json" });
+    window.BG3TacticalMap.movePlayerLocal.mockClear();
+    window.BG3HudRenderers.renderCompanionBark({ speaker: "astarion", text: "Move." });
+
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "w", bubbles: true, cancelable: true }));
+
+    expect(window.BG3TacticalMap.movePlayerLocal).toHaveBeenCalled();
+    expect(window.BG3DirectorTrace.getState()).toBe("idle");
+  });
+
+  test("test_reduced_motion_companion_bark_has_no_motion_class", async () => {
+    loadNewModules();
+    const previousMatchMedia = window.matchMedia;
+    window.matchMedia = jest.fn().mockImplementation((query) => ({
+      matches: query === "(prefers-reduced-motion: reduce)",
+      media: query,
+      addListener: jest.fn(),
+      removeListener: jest.fn(),
+      addEventListener: jest.fn(),
+      removeEventListener: jest.fn(),
+      dispatchEvent: jest.fn(),
+    }));
+    jest.useFakeTimers();
+    window.BG3HudRenderers.renderCompanionBark({ speaker: "astarion", text: "No flourish." });
+    const bark = document.querySelector(".companion-bark");
+    expect(bark.classList.contains("is-reduced-motion")).toBe(true);
+    expect(bark.classList.contains("companion-bark--motion")).toBe(false);
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+    window.matchMedia = previousMatchMedia;
+  });
+
+  test("test_act4_party_strategy_split_produces_three_companion_barks", async () => {
+    loadNewModules();
+    jest.useFakeTimers();
+    window.BG3HudRenderers.dispatchUIEvents([{
+      type: "boss_strategy",
+      strategies: [
+        { actor: "astarion", plan: "steal_key" },
+        { actor: "shadowheart", plan: "contain_corruption" },
+        { actor: "laezel", plan: "execute" },
+      ],
+    }]);
+    expect(document.querySelectorAll(".companion-bark")).toHaveLength(1);
+    expect(document.querySelector(".companion-bark--astarion")).not.toBeNull();
+    window.BG3HudRenderers.skipCurrentCompanionBark();
+    expect(document.querySelector(".companion-bark--astarion").textContent).toContain("take the key");
+    window.BG3HudRenderers.skipCurrentCompanionBark();
+    expect(document.querySelector(".companion-bark--shadowheart")).not.toBeNull();
+    window.BG3HudRenderers.skipCurrentCompanionBark();
+    expect(document.querySelector(".companion-bark--shadowheart").textContent).toContain("poison");
+    window.BG3HudRenderers.skipCurrentCompanionBark();
+    expect(document.querySelector(".companion-bark--laezel")).not.toBeNull();
+    window.BG3HudRenderers.skipCurrentCompanionBark();
+    expect(document.querySelector(".companion-bark--laezel").textContent).toContain("Strike");
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+  });
+
+  test("test_boss_strategy_bark_interrupts_lower_priority_guidance_bark", async () => {
+    loadNewModules();
+    jest.useFakeTimers();
+    window.BG3HudRenderers.dispatchUIEvents([{
+      type: "companion_guidance",
+      actorId: "astarion",
+      advice: "astarion notices inventory/world state: has_key=False door_id=door_b_to_d.",
+      state: "missing_key",
+    }]);
+    expect(document.querySelector(".companion-bark--astarion").textContent).not.toContain("notices inventory");
+    window.BG3HudRenderers.dispatchUIEvents([{
+      type: "boss_strategy",
+      strategies: [{ actor: "astarion", plan: "steal_key" }],
+    }]);
+    const bark = document.querySelector(".companion-bark--astarion");
+    window.BG3HudRenderers.skipCurrentCompanionBark();
+    expect(bark.textContent).toContain("take the key");
+    expect(bark.textContent).not.toContain("notices inventory");
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+  });
+
+  test("test_memory_party_guidance_barks_do_not_create_speech_bubble_or_modal", async () => {
+    loadNewModules();
+    jest.useFakeTimers();
+    window.BG3HudRenderers.dispatchUIEvents([
+      { type: "memory_echo", actor: "astarion", tone: "resentful", quote: "Now you need me?" },
+      { type: "party_stance", stances: [{ actor: "shadowheart", stance: "mercy" }] },
+      { type: "companion_guidance", actorId: "astarion", advice: "Find the study.", state: "missing_key" },
+    ]);
+    expect(document.querySelectorAll(".companion-bark")).toHaveLength(1);
+    expect(document.querySelector(".dialogue-overlay:not(.hidden)")).toBeNull();
+    expect(document.querySelector(".speech-bubble")).toBeNull();
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+  });
+
+  test("test_companion_bark_mobile_width_and_unknown_fallback_style_contract", async () => {
+    loadNewModules();
+    jest.useFakeTimers();
+    window.BG3HudRenderers.renderCompanionBark({ speaker: "", text: "Unknown speaker." });
+    const bark = document.querySelector(".companion-bark--unknown");
+    expect(bark).not.toBeNull();
+    const css = fs.readFileSync(path.resolve(__dirname, "../style.css"), "utf8");
+    expect(css).toMatch(/\.companion-bark-container\s*\{[\s\S]*width:\s*min\(320px,\s*calc\(100vw - 44px\)\)/);
+    expect(css).toContain("@media (max-width: 768px)");
+    expect(css).toMatch(/\.companion-bark-container\s*\{[\s\S]*width:\s*min\(300px,\s*calc\(100vw - 24px\)\)/);
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+  });
+
+  test("test_study_observation_replaces_stale_trap_disarmed_bark", async () => {
+    loadNewModules();
+    jest.useFakeTimers();
+    window.BG3HudRenderers.dispatchUIEvents([{ type: "trap_disarmed", actor: "astarion", trapId: "gas_trap_1" }]);
+    let bark = document.querySelector(".companion-bark--astarion");
+    expect(bark).not.toBeNull();
+    window.BG3HudRenderers.skipCurrentCompanionBark();
+    expect(bark.textContent).toContain("Done");
+
+    window.BG3HudRenderers.dispatchCompanionBarks([
+      { speaker: "astarion", text: "钥匙草图、逃生路线。", source: "study_observation", priority: 6 },
+      { speaker: "shadowheart", text: "这里的死灵气息很重。", source: "study_observation", priority: 6 },
+      { speaker: "laezel", text: "找到能开门的东西。", source: "study_observation", priority: 6 },
+    ]);
+
+    bark = document.querySelector(".companion-bark");
+    expect(bark).not.toBeNull();
+    expect(bark.textContent).not.toContain("Done. The mechanism");
+    expect(window.BG3HudRenderers.getCompanionBarkDebugState()).toMatchObject({
+      activeSpeaker: "astarion",
+      currentGroup: "study",
+    });
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+  });
+
+  test("test_boss_strategy_replaces_stale_study_or_trap_bark", async () => {
+    loadNewModules();
+    jest.useFakeTimers();
+    window.BG3HudRenderers.dispatchCompanionBarks([
+      { speaker: "astarion", text: "钥匙草图、逃生路线。", source: "study_observation", priority: 6 },
+      { speaker: "shadowheart", text: "这里的死灵气息很重。", source: "study_observation", priority: 6 },
+    ]);
+    expect(window.BG3HudRenderers.getCompanionBarkDebugState().currentGroup).toBe("study");
+
+    window.BG3HudRenderers.dispatchCompanionBarks([
+      { speaker: "astarion", text: "Let me take the key.", source: "boss_strategy", priority: 8 },
+      { speaker: "shadowheart", text: "Keep the poison contained.", source: "boss_strategy", priority: 8 },
+      { speaker: "laezel", text: "Strike first.", source: "boss_strategy", priority: 8 },
+    ]);
+
+    const state = window.BG3HudRenderers.getCompanionBarkDebugState();
+    expect(state.activeSpeaker).toBe("astarion");
+    expect(state.currentGroup).toBe("boss_strategy");
+    expect(state.pendingSpeakers).toEqual(["shadowheart", "laezel"]);
+    expect(document.querySelector(".companion-bark").textContent).not.toContain("钥匙草图");
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+  });
+
+  test("test_multi_agent_study_queue_completes_party_order_within_bounded_time", async () => {
+    loadNewModules();
+    jest.useFakeTimers();
+    window.BG3HudRenderers.dispatchCompanionBarks([
+      { speaker: "astarion", text: "钥匙草图、逃生路线。", source: "study_observation", priority: 6 },
+      { speaker: "shadowheart", text: "这里的死灵气息很重。", source: "study_observation", priority: 6 },
+      { speaker: "laezel", text: "找到能开门的东西。", source: "study_observation", priority: 6 },
+    ]);
+
+    jest.advanceTimersByTime(7000);
+
+    const state = window.BG3HudRenderers.getCompanionBarkDebugState();
+    expect(state.completedSpeakers).toEqual(["astarion", "shadowheart", "laezel"]);
+    expect(state.pendingSpeakers).toEqual([]);
+    expect(state.queueLength).toBe(0);
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+  });
+
+  test("test_multi_agent_boss_strategy_queue_completes_party_order_within_bounded_time", async () => {
+    loadNewModules();
+    jest.useFakeTimers();
+    window.BG3HudRenderers.dispatchCompanionBarks([
+      { speaker: "astarion", text: "Let me take the key.", source: "boss_strategy", priority: 8 },
+      { speaker: "shadowheart", text: "Keep the poison contained.", source: "boss_strategy", priority: 8 },
+      { speaker: "laezel", text: "Strike first.", source: "boss_strategy", priority: 8 },
+    ]);
+
+    jest.advanceTimersByTime(7000);
+
+    const state = window.BG3HudRenderers.getCompanionBarkDebugState();
+    expect(state.completedSpeakers).toEqual(["astarion", "shadowheart", "laezel"]);
+    expect(state.completedSpeakers).toContain("shadowheart");
+    expect(state.pendingSpeakers).not.toContain("laezel");
+    expect(state.queueLength).toBe(0);
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+  });
+
+  test("test_generic_response_cannot_replace_active_boss_strategy_bark", async () => {
+    loadNewModules();
+    jest.useFakeTimers();
+    window.BG3HudRenderers.dispatchCompanionBarks([
+      { speaker: "astarion", text: "Let me take the key.", source: "boss_strategy", priority: 8 },
+      { speaker: "shadowheart", text: "Keep the poison contained.", source: "boss_strategy", priority: 8 },
+    ]);
+    window.BG3HudRenderers.dispatchCompanionBarks([
+      { speaker: "gribbo", text: "Generic interruption.", source: "response", priority: 10 },
+    ]);
+
+    const state = window.BG3HudRenderers.getCompanionBarkDebugState();
+    expect(state.activeSpeaker).toBe("astarion");
+    expect(state.pendingSpeakers).toEqual(["shadowheart"]);
+    expect(document.querySelector(".companion-bark").textContent).not.toContain("Generic interruption");
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+  });
+
+  test("test_stale_trap_disarmed_cannot_replace_boss_strategy_queue", async () => {
+    loadNewModules();
+    jest.useFakeTimers();
+    window.BG3HudRenderers.dispatchCompanionBarks([
+      { speaker: "astarion", text: "Let me take the key.", source: "boss_strategy", priority: 8 },
+      { speaker: "shadowheart", text: "Keep the poison contained.", source: "boss_strategy", priority: 8 },
+      { speaker: "laezel", text: "Strike first.", source: "boss_strategy", priority: 8 },
+    ]);
+
+    const blocked = window.BG3HudRenderers.dispatchCompanionBarks([
+      { speaker: "astarion", text: "Done. The mechanism will not bite unless you insist.", source: "trap_disarmed", priority: 8 },
+    ]);
+
+    expect(blocked).toEqual([]);
+    const state = window.BG3HudRenderers.getCompanionBarkDebugState();
+    expect(state.currentGroup).toBe("boss_strategy");
+    expect(state.activeSpeaker).toBe("astarion");
+    expect(state.pendingSpeakers).toEqual(["shadowheart", "laezel"]);
+    expect(document.querySelector(".companion-bark").textContent).not.toContain("mechanism");
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+  });
+
+  test("test_bark_queue_qa_state_exists_empty_on_module_boot", async () => {
+    loadNewModules();
+    expect(window.__BG3_QA_STATE__.barkQueue).toMatchObject({
+      activeSpeaker: "",
+      activeSource: "",
+      activeSourceGroup: "",
+      activeComplete: false,
+      pendingSpeakers: [],
+      pendingSources: [],
+      pendingSourceGroups: [],
+      completedSpeakers: [],
+      completedSources: [],
+      currentGroup: "",
+      queueLength: 0,
+    });
+    expect(window.__BG3_QA_STATE__.barkQueue.pendingSceneScopes).toEqual([]);
+  });
+
+  test("test_clear_companion_barks_without_args_resets_qa_state_empty", async () => {
+    loadNewModules();
+    jest.useFakeTimers();
+    window.BG3HudRenderers.dispatchCompanionBarks([
+      { speaker: "astarion", text: "Done. The mechanism will not bite unless you insist.", source: "trap_disarmed", priority: 8 },
+    ]);
+    expect(window.BG3HudRenderers.getCompanionBarkDebugState().currentGroup).toBe("trap");
+
+    window.BG3HudRenderers.clearCompanionBarks();
+
+    expect(window.__BG3_QA_STATE__.barkQueue).toMatchObject({
+      activeSpeaker: "",
+      activeSourceGroup: "",
+      pendingSpeakers: [],
+      completedSpeakers: [],
+      currentGroup: "",
+      queueLength: 0,
+    });
+    expect(document.querySelector(".companion-bark")).toBeNull();
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+  });
+
+  test("test_act3_study_observation_clears_active_trap_disarmed_bark", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    const api = await bootAppForTest();
+    jest.useFakeTimers();
+    window.BG3HudRenderers.dispatchCompanionBarks([
+      { speaker: "astarion", text: "Done. The mechanism will not bite unless you insist.", source: "trap_disarmed", priority: 8 },
+    ]);
+
+    api.triggerSpeechBubbles({
+      journal_events: ["[书房观察] shadowheart -> necromancy_pollution"],
+    }, { skipUIEvents: true });
+
+    const state = window.BG3HudRenderers.getCompanionBarkDebugState();
+    expect(state.currentGroup).toBe("study");
+    expect(state.activeSpeaker).toBe("shadowheart");
+    expect(document.querySelector(".companion-bark--shadowheart")).not.toBeNull();
+    expect(document.querySelector(".companion-bark").textContent).not.toContain("mechanism");
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+  });
+
+  test("test_act3_context_without_bark_clears_active_trap_disarmed_group", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    const api = await bootAppForTest();
+    jest.useFakeTimers();
+    window.BG3HudRenderers.dispatchCompanionBarks([
+      { speaker: "astarion", text: "Done. The mechanism will not bite unless you insist.", source: "trap_disarmed", priority: 8 },
+    ]);
+
+    api.triggerSpeechBubbles({
+      journal_events: ["[线索整合] chemical_notes -> diary_context"],
+    }, { skipUIEvents: true });
+
+    const state = window.BG3HudRenderers.getCompanionBarkDebugState();
+    expect(state.activeSpeaker).toBe("");
+    expect(state.currentGroup).not.toBe("trap");
+    expect(state.queueLength).toBe(0);
+    expect(document.querySelector(".companion-bark")).toBeNull();
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+  });
+
+  test("test_act3_context_suppresses_later_stale_trap_disarmed_bark", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    const api = await bootAppForTest();
+    jest.useFakeTimers();
+    api.triggerSpeechBubbles({
+      journal_events: ["[线索整合] chemical_notes -> diary_context"],
+    }, { skipUIEvents: true });
+
+    const blocked = window.BG3HudRenderers.dispatchCompanionBarks([
+      { speaker: "astarion", text: "Done. The mechanism will not bite unless you insist.", source: "trap_disarmed", priority: 8 },
+    ]);
+
+    expect(blocked).toEqual([]);
+    expect(window.BG3HudRenderers.getCompanionBarkDebugState()).toMatchObject({
+      activeSpeaker: "",
+      currentGroup: "",
+      queueLength: 0,
+    });
+    expect(document.querySelector(".companion-bark")).toBeNull();
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+  });
+
+  test("test_act3_transition_clear_removes_active_trap_disarmed_dom", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    const api = await bootAppForTest();
+    jest.useFakeTimers();
+    window.BG3HudRenderers.dispatchCompanionBarks([
+      { speaker: "astarion", text: "Done. The mechanism will not bite unless you insist.", source: "trap_disarmed", priority: 8 },
+    ]);
+    window.BG3HudRenderers.skipCurrentCompanionBark();
+    expect(document.querySelector(".companion-bark--astarion").textContent).toContain("mechanism");
+
+    api.hardClearAct3TrapBarks("unit_act3_transition");
+
+    expect(document.querySelector(".companion-bark")).toBeNull();
+    expect(window.__BG3_QA_STATE__.barkQueue).toMatchObject({
+      activeSource: "",
+      activeSourceGroup: "",
+      currentGroup: "",
+      queueLength: 0,
+    });
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+  });
+
+  test("test_reveal_room_c_hard_clears_active_trap_disarmed_dom", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    const api = await bootAppForTest();
+    jest.useFakeTimers();
+    window.BG3HudRenderers.dispatchCompanionBarks([
+      { speaker: "astarion", text: "Done. The mechanism will not bite unless you insist.", source: "trap_disarmed", priority: 8 },
+    ]);
+    window.BG3HudRenderers.skipCurrentCompanionBark();
+    expect(document.querySelector(".companion-bark--astarion").textContent).toContain("mechanism");
+
+    expect(api.revealRoom("room_c_secret_study")).toBe(true);
+
+    const state = window.BG3HudRenderers.getCompanionBarkDebugState();
+    expect(document.querySelector(".companion-bark")).toBeNull();
+    expect(state.activeSourceGroup).not.toBe("trap");
+    expect(state.currentGroup).not.toBe("trap");
+    expect(state.activeSceneScope).not.toBe("act2_corridor");
+    expect(state.pendingSceneScopes).not.toContain("act2_corridor");
+    expect(state.lastDropReason).toMatch(/room_c_reveal|scope_clear:act2_corridor/);
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+  });
+
+  test("test_reveal_room_c_by_door_target_hard_clears_active_trap_disarmed_dom", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    const api = await bootAppForTest();
+    jest.useFakeTimers();
+    window.BG3HudRenderers.dispatchCompanionBarks([
+      { speaker: "astarion", text: "Done. The mechanism will not bite unless you insist.", source: "trap_disarmed", priority: 8 },
+    ]);
+    window.BG3HudRenderers.skipCurrentCompanionBark();
+    expect(document.querySelector(".companion-bark")).not.toBeNull();
+
+    expect(api.revealRoomByDoorTarget("door_b_to_c")).toBe(true);
+
+    const state = window.BG3HudRenderers.getCompanionBarkDebugState();
+    expect(document.querySelector(".companion-bark")).toBeNull();
+    expect(state.activeSourceGroup).not.toBe("trap");
+    expect(state.currentGroup).not.toBe("trap");
+    expect(state.pendingSceneScopes).not.toContain("act2_corridor");
+    expect(state.lastDropReason).toMatch(/room_c_reveal|scope_clear:act2_corridor/);
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+  });
+
+  test("test_pending_act2_trap_scope_bark_is_dropped_on_room_c_reveal", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    const api = await bootAppForTest();
+    jest.useFakeTimers();
+    window.BG3HudRenderers.dispatchCompanionBarks([
+      { speaker: "astarion", text: "Wait. Hidden gas trap.", source: "trap_insight", priority: 9 },
+      { speaker: "shadowheart", text: "The corridor smells wrong.", source: "trap_insight", priority: 9 },
+    ]);
+    const before = window.BG3HudRenderers.getCompanionBarkDebugState();
+    expect(before.activeSceneScope).toBe("act2_corridor");
+    expect(before.pendingSceneScopes).toContain("act2_corridor");
+
+    api.revealRoom("room_c_secret_study");
+
+    const state = window.BG3HudRenderers.getCompanionBarkDebugState();
+    expect(document.querySelector(".companion-bark")).toBeNull();
+    expect(state.pendingSourceGroups).not.toContain("trap");
+    expect(state.pendingSceneScopes).not.toContain("act2_corridor");
+    expect(state.currentGroup).not.toBe("trap");
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+  });
+
+  test("test_room_c_visible_rejects_delayed_trap_disarmed_replay", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    const api = await bootAppForTest();
+    jest.useFakeTimers();
+    api.revealRoom("room_c_secret_study");
+
+    api.triggerSpeechBubbles({
+      journal_events: ["[陷阱解除] astarion -> gas_trap_1"],
+    }, { skipUIEvents: true });
+
+    const state = window.BG3HudRenderers.getCompanionBarkDebugState();
+    expect(document.querySelector(".companion-bark")).toBeNull();
+    expect(state.pendingSources).not.toContain("trap_disarmed");
+    expect(state.pendingSceneScopes).not.toContain("act2_corridor");
+    expect(state.currentGroup).not.toBe("trap");
+    expect(state.lastDropReason).toMatch(/scene_scope_mismatch|scope_clear:act2_corridor|room_c_reveal/);
+    window.BG3HudRenderers.clearCompanionBarks();
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+  });
+
+  test("test_visible_room_c_state_update_hard_clears_active_trap_disarmed_bark", async () => {
+    const fetchSpy = spyOnFetch().mockResolvedValue(mockResponse({
+      responses: [],
+      journal_events: [],
+      map_data: { visible_rooms: ["room_a_spawn", "room_b_corridor", "room_c_secret_study"] },
+      party_status: {},
+      environment_objects: {},
+      player_inventory: {},
+      combat_state: {},
+    }));
+    const api = await bootAppForTest();
+    fetchSpy.mockClear();
+    jest.useFakeTimers();
+    window.BG3HudRenderers.dispatchCompanionBarks([
+      { speaker: "astarion", text: "Done. The mechanism will not bite unless you insist.", source: "trap_disarmed", priority: 8 },
+    ]);
+    window.BG3HudRenderers.skipCurrentCompanionBark();
+
+    await api.sendMessage("同步 Act3 状态", "CHAT", null, { skipLogUpdate: true });
+
+    expect(document.querySelector(".companion-bark")).toBeNull();
+    expect(window.BG3HudRenderers.getCompanionBarkDebugState()).toMatchObject({
+      activeSourceGroup: "",
+      currentGroup: "",
+      queueLength: 0,
+    });
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+  });
+
+  test("test_read_chemical_notes_pre_request_hard_clears_trap_disarmed_bark", async () => {
+    const pending = {};
+    const fetchSpy = spyOnFetch().mockResolvedValue(mockResponse({}));
+    const api = await bootAppForTest();
+    fetchSpy.mockImplementation(() => new Promise((resolve) => {
+      pending.resolve = resolve;
+    }));
+    jest.useFakeTimers();
+    window.BG3HudRenderers.dispatchCompanionBarks([
+      { speaker: "astarion", text: "Done. The mechanism will not bite unless you insist.", source: "trap_disarmed", priority: 8 },
+    ]);
+    window.BG3HudRenderers.skipCurrentCompanionBark();
+    expect(document.querySelector(".companion-bark")).not.toBeNull();
+
+    const sendPromise = api.sendMessage("阅读 chemical_notes", null, null, { source: "text_input" });
+    await Promise.resolve();
+
+    expect(document.querySelector(".companion-bark")).toBeNull();
+    expect(window.BG3HudRenderers.getCompanionBarkDebugState()).toMatchObject({
+      activeSourceGroup: "",
+      currentGroup: "",
+      queueLength: 0,
+    });
+
+    pending.resolve(await mockResponse({
+      responses: [],
+      journal_events: ["[线索整合] chemical_notes -> diary_context"],
+      party_status: {},
+      environment_objects: {},
+      player_inventory: {},
+      combat_state: {},
+    }));
+    jest.runOnlyPendingTimers();
+    await sendPromise;
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+  });
+
+  test("test_delayed_trap_disarmed_replay_after_act3_does_not_requeue", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    const api = await bootAppForTest();
+    jest.useFakeTimers();
+    api.triggerSpeechBubbles({
+      journal_events: ["[线索整合] chemical_notes -> diary_context"],
+    }, { skipUIEvents: true });
+
+    api.triggerSpeechBubbles({
+      journal_events: ["[陷阱解除] astarion -> gas_trap_1"],
+    }, { skipUIEvents: true });
+
+    expect(document.querySelector(".companion-bark")).toBeNull();
+    expect(window.BG3HudRenderers.getCompanionBarkDebugState()).toMatchObject({
+      activeSource: "",
+      activeSourceGroup: "",
+      currentGroup: "",
+      queueLength: 0,
+    });
+    window.BG3HudRenderers.clearCompanionBarks();
+    jest.useRealTimers();
+  });
+
+  test("test_trap_disarmed_immediately_replaces_active_trap_insight", async () => {
+    loadNewModules();
+    jest.useFakeTimers();
+    window.BG3HudRenderers.dispatchUIEvents([{ type: "trap_insight", actor: "astarion", trapId: "gas_trap_1" }]);
+    expect(window.BG3HudRenderers.getCompanionBarkDebugState()).toMatchObject({
+      activeSource: "trap_insight",
+      activeSourceGroup: "trap",
+    });
+
+    window.BG3HudRenderers.dispatchUIEvents([{ type: "trap_disarmed", actor: "astarion", trapId: "gas_trap_1" }]);
+
+    const state = window.BG3HudRenderers.getCompanionBarkDebugState();
+    expect(state.activeSource).toBe("trap_disarmed");
+    expect(state.pendingSources).not.toContain("trap_disarmed");
+    expect(document.querySelector(".companion-bark--astarion")).not.toBeNull();
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+  });
+
+  test("test_trap_disarmed_is_visible_inside_act2_window", async () => {
+    loadNewModules();
+    jest.useFakeTimers();
+    window.BG3HudRenderers.dispatchUIEvents([{ type: "trap_disarmed", actor: "astarion", trapId: "gas_trap_1" }]);
+    expect(document.querySelector(".companion-bark--astarion")).not.toBeNull();
+    expect(window.BG3HudRenderers.getCompanionBarkDebugState()).toMatchObject({
+      activeSource: "trap_disarmed",
+      activeSceneScope: "act2_corridor",
+    });
+    jest.advanceTimersByTime(500);
+    expect(document.querySelector(".companion-bark--astarion")).not.toBeNull();
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+  });
+
+  test("test_stale_trap_disarmed_past_max_age_is_dropped_before_play", async () => {
+    loadNewModules();
+    jest.useFakeTimers();
+    const oldCreatedAt = Date.now() - 3000;
+    const result = window.BG3HudRenderers.dispatchCompanionBarks([
+      {
+        speaker: "astarion",
+        text: "Done. The mechanism will not bite unless you insist.",
+        source: "trap_disarmed",
+        createdAt: oldCreatedAt,
+        maxAgeMs: 2500,
+      },
+    ]);
+    expect(result).toEqual([]);
+    expect(document.querySelector(".companion-bark")).toBeNull();
+    expect(window.BG3HudRenderers.getCompanionBarkDebugState().lastDropReason).toContain("expired:trap_disarmed");
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+  });
+
+  test("test_active_trap_disarmed_removed_when_entering_secret_study_scene", async () => {
+    loadNewModules();
+    jest.useFakeTimers();
+    window.BG3HudRenderers.dispatchUIEvents([{ type: "trap_disarmed", actor: "astarion", trapId: "gas_trap_1" }]);
+    expect(document.querySelector(".companion-bark--astarion")).not.toBeNull();
+
+    window.BG3HudRenderers.setBarkSceneContext({ act: "act3", visibleRooms: ["room_c_secret_study"] });
+
+    expect(document.querySelector(".companion-bark")).toBeNull();
+    expect(window.BG3HudRenderers.getCompanionBarkDebugState()).toMatchObject({
+      activeSourceGroup: "",
+      currentGroup: "",
+      queueLength: 0,
+    });
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+  });
+
+  test("test_pending_act2_trap_barks_are_dropped_when_entering_secret_study_scene", async () => {
+    loadNewModules();
+    jest.useFakeTimers();
+    window.BG3HudRenderers.dispatchCompanionBarks([
+      { speaker: "astarion", text: "Wait. Hidden gas trap.", source: "trap_insight", priority: 9 },
+      { speaker: "shadowheart", text: "The corridor smells wrong.", source: "trap_insight", priority: 9 },
+    ]);
+    expect(window.BG3HudRenderers.getCompanionBarkDebugState().pendingSourceGroups).toContain("trap");
+
+    window.BG3HudRenderers.setBarkSceneContext({ act: "act3", visibleRooms: ["room_c_secret_study"] });
+
+    const state = window.BG3HudRenderers.getCompanionBarkDebugState();
+    expect(state.pendingSourceGroups).not.toContain("trap");
+    expect(state.currentGroup).not.toBe("trap");
+    expect(document.querySelector(".companion-bark")).toBeNull();
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+  });
+
+  test("test_new_trap_triggered_danger_bark_can_still_interrupt_after_act3_context", async () => {
+    loadNewModules();
+    jest.useFakeTimers();
+    window.BG3HudRenderers.setBarkSceneContext({ act: "act3", visibleRooms: ["room_c_secret_study"] });
+
+    const result = window.BG3HudRenderers.dispatchUIEvents([{ type: "trap_triggered", trapId: "gas_trap_1" }]);
+
+    expect(result).toBeUndefined();
+    expect(document.querySelector(".companion-bark--gribbo")).not.toBeNull();
+    expect(window.BG3HudRenderers.getCompanionBarkDebugState()).toMatchObject({
+      activeSource: "trap_triggered",
+      activeSourceGroup: "trap",
+    });
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+  });
+
+  test("test_act3_diary_decoded_flag_clears_active_trap_disarmed_group", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    const api = await bootAppForTest();
+    jest.useFakeTimers();
+    window.BG3HudRenderers.dispatchCompanionBarks([
+      { speaker: "astarion", text: "Done. The mechanism will not bite unless you insist.", source: "trap_disarmed", priority: 8 },
+    ]);
+
+    api.triggerSpeechBubbles({
+      flags: { act3_diary_decoded: true },
+    }, { skipUIEvents: true });
+
+    const state = window.BG3HudRenderers.getCompanionBarkDebugState();
+    expect(state.activeSpeaker).toBe("");
+    expect(state.currentGroup).not.toBe("trap");
+    expect(state.queueLength).toBe(0);
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+  });
+
+  test("test_demo_cleared_resets_bark_queue_group", async () => {
+    loadNewModules();
+    jest.useFakeTimers();
+    window.BG3HudRenderers.dispatchCompanionBarks([
+      { speaker: "astarion", text: "Done. The mechanism will not bite unless you insist.", source: "trap_disarmed", priority: 8 },
+    ]);
+    window.BG3HudRenderers.dispatchUIEvents([{ type: "demo_cleared" }]);
+
+    const state = window.BG3HudRenderers.getCompanionBarkDebugState();
+    expect(state.currentGroup).toBe("");
+    expect(state.queueLength).toBe(0);
+    expect(document.querySelector(".companion-bark")).toBeNull();
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+  });
+
+  test("test_bark_queue_debug_state_exposes_active_pending_completed_group", async () => {
+    loadNewModules();
+    jest.useFakeTimers();
+    window.BG3HudRenderers.dispatchCompanionBarks([
+      { speaker: "astarion", text: "Let me take the key.", source: "boss_strategy", priority: 8 },
+      { speaker: "shadowheart", text: "Keep the poison contained.", source: "boss_strategy", priority: 8 },
+    ]);
+
+    let state = window.BG3HudRenderers.getCompanionBarkDebugState();
+    expect(state).toMatchObject({
+      activeSpeaker: "astarion",
+      activeSource: "boss_strategy",
+      activeSourceGroup: "boss_strategy",
+      pendingSpeakers: ["shadowheart"],
+      currentGroup: "boss_strategy",
+      queueLength: 2,
+    });
+    expect(window.__BG3_QA_STATE__.barkQueue).toMatchObject({ activeSpeaker: "astarion" });
+
+    jest.advanceTimersByTime(2400);
+    state = window.BG3HudRenderers.getCompanionBarkDebugState();
+    expect(state.completedSpeakers).toContain("astarion");
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+  });
+
   test("test_trap_insight_journal_derives_ui_event", async () => {
     loadNewModules();
     const events = window.BG3UIEventAdapter.extractUIEvents({
@@ -3211,6 +4909,18 @@ describe("web_ui/app.js UI bindings", () => {
     });
     expect(events.filter((event) => event.type === "trap_insight")).toHaveLength(1);
     expect(events.find((event) => event.type === "trap_insight")).toMatchObject({ trapId: "gas_trap_1" });
+
+    const actorFlagEvents = window.BG3UIEventAdapter.extractUIEvents({
+      game_state: {
+        flags: {
+          astarion_detected_gas_trap: { value: true },
+          world_necromancer_lab_trap_warned: true,
+        },
+      },
+    }, {
+      flags: {},
+    });
+    expect(actorFlagEvents.filter((event) => event.type === "trap_insight")).toHaveLength(1);
   });
 
   test("test_trap_disarmed_journal_derives_ui_event", async () => {
@@ -3225,6 +4935,25 @@ describe("web_ui/app.js UI bindings", () => {
     }));
   });
 
+  test("test_sticky_trap_disarmed_flag_does_not_replay_after_act2", async () => {
+    loadNewModules();
+    const previous = {
+      flags: { necromancer_lab_poison_trap_disarmed: true },
+      environment_objects: { gas_trap_1: { status: "disabled" } },
+    };
+    const current = {
+      flags: {
+        necromancer_lab_poison_trap_disarmed: true,
+        act4_boss_room_entered: true,
+      },
+      environment_objects: { gas_trap_1: { status: "disabled" } },
+      journal_events: ["[Boss Encounter] gribbo_confrontation_started"],
+    };
+    const events = window.BG3UIEventAdapter.extractUIEvents(current, previous);
+    expect(events.filter((event) => event.type === "trap_disarmed")).toHaveLength(0);
+    expect(events).toContainEqual(expect.objectContaining({ type: "boss_intro" }));
+  });
+
   test("test_trap_triggered_journal_derives_ui_event", async () => {
     loadNewModules();
     const events = window.BG3UIEventAdapter.extractUIEvents({
@@ -3234,6 +4963,16 @@ describe("web_ui/app.js UI bindings", () => {
       type: "trap_triggered",
       trapId: "gas_trap_1",
     }));
+  });
+
+  test("test_diary_lore_mentioning_trap_trigger_does_not_emit_trap_triggered", async () => {
+    loadNewModules();
+    const events = window.BG3UIEventAdapter.extractUIEvents({
+      journal_events: [
+        "实验记录：只要通道的毒气陷阱会触发，他就会警觉。逃生关键是 heavy_iron_key。",
+      ],
+    });
+    expect(events.filter((event) => event.type === "trap_triggered")).toHaveLength(0);
   });
 
   test("test_poisoned_status_diff_derives_trap_triggered_affected_actor", async () => {
@@ -3300,6 +5039,118 @@ describe("web_ui/app.js UI bindings", () => {
     expect(projectedParty.astarion).toMatchObject({ x: 2, y: 3, _projection_source: "local_party_trail" });
     expect(projectedParty.shadowheart).toMatchObject({ x: 2, y: 4, _projection_source: "local_party_trail" });
     expect(projectedParty.laezel).toMatchObject({ x: 1, y: 4, _projection_source: "local_party_trail" });
+  });
+
+  test("test_opening_a_b_door_dispatches_act2_trap_insight_trace_without_backend_ui_event", async () => {
+    const fetchSpy = spyOnFetch().mockResolvedValue(mockResponse({
+      responses: [],
+      journal_events: ["🚪 [交互] 玩家 打开了 通往毒气走廊的门。"],
+      party_status: {},
+      environment_objects: {
+        door_a_to_b: { id: "door_a_to_b", type: "door", status: "open", is_open: true, x: 3, y: 2 },
+        gas_trap_1: { id: "gas_trap_1", type: "trap", status: "hidden", is_hidden: true, x: 4, y: 6 },
+      },
+      player_inventory: { healing_potion: 2 },
+      combat_state: {},
+      game_state: { flags: {} },
+    }));
+    const api = await bootAppForTest("http://localhost/?qa_test=1&qa_no_idle=1");
+    fetchSpy.mockClear();
+
+    await api.sendStructuredAction({
+      text: "打开 A-B 门。",
+      intent: "INTERACT",
+      options: { target: "door_a_to_b", source: "ui_text_normalized" },
+    });
+    await flushAsync();
+
+    expect(document.querySelector(".agent-signal-card--trap-insight")).not.toBeNull();
+    expect(document.getElementById("director-trace-summary").textContent).toContain("Astarion noticed");
+  });
+
+  test("test_act4_valve_backend_objects_hidden_until_lab_revealed", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    const api = await bootAppForTest();
+    api.applyNormalizedMap(buildTrapCorridorTestMap(), { source: "json" });
+    api.state.environmentObjects = {
+      poison_valve: { id: "poison_valve", type: "poison_valve", status: "armed", is_hidden: false, x: 6, y: 9 },
+      potion_tank: { id: "potion_tank", type: "potion_tank", status: "unstable", is_hidden: false, x: 7, y: 9 },
+    };
+    window.BG3TacticalMap.update.mockClear();
+
+    api.revealRoomByDoorTarget("door_a_to_b");
+    api.refreshVisibilityProjection();
+    api.renderTacticalGrid(api.state.partyStatus, api.state.environmentObjects, api.state.mapData);
+
+    let lastCall = window.BG3TacticalMap.update.mock.calls.at(-1);
+    expect(lastCall[1].poison_valve).toBeUndefined();
+    expect(lastCall[1].potion_tank).toBeUndefined();
+
+    api.state.worldFlags = { act4_boss_room_entered: true };
+    api.refreshVisibilityProjection();
+    api.renderTacticalGrid(api.state.partyStatus, api.state.environmentObjects, api.state.mapData);
+
+    lastCall = window.BG3TacticalMap.update.mock.calls.at(-1);
+    expect(lastCall[1].poison_valve).toMatchObject({ id: "poison_valve", status: "armed" });
+    expect(lastCall[1].potion_tank).toMatchObject({ id: "potion_tank", status: "unstable" });
+  });
+
+  test("test_revealed_backend_gas_trap_projects_to_real_tiled_corridor_marker", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    const api = await bootAppForTest();
+    const rawMap = JSON.parse(fs.readFileSync(REAL_MAP_JSON_PATH, "utf8"));
+    api.applyNormalizedMap(window.BG3TiledAdapter.normalizeTiledMap(rawMap), { source: "json" });
+    api.state.environmentObjects = {
+      gas_trap_1: { id: "gas_trap_1", type: "trap", status: "revealed", is_hidden: false, x: 4, y: 6 },
+    };
+
+    api.revealRoomByDoorTarget("door_a_to_b");
+    api.refreshVisibilityProjection();
+    api.renderTacticalGrid(api.state.partyStatus, api.state.environmentObjects, api.state.mapData);
+
+    const lastCall = window.BG3TacticalMap.update.mock.calls.at(-1);
+    expect(lastCall[1].gas_trap_1).toMatchObject({
+      status: "revealed",
+      is_hidden: false,
+      is_revealed: true,
+      discovered: true,
+      x: 5,
+      y: 11,
+      room_id: "room_b_corridor",
+    });
+  });
+
+  test("test_astarion_disarm_actor_action_projects_next_to_real_tiled_trap", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    const api = await bootAppForTest();
+    const rawMap = JSON.parse(fs.readFileSync(REAL_MAP_JSON_PATH, "utf8"));
+    api.applyNormalizedMap(window.BG3TiledAdapter.normalizeTiledMap(rawMap), { source: "json" });
+    api.revealRoomByDoorTarget("door_a_to_b");
+    api.refreshVisibilityProjection();
+    api.state.worldFlags = {
+      act2_disarm_actor: "astarion",
+      act2_disarm_attempted: true,
+      act2_gas_trap_disarmed: true,
+      necromancer_lab_poison_trap_disarmed: true,
+    };
+    api.state.partyStatus = {
+      player: { x: 5, y: 15, faction: "player" },
+      astarion: { x: 4, y: 7 },
+      shadowheart: { x: 5, y: 17 },
+      laezel: { x: 5, y: 18 },
+    };
+    window.BG3TacticalMap.getLocalPartyTokenPositions.mockReturnValue({
+      astarion: { x: 5, y: 16, _projection_source: "local_party_trail" },
+    });
+
+    api.renderTacticalGrid(api.state.partyStatus, api.state.environmentObjects, api.state.mapData);
+
+    const lastCall = window.BG3TacticalMap.update.mock.calls.at(-1);
+    expect(lastCall[0].astarion).toMatchObject({
+      x: 5,
+      y: 12,
+      _projection_source: "actor_action",
+    });
   });
 
   test("test_trap_overlay_appears_after_backend_journal_trap_insight_signal", async () => {
@@ -3514,6 +5365,24 @@ describe("web_ui/app.js UI bindings", () => {
     expect(document.querySelector(".agent-signal-card--trap-triggered")).not.toBeNull();
   });
 
+  test("test_astarion_warning_line_derives_trap_insight_event", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    const api = await bootAppForTest();
+
+    const events = api.dispatchUIEventsFromResponse({
+      journal_events: ["🗣️ [Astarion] 小心，前面有毒气机关的痕迹。"],
+    }, {});
+
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: "trap_insight",
+        actor: "astarion",
+        trapId: "gas_trap_1",
+      }),
+    ]));
+    expect(document.querySelector(".agent-signal-card--trap-insight")).not.toBeNull();
+  });
+
   test("test_trap_insight_response_does_not_auto_open_loot_modal_for_available_chest", async () => {
     const fetchSpy = spyOnFetch().mockResolvedValue(mockResponse({
       responses: ["Astarion notices a hidden gas mechanism."],
@@ -3661,6 +5530,16 @@ describe("web_ui/app.js UI bindings", () => {
     });
     expect(document.querySelector('li[data-node="actor_view_filter"]').classList.contains("is-agent-signal")).toBe(true);
     expect(document.querySelector('li[data-node="ui_events"]').classList.contains("is-agent-signal")).toBe(true);
+
+    window.BG3DirectorTrace.activateTrace(disarmNodes, {
+      animate: false,
+      uiEvents: [
+        { type: "trap_insight", trapId: "gas_trap_1" },
+        { type: "trap_disarmed", trapId: "gas_trap_1" },
+      ],
+      autoIdleMs: 999999,
+    });
+    expect(document.getElementById("director-trace-summary").textContent).toContain("Trap disabled");
   });
 
   test("test_reduced_motion_trap_cards_do_not_pulse", async () => {

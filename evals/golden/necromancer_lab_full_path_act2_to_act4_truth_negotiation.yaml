@@ -158,15 +158,15 @@ steps:
             payload:
               transaction_accepted_count: 1
   - id: approach_final_exit
-    user_input: 移动到 13,11
+    user_input: 移动到 17,4
     intent: MOVE
     payload:
-      target: "13,11"
+      target: "17,4"
     expected:
       state:
         equals:
-          game_state.entities.player.x: 13
-          game_state.entities.player.y: 11
+          game_state.entities.player.x: 17
+          game_state.entities.player.y: 4
   - id: open_final_exit
     user_input: 用 heavy_iron_key 打开 exit_door。
     intent: INTERACT

@@ -4,12 +4,15 @@ Application service 保护性测试。
 """
 
 import asyncio
+import copy
 from types import SimpleNamespace
 from unittest.mock import Mock
 
 from langgraph.graph import START
 
 from core.application.game_service import GameService, process_chat_turn
+from core.graph.nodes.mechanics import mechanics_node
+from core.systems.world_init import get_initial_world_state
 
 
 class _AsyncContextManager:
@@ -42,6 +45,37 @@ class _FakeGraph:
     async def ainvoke(self, payload, config):
         self.ainvoke_calls.append({"payload": payload, "config": config})
         return self._invoke_result
+
+
+class _MutatingMechanicsGraph:
+    def __init__(self, initial_state):
+        self._state = copy.deepcopy(initial_state)
+        self.aupdate_state_calls = []
+        self.ainvoke_calls = []
+
+    async def aget_state(self, config):
+        return SimpleNamespace(values=copy.deepcopy(self._state))
+
+    async def aupdate_state(self, config, payload, as_node):
+        self.aupdate_state_calls.append(
+            {"config": config, "payload": copy.deepcopy(payload), "as_node": as_node}
+        )
+        for key, value in payload.items():
+            self._state[key] = copy.deepcopy(value)
+
+    async def ainvoke(self, payload, config):
+        self.ainvoke_calls.append({"payload": copy.deepcopy(payload), "config": config})
+        working_state = copy.deepcopy(self._state)
+        working_state.update(copy.deepcopy(payload))
+        patch = mechanics_node(working_state)
+        journal_events = list(self._state.get("journal_events") or [])
+        journal_events.extend(list(patch.get("journal_events") or []))
+        for key, value in patch.items():
+            if key == "journal_events":
+                continue
+            self._state[key] = copy.deepcopy(value)
+        self._state["journal_events"] = journal_events
+        return copy.deepcopy(self._state)
 
 
 def test_process_chat_turn_initializes_empty_checkpoint_then_invokes_graph():
@@ -203,6 +237,144 @@ def test_process_chat_turn_passes_structured_target_source_into_graph_payload():
             "source": "interaction",
         },
     }
+
+
+def test_process_chat_turn_applies_client_position_before_final_exit_mechanics():
+    stale_state = get_initial_world_state(map_id="necromancer_lab")
+    stale_state["flags"] = {
+        "necromancer_lab_intro_seen": True,
+        "act4_negotiation_success": True,
+        "act4_heavy_iron_key_obtained": True,
+    }
+    stale_state["entities"]["player"]["x"] = 4
+    stale_state["entities"]["player"]["y"] = 6
+    stale_state["player_inventory"]["heavy_iron_key"] = 1
+    fake_graph = _MutatingMechanicsGraph(stale_state)
+
+    result = asyncio.run(
+        process_chat_turn(
+            user_input="用 heavy_iron_key 打开 heavy_oak_door_1。",
+            intent="INTERACT",
+            session_id="session-client-position-final-exit",
+            character=None,
+            map_id="necromancer_lab",
+            target="heavy_oak_door_1",
+            source="text_input",
+            client_player_position={"x": 17, "y": 4},
+            player_position=[4, 6],
+            saver_factory=Mock(return_value=_AsyncContextManager(value=object())),
+            graph_builder=Mock(return_value=fake_graph),
+            initial_state_factory=Mock(),
+        )
+    )
+
+    position_patch = fake_graph.aupdate_state_calls[0]["payload"]
+    assert position_patch["entities"]["player"]["x"] == 17
+    assert position_patch["entities"]["player"]["y"] == 4
+    assert fake_graph.ainvoke_calls[0]["payload"]["intent_context"] == {
+        "action_actor": "player",
+        "action_target": "heavy_oak_door_1",
+        "source": "text_input",
+    }
+    assert result["demo_cleared"] is True
+    assert result["party_status"]["player"]["x"] == 17
+    assert result["party_status"]["player"]["y"] == 4
+    assert result["environment_objects"]["heavy_oak_door_1"]["is_open"] is True
+
+
+def test_process_chat_turn_uses_player_position_array_fallback_for_sync():
+    stale_state = get_initial_world_state(map_id="necromancer_lab")
+    stale_state["flags"] = {"necromancer_lab_intro_seen": True}
+    stale_state["entities"]["player"]["x"] = 4
+    stale_state["entities"]["player"]["y"] = 6
+    fake_graph = _MutatingMechanicsGraph(stale_state)
+
+    result = asyncio.run(
+        process_chat_turn(
+            user_input="看一眼门。",
+            intent="chat",
+            session_id="session-player-position-fallback",
+            character=None,
+            map_id="necromancer_lab",
+            player_position=[17, 4],
+            saver_factory=Mock(return_value=_AsyncContextManager(value=object())),
+            graph_builder=Mock(return_value=fake_graph),
+            initial_state_factory=Mock(),
+        )
+    )
+
+    position_patch = fake_graph.aupdate_state_calls[0]["payload"]
+    assert position_patch["entities"]["player"]["x"] == 17
+    assert position_patch["entities"]["player"]["y"] == 4
+    assert result["party_status"]["player"]["x"] == 17
+    assert result["party_status"]["player"]["y"] == 4
+
+
+def test_process_chat_turn_ignores_invalid_client_position_without_reinitializing_map():
+    stale_state = get_initial_world_state(map_id="necromancer_lab")
+    stale_state["flags"] = {"necromancer_lab_intro_seen": True}
+    stale_state["entities"]["player"]["x"] = 4
+    stale_state["entities"]["player"]["y"] = 6
+    fake_graph = _FakeGraph(
+        snapshots=[stale_state],
+        invoke_result={
+            **stale_state,
+            "speaker_responses": [],
+            "journal_events": list(stale_state.get("journal_events") or []),
+        },
+    )
+    initial_state_factory = Mock()
+
+    result = asyncio.run(
+        process_chat_turn(
+            user_input="看一眼周围。",
+            intent="chat",
+            session_id="session-invalid-client-position",
+            character=None,
+            map_id="necromancer_lab",
+            client_player_position={"x": 999, "y": 11},
+            player_position=[999, 11],
+            saver_factory=Mock(return_value=_AsyncContextManager(value=object())),
+            graph_builder=Mock(return_value=fake_graph),
+            initial_state_factory=initial_state_factory,
+        )
+    )
+
+    assert fake_graph.aupdate_state_calls == []
+    initial_state_factory.assert_not_called()
+    assert result["party_status"]["player"]["x"] == 4
+    assert result["party_status"]["player"]["y"] == 6
+
+
+def test_client_position_sync_rejects_blocked_tiles():
+    stale_state = get_initial_world_state(map_id="necromancer_lab")
+    stale_state["flags"] = {"necromancer_lab_intro_seen": True}
+    fake_graph = _FakeGraph(
+        snapshots=[stale_state],
+        invoke_result={
+            **stale_state,
+            "speaker_responses": [],
+            "journal_events": list(stale_state.get("journal_events") or []),
+        },
+    )
+
+    result = asyncio.run(
+        process_chat_turn(
+            user_input="看门。",
+            intent="chat",
+            session_id="session-blocked-client-position",
+            character=None,
+            map_id="necromancer_lab",
+            client_player_position={"x": 0, "y": 0},
+            saver_factory=Mock(return_value=_AsyncContextManager(value=object())),
+            graph_builder=Mock(return_value=fake_graph),
+            initial_state_factory=Mock(),
+        )
+    )
+
+    assert fake_graph.aupdate_state_calls == []
+    assert result["party_status"]["player"]["x"] == 2
+    assert result["party_status"]["player"]["y"] == 2
 
 
 def test_process_chat_turn_init_sync_initializes_empty_checkpoint_with_map_id():

@@ -230,3 +230,6 @@ memory.db
 data/chroma_db/
 .pytest_cache/
 __pycache__/
+
+.playwright-cli/
+output/

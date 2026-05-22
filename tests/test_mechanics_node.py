@@ -9,8 +9,8 @@ def test_mechanics_node_propagates_demo_cleared_from_interact_result():
         "action_actor": "player",
         "action_target": "heavy_oak_door_1",
     }
-    state["entities"]["player"]["x"] = 13
-    state["entities"]["player"]["y"] = 11
+    state["entities"]["player"]["x"] = 17
+    state["entities"]["player"]["y"] = 4
     state["player_inventory"]["heavy_iron_key"] = 1
 
     result = mechanics_node(state)

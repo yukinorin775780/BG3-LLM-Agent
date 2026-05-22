@@ -2559,7 +2559,7 @@
             },
             {
               "name": "trigger_text",
-              "value": "门后的空气骤然变冷，狭窄石廊深处翻涌着淡绿色毒雾，酸液顺着裂缝缓慢流动。"
+              "value": "门后的空气骤然变冷，狭窄石廊铺着普通灰石地砖；墙缝里传来若有若无的气压声。"
             },
             {
               "name": "room_id",
@@ -2886,6 +2886,10 @@
             {
               "name": "requires_flag",
               "value": "world_necromancer_lab_gribbo_defeated"
+            },
+            {
+              "name": "room_id",
+              "value": "room_exit"
             },
             {
               "name": "connects_from",

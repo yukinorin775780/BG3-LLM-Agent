@@ -6,7 +6,7 @@
   <title>BG3 LLM | 废弃死灵实验室</title>
   <meta name="description" content="博德之门3 LLM Agent — 废弃死灵实验室 2.5D 可探索 Demo" />
   <link rel="icon" href="data:," />
-  <link rel="stylesheet" href="./style.css?v=20260514_act2_playability_polish" />
+  <link rel="stylesheet" href="./style.css?v=20260521_owner_release_v9" />
 </head>
 <body>
   <div id="main-layout" class="main-layout">
@@ -234,13 +234,17 @@
     <header class="xray-header">
       <p>AI Director Pipeline</p>
       <h2>Director Trace <span>Logic Tracer</span></h2>
+      <div class="director-trace-brief" aria-live="polite">
+        <span id="director-trace-mode" class="director-trace-mode">LOCAL EXPLORATION</span>
+        <span id="director-trace-summary" class="director-trace-summary">WASD and hover stay local. No narrative route is active.</span>
+      </div>
       <div id="director-state-indicator" class="director-state-indicator director-state--idle">Director Idle · Local Exploration</div>
     </header>
 
     <section class="xray-section xray-section--node-trace">
       <div class="xray-section-title">
         <span>01</span>
-        <h3>Node Trace</h3>
+        <h3>Director Timeline</h3>
       </div>
       <ol id="director-node-timeline" class="node-timeline">
         <li data-node="input_processing"><strong>Input</strong><small>玩家叙事触发</small><span class="node-timing">--ms</span></li>
@@ -288,15 +292,15 @@
   </div>
 
   <script src="./vendor/phaser-3.60.0.min.js" defer></script>
-  <script src="./necromancer-meta.js?v=20260514_act2_playability_polish" defer></script>
-  <script src="./tiled-adapter.js?v=20260514_act2_playability_polish" defer></script>
-  <script src="./ui-event-adapter.js?v=20260514_act2_playability_polish" defer></script>
-  <script src="./director-trace.js?v=20260514_act2_playability_polish" defer></script>
-  <script src="./state-diff-renderer.js?v=20260514_act2_playability_polish" defer></script>
-  <script src="./demo-script-runner.js?v=20260514_act2_playability_polish" defer></script>
-  <script src="./input-controller.js?v=20260514_act2_playability_polish" defer></script>
-  <script src="./hud-renderers.js?v=20260514_act2_playability_polish" defer></script>
-  <script src="./game.js?v=20260514_act2_playability_polish" defer></script>
-  <script src="./app.js?v=20260514_act2_playability_polish" defer></script>
+  <script src="./necromancer-meta.js?v=20260521_owner_release_v9" defer></script>
+  <script src="./tiled-adapter.js?v=20260521_owner_release_v9" defer></script>
+  <script src="./ui-event-adapter.js?v=20260521_owner_release_v9" defer></script>
+  <script src="./director-trace.js?v=20260521_owner_release_v9" defer></script>
+  <script src="./state-diff-renderer.js?v=20260521_owner_release_v9" defer></script>
+  <script src="./demo-script-runner.js?v=20260521_owner_release_v9" defer></script>
+  <script src="./input-controller.js?v=20260521_owner_release_v9" defer></script>
+  <script src="./hud-renderers.js?v=20260521_owner_release_v9" defer></script>
+  <script src="./game.js?v=20260521_owner_release_v9" defer></script>
+  <script src="./app.js?v=20260521_owner_release_v9" defer></script>
 </body>
 </html>

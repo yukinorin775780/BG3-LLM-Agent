@@ -95,7 +95,7 @@ def test_dm_node_structured_chat_to_gribbo_routes_without_llm_timeout():
 
 
 def test_dm_node_plain_chat_does_not_force_structured_dialogue_from_active_target():
-    state = _build_dm_state("移动到 13,11。")
+    state = _build_dm_state("移动到 17,4。")
     state["active_dialogue_target"] = "gribbo"
     move_analysis = {
         "action_type": "MOVE",
@@ -108,7 +108,7 @@ def test_dm_node_plain_chat_does_not_force_structured_dialogue_from_active_targe
         "item_transfers": [],
         "hp_changes": [],
         "action_actor": "player",
-        "action_target": "13,11",
+        "action_target": "17,4",
     }
 
     with patch("core.graph.nodes.dm.analyze_intent", return_value=move_analysis) as mocked_llm:
@@ -116,7 +116,7 @@ def test_dm_node_plain_chat_does_not_force_structured_dialogue_from_active_targe
 
     mocked_llm.assert_called_once()
     assert result["intent"] == "MOVE"
-    assert result["intent_context"]["action_target"] == "13,11"
+    assert result["intent_context"]["action_target"] == "17,4"
 
 
 def test_dm_node_structured_read_diary_never_uses_player_as_current_speaker():

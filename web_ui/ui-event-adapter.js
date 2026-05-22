@@ -38,7 +38,7 @@
   const RE_TRAP_DISCOVERED =
     /发现.*陷阱|察觉.*陷阱|trap.*discovered|trap.*revealed/i;
   const RE_TRAP_TRIGGERED =
-    /踩中.*陷阱|陷阱.*触发|poison.*damage|毒雾.*喷发|trap.*trigger/i;
+    /踩中.*陷阱|毒雾.*喷发|毒气.*喷发|poison.*damage|trap[_\s-]*triggered|trap\s+(?:was\s+)?triggered/i;
   const RE_COMPANION_GUIDANCE = /\[队友建议\]/i;
   const RE_NEGOTIATION_LEVERAGE = /\[交涉筹码\]/i;
   const RE_TRAP_INSIGHT_SIGNAL = /\[陷阱感知\]\s*([a-z0-9_\-]+)\s*->\s*([a-z0-9_\-]+)/i;
@@ -460,6 +460,9 @@
     let match = raw.match(RE_TRAP_INSIGHT_SIGNAL);
     if (match) {
       return buildTrapInsightEvent(match[1], match[2], "journal", raw);
+    }
+    if (/(?:Astarion|阿斯代伦).*?(?:毒气机关|毒气陷阱|gas trap|hidden gas trap|陷阱)|小心.*?(?:毒气机关|毒气陷阱|陷阱)/i.test(raw)) {
+      return buildTrapInsightEvent("astarion", "gas_trap_1", "journal", raw);
     }
     match = raw.match(RE_TRAP_DISARMED_SIGNAL);
     if (match) {
@@ -1014,19 +1017,25 @@
     const prevStatus = String(prevTrap.status || "").trim().toLowerCase();
     const currStatus = String(currTrap.status || "").trim().toLowerCase();
     const wasRevealed = flagBool(prevFlags.necromancer_lab_poison_trap_revealed)
+      || flagBool(prevFlags.astarion_detected_gas_trap)
+      || flagBool(prevFlags.world_necromancer_lab_trap_warned)
       || prevStatus === "revealed"
       || prevTrap.is_hidden === false;
     const isRevealed = flagBool(currFlags.necromancer_lab_poison_trap_revealed)
+      || flagBool(currFlags.astarion_detected_gas_trap)
+      || flagBool(currFlags.world_necromancer_lab_trap_warned)
       || currStatus === "revealed"
       || currTrap.is_hidden === false;
+    const wasDisabled = flagBool(prevFlags.necromancer_lab_poison_trap_disarmed) || prevStatus === "disabled";
     const isDisabled = flagBool(currFlags.necromancer_lab_poison_trap_disarmed) || currStatus === "disabled";
+    const wasTriggered = flagBool(prevFlags.necromancer_lab_poison_trap_triggered) || prevStatus === "triggered";
     const isTriggered = flagBool(currFlags.necromancer_lab_poison_trap_triggered) || currStatus === "triggered";
     const affectedActors = inferPoisonedActors(previousState, currentState);
 
     if (!wasRevealed && isRevealed) {
       pushTrapEvent(events, buildTrapInsightEvent("astarion", "gas_trap_1", "state", ""));
     }
-    if (isDisabled) {
+    if (!wasDisabled && isDisabled) {
       pushTrapEvent(events, {
         type: "trap_disarmed",
         actor: "astarion",
@@ -1034,7 +1043,7 @@
         source: "state",
       });
     }
-    if (isTriggered || affectedActors.length) {
+    if ((!wasTriggered && isTriggered) || affectedActors.length) {
       pushTrapEvent(events, {
         type: "trap_triggered",
         trapId: "gas_trap_1",

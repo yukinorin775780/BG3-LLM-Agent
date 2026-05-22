@@ -195,8 +195,8 @@ def test_final_exit_adds_route_specific_resolution_line():
     state = _lab_state()
     state["player_inventory"]["heavy_iron_key"] = 1
     state["flags"]["act4_astarion_steal_key_success"] = True
-    state["entities"]["player"]["x"] = 13
-    state["entities"]["player"]["y"] = 11
+    state["entities"]["player"]["x"] = 17
+    state["entities"]["player"]["y"] = 4
 
     result = mechanics.execute_interact_action(
         {

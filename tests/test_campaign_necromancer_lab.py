@@ -30,8 +30,8 @@ def _build_lab_state() -> dict:
 def test_necromancer_lab_kill_loot_then_interact_clears_demo():
     state = _build_lab_state()
     entities = state["entities"]
-    entities["player"]["x"] = 13
-    entities["player"]["y"] = 11
+    entities["player"]["x"] = 17
+    entities["player"]["y"] = 4
     gribbo = entities["gribbo"]
     gribbo["hp"] = 0
     gribbo["status"] = "dead"
@@ -66,8 +66,8 @@ def test_necromancer_lab_kill_loot_then_interact_clears_demo():
                     **(loot_state.get("entities") or {}),
                     "player": {
                         **((loot_state.get("entities") or {}).get("player") or {}),
-                        "x": 13,
-                        "y": 11,
+                        "x": 17,
+                        "y": 4,
                     },
                 },
             },
@@ -86,8 +86,8 @@ def test_necromancer_lab_kill_loot_then_interact_clears_demo():
 
 def test_necromancer_lab_interact_without_key_fails():
     state = _build_lab_state()
-    state["entities"]["player"]["x"] = 13
-    state["entities"]["player"]["y"] = 11
+    state["entities"]["player"]["x"] = 17
+    state["entities"]["player"]["y"] = 4
 
     interact_result = mechanics.execute_interact_action(
         {
@@ -107,8 +107,8 @@ def test_necromancer_lab_interact_without_key_fails():
 
 def test_necromancer_lab_dialogue_transfer_key_then_interact_clears_demo():
     state = _build_lab_state()
-    state["entities"]["player"]["x"] = 13
-    state["entities"]["player"]["y"] = 11
+    state["entities"]["player"]["x"] = 17
+    state["entities"]["player"]["y"] = 4
     state["entities"]["gribbo"]["faction"] = "neutral"
     state["entities"]["gribbo"]["inventory"] = {"heavy_iron_key": 1}
 
@@ -251,8 +251,8 @@ def test_necromancer_lab_act4_loot_key_uses_event_drain_and_prevents_duplication
 
 def test_necromancer_lab_open_door_sets_escape_completion_flags():
     state = _build_lab_state()
-    state["entities"]["player"]["x"] = 13
-    state["entities"]["player"]["y"] = 11
+    state["entities"]["player"]["x"] = 17
+    state["entities"]["player"]["y"] = 4
     state["player_inventory"]["heavy_iron_key"] = 1
     state["flags"] = {}
 
@@ -270,6 +270,31 @@ def test_necromancer_lab_open_door_sets_escape_completion_flags():
     assert interact_result.get("demo_cleared") is True
     assert interact_result["flags"]["necromancer_lab_escape_complete"] is True
     assert interact_result["flags"]["content_sprint_1_complete"] is True
+
+
+def test_final_exit_uses_tiled_aligned_coordinates_and_alias():
+    state = _build_lab_state()
+    state["entities"]["player"]["x"] = 17
+    state["entities"]["player"]["y"] = 4
+    state["player_inventory"]["heavy_iron_key"] = 1
+
+    for target in ("heavy_oak_door_1", "exit_door"):
+        interact_result = mechanics.execute_interact_action(
+            {
+                **state,
+                "intent_context": {
+                    "action_actor": "player",
+                    "action_target": target,
+                },
+            }
+        )
+
+        raw_result = interact_result["raw_roll_data"]["result"]
+        assert raw_result["result_type"] == "SUCCESS"
+        assert raw_result["is_success"] is True
+        assert interact_result["entities"]["heavy_oak_door_1"]["is_open"] is True
+        assert interact_result["flags"]["act4_final_exit_opened"] is True
+        assert interact_result["demo_cleared"] is True
 
 
 def test_key_guidance_context_returns_none_outside_necromancer_lab():

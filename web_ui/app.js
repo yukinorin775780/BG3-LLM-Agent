@@ -8,14 +8,22 @@
   const QA_PARAMS = new URLSearchParams(window.location.search);
   const IS_QA_MODE = Array.from(QA_PARAMS.keys()).some((key) => key.startsWith("qa_"));
   const QA_NO_IDLE = QA_PARAMS.get("qa_no_idle") === "1" || window.__BG3_QA_NO_IDLE__ === true;
+  const QA_TEST = QA_PARAMS.get("qa_test") === "1" || window.__BG3_QA_TEST__ === true;
   const QA_MAP_DEBUG = QA_PARAMS.get("qa_map_debug") === "1" || window.__BG3_QA_MAP_DEBUG__ === true;
   const QA_SHOWCASE = QA_PARAMS.get("qa_showcase") === "1" || window.__BG3_QA_SHOWCASE__ === true;
+  const SHOULD_SYNC_INITIAL_STATE = !IS_QA_MODE || (QA_NO_IDLE && !QA_TEST && !QA_SHOWCASE && !QA_MAP_DEBUG);
   const QA_REST_CONTROLS = QA_PARAMS.get("qa_rest_controls") === "1" || window.__BG3_QA_REST_CONTROLS__ === true;
   const IDLE_MS = 30000;
   const DIALOGUE_POLL_MS = 1800;
   const BACKEND_REQUEST_TIMEOUT_MS = Math.max(5000, Number(QA_PARAMS.get("qa_backend_timeout_ms")) || 12000);
   const SILENT_FALLBACK_TEXT = "📖 [环境] 一阵阴冷的穿堂风吹过，你暂时失去了对周围环境的感知。";
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const BARK_BUILD_ID = "20260521_owner_release_v9";
+
+  window.__BG3_BARK_BUILD_ID__ = BARK_BUILD_ID;
+  if (typeof document !== "undefined" && document.documentElement) {
+    document.documentElement.dataset.barkBuild = BARK_BUILD_ID;
+  }
 
   /* Merge necromancer-meta extensions if loaded */
   const _necroMeta = window.BG3NecromancerMeta || {};
@@ -148,6 +156,8 @@
     demoScriptRunner: null,
     demoScriptControls: null,
     worldFlags: {},
+    barkEpoch: 0,
+    act3BarkEpoch: 0,
   };
 
   const INTERACTION_SOURCES = new Set([
@@ -180,13 +190,23 @@
   const DOOR_ATTACK_MARKERS = ["攻击门", "砸门", "打门", "破门", "attack door", "smash door"];
   const DOOR_INTERACT_MARKERS = [
     "打开门",
+    "打开暗门",
     "开门",
+    "开暗门",
+    "检查暗门",
     "使用钥匙打开门",
     "用钥匙开门",
     "用 heavy_iron_key 打开门",
+    "用钥匙打开门",
+    "用钥匙打开出口门",
+    "打开出口门",
     "打开 heavy_oak_door_1",
+    "打开 exit_door",
     "检查 heavy_oak_door_1",
+    "open secret door",
+    "check secret door",
     "open heavy_oak_door_1",
+    "open exit_door",
     "check heavy_oak_door_1",
   ];
   const READ_DIARY_MARKERS = [
@@ -203,7 +223,7 @@
   const GRIBBO_NEGOTIATION_MARKERS = ["日记", "药剂", "灵药", "死灵", "实验", "解药", "钥匙", "真相"];
   const EXPLICIT_ATTACK_MARKERS = ["攻击", "打", "砍", "射击", "attack", "strike", "shoot"];
   const EXPLICIT_LOOT_MARKERS = ["搜刮", "洗劫", "拿走", "拾取", "loot", "take"];
-  const EXPLICIT_MOVE_MARKERS = ["移动", "走到", "前往", "move", "go to", "walk"];
+  const EXPLICIT_MOVE_MARKERS = ["移动", "走到", "靠近", "前往", "move", "go to", "walk"];
   const TRAP_DISARM_ACTION_MARKERS = ["解除", "拆除", "拆掉", "disarm", "disable"];
   const TRAP_DISARM_TARGET_MARKERS = ["陷阱", "机关", "毒气", "gas_trap_1", "poison_trap", "trap"];
   const TRAP_DISARM_ACTOR_MARKERS = ["阿斯代伦", "astarion"];
@@ -241,11 +261,17 @@
   }
 
   function extractEventLines(data) {
+    const payload = safeObject(data);
+    const gameState = safeObject(payload.game_state || payload.gameState || payload.state);
     const lines = [];
-    safeArray(data && data.journal_events).forEach((entry) => {
+    [
+      ...safeArray(payload.journal_events),
+      ...safeArray(gameState.journal_events),
+      ...safeArray(payload.state && payload.state.journal_events),
+    ].forEach((entry) => {
       lines.push(String(entry || ""));
     });
-    safeArray(data && data.logs).forEach((entry) => {
+    safeArray(payload.logs).forEach((entry) => {
       if (typeof entry === "string") {
         lines.push(entry);
         return;
@@ -620,10 +646,32 @@
     if (DOOR_INTERACT_MARKERS.some((marker) => raw.includes(marker) || normalized.includes(marker))) {
       return true;
     }
+    if (hasDoorHint && /(打开|开门|使用|钥匙|检查|open|unlock|use|check)/i.test(raw)) {
+      return true;
+    }
     if (normalized.includes("heavy_oak_door_1")) {
       return /(打开|开门|使用|检查|open|interact|check)/i.test(raw);
     }
     return false;
+  }
+
+  function resolveMoveTargetFromText(text) {
+    const raw = String(text || "").trim();
+    if (!raw) return "";
+    const coordinateMatch = raw.match(/(?:移动到|走到|靠近|前往|move(?:\s+to)?|go\s+to|walk\s+to)?\s*(\d{1,2})\s*[,，]\s*(\d{1,2})/i);
+    if (coordinateMatch) {
+      return coordinateMatch[1] + "," + coordinateMatch[2];
+    }
+    if (/b\s*-\s*d|b-d|door_b_to_d|实验室重门|实验室门|lab\s*door|laboratory\s*door/i.test(raw)) {
+      return "4,8";
+    }
+    if (/heavy_oak_door_1|exit_door|出口门|最终门|final\s*exit|final\s*door/i.test(raw)) {
+      return "17,4";
+    }
+    if (/a\s*-\s*b|a-b|door_a_to_b|走廊入口|corridor/i.test(raw) && /门|door|走廊|corridor/i.test(raw)) {
+      return "3,5";
+    }
+    return "";
   }
 
   function resolveDoorTargetFromWorldContext(userLine) {
@@ -633,12 +681,30 @@
     if (normalized.includes("door_a_to_b")) return "door_a_to_b";
     if (normalized.includes("door_b_to_c")) return "door_b_to_c";
     if (normalized.includes("door_b_to_d")) return "door_b_to_d";
+    if (/a\s*-\s*b|a-b|走廊入口|corridor\s*entrance/i.test(raw)) {
+      return "door_a_to_b";
+    }
+    if (/b\s*-\s*d|b-d|实验室重门|实验室门|lab\s*door|laboratory\s*door/i.test(raw)) {
+      return "door_b_to_d";
+    }
     if (normalized.includes("exit_door")) return "heavy_oak_door_1";
     if (normalized.includes("heavy_oak_door_1")) {
       return "heavy_oak_door_1";
     }
+    if (/出口门|最终门|final\s*exit|final\s*door/i.test(raw)) {
+      return "heavy_oak_door_1";
+    }
+    if (
+      /暗门|密门|secret\s*door|secret\s*study|书房|study/i.test(raw)
+      && (state.discoveredSecretDoorIds.has("door_b_to_c") || state.roomVisibleIds.has(ROOM_B))
+    ) {
+      return "door_b_to_c";
+    }
 
     const fromCurrent = normalizeId(state.currentInteractable);
+    if (["door_a_to_b", "door_b_to_c", "door_b_to_d", "heavy_oak_door_1"].includes(fromCurrent)) {
+      return fromCurrent;
+    }
     if (fromCurrent === "heavy_oak_door_1") {
       return "heavy_oak_door_1";
     }
@@ -646,14 +712,16 @@
     const inputController = window.BG3InputController;
     if (inputController && typeof inputController.getCurrentHighlightedInteractable === "function") {
       const highlighted = safeObject(inputController.getCurrentHighlightedInteractable());
-      if (normalizeId(highlighted.id) === "heavy_oak_door_1") {
-        return "heavy_oak_door_1";
+      const highlightedId = normalizeId(highlighted.id);
+      if (["door_a_to_b", "door_b_to_c", "door_b_to_d", "heavy_oak_door_1"].includes(highlightedId)) {
+        return highlightedId;
       }
     }
     if (inputController && typeof inputController.findNearbyInteractable === "function") {
       const nearby = safeObject(inputController.findNearbyInteractable());
-      if (normalizeId(nearby.id) === "heavy_oak_door_1") {
-        return "heavy_oak_door_1";
+      const nearbyId = normalizeId(nearby.id);
+      if (["door_a_to_b", "door_b_to_c", "door_b_to_d", "heavy_oak_door_1"].includes(nearbyId)) {
+        return nearbyId;
       }
     }
 
@@ -745,6 +813,7 @@
       const key = String(marker || "");
       return key && (userLine.includes(key) || userLineLower.includes(key.toLowerCase()));
     });
+    const hasDoorOpenSemantics = shouldRouteDoorInteractText(userLine);
     const hasTrapDisarmText = isNecromancerLab
       && TRAP_DISARM_ACTION_MARKERS.some((marker) => userLine.includes(marker) || userLineLower.includes(String(marker).toLowerCase()))
       && TRAP_DISARM_TARGET_MARKERS.some((marker) => userLine.includes(marker) || userLineLower.includes(String(marker).toLowerCase()))
@@ -757,10 +826,14 @@
       && BOSS_STEAL_KEY_MARKERS.some((marker) => userLine.includes(marker) || userLineLower.includes(String(marker).toLowerCase()));
     const hasBossDiaryTruthText = isNecromancerLab
       && BOSS_DIARY_TRUTH_MARKERS.some((marker) => userLine.includes(marker) || userLineLower.includes(String(marker).toLowerCase()));
+    const hasImplicitBossTruthNegotiationText = isNecromancerLab
+      && !hasDoorOpenSemantics
+      && /(你不是守卫|实验品|药剂对你|药剂.*做了什么|喝了.*药剂|死灵药剂|实验.*真相|日记.*真相|gribbo_elixir_truth|解药)/i.test(userLine)
+      && /(钥匙|heavy_iron_key|key|带你离开|带你走|放你走|交出|交出来|给我)/i.test(userLine);
+    const hasBossTruthNegotiationText = hasBossDiaryTruthText || hasImplicitBossTruthNegotiationText;
     const hasBossAssaultText = isNecromancerLab
       && BOSS_ASSAULT_MARKERS.some((marker) => userLine.includes(marker) || userLineLower.includes(String(marker).toLowerCase()));
     const normalizedIntent = String(resolvedIntent || "").trim().toUpperCase();
-    const hasDoorOpenSemantics = shouldRouteDoorInteractText(userLine);
     const isExplicitNonDialogue = isExplicitAttack || isExplicitLoot || isExplicitMove || hasDoorOpenSemantics;
     const shouldBackfillDoorTarget =
       activeMapId === "necromancer_lab"
@@ -769,11 +842,35 @@
     const resolvedDoorTarget = shouldBackfillDoorTarget
       ? resolveDoorTargetFromWorldContext(userLine)
       : "";
+    const resolvedMoveTarget = isNecromancerLab ? resolveMoveTargetFromText(userLine) : "";
 
     if (hasStudyContextReadVerb && (hasChemicalNotesText || hasIronKeySketchText)) {
       resolvedIntent = "READ";
       resolvedTarget = hasIronKeySketchText ? "iron_key_sketch" : "chemical_notes";
       resolvedSource = "act3_study_context";
+      return {
+        userLine,
+        intentValue: resolvedIntent,
+        target: resolvedTarget,
+        source: resolvedSource,
+        intentContext: {
+          action_target: resolvedTarget,
+          source: resolvedSource,
+        },
+      };
+    }
+
+    if (
+      isExplicitMove
+      && resolvedMoveTarget
+      && !explicitIntent
+      && !isExplicitAttack
+      && !isExplicitLoot
+      && !hasBossTruthNegotiationText
+    ) {
+      resolvedIntent = "MOVE";
+      resolvedTarget = resolvedMoveTarget;
+      resolvedSource = "ui_text_move";
       return {
         userLine,
         intentValue: resolvedIntent,
@@ -818,7 +915,7 @@
       };
     }
 
-    if (hasBossDiaryTruthText) {
+    if (hasBossTruthNegotiationText) {
       resolvedIntent = "CHAT";
       resolvedTarget = "gribbo";
       resolvedSource = "boss_diary_truth";
@@ -1474,6 +1571,16 @@
     };
   }
 
+  function attachVisibleMapObjectsToMapData(mapData, projectionMap) {
+    const projection = safeObject(projectionMap);
+    return {
+      ...safeObject(mapData),
+      interactables: safeArray(projection.interactables).map((item) => ({ ...safeObject(item) })),
+      triggers: safeArray(projection.triggers).map((item) => ({ ...safeObject(item) })),
+      spawns: safeArray(projection.spawns).map((item) => ({ ...safeObject(item) })),
+    };
+  }
+
   function isCoordInsideVisibleRooms(coord, normalizedMap) {
     const point = safeObject(coord);
     const map = safeObject(normalizedMap);
@@ -1664,6 +1771,12 @@
       cameraFollowTarget: getCameraFollowTarget(),
       lastFetch: safeObject(state.mapDebugLastFetch),
       lastMapLoad: safeObject(state.mapDebugLastMapLoad),
+      barkBuild: BARK_BUILD_ID,
+      hasCompanionBarkRenderer: !!(
+        window.BG3HudRenderers
+        && typeof window.BG3HudRenderers.dispatchCompanionBarks === "function"
+      ),
+      hasExtractSpeechBarks: typeof extractSpeechBarks === "function",
     };
     return snapshot;
   }
@@ -1672,10 +1785,20 @@
     if (!QA_MAP_DEBUG) return;
     const snapshot = collectMapDebugSnapshot(reason);
     state.mapDebugSnapshot = snapshot;
+    window.__BG3_QA_STATE__ = {
+      ...safeObject(window.__BG3_QA_STATE__),
+      barkBuild: snapshot.barkBuild,
+      hasCompanionBarkRenderer: snapshot.hasCompanionBarkRenderer,
+      hasExtractSpeechBarks: snapshot.hasExtractSpeechBarks,
+      mapDebugSnapshot: snapshot,
+    };
     const chip = ensureMapDebugChip();
     if (chip) {
       chip.textContent = [
         "[qa_map_debug]",
+        "barkBuild=" + snapshot.barkBuild,
+        "hasCompanionBarkRenderer=" + String(snapshot.hasCompanionBarkRenderer),
+        "hasExtractSpeechBarks=" + String(snapshot.hasExtractSpeechBarks),
         "reason=" + (snapshot.reason || "n/a"),
         "mapSource=" + snapshot.mapLoadSource + " reason=" + snapshot.mapLoadReason,
         "fullMap=" + snapshot.fullNormalizedMap.width + "x" + snapshot.fullNormalizedMap.height
@@ -1716,7 +1839,7 @@
       player_inventory: data.player_inventory || state.playerInventory,
       combat_state: data.combat_state || state.combatState,
       map_data: data.map_data || state.mapData,
-      flags: data.flags || gameState.flags || safeObject(state.lastShowcaseSnapshot).flags || {},
+      flags: data.flags || gameState.flags || safeObject(state.worldFlags) || safeObject(state.lastShowcaseSnapshot).flags || {},
       actor_runtime_state: data.actor_runtime_state || gameState.actor_runtime_state || {},
       demo_cleared: data.demo_cleared === true || gameState.demo_cleared === true,
     };
@@ -1773,7 +1896,10 @@
 
   function findMapInteractableById(map, targetId) {
     const key = normalizeId(targetId);
-    return safeArray(safeObject(map).interactables).find((item) => {
+    return [
+      ...safeArray(safeObject(map).interactables),
+      ...safeArray(safeObject(map).triggers),
+    ].find((item) => {
       const record = safeObject(item);
       const data = safeObject(record.data);
       return normalizeId(record.id) === key
@@ -1904,8 +2030,12 @@
   function revealRoom(roomId) {
     const key = String(roomId || "").trim();
     if (!key) return false;
-    if (state.roomVisibleIds.has(key)) return false;
+    if (state.roomVisibleIds.has(key)) {
+      if (key === ROOM_C) hardClearAct3TrapBarks("room_c_reveal");
+      return false;
+    }
     state.roomVisibleIds.add(key);
+    if (key === ROOM_C) hardClearAct3TrapBarks("room_c_reveal");
     return true;
   }
 
@@ -2008,23 +2138,60 @@
     }
   }
 
+  function isAct4LabObject(id, entity = {}) {
+    const key = normalizeId(id);
+    const type = normalizeId(safeObject(entity).type || safeObject(entity).kind || safeObject(entity).entity_type);
+    return key === "poison_valve"
+      || key === "potion_tank"
+      || key.includes("poison_valve")
+      || key.includes("potion_tank")
+      || type === "poison_valve"
+      || type === "potion_tank";
+  }
+
+  function shouldRevealAct4LabObjects() {
+    const flags = safeObject(state.worldFlags);
+    return state.roomVisibleIds.has(ROOM_D)
+      || flags.act4_boss_room_entered === true
+      || flags.act4_gribbo_confrontation_started === true
+      || flags.act4_poison_valve_triggered === true
+      || flags.act4_lab_poison_leak === true
+      || flags.act4_poison_valve_disabled === true;
+  }
+
   function refreshWorldFlags(data = {}) {
     const payload = safeObject(data);
-    const gameState = safeObject(payload.game_state);
+    const gameState = safeObject(payload.game_state || payload.gameState || payload.state);
+    const nestedState = safeObject(payload.state);
     state.worldFlags = {
       ...safeObject(state.worldFlags),
       ...safeObject(gameState.flags),
+      ...safeObject(nestedState.flags),
       ...safeObject(payload.flags),
     };
     const flags = safeObject(state.worldFlags);
     const journalBlob = [
       ...safeArray(payload.journal_events),
       ...safeArray(gameState.journal_events),
+      ...safeArray(nestedState.journal_events),
     ].join("\n");
+    const visibleRooms = [
+      ...safeArray(payload.visibleRooms),
+      ...safeArray(payload.visible_rooms),
+      ...safeArray(safeObject(payload.map_data).visibleRooms),
+      ...safeArray(safeObject(payload.map_data).visible_rooms),
+      ...safeArray(safeObject(gameState.map_data).visibleRooms),
+      ...safeArray(safeObject(gameState.map_data).visible_rooms),
+      ...safeArray(safeObject(nestedState.map_data).visibleRooms),
+      ...safeArray(safeObject(nestedState.map_data).visible_rooms),
+    ].map((roomId) => normalizeId(roomId));
     const hasSecretStudyRevealSignal = Boolean(
-      flags.act3_secret_study_entered === true
+      visibleRooms.includes(ROOM_C)
+      || flags.act3_secret_study_entered === true
       || flags.act3_secret_study_discovered === true
       || flags.act2_secret_study_route_unlocked === true
+      || flags.necromancer_lab_secret_study_discovered === true
+      || flags.necromancer_lab_secret_study_entered === true
       || /\[秘密书房\]\s*cracked_wall\s*->\s*room_c_secret_study/i.test(journalBlob)
     );
     if (hasSecretStudyRevealSignal) {
@@ -2042,6 +2209,7 @@
       markPoisonValveSignal("poison_valve", "disabled");
     }
     updateExplorationActProgress();
+    hardClearAct3TrapBarksIfNeeded(payload, "state_transition");
   }
 
   function hasTrapRevealFlag() {
@@ -2104,6 +2272,9 @@
     if (!key) return false;
     if (state.discoveredSecretDoorIds.has(key)) return false;
     state.discoveredSecretDoorIds.add(key);
+    if (key === "door_b_to_c" && state.roomVisibleIds.has(ROOM_C)) {
+      hardClearAct3TrapBarks("room_c_reveal");
+    }
     return true;
   }
 
@@ -2198,6 +2369,7 @@
     const visual = mapDataFromNormalized(normalizedMap);
     if (!Object.keys(visual).length) return runtime;
     const useVisualAsTruth = normalizeId(state.mapLoadSource) === "json";
+    const visibleProjection = deriveVisibleNormalizedMap(normalizedMap);
     const merged = useVisualAsTruth ? { ...runtime, ...visual } : { ...visual, ...runtime };
     if (useVisualAsTruth) {
       merged.id = visual.id;
@@ -2210,7 +2382,7 @@
       merged.rooms = visual.rooms;
       merged.visible_rooms = visual.visible_rooms;
       merged.obstacles = visual.obstacles;
-      return merged;
+      return attachVisibleMapObjectsToMapData(merged, visibleProjection);
     }
     const hasGrid = safeArray(runtime.grid).length > 0;
     if (!hasGrid) merged.grid = visual.grid;
@@ -2220,6 +2392,15 @@
     if (!runtime.width) merged.width = visual.width;
     if (!runtime.height) merged.height = visual.height;
     if (!runtime.id) merged.id = visual.id;
+    if (!safeArray(merged.interactables).length && safeArray(visibleProjection.interactables).length) {
+      merged.interactables = visibleProjection.interactables;
+    }
+    if (!safeArray(merged.triggers).length && safeArray(visibleProjection.triggers).length) {
+      merged.triggers = visibleProjection.triggers;
+    }
+    if (!safeArray(merged.spawns).length && safeArray(visibleProjection.spawns).length) {
+      merged.spawns = visibleProjection.spawns;
+    }
     return merged;
   }
 
@@ -2255,7 +2436,10 @@
     state.worldFlags = {};
     resetRoomVisibility(map);
     state.normalizedMap = deriveVisibleNormalizedMap(map);
-    state.mapData = mapDataFromNormalized({ ...map, visibleRooms: Array.from(state.roomVisibleIds) });
+    state.mapData = attachVisibleMapObjectsToMapData(
+      mapDataFromNormalized({ ...map, visibleRooms: Array.from(state.roomVisibleIds) }),
+      state.normalizedMap
+    );
     updateExplorationActProgress();
     updateMapSourceStatus(meta.source || "fixture", meta.reason || "");
     if (window.BG3InputController && typeof window.BG3InputController.setMap === "function") {
@@ -2287,12 +2471,13 @@
     });
     state.mapData = {
       ...safeObject(state.mapData),
-      ...visualMapData,
+      ...attachVisibleMapObjectsToMapData(visualMapData, state.normalizedMap),
     };
     if (window.BG3InputController && typeof window.BG3InputController.setMap === "function") {
       window.BG3InputController.setMap(state.normalizedMap);
     }
     updateExplorationActProgress();
+    hardClearAct3TrapBarksIfNeeded({ visibleRooms: Array.from(state.roomVisibleIds) }, "visibility_projection");
   }
 
   function revealRoomByDoorTarget(targetId) {
@@ -2404,6 +2589,7 @@
     const out = {};
     const copyVisibleEntity = (id, raw, mapInteractable = null) => {
       const entity = safeObject(raw);
+      if (isAct4LabObject(id, entity) && !shouldRevealAct4LabObjects()) return;
       const x = Number(entity.x);
       const y = Number(entity.y);
       if (rooms.length && (!Number.isFinite(x) || !Number.isFinite(y))) return;
@@ -2433,6 +2619,13 @@
           copy.is_revealed = discovered;
           copy.is_hidden = !discovered;
           copy.status = discovered ? status : "hidden";
+          if (mapInteractable) {
+            copy.x = Number(mapInteractable.x);
+            copy.y = Number(mapInteractable.y);
+            copy.w = Math.max(1, Number(mapInteractable.w || mapInteractable.width || 1));
+            copy.h = Math.max(1, Number(mapInteractable.h || mapInteractable.height || 1));
+            if (roomIdFromMap) copy.room_id = String(roomIdFromMap);
+          }
         }
         out[id] = copy;
       }
@@ -2605,6 +2798,48 @@
     return projected;
   }
 
+  function projectAct2DisarmActorApproach(partyStatus, mapData) {
+    const flags = safeObject(state.worldFlags);
+    const trapState = safeObject(state.environmentObjects.gas_trap_1);
+    const trapStatus = resolvedTrapVisualStatus("gas_trap_1", trapState);
+    let actorId = normalizeId(flags.act2_disarm_actor || (flags.act2_astarion_ordered_to_disarm ? "astarion" : ""));
+    if (!actorId && trapStatus === "disabled") actorId = "astarion";
+    if (!actorId || !Object.prototype.hasOwnProperty.call(safeObject(partyStatus), actorId)) return partyStatus;
+    if (!(
+      flags.act2_disarm_attempted === true
+      || flags.act2_gas_trap_disarmed === true
+      || flags.act2_gas_trap_triggered === true
+      || flags.necromancer_lab_poison_trap_disarmed === true
+      || flags.necromancer_lab_poison_trap_triggered === true
+      || trapStatus === "disabled"
+    )) {
+      return partyStatus;
+    }
+    const trap = findMapInteractableById(state.fullNormalizedMap, "gas_trap_1")
+      || safeObject(state.environmentObjects.gas_trap_1);
+    const trapX = Math.round(Number(safeObject(trap).x));
+    const trapY = Math.round(Number(safeObject(trap).y));
+    if (!Number.isFinite(trapX) || !Number.isFinite(trapY)) return partyStatus;
+    const map = tacticalFormationMapData(mapData);
+    const candidates = [
+      { x: trapX, y: trapY + 1 },
+      { x: trapX + 1, y: trapY },
+      { x: trapX - 1, y: trapY },
+      { x: trapX, y: trapY - 1 },
+    ];
+    const target = candidates.find((coord) => hasUsableFormationCoord(coord, map));
+    if (!target) return partyStatus;
+    return {
+      ...partyStatus,
+      [actorId]: {
+        ...safeObject(partyStatus[actorId]),
+        x: target.x,
+        y: target.y,
+        _projection_source: "actor_action",
+      },
+    };
+  }
+
   function hasUsableFormationCoord(entity, mapLike) {
     const data = safeObject(entity);
     const x = Number(data.x);
@@ -2635,7 +2870,10 @@
       faction: rawPlayer.faction || "player",
       _projection_source: coords.source || "backend",
     };
-    return applyLocalTokens(projectCompanionFormationForTactical(projected, mapData, projected.player));
+    return applyLocalTokens(projectAct2DisarmActorApproach(
+      projectCompanionFormationForTactical(projected, mapData, projected.player),
+      mapData
+    ));
   }
 
   function preserveLocalPartyTokenPositions(partyStatus) {
@@ -2653,6 +2891,7 @@
       if (!Number.isFinite(x) || !Number.isFinite(y)) return;
       const incoming = safeObject(party[companionId]);
       const incomingSource = normalizeId(incoming._projection_source);
+      if (incomingSource === "actor_action") return;
       const shouldPreserve =
         source === "local_party_trail"
         || source === "local_party_follow"
@@ -2900,58 +3139,430 @@
     return { speaker: "", text: value.replace(/\[台词\]\s*/, "") };
   }
 
-  function extractSpeechBarks(data) {
+  const BARK_ACTOR_ORDER = ["astarion", "shadowheart", "laezel"];
+
+  function normalizeBarkSpeakerId(value) {
+    const raw = normalizeId(value).replace(/[’']/g, "");
+    if (/astarion|阿斯代伦/.test(raw)) return "astarion";
+    if (/shadowheart|影心/.test(raw)) return "shadowheart";
+    if (/laezel|lae\s*zel|莱埃泽尔/.test(raw)) return "laezel";
+    if (/gribbo|格里布|格里波|格里博/.test(raw)) return "gribbo";
+    if (/party|队伍|同伴/.test(raw)) return "party";
+    return raw;
+  }
+
+  function resolveBarkSpeaker(rawSpeaker, text) {
+    const normalized = normalizeBarkSpeakerId(rawSpeaker);
+    if (["astarion", "shadowheart", "laezel", "gribbo", "party"].includes(normalized)) return normalized;
+    return resolveSpeechSpeaker(rawSpeaker, text);
+  }
+
+  function bossStrategyText(actor, plan) {
+    const speaker = normalizeBarkSpeakerId(actor);
+    const key = normalizeId(plan);
+    if (speaker === "astarion" || key === "steal_key") {
+      return "给我一个机会，我能把钥匙弄出来。";
+    }
+    if (speaker === "shadowheart" || key === "contain_corruption") {
+      return "逼太狠，毒气罐可能会先炸。";
+    }
+    if (speaker === "laezel" || key === "execute") {
+      return "杀掉守门人，拿走钥匙，打开门。";
+    }
+    return "先决定路线，再动手。";
+  }
+
+  function studyObservationText(actor) {
+    const speaker = normalizeBarkSpeakerId(actor);
+    if (speaker === "astarion") return "钥匙草图、逃生路线……终于有点有用的东西。";
+    if (speaker === "shadowheart") return "这里的死灵气息很重，别乱碰。";
+    if (speaker === "laezel") return "找到能开门的东西，然后离开。";
+    return "";
+  }
+
+  function partyStanceText(actor, stance) {
+    const speaker = normalizeBarkSpeakerId(actor);
+    const key = normalizeId(stance);
+    if (key === "mercy") return "放过他。我们不需要再添一具尸体。";
+    if (key === "execute") return speaker === "laezel" ? "结束这一切。仁慈只会喂养软弱。" : "在他说出更多废话前杀了他。";
+    if (key === "resentful") return "哦，现在我的意见又重要了？";
+    if (key === "mocking") return "仁慈？真是英勇，也真是麻烦。";
+    return "我有立场，如果有人愿意听的话。";
+  }
+
+  function journalLineToBarks(line) {
+    const text = String(line || "");
+    const result = [];
+    let match = text.match(/\[陷阱感知\]\s*([a-z0-9_'’\-]+)\s*->\s*(gas_trap_1|poison_trap_[12])/i);
+    if (match) {
+      result.push({
+        speaker: normalizeBarkSpeakerId(match[1]) || "astarion",
+        text: "附近有陷阱，小心。",
+        source: "trap_insight",
+        priority: 9,
+      });
+    }
+    match = text.match(/\[陷阱解除\]\s*([a-z0-9_'’\-]+)\s*->\s*(gas_trap_1|poison_trap_[12])/i);
+    if (match) {
+      result.push({
+        speaker: normalizeBarkSpeakerId(match[1]) || "astarion",
+        text: "处理好了。走廊安全了。",
+        source: "trap_disarmed",
+        priority: 8,
+      });
+    }
+    match = text.match(/\[书房观察\]\s*([a-z0-9_'’\-]+)\s*->\s*(.+)$/i);
+    if (match) {
+      const speaker = normalizeBarkSpeakerId(match[1]);
+      const barkText = studyObservationText(speaker);
+      if (barkText) {
+        result.push({ speaker, text: barkText, source: "study_observation", priority: 6 });
+      }
+    }
+    match = text.match(/\[Boss方案\]\s*([a-z0-9_'’\-]+)\s*->\s*(steal_key|contain_corruption|execute)/i);
+    if (match) {
+      const speaker = normalizeBarkSpeakerId(match[1]);
+      result.push({
+        speaker,
+        text: bossStrategyText(speaker, match[2]),
+        source: "boss_strategy",
+        priority: 6,
+      });
+    }
+    match = text.match(/\[记忆回响\]\s*([a-z0-9_'’\-]+)\s*->\s*(rebuked_by_player|sided_with_player)/i);
+    if (match) {
+      result.push({
+        speaker: normalizeBarkSpeakerId(match[1]) || "astarion",
+        text: normalizeId(match[2]) === "sided_with_player" ? "残忍共享，信任也会发芽。" : "现在又需要我了？",
+        source: "memory_echo",
+        priority: 7,
+      });
+    }
+    match = text.match(/\[站队\]\s*([a-z0-9_'’\-]+)\s*->\s*(mercy|execute|resentful|mocking)/i);
+    if (match) {
+      const speaker = normalizeBarkSpeakerId(match[1]);
+      result.push({
+        speaker,
+        text: partyStanceText(speaker, match[2]),
+        source: "party_stance",
+        priority: 6,
+      });
+    }
+    match = text.match(/\[抉择\]\s*(gribbo|格里布|格里波|格里博)\s*->\s*(spared|executed)/i);
+    if (match) {
+      result.push({
+        speaker: "gribbo",
+        text: normalizeId(match[2]) === "spared" ? "我会走。钥匙的路还在。" : "你们……会把这里也一起埋掉。",
+        source: "mercy_resolution",
+        priority: 6,
+      });
+    }
+    return result;
+  }
+
+  function responseRecordToBark(response) {
+    if (response == null) return null;
+    if (typeof response === "string") {
+      const parsed = parseBarkString(response);
+      const speaker = resolveBarkSpeaker(parsed.speaker, parsed.text);
+      return speaker ? { speaker, text: parsed.text, source: "response" } : null;
+    }
+    const record = safeObject(response);
+    const text = record.text || record.line || record.content || record.message || record.response || record.reply || "";
+    const speaker = resolveBarkSpeaker(
+      record.speaker || record.name || record.actor || record.actorId || record.actor_id || record.character || record.entity_id || record.id,
+      text,
+    );
+    return speaker && text ? { speaker, text, source: "response" } : null;
+  }
+
+  function responseIndicatesInteractionBlocked(data) {
+    const payload = safeObject(data);
+    const gameState = safeObject(payload.game_state || payload.gameState || payload.state);
+    const roll = safeObject(payload.latest_roll || payload.raw_roll_data || gameState.latest_roll || gameState.raw_roll_data);
+    const result = safeObject(roll.result);
+    const resultType = normalizeId(result.result_type || roll.result_type);
+    if ([
+      "missing_key",
+      "not_found",
+      "out_of_range",
+      "invalid_target",
+      "invalid_object",
+      "no_bonus_action",
+      "blocked",
+    ].includes(resultType)) {
+      return true;
+    }
+    if (result.is_success === false || roll.is_success === false) {
+      return true;
+    }
+    return extractEventLines(payload).some((line) => {
+      const text = String(line || "");
+      return /距离过远|需相邻|需要.*钥匙|requires?\s+key|missing[_\s-]?key|too\s*far|not\s*adjacent|cannot\s+interact|无法交互|交互失败/i.test(text);
+    });
+  }
+
+  function barksFromUIEvents(events) {
+    if (!window.BG3HudRenderers || typeof window.BG3HudRenderers.barksFromUIEvent !== "function") return [];
+    return safeArray(events).flatMap((event) => window.BG3HudRenderers.barksFromUIEvent(event) || []);
+  }
+
+  function sortKnownPartyBarks(barks, source) {
+    if (!String(source || "").match(/boss_strategy|study_observation/i)) return barks;
+    return barks.slice().sort((a, b) => {
+      const ai = BARK_ACTOR_ORDER.indexOf(normalizeBarkSpeakerId(a.speaker));
+      const bi = BARK_ACTOR_ORDER.indexOf(normalizeBarkSpeakerId(b.speaker));
+      return (ai < 0 ? 99 : ai) - (bi < 0 ? 99 : bi);
+    });
+  }
+
+  function extractSpeechBarks(data, options = {}) {
+    const payload = safeObject(data);
+    const gameState = safeObject(payload.game_state || payload.gameState || payload.state);
     const barks = [];
-    const pushBark = (speaker, text) => {
+    const dispatchedEvents = safeArray(options.dispatchedEvents);
+    const pushBark = (speaker, text, meta = {}) => {
       const content = String(text || "").trim();
       if (!content) return;
-      const speakerId = resolveSpeechSpeaker(speaker, content);
+      const speakerId = resolveBarkSpeaker(speaker, content);
       if (!speakerId) return;
-      barks.push({ speaker: speakerId, text: content });
+      barks.push({ speaker: speakerId, text: content, source: meta.source || "", priority: meta.priority || 0 });
     };
 
-    safeArrayOrObjectValues(data && data.recent_barks).forEach((entry) => {
+    safeArrayOrObjectValues(payload.recent_barks || gameState.recent_barks).forEach((entry) => {
       if (typeof entry === "string") {
         const parsed = parseBarkString(entry);
-        pushBark(parsed.speaker, parsed.text);
+        pushBark(parsed.speaker, parsed.text, { source: "recent_barks" });
         return;
       }
       const record = safeObject(entry);
       pushBark(
         record.speaker || record.entity_id || record.actor || record.character || record.id,
         record.text || record.line || record.content || record.message,
+        { source: "recent_barks" },
       );
     });
 
-    safeArray(data && data.responses).forEach((response) => {
-      const record = safeObject(response);
-      const speaker = normalizeId(record.speaker || "");
-      if (!speaker || speaker === "dm" || speaker === "npc") return;
-      pushBark(speaker, record.text);
+    [
+      ...safeArray(payload.responses),
+      ...safeArray(gameState.responses),
+      ...safeArray(payload.response),
+    ].forEach((response) => {
+      const bark = responseRecordToBark(response);
+      if (bark && !["dm", "narrator", "system", "npc"].includes(normalizeId(bark.speaker))) {
+        pushBark(bark.speaker, bark.text, { source: bark.source });
+      }
     });
+    const singularResponse = responseRecordToBark(payload.response);
+    if (singularResponse && !["dm", "narrator", "system", "npc"].includes(normalizeId(singularResponse.speaker))) {
+      pushBark(singularResponse.speaker, singularResponse.text, { source: singularResponse.source });
+    }
 
     extractEventLines(data).forEach((line) => {
-      if (!/\[台词\]/.test(line)) return;
-      const parsed = parseBarkString(line);
-      pushBark(parsed.speaker, parsed.text);
+      if (/\[台词\]/.test(line)) {
+        const parsed = parseBarkString(line);
+        pushBark(parsed.speaker, parsed.text, { source: "journal_line" });
+      }
+      journalLineToBarks(line).forEach((bark) => pushBark(bark.speaker, bark.text, bark));
     });
 
+    if (options.skipUIEvents !== true) {
+      barksFromUIEvents([
+        ...safeArray(payload.ui_events),
+        ...safeArray(gameState.ui_events),
+        ...dispatchedEvents,
+      ]).forEach((bark) => pushBark(bark.speaker, bark.text, bark));
+    }
+
     const dedupe = new Set();
-    return barks.filter((bark) => {
-      const key = bark.speaker + "::" + bark.text;
+    const speakerTextDedupe = new Set();
+    const signalSources = new Set([
+      "trap_insight",
+      "trap_disarmed",
+      "trap_triggered",
+      "study_observation",
+      "boss_strategy",
+      "memory_echo",
+      "party_stance",
+      "mercy_resolution",
+    ]);
+    const deduped = barks.filter((bark) => {
+      const speakerTextKey = normalizeBarkSpeakerId(bark.speaker) + "::" + normalizeId(bark.text);
+      if (speakerTextDedupe.has(speakerTextKey)) return false;
+      speakerTextDedupe.add(speakerTextKey);
+      const source = normalizeId(bark.source);
+      const key = signalSources.has(source)
+        ? normalizeBarkSpeakerId(bark.speaker) + "::" + source
+        : normalizeBarkSpeakerId(bark.speaker) + "::" + source + "::" + normalizeId(bark.text);
       if (dedupe.has(key)) return false;
       dedupe.add(key);
       return true;
     });
+    const grouped = [];
+    const bySource = new Map();
+    deduped.forEach((bark) => {
+      const source = bark.source || "";
+      if (!bySource.has(source)) bySource.set(source, []);
+      bySource.get(source).push(bark);
+    });
+    bySource.forEach((items, source) => {
+      grouped.push(...sortKnownPartyBarks(items, source));
+    });
+    return grouped;
   }
 
-  function triggerSpeechBubbles(data) {
-    if (!window.BG3TacticalMap || typeof window.BG3TacticalMap.playSpeechBubble !== "function") return;
-    extractSpeechBarks(data).slice(0, 4).forEach((bark, index) => {
-      window.setTimeout(() => {
-        window.BG3TacticalMap.playSpeechBubble(bark.speaker, bark.text);
-      }, 120 + index * 180);
+  function triggerSpeechBubbles(data, options = {}) {
+    if (!window.BG3HudRenderers || typeof window.BG3HudRenderers.dispatchCompanionBarks !== "function") return;
+    hardClearAct3TrapBarksIfNeeded(data, "speech_dispatch");
+    const barks = extractSpeechBarks(data, options)
+      .filter((bark) => normalizeId(bark.speaker) !== "player")
+      .slice(0, 4)
+      .map((bark) => ({
+        ...bark,
+        source: bark.source || "response",
+        epoch: state.barkEpoch,
+      }));
+    if (hasAct3BarkResetSignal(data) && typeof window.BG3HudRenderers.clearCompanionBarks === "function") {
+      window.BG3HudRenderers.clearCompanionBarks({
+        groups: ["trap", "generic_response"],
+        resetCompleted: true,
+        suppress: true,
+        reason: "act3_context",
+      });
+    }
+    if (barks.length) {
+      window.BG3HudRenderers.dispatchCompanionBarks(barks);
+    }
+    if (hasFinalBarkClearSignal(data) && typeof window.BG3HudRenderers.clearCompanionBarks === "function") {
+      window.BG3HudRenderers.clearCompanionBarks({
+        force: true,
+        resetCompleted: true,
+        resetGroup: true,
+        reason: "final_clear",
+      });
+    }
+  }
+
+  function hasAct3BarkResetSignal(data) {
+    const payload = safeObject(data);
+    const gameState = safeObject(payload.game_state || payload.gameState || payload.state);
+    const flags = {
+      ...safeObject(gameState.flags),
+      ...safeObject(payload.flags),
+    };
+    const lines = extractEventLines(payload).join("\n");
+    const visibleRooms = [
+      ...safeArray(payload.visibleRooms),
+      ...safeArray(payload.visible_rooms),
+      ...safeArray(safeObject(payload.map_data).visibleRooms),
+      ...safeArray(safeObject(payload.map_data).visible_rooms),
+      ...safeArray(safeObject(gameState.map_data).visibleRooms),
+      ...safeArray(safeObject(gameState.map_data).visible_rooms),
+    ].map((roomId) => normalizeId(roomId));
+    return visibleRooms.includes(ROOM_C)
+      || state.roomVisibleIds.has(ROOM_C)
+      || /\[秘密书房\]|\[书房观察\]|\[线索整合\]/i.test(lines)
+      || flags.act3_diary_context_gathered === true
+      || flags.act3_diary_read === true
+      || flags.act3_diary_decoded === true
+      || flags.act3_secret_study_entered === true
+      || flags.act3_secret_study_discovered === true
+      || flags.necromancer_lab_diary_decoded === true;
+  }
+
+  function isAct3BarkRequest(routed = {}, payload = {}) {
+    const text = normalizeId(routed.userLine || safeObject(payload).user_input || "");
+    const target = normalizeId(routed.target || safeObject(payload).target || "");
+    const source = normalizeId(routed.source || safeObject(payload).source || "");
+    const intent = normalizeId(routed.intentValue || safeObject(payload).intent || "");
+    if (source === "act3_study_context") return true;
+    if (["chemical_notes", "iron_key_sketch", "necromancer_diary"].includes(target)) return true;
+    if (intent === "read" && /(chemical_notes|iron_key_sketch|necromancer_diary|药剂笔记|化学|钥匙草图|日记|diary|notes|sketch)/i.test(text)) {
+      return true;
+    }
+    return false;
+  }
+
+  function hardClearAct3TrapBarks(reason = "act3_transition") {
+    if (!window.BG3HudRenderers || typeof window.BG3HudRenderers.clearCompanionBarks !== "function") return false;
+    state.act3BarkEpoch = Math.max(Number(state.act3BarkEpoch) || 0, Number(state.barkEpoch) || 0);
+    if (typeof window.BG3HudRenderers.setBarkSceneContext === "function") {
+      window.BG3HudRenderers.setBarkSceneContext({
+        act: "act3",
+        visibleRooms: Array.from(state.roomVisibleIds || []),
+      });
+    }
+    if (typeof window.BG3HudRenderers.clearBarksByScope === "function") {
+      window.BG3HudRenderers.clearBarksByScope("act2_corridor", { suppressGroups: ["trap"], reason });
+    }
+    window.BG3HudRenderers.clearCompanionBarks({
+      groups: ["trap", "generic_response"],
+      force: true,
+      resetCompleted: true,
+      suppress: true,
+      reason,
     });
+    return true;
+  }
+
+  function hardClearAct3TrapBarksIfNeeded(data = {}, reason = "act3_transition") {
+    if (!hasAct3BarkResetSignal(data)) return false;
+    return hardClearAct3TrapBarks(reason);
+  }
+
+  function applyLocalAct3ReadProjection(actionIntent, actionTarget, data = {}) {
+    if (normalizeId(actionIntent) !== "read") return false;
+    const target = normalizeId(actionTarget);
+    const isStudyContext = target === "chemical_notes" || target === "iron_key_sketch";
+    const isDiary = target === "necromancer_diary";
+    if (!isStudyContext && !isDiary) return false;
+
+    const flags = safeObject(state.worldFlags);
+    flags.act3_secret_study_entered = true;
+    if (target === "chemical_notes") {
+      flags.act3_chemical_notes_seen = true;
+      flags.act3_diary_context_gathered = true;
+      flags.act3_diary_context_bonus = flags.act3_diary_context_bonus || 10;
+    }
+    if (target === "iron_key_sketch") {
+      flags.act3_key_sketch_seen = true;
+      flags.act3_diary_context_gathered = true;
+      flags.act3_diary_context_bonus = flags.act3_diary_context_bonus || 10;
+    }
+    if (isDiary) {
+      const latest = safeObject(data.latest_roll);
+      const result = safeObject(latest.result);
+      const succeeded = result.is_success === true
+        || latest.is_success === true
+        || normalizeId(result.result_type).includes("success");
+      flags.act3_diary_read = true;
+      if (succeeded || flags.act3_diary_context_gathered === true) {
+        flags.act3_diary_decoded = true;
+        flags.act3_gribbo_potion_truth_known = true;
+        flags.act3_heavy_key_hint_known = true;
+        flags.act3_party_knows_gribbo_truth = true;
+      }
+    }
+    state.worldFlags = flags;
+    revealRoom(ROOM_C);
+    refreshVisibilityProjection();
+    hardClearAct3TrapBarks("act3_read_projection");
+    updateExplorationActProgress();
+    return true;
+  }
+
+  function hasFinalBarkClearSignal(data) {
+    const payload = safeObject(data);
+    const gameState = safeObject(payload.game_state || payload.gameState || payload.state);
+    const flags = {
+      ...safeObject(gameState.flags),
+      ...safeObject(payload.flags),
+    };
+    const lines = extractEventLines(payload).join("\n");
+    return payload.demo_cleared === true
+      || gameState.demo_cleared === true
+      || flags.act4_final_exit_opened === true
+      || /demo\s*cleared|\[DEMO CLEARED\]/i.test(lines);
   }
 
   function triggerMapTransitionEffects(data) {
@@ -4185,6 +4796,20 @@
     }, IDLE_MS);
   }
 
+  function ensureAct2CorridorTrapInsightEvent(uiEvents, actionIntent, actionTarget) {
+    const events = safeArray(uiEvents).slice();
+    if (events.some((event) => normalizeId(safeObject(event).type) === "trap_insight")) return events;
+    if (normalizeId(actionIntent) !== "interact") return events;
+    if (!["door_a_to_b", "ab_door", "corridor_entrance"].includes(normalizeId(actionTarget))) return events;
+    events.push({
+      type: "trap_insight",
+      actor: "astarion",
+      trapId: "gas_trap_1",
+      source: "corridor_reveal",
+    });
+    return events;
+  }
+
   async function sendStructuredAction(action = {}) {
     const descriptor = action && typeof action === "object" ? action : {};
     const options = descriptor.options && typeof descriptor.options === "object" ? descriptor.options : {};
@@ -4215,6 +4840,12 @@
       return { ok: true, qa_local: true };
     }
 
+    if (normalizeId(intentValue) !== "init_sync") {
+      state.barkEpoch = (Number(state.barkEpoch) || 0) + 1;
+    }
+    if (isAct3BarkRequest(routed, payload)) {
+      hardClearAct3TrapBarks("act3_request");
+    }
     syncLocalPlayerProjectionState("client_before_narrative");
     setLoading(true);
     state.xrayNodeTimings = {};
@@ -4244,6 +4875,7 @@
       if (opts.incrementTurn !== false) {
         state.turnCount += 1;
       }
+      const previousWorldFlagsSnapshot = { ...safeObject(state.worldFlags) };
       refreshWorldFlags(data);
       const wasCombatActive = isCombatStateActive(state.combatState);
       const prevPartySnapshot = { ...state.partyStatus };
@@ -4254,6 +4886,7 @@
         environment_objects: prevEnvironmentSnapshot,
         player_inventory: prevInventorySnapshot,
         combat_state: state.combatState,
+        flags: previousWorldFlagsSnapshot,
       };
       state.partyStatus = mergePartyStatusResponse(prevPartySnapshot, data.party_status);
       state.environmentObjects = safeObject(data.environment_objects);
@@ -4269,7 +4902,8 @@
       updateMapDebug("sendStructuredAction:response");
       const actionIntent = normalizeId(payload.intent);
       const actionTarget = normalizeId(payload.target || routed.target);
-      if (actionIntent === "interact") {
+      applyLocalAct3ReadProjection(actionIntent, actionTarget, data);
+      if (actionIntent === "interact" && !responseIndicatesInteractionBlocked(data)) {
         if (actionTarget === "door_b_to_c" && !state.discoveredSecretDoorIds.has("door_b_to_c")) {
           discoverSecretDoor("door_b_to_c");
         }
@@ -4293,9 +4927,11 @@
       renderTacticalGrid(state.partyStatus, state.environmentObjects, state.mapData);
       renderInitiativeTracker(state.combatState, wasCombatActive);
       updateRestControls(state.combatState);
+      updateExplorationActProgress();
       let uiEvents = window.BG3UIEventAdapter
         ? window.BG3UIEventAdapter.extractUIEvents(data, previousUIEventState)
         : [];
+      uiEvents = ensureAct2CorridorTrapInsightEvent(uiEvents, actionIntent, actionTarget);
       const trace = window.BG3DirectorTrace && typeof window.BG3DirectorTrace.buildTraceNodes === "function"
         ? window.BG3DirectorTrace.buildTraceNodes(data, { userLine, intent: intentValue, uiEvents })
         : inferNodeTrace(data, userLine, intentValue);
@@ -4315,56 +4951,62 @@
           intent: intentValue,
           uiEvents,
           timings: resolveNodeTimings(data, safeObject(data.game_state)),
+          autoIdleMs: QA_NO_IDLE ? 999999 : undefined,
         });
       }
 
       if (window.BG3StateDiffRenderer && typeof window.BG3StateDiffRenderer.update === "function") {
-        let diffData = data;
-        if (QA_SHOWCASE || QA_MAP_DEBUG) {
-          const liveState = await fetchShowcaseStateSnapshot();
-          if (liveState) {
-            diffData = {
-              ...data,
-              game_state: liveState,
-              flags: liveState.flags,
-              actor_runtime_state: liveState.actor_runtime_state,
-              demo_cleared: data.demo_cleared === true || liveState.demo_cleared === true,
-            };
-            if (window.BG3UIEventAdapter) {
-              const enrichedEvents = window.BG3UIEventAdapter.extractUIEvents(
-                diffData,
-                previousShowcaseSnapshot
-              );
-              enrichedEvents.forEach((event) => {
-                if (!event || !["negotiation_leverage", "memory_echo", "party_stance", "mercy_resolution"].includes(event.type)) return;
-                const exists = uiEvents.some((candidate) => {
-                  if (!candidate || candidate.type !== event.type) return false;
-                  if (event.type === "negotiation_leverage") {
-                    return candidate.evidence === event.evidence
-                      && candidate.targetId === event.targetId
-                      && candidate.pressure === event.pressure;
-                  }
-                  if (event.type === "party_stance") {
-                    return candidate.target === event.target;
-                  }
-                  if (event.type === "mercy_resolution") {
-                    return candidate.target === event.target && candidate.result === event.result;
-                  }
-                  return candidate.actor === event.actor && candidate.memoryType === event.memoryType;
+        if (normalizeId(intentValue) === "init_sync") {
+          recordShowcaseBaseline(data);
+        } else {
+          let diffData = data;
+          if (QA_SHOWCASE || QA_MAP_DEBUG) {
+            const liveState = await fetchShowcaseStateSnapshot();
+            if (liveState) {
+              diffData = {
+                ...data,
+                game_state: liveState,
+                flags: liveState.flags,
+                actor_runtime_state: liveState.actor_runtime_state,
+                demo_cleared: data.demo_cleared === true || liveState.demo_cleared === true,
+              };
+              if (window.BG3UIEventAdapter) {
+                const enrichedEvents = window.BG3UIEventAdapter.extractUIEvents(
+                  diffData,
+                  previousShowcaseSnapshot
+                );
+                enrichedEvents.forEach((event) => {
+                  if (!event || !["negotiation_leverage", "memory_echo", "party_stance", "mercy_resolution"].includes(event.type)) return;
+                  const exists = uiEvents.some((candidate) => {
+                    if (!candidate || candidate.type !== event.type) return false;
+                    if (event.type === "negotiation_leverage") {
+                      return candidate.evidence === event.evidence
+                        && candidate.targetId === event.targetId
+                        && candidate.pressure === event.pressure;
+                    }
+                    if (event.type === "party_stance") {
+                      return candidate.target === event.target;
+                    }
+                    if (event.type === "mercy_resolution") {
+                      return candidate.target === event.target && candidate.result === event.result;
+                    }
+                    return candidate.actor === event.actor && candidate.memoryType === event.memoryType;
+                  });
+                  if (!exists) uiEvents.push(event);
                 });
-                if (!exists) uiEvents.push(event);
-              });
+              }
             }
           }
+          updateWorldStateDiff(previousShowcaseSnapshot, buildShowcaseSnapshot(diffData), {
+            autoExpand: _isNarrative || normalizeId(intentValue) === "ui_action_loot",
+          });
         }
-        updateWorldStateDiff(previousShowcaseSnapshot, buildShowcaseSnapshot(diffData), {
-          autoExpand: _isNarrative || normalizeId(intentValue) === "ui_action_loot",
-        });
       }
 
       /* Dispatch HUD UI events from response (#1) */
+      let dispatchedEvents = [];
       if (intentValue.toLowerCase() !== "init_sync") {
-        const dispatchedEvents = dispatchUIEventsFromResponse(data, previousUIEventState, uiEvents);
+        dispatchedEvents = dispatchUIEventsFromResponse(data, previousUIEventState, uiEvents) || [];
         if (safeArray(dispatchedEvents).some((event) => normalizeId(safeObject(event).type).startsWith("trap_"))) {
           refreshVisibilityProjection();
           renderTacticalGrid(state.partyStatus, state.environmentObjects, state.mapData);
@@ -4376,7 +5018,9 @@
         triggerMapTransitionEffects(data);
         triggerRestVisualEffects(data, intentValue);
         triggerCombatVisualEffects(data, userLine || "");
-        triggerSpeechBubbles(data);
+      }
+      if (intentValue.toLowerCase() !== "init_sync") {
+        triggerSpeechBubbles(data, { dispatchedEvents, skipUIEvents: true });
       }
       maybeShowLootModal(data.environment_objects, { intent: intentValue });
       setNetworkState("链路在线", "ok");
@@ -5304,7 +5948,7 @@
     if (i === "companion_interrupt") return true;
     if (s === "dialogue_input") return true;
 
-    if (n === "READ" || n === "INTERACT" || n === "CHAT" || n === "ATTACK") return true;
+    if (n === "READ" || n === "INTERACT" || n === "CHAT" || n === "ATTACK" || n === "DISARM") return true;
     if (/dialogue|choice|talk|speak|converse/i.test(i)) return true;
     return false;
   }
@@ -5424,8 +6068,10 @@
       }, qa.traceDelay);
     }
 
-    if (!IS_QA_MODE) {
+    if (SHOULD_SYNC_INITIAL_STATE) {
       await syncInitialState();
+    }
+    if (!IS_QA_MODE) {
       startDialoguePolling();
     }
   }
@@ -5449,13 +6095,21 @@
       normalizeNodeName,
       isNarrativeRequest,
       dispatchUIEventsFromResponse,
+      extractSpeechBarks,
+      triggerSpeechBubbles,
+      hardClearAct3TrapBarks,
+      hardClearAct3TrapBarksIfNeeded,
+      hasAct3BarkResetSignal,
+      isAct3BarkRequest,
       buildShowcaseSnapshot,
       updateWorldStateDiff,
       recordShowcaseBaseline,
       runShowcaseLocalStep,
       applyNormalizedMap,
       refreshVisibilityProjection,
+      revealRoom,
       revealRoomByDoorTarget,
+      handleLocalExplorationDoor,
       resolveAct1Perception,
       discoverSecretDoor,
       projectPartyStatusForTactical,

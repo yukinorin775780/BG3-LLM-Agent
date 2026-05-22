@@ -20,7 +20,7 @@ determinism:
         item_transfers: []
         hp_changes: []
         action_actor: player
-        action_target: 13,11
+        action_target: 17,4
       - action_type: INTERACT
         difficulty_class: 0
         reason: scripted_open_exit
@@ -43,7 +43,7 @@ steps:
     user_input: /flag act4_astarion_steal_key_success true
     intent: chat
   - id: move_to_exit
-    user_input: 移动到 13,11。
+    user_input: 移动到 17,4。
     intent: chat
   - id: open_exit
     user_input: 用 heavy_iron_key 打开 heavy_oak_door_1。

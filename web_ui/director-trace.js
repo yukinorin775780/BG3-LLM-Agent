@@ -13,15 +13,16 @@
   let pendingStartedAt = 0;
   let lastNodes = [];
   const TRACE_STEP_MS = 240;
+  const INSTANCE_ID = String(Date.now()) + ":" + Math.random().toString(36).slice(2);
 
   const CHAIN = Object.freeze([
-    ["player_input", "Player Input", "narrative command"],
-    ["dm_router", "DM Router", "intent routing"],
-    ["actor_view_filter", "ActorView Filter", "memory isolation"],
-    ["actor_runtime", "Actor Runtime / Party Coordinator", "party turn arbitration"],
-    ["domain_event", "DomainEvent", "event contracts"],
-    ["event_drain", "EventDrain", "state write-back"],
-    ["ui_events", "UI Events", "HUD projection"],
+    ["player_input", "Player Intent", "WASD stays local; narrative actions enter the route."],
+    ["dm_router", "DM Router", "Classifies the action, target, and route."],
+    ["actor_view_filter", "ActorView", "Filters what this actor is allowed to know."],
+    ["actor_runtime", "Actor Runtime", "Runs companion memory, voice, and party coordination."],
+    ["domain_event", "Rules / Mechanics", "Resolves traps, locks, items, checks, or combat effects."],
+    ["event_drain", "EventDrain", "Commits inventory, flags, memory, affection, and status."],
+    ["ui_events", "UI Feedback", "Renders bark, cards, overlays, and state diff."],
   ]);
 
   const NODE_DISPLAY = Object.freeze(
@@ -72,12 +73,22 @@
     return typeof performance !== "undefined" && typeof performance.now === "function" ? performance.now() : Date.now();
   }
 
+  function markCurrentInstance() {
+    window.__BG3_DIRECTOR_TRACE_INSTANCE_ID__ = INSTANCE_ID;
+  }
+
+  function isCurrentInstance() {
+    return window.__BG3_DIRECTOR_TRACE_INSTANCE_ID__ === INSTANCE_ID;
+  }
+
   function cacheEls() {
     if (els && document.body.contains(els.panel)) return;
     els = {
       panel: document.getElementById("director-trace-panel"),
       nodeTimeline: document.getElementById("director-node-timeline"),
       stateIndicator: document.getElementById("director-state-indicator"),
+      mode: document.getElementById("director-trace-mode"),
+      summary: document.getElementById("director-trace-summary"),
       fallback: document.getElementById("director-fallback-reason"),
     };
   }
@@ -91,9 +102,10 @@
       item.dataset.node = id;
       item.className = "director-chain-node node-status--idle";
       item.innerHTML =
-        '<div class="node-copy"><strong></strong><small></small>' +
+        '<span class="node-step-index"></span><div class="node-copy"><strong></strong><small class="node-explanation"></small>' +
         '<span class="node-io node-input"></span><span class="node-io node-output"></span></div>' +
         '<div class="node-meta"><span class="node-status">idle</span><span class="node-timing">--ms</span></div>';
+      item.querySelector(".node-step-index").textContent = String(els.nodeTimeline.children.length + 1).padStart(2, "0");
       item.querySelector("strong").textContent = label;
       item.querySelector("small").textContent = subtitle;
       els.nodeTimeline.appendChild(item);
@@ -128,6 +140,19 @@
     els.stateIndicator.className = "director-state-indicator director-state--" + stateClass;
   }
 
+  function updateTraceBrief(mode, summary) {
+    cacheEls();
+    if (els.mode) els.mode.textContent = String(mode || "LOCAL EXPLORATION").toUpperCase();
+    if (els.summary) els.summary.textContent = summary || "WASD and hover stay local. No narrative route is active.";
+  }
+
+  function setPanelMode(mode) {
+    cacheEls();
+    if (!els.panel) return;
+    els.panel.classList.remove("director-trace--idle", "director-trace--active", "director-trace--pending");
+    els.panel.classList.add("director-trace--" + mode);
+  }
+
   function statusForNode(activeNodes, activeNode, nodeId) {
     if (!activeNodes.includes(nodeId)) return "skipped";
     if (activeNode === nodeId) return "active";
@@ -154,7 +179,10 @@
     if (!els.nodeTimeline) return;
     els.nodeTimeline.querySelectorAll("li[data-node]").forEach((item) => {
       const node = normalizeNodeName(item.dataset.node);
-      const status = statusForNode(activeNodes, activeNode, node);
+      const status = currentState === "idle" && node === "player_input"
+        ? "idle"
+        : statusForNode(activeNodes, activeNode, node);
+      item.hidden = currentState === "idle" && node !== "player_input";
       const detail = safeObj(details[node]);
       item.classList.toggle("is-active", status === "active");
       item.classList.toggle("is-visited", status === "done");
@@ -166,7 +194,14 @@
       const timingEl = item.querySelector(".node-timing");
       const inputEl = item.querySelector(".node-input");
       const outputEl = item.querySelector(".node-output");
+      const explanationEl = item.querySelector(".node-explanation");
       if (statusEl) statusEl.textContent = status;
+      if (explanationEl) {
+        const fallback = safeObj(NODE_DISPLAY[node]).subtitle || "";
+        const explanation = String(detail.explanation || (status === "skipped" ? fallback : ""));
+        explanationEl.textContent = explanation;
+        explanationEl.title = explanation;
+      }
       if (timingEl) {
         timingEl.textContent = timingText(detail.ms, detail.estimated !== false);
         timingEl.classList.remove("node-timing--fast", "node-timing--medium", "node-timing--slow");
@@ -174,12 +209,14 @@
         if (klass) timingEl.classList.add(klass);
       }
       if (inputEl) {
-        inputEl.textContent = detail.input ? "in: " + detail.input : "";
-        inputEl.classList.toggle("is-empty", !detail.input);
+        const input = String(detail.input || "");
+        inputEl.textContent = input ? "in: " + input : "";
+        inputEl.classList.toggle("is-empty", !input);
       }
       if (outputEl) {
-        outputEl.textContent = detail.output ? "out: " + detail.output : "";
-        outputEl.classList.toggle("is-empty", !detail.output);
+        const output = String(detail.output || "");
+        outputEl.textContent = output ? "out: " + output : "";
+        outputEl.classList.toggle("is-empty", !output);
       }
     });
   }
@@ -187,6 +224,7 @@
   function scheduleAutoIdle(token, delayMs) {
     clearIdleTimer();
     idleTimer = window.setTimeout(() => {
+      if (!isCurrentInstance()) return;
       if (token !== transitionToken) return;
       setIdle();
     }, Math.max(360, Number(delayMs) || 1500));
@@ -244,8 +282,8 @@
     if (/item|transfer|获得|搜刮|heavy_iron_key|lab_key|钥匙/i.test(blob) || types.has("item_gained")) parts.push("item_transfer");
     if (types.has("companion_guidance")) parts.push("companion_guidance");
     if (types.has("negotiation_leverage") || /\[交涉筹码\]|diary_evidence|gribbo_elixir_truth/i.test(blob)) parts.push("negotiation_leverage");
-    if (types.has("trap_insight") || /\[陷阱感知\]|gas_trap_1.*revealed|poison_trap_revealed/i.test(blob)) parts.push("trap_reveal");
-    if (types.has("trap_disarmed") || /\[陷阱解除\]|gas_trap_1.*disabled|poison_trap_disarmed/i.test(blob)) parts.push("trap_disarmed");
+    if (types.has("trap_insight") || /\[陷阱感知\]/i.test(blob)) parts.push("trap_reveal");
+    if (types.has("trap_disarmed") || /\[陷阱解除\]/i.test(blob)) parts.push("trap_disarmed");
     if (types.has("trap_triggered") || /\[毒气陷阱\]|gas_trap_1.*triggered|poisoned|中毒/i.test(blob)) parts.push("trap_triggered");
     if (types.has("boss_intro") || /\[Boss Encounter\]|act4_gribbo_confrontation_started|act4_boss_room_entered/i.test(blob)) parts.push("boss_intro");
     if (types.has("boss_strategy") || /\[Boss方案\]|boss_strategy/i.test(blob)) parts.push("boss_strategy");
@@ -280,8 +318,57 @@
     if (types.has("poison_valve") || /\[毒气泄漏\]|poison_valve|potion_tank/i.test(blob)) out.push("Poison Valve Card");
     if (/\[秘密书房\]|act3_secret_study|cracked_wall|room_c_secret_study/i.test(blob)) out.push("Secret Study Toast");
     if (types.has("demo_cleared") || /demo_cleared|DEMO CLEARED/i.test(blob)) out.push("Demo Banner");
-    if (types.has("trap_discovered") || types.has("trap_triggered") || /陷阱|trap/i.test(blob)) out.push("Trap HUD");
+    if (types.has("trap_discovered") || types.has("trap_triggered") || /\[陷阱感知\]|\[陷阱解除\]|\[毒气陷阱\]/i.test(blob)) out.push("Trap HUD");
     return out.join(", ") || "HUD events";
+  }
+
+  function hasEventType(data, events, types) {
+    const wanted = new Set(safeArr(types).map(normalizeId));
+    return eventTypes(data, events).some((type) => wanted.has(type));
+  }
+
+  function resolveTraceBrief(data, options = {}) {
+    const opts = safeObj(options);
+    const payload = safeObj(data);
+    const events = safeArr(opts.uiEvents || opts.events);
+    const blob = textBlob(payload, opts.userLine, opts.intent);
+    if (!blob.trim() && !events.length) {
+      return {
+        mode: "LOCAL EXPLORATION",
+        summary: "WASD and hover stay local. No narrative route is active.",
+      };
+    }
+    if (hasEventType(payload, events, ["demo_cleared"]) || /demo_cleared|DEMO CLEARED|act4_final_exit_opened/i.test(blob)) {
+      return { mode: "PHYSICS / EVENTDRAIN", summary: "Heavy iron key opened the final exit." };
+    }
+    if (hasEventType(payload, events, ["boss_route"]) || /\[Boss解决\]|\[偷钥匙失败\]|act4_(?:negotiation_success|astarion_steal_key_success|assault_success|heavy_iron_key_obtained)/i.test(blob)) {
+      return { mode: "NARRATIVE TURN", summary: "Boss route resolved and world state changed." };
+    }
+    if (hasEventType(payload, events, ["boss_strategy"]) || /\[Boss方案\]/i.test(blob)) {
+      return { mode: "AGENT RESPONSE", summary: "Three companions proposed conflicting plans." };
+    }
+    if (hasEventType(payload, events, ["memory_added", "negotiation_leverage"]) || /necromancer_diary|diary_context|\[线索整合\]|\[交涉筹码\]|\[记忆\]/i.test(blob)) {
+      return { mode: "NARRATIVE TURN", summary: "Diary context unlocked memory and negotiation leverage." };
+    }
+    if (hasEventType(payload, events, ["boss_intro"]) || /\[Boss Encounter\]|act4_gribbo_confrontation_started|act4_boss_room_entered/i.test(blob)) {
+      return { mode: "AGENT RESPONSE", summary: "Gribbo confrontation started." };
+    }
+    if (hasEventType(payload, events, ["trap_disarmed"]) || /\[陷阱解除\]/i.test(blob)) {
+      return { mode: "PHYSICS / EVENTDRAIN", summary: "Trap disabled. Corridor is safe." };
+    }
+    if (hasEventType(payload, events, ["trap_insight"]) || /\[陷阱感知\]/i.test(blob)) {
+      return { mode: "AGENT RESPONSE", summary: "Astarion noticed a hidden gas trap." };
+    }
+    if (hasEventType(payload, events, ["trap_triggered", "poison_valve"]) || /\[毒气陷阱\]|\[毒气泄漏\]|poisoned|中毒|poison_valve|lab_poison_leak/i.test(blob)) {
+      return { mode: "PHYSICS / EVENTDRAIN", summary: "Poison danger resolved through mechanics and EventDrain." };
+    }
+    if (hasEventType(payload, events, ["party_stance", "mercy_resolution"]) || /\[站队\]|\[抉择\]/i.test(blob)) {
+      return { mode: "AGENT RESPONSE", summary: "Party Coordinator surfaced companion value conflict." };
+    }
+    if (hasEventType(payload, events, ["item_gained"]) || /item_transfer|heavy_iron_key|lab_key|获得|物品转移/i.test(blob)) {
+      return { mode: "PHYSICS / EVENTDRAIN", summary: "EventDrain applied an item transfer." };
+    }
+    return { mode: "NARRATIVE TURN", summary: "Director routed the player intent into world feedback." };
   }
 
   function estimateTimings(nodes, timings) {
@@ -327,7 +414,7 @@
     const nodes = ["player_input", "dm_router", "actor_view_filter"];
     const types = eventTypes(payload, events);
     const hasTrapSignal = types.some((type) => ["trap_insight", "trap_disarmed", "trap_triggered"].includes(type))
-      || /\[陷阱感知\]|\[陷阱解除\]|\[毒气陷阱\]|gas_trap_1|poison_trap/i.test(blob);
+      || /\[陷阱感知\]|\[陷阱解除\]|\[毒气陷阱\]/i.test(blob);
     const hasMemoryEcho = types.includes("memory_echo")
       || /\[记忆回响\]|rebuked_by_player|sided_with_player|astarion_memory_echo|rebuke_echo|complicity_echo/i.test(blob);
     const hasMercySignal = types.some((type) => ["party_stance", "mercy_resolution"].includes(type))
@@ -362,13 +449,13 @@
     const uiSummary = summarizeUi(events, blob);
     const inputSummary = summarizeInput(opts.userLine, opts.intent, payload);
     const details = {
-      player_input: { input: inputSummary, output: String(opts.intent || "routed").toUpperCase() || "routed" },
-      dm_router: { input: inputSummary, output: /fallback/i.test(blob) ? "fallback selected" : "route selected" },
-      actor_view_filter: { input: "world + actor scope", output: /memory|记忆|actor_private/i.test(blob) ? "ActorView private memory" : "visible slice" },
-      actor_runtime: { input: "filtered ActorView", output: /gribbo|astarion|party|dialogue|对话|台词/i.test(blob) ? "Party Coordinator" : "actor runtime" },
-      domain_event: { input: "runtime decisions", output: domainSummary },
-      event_drain: { input: "pending events", output: /EventDrain|event_drain|pending_events|item|memory|affection|flag/i.test(blob) ? domainSummary : "state committed" },
-      ui_events: { input: "response/ui_events", output: uiSummary },
+      player_input: { explanation: "Player action enters the director only for narrative turns.", input: inputSummary, output: String(opts.intent || "routed").toUpperCase() || "routed" },
+      dm_router: { explanation: "Classified intent, target, fallback, and route.", input: inputSummary, output: /fallback/i.test(blob) ? "fallback selected" : "route selected" },
+      actor_view_filter: { explanation: "Applied memory isolation and actor-visible world slice.", input: "world + actor scope", output: /memory|记忆|actor_private/i.test(blob) ? "ActorView private memory" : "visible slice" },
+      actor_runtime: { explanation: "Generated companion/NPC response or party coordination.", input: "filtered ActorView", output: /gribbo|astarion|party|dialogue|对话|台词/i.test(blob) ? "Party Coordinator" : "actor runtime" },
+      domain_event: { explanation: "Resolved rules, checks, trap state, item movement, or route result.", input: "runtime decisions", output: domainSummary },
+      event_drain: { explanation: "Applied queued state changes to the world snapshot.", input: "pending events", output: /EventDrain|event_drain|pending_events|item|memory|affection|flag/i.test(blob) ? domainSummary : "state committed" },
+      ui_events: { explanation: "Projected engine results into HUD, bark, overlay, and diff.", input: "response/ui_events", output: uiSummary },
     };
     const types = new Set(eventTypes(payload, events));
     if (types.has("companion_guidance") || /\[队友建议\]/i.test(blob)) {
@@ -450,8 +537,20 @@
     clearIdleTimer();
     clearTraceAnimation();
     currentState = "idle";
+    lastNodes = ["player_input"];
+    setPanelMode("idle");
+    updateTraceBrief("LOCAL EXPLORATION", "WASD and hover stay local. No narrative route is active.");
     updateStateIndicator("Director Idle · Local Exploration", "idle");
-    applyNodeStates([], "", {});
+    const details = {
+      player_input: {
+        explanation: "Local movement is resolved client-side.",
+        input: "WASD / hover",
+        output: "no backend route",
+        ms: null,
+        estimated: true,
+      },
+    };
+    applyNodeStates(["player_input"], "", details);
     updateFallback("");
   }
 
@@ -460,7 +559,9 @@
     clearIdleTimer();
     clearTraceAnimation();
     currentState = "pending";
+    setPanelMode("pending");
     pendingStartedAt = nowMs();
+    updateTraceBrief("NARRATIVE TURN", "Classifying player intent...");
     updateStateIndicator("Director Processing…", "pending");
     const nodes = ["player_input", "dm_router", "actor_view_filter", "actor_runtime", "domain_event", "event_drain", "ui_events"];
     const details = buildTraceDetails({}, { nodes, userLine: safeObj(context).userLine || "", intent: safeObj(context).intent || "" });
@@ -478,7 +579,11 @@
     const token = transitionToken;
     currentState = "active";
     lastNodes = traceNodes.slice();
-    updateStateIndicator("Director Active · Route Chain", "active");
+    setPanelMode("active");
+    const brief = resolveTraceBrief(opts.data || {}, opts);
+    updateTraceBrief(brief.mode, brief.summary);
+    updateStateIndicator("Director Active · " + brief.mode, "active");
+    clearIdleTimer();
     clearTraceAnimation();
 
     if (!traceNodes.length || opts.animate === false) {
@@ -489,11 +594,13 @@
 
     traceNodes.forEach((node, index) => {
       traceTimers.push(window.setTimeout(() => {
+        if (!isCurrentInstance()) return;
         if (token !== transitionToken) return;
         applyNodeStates(traceNodes, node, details);
       }, index * (opts.stepMs || TRACE_STEP_MS)));
     });
     traceTimers.push(window.setTimeout(() => {
+      if (!isCurrentInstance()) return;
       if (token !== transitionToken) return;
       applyNodeStates(traceNodes, traceNodes[traceNodes.length - 1] || "", details);
       scheduleAutoIdle(token, opts.autoIdleMs || 3200);
@@ -518,6 +625,7 @@
   }
 
   function init() {
+    markCurrentInstance();
     cacheEls();
     ensureTimeline();
     ensureFallbackSlot();

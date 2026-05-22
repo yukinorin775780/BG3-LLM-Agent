@@ -77,6 +77,8 @@ class ChatRequest(BaseModel):
     map_id: Optional[str] = None  # 可选：新会话初始化地图（如 necromancer_lab）
     target: Optional[str] = None  # 可选：结构化目标 id（如 gribbo / heavy_oak_door_1）
     source: Optional[str] = None  # 可选：请求来源（如 interaction / ui_click）
+    client_player_position: Optional[Dict[str, int]] = None  # 可选：前端本地玩家网格坐标
+    player_position: Optional[List[int]] = None  # 兼容旧/简化 payload: [x, y]
 
 
 class ChatResponse(BaseModel):
@@ -113,6 +115,8 @@ async def chat_endpoint(req: ChatRequest) -> ChatResponse:
         map_id=req.map_id,
         target=req.target,
         source=req.source,
+        client_player_position=req.client_player_position,
+        player_position=req.player_position,
     )
     return ChatResponse(**result)
 

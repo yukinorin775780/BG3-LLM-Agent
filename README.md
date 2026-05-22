@@ -1,9 +1,11 @@
 # BG3 LLM Agent
 
-A playable AI CRPG vertical slice and LangGraph-powered agentic narrative engine.
+**LLM-driven NPC behavior and dialogue agents for RPG games.**
 
-LLMs handle intent and character expression. Deterministic systems handle state mutation,
-memory isolation, event consistency, regression testing, and performance visibility.
+This project is a playable RPG vertical slice where companion NPCs perceive hidden
+world state, remember player choices, react through scoped memory, disagree with
+each other, and commit gameplay consequences through deterministic game systems
+instead of raw LLM text.
 
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
 ![LangGraph](https://img.shields.io/badge/LangGraph-State_Machine-orange)
@@ -11,144 +13,213 @@ memory isolation, event consistency, regression testing, and performance visibil
 ![Golden Eval](https://img.shields.io/badge/Eval-Golden_Replay-purple)
 ![Benchmark](https://img.shields.io/badge/Benchmark-Real_LLM-violet)
 
-BG3_LLM_Agent is a playable AI CRPG vertical slice and an agentic narrative engine infrastructure prototype.
+## Portfolio Pitch
 
-Core positioning:
+BG3 LLM Agent explores one core question:
 
-> A LangGraph-powered AI CRPG narrative engine where LLMs handle intent and expression,
-> while deterministic game systems own state mutation, memory isolation, event consistency,
-> testing, and performance visibility.
+> How do you make AI-driven RPG characters feel player-perceivable, stateful,
+> and game-safe inside a playable loop?
 
-## What This Project Demonstrates
+The answer here is not a bigger prompt. The project separates:
 
-- Multi-agent companion dialogue with isolated actor views.
-- Deterministic physical actions through DomainEvent and EventDrain.
-- Skill checks, traps, hidden lore, item transfer, and party reactions in one shared runtime.
-- Golden replay evals for regression safety without real LLM calls.
-- Real LLM benchmark coverage with architecture comparison and prompt budget estimates.
-- A playable Necromancer Lab V2 browser demo with Showcase Mode overlays.
-- FastAPI and CLI frontends sharing one GameService orchestration layer.
+- **LLMs** for intent interpretation, character expression, and open-ended dialogue.
+- **Deterministic systems** for dice checks, physics, state mutation, memory isolation,
+  item transfer, affection deltas, and regression safety.
+- **Frontend feedback** for companion barks, dice cards, map highlights, state diffs,
+  and a readable Director Timeline.
+
+The result is a compact but complete AI CRPG encounter: the player escapes a
+necromancer lab while companions notice hidden traps, react to discoveries, remember
+social choices, argue about a boss, and unlock different outcomes based on what the
+player learned earlier.
+
+## What This Demonstrates
+
+- **NPC personality and agenda modeling**: Astarion, Shadowheart, and Lae'zel propose
+  different plans instead of acting as interchangeable chatbots.
+- **Scoped actor perception**: NPCs receive filtered `ActorView` data rather than
+  unrestricted global state.
+- **D&D-style checks**: perception, disarm, lockpicking, lore reading, persuasion,
+  and combat-adjacent outcomes use ability scores, DCs, dice, and replayable results.
+- **Memory and relationship continuity**: private memory, party-shared knowledge,
+  affection changes, and remembered rebukes alter later dialogue.
+- **State-driven branching**: reading the diary changes the Gribbo negotiation;
+  skipping that knowledge removes the truth-based advantage.
+- **Game-safe LLM integration**: LLMs can suggest intent and expression, but state
+  changes are committed through `DomainEvent` and `EventDrain`.
+- **Regression and performance discipline**: deterministic golden evals protect
+  narrative behavior, while real benchmark runs measure LLM latency and prompt budget.
 
 ## Playable Vertical Slice: Necromancer Lab V2
 
-The current public demo is a compact AI CRPG vertical slice:
-
 ```text
-A -> B -> C -> D -> Exit
-safe room -> poison corridor -> hidden study -> Gribbo lab -> final exit
+Act 1      Safe Room
+Act 2      Poison Corridor
+Act 3      Secret Study
+Act 4      Gribbo Lab
+Final      Exit Door
 ```
 
-It is intentionally small, but it exercises the backend in ways that matter:
+The demo path is intentionally small, but it exercises the full agent stack:
 
-- perception and trap awareness on entry
-- hidden lore and diary reading branches
-- companion agenda, disagreement, and party banter
-- item transactions and key-gated escape flow
-- state diff and director trace overlays in Showcase Mode
+1. **Act 1: Wake Up**
+   The party wakes in a sealed lab room and opens the door into the next space.
 
-In practice, the slice covers the path implied by the shipped golden cases:
+2. **Act 2: Poison Corridor**
+   Astarion can notice a hidden gas trap. The player can order him to disarm it.
+   The UI shows companion bark, trap marker, dice/state feedback, and map effects.
 
-- Act 1: trap perception and lab intro awareness
-- Act 2: necromancer diary success and failure branches
-- Act 3: Gribbo negotiation, siding with or rebuking Astarion
-- Act 4: key retrieval, door opening, and escape resolution
+3. **Act 3: Secret Study**
+   A failed direct route becomes useful: the party finds a hidden study, reads
+   chemical notes, decodes the necromancer diary, and gains information about Gribbo.
 
-## Architecture Overview
+4. **Act 4: Gribbo Boss Encounter**
+   The final obstacle is not a health bar. Gribbo holds the key, guards the exit,
+   and reacts differently if the player discovered the truth about the potion.
+
+5. **Final Exit**
+   The heavy iron key opens the final door and clears the demo.
+
+## Example Player-Visible Agent Moments
+
+For a fuller set of dialogue/state examples, see
+[Dialogue Examples](docs/dialogue_examples.md).
+
+### Astarion notices a hidden trap
 
 ```text
-Web UI / CLI / FastAPI
-        |
-        v
-GameService
-        |
-        v
-LangGraph State Machine
-  input -> dm_router -> mechanics/physics -> actor_runtime/generation -> event_drain
-        |
-        v
-GameState Checkpoint + Memory + Eval Telemetry
+Player: Is something wrong in the corridor?
+
+Astarion: Wait. Hidden gas trap.
+
+State: act2_gas_trap_revealed=true
+UI: suspicious trap marker + Companion Bark + Director Timeline
 ```
 
-`GameService` is the application entrypoint. It owns session lifecycle, Genesis/reset flow, state snapshotting, mode-specific orchestration, and transport-neutral response shaping.
+Why it matters: the trap is not simply visible to everyone. It is surfaced through
+an actor-specific perception branch.
 
-LangGraph owns runtime routing. The current graph includes dedicated paths for input, DM routing, dialogue/lore handling, mechanics, actor invocation, event draining, narration, and generation. This means the backend is no longer a single prompt loop; it is a deterministic state machine with LLM-assisted branches.
+### The diary changes the boss negotiation
 
-`ActorView` constrains what each NPC can see. Actors do not read raw global state directly. They receive a scoped view with filtered flags, visible entities, visible history, visible environment objects, and actor-scoped memory snippets.
+```text
+Player: I know what the potion did to you. You are not a guard. You are an experiment.
 
-`DomainEvent` and `EventDrain` own state write-back. LLMs and ActorRuntime can propose actions, but inventory changes, memory updates, affection deltas, negotiation outcomes, and world flags are committed through the event pipeline.
+Gribbo: Shut up! Gribbo is gatekeeper, not experiment! Not!
 
-Golden Eval and the real benchmark both reuse the same service layer and core graph contracts. That is the main backend value of the repository: gameplay, replay safety, and benchmark visibility all sit on the same architecture rather than separate demo-only code paths.
+State: act4_negotiation_success=true
+EventDrain: gribbo -> player heavy_iron_key
+```
 
-## Backend Infrastructure Highlights
+Why it matters: earlier lore discovery unlocks a later social advantage. The boss
+conversation changes because memory and flags changed, not because the prompt was
+manually rewritten for that line.
+
+### Three companions propose different boss plans
+
+```text
+Player: How do we handle him?
+
+Astarion: Give me one chance and I can get the key out of his hand.
+Shadowheart: Push too hard and the poison tanks may rupture first.
+Lae'zel: Kill the gatekeeper. Take the key. Open the door.
+```
+
+Why it matters: the party behaves like agents with competing priorities, not a
+single narrator voice.
+
+## Architecture
+
+```mermaid
+flowchart TD
+    Player["Player Input / Web UI"] --> Service["GameService"]
+    Service --> Graph["LangGraph Runtime"]
+
+    Graph --> Input["Input Node"]
+    Input --> Router["DM Router"]
+    Router --> Mechanics["Rules / Mechanics"]
+    Router --> Lore["Lore / Dialogue"]
+    Router --> ActorRuntime["Actor Runtime"]
+    Router --> Generation["LLM Generation"]
+
+    ActorRuntime --> ActorView["Scoped ActorView"]
+    Generation --> ActorView
+
+    Mechanics --> Events["DomainEvent"]
+    Lore --> Events
+    ActorRuntime --> Events
+    Events --> Drain["EventDrain"]
+
+    Drain --> State["GameState Checkpoint"]
+    State --> Memory["MemoryService"]
+    State --> Eval["Golden Eval / Telemetry"]
+    State --> UI["State Diff / Bark / Director Timeline"]
+```
+
+`GameService` is the transport-neutral application boundary used by the web UI,
+CLI, API, eval runner, and benchmark script.
+
+`LangGraph` provides explicit routing instead of a single prompt loop. Input,
+DM routing, lore, mechanics, actor runtime, generation, and event draining are
+separate nodes with testable responsibilities.
+
+`ActorView` prevents NPCs from reading raw global state. Each actor receives
+filtered environment objects, peer state, visible history, and memory snippets.
+
+`DomainEvent` and `EventDrain` are the consistency boundary. Inventory updates,
+memory writes, world flags, affection changes, damage/status effects, and journal
+events are committed through deterministic code paths.
+
+## Backend Highlights
 
 ### ActorView / Visibility
 
 - NPCs do not consume unrestricted global state.
-- Each actor receives a scoped `ActorView` with `self_state`, public peer views, filtered flags, visible history, public events, and actor-scoped memory snippets.
-- Visibility policy is a backend contract, not a prompt convention.
+- Hidden traps, private memories, and object knowledge are filtered before actor use.
+- Visibility is enforced as a backend contract, not just a prompt instruction.
 
 ### MemoryService
 
-- Memory is separated into actor-private, party-shared, and world retrieval scopes.
-- `MemoryService.retrieve_for_actor(...)` and `retrieve_for_director(...)` keep actor isolation explicit.
-- This provides a backend-ready base for future RAG expansion without collapsing private memory boundaries.
+- Actor-private memory supports personal reactions such as Astarion remembering a rebuke.
+- Party-shared memory supports common knowledge such as the Gribbo diary truth.
+- Director retrieval can summarize world knowledge without breaking actor isolation.
 
 ### ActorRuntime
 
-- `ActorRuntime` can emit deterministic companion responses and event decisions without always paying for a large generation prompt.
-- It is a good fit for gift acceptance or rejection, relationship reactions, private memory updates, party choice commentary, and other structured companion behavior.
-- This keeps simple companion logic cheap, testable, and replayable.
+- Structured companion behavior runs without always paying for a large generation prompt.
+- Useful for party disagreement, item transfer, trap handling, memory echo, and guided hints.
+- Keeps common gameplay reactions cheap, replayable, and testable.
 
-### DomainEvent / EventDrain
+### Dice / Rules
 
-- LLMs may suggest actions, but world state changes land through the event pipeline.
-- Item transfers, affection updates, memory writes, negotiation outcomes, combat flags, and public logs all converge on `DomainEvent` and `event_drain`.
-- This is the main consistency boundary for the backend.
+- D20 checks, DCs, ability modifiers, advantage-style results, damage dice, trap disarm,
+  lockpicking, lore reading, and status ticks are implemented in deterministic systems.
+- The UI can show dice/state consequences without trusting free-form model text.
 
 ### Golden Eval
 
 - Golden Eval is deterministic replay, not a real-LLM smoke test.
-- It exists to protect routing, event application, actor visibility, memory isolation, and scenario regressions.
-- The runner lives in `core/eval/runner.py` and uses cases under `evals/golden/`.
+- It protects routing, event application, actor visibility, memory isolation, and scenario
+  regressions.
+- Cases live under `evals/golden/` and run with:
+
+```bash
+python -m core.eval.runner --suite golden
+```
 
 ### Real LLM Benchmark
 
-- Real benchmark runs are manual and opt-in.
-- They are designed to measure real provider latency, graph routing behavior, action success, and prompt-budget deltas against a naive monolithic baseline.
-- See [BENCHMARK.md](BENCHMARK.md) for the latest report.
+- Benchmark runs are manual and opt-in because they use real provider calls.
+- The report compares graph-routed behavior against a naive monolithic prompt budget.
+- See [BENCHMARK.md](BENCHMARK.md).
 
 ## Runtime Modes
 
 | Mode | Purpose | Uses Real LLM | Deterministic | Entry |
 | --- | --- | --- | --- | --- |
 | Playable | Real gameplay runtime | yes | no | Web UI / CLI / API |
-| Showcase | Technical demo overlays and guided presentation | optional | no | `qa_showcase=1` |
+| Showcase | Technical overlays and guided presentation | optional | no | `qa_showcase=1` |
 | Golden Eval | Regression replay baseline | no | yes | `python -m core.eval.runner --suite golden` |
 | Benchmark | Real LLM performance report | yes | no | `python scripts/generate_benchmark.py` |
-
-Notes:
-
-- Showcase Mode may include frontend-guided continuity helpers for presentation. It should not be treated as proof that the backend alone completed the full loop.
-- Benchmark mode is not a default CI gate.
-- Golden Eval is the regression truth source for deterministic backend behavior.
-
-## Benchmark v2 Summary
-
-See [BENCHMARK.md](BENCHMARK.md) for the latest full run.
-
-Current baseline highlights:
-
-- physics core node: about `1 ms`
-- generation LLM node: about `1461 ms`
-- first graph node update: about `45 ms` average
-- estimated scoped prompt reduction: about `95.7%`
-- action success: `100.0%` on the benchmark suite
-
-Important interpretation notes:
-
-- Provider token usage was unavailable in the referenced run, so prompt-token comparisons are estimated rather than provider-billed totals.
-- Naive monolithic latency is an architecture comparison estimate, not a second live billing run.
-- Token-level TTFT is still unavailable in the current node-update stream path and is reported as `N/A`.
 
 ## Quick Start
 
@@ -178,17 +249,20 @@ Open the playable demo:
 http://127.0.0.1:8000/web_ui/?map_id=necromancer_lab
 ```
 
+Open a clean playtest session:
+
+```text
+http://127.0.0.1:8000/web_ui/?session_id=playtest_001&map_id=necromancer_lab&qa_no_idle=1
+```
+
 Open Showcase Mode:
 
 ```text
 http://127.0.0.1:8000/web_ui/?map_id=necromancer_lab&qa_showcase=1&qa_no_idle=1
 ```
 
-Run the CLI:
-
-```bash
-python main.py
-```
+For a 60-90 second portfolio recording plan, see
+[Portfolio Demo Script](docs/portfolio_demo_script.md).
 
 ## Testing / Eval / Benchmark
 
@@ -228,12 +302,6 @@ Real benchmark run:
 python scripts/generate_benchmark.py --max-cases 4
 ```
 
-Benchmark guidance:
-
-- Real benchmark requires an API key and incurs provider cost.
-- Do not treat benchmark output as a deterministic CI gate.
-- Use Golden Eval for replay-safe regression protection.
-
 ## Repository Map
 
 ```text
@@ -242,15 +310,29 @@ core/graph/            LangGraph state machine, nodes, and subgraphs
 core/actors/           ActorView, ActorRuntime, registry, visibility contracts
 core/events/           DomainEvent models, apply path, and event store
 core/memory/           Memory scopes, retrieval, distillation, and service layer
+core/systems/          dice, mechanics, world initialization, memory RAG support
 core/eval/             Golden replay runner, assertions, telemetry, reporting
 scripts/               Benchmark and simulation tooling
 evals/golden/          deterministic regression cases
 evals/benchmark/       real LLM performance cases
-web_ui/                browser demo and Showcase Mode UI
-data/maps/             YAML backend maps and TMX visual maps
+web_ui/                browser demo, bark UI, Director Timeline, map renderer
+data/maps/             YAML backend maps and TMX/JSON visual maps
 characters/            YAML character definitions and prompts
 docs/                  governance, freeze contracts, and design records
+archive/v1_legacy/     archived prototype code, not the current runtime
 ```
+
+## Portfolio Roadmap
+
+The core vertical slice is designed to show one dungeon-quality encounter. The
+next useful extensions are portfolio-facing rather than infrastructure-heavy:
+
+- record a 60-90 second demo video or GIF covering Act 2 -> Act 4
+- add a static architecture image derived from the Mermaid graph above
+- add a short dialogue comparison page for memory/no-memory boss outcomes
+- add one more NPC using the existing ActorRuntime and ActorView contracts
+- add token-level generation streaming when the provider path supports it cleanly
+- expand combat presentation without replacing the event pipeline
 
 ## Governance / Freeze Docs
 
@@ -262,22 +344,17 @@ docs/                  governance, freeze contracts, and design records
 
 More governance docs are under [`docs/`](docs/).
 
-## Current Scope / Non-goals
+## Scope
 
-This is not a full CRPG. It is a vertical slice focused on agentic narrative infrastructure.
+This is not a full CRPG. It is a playable vertical slice and agentic narrative
+runtime prototype focused on:
 
-Frozen backend contracts:
+- player-perceivable AI companions
+- stateful NPC dialogue
+- deterministic game consequences
+- memory and visibility isolation
+- replayable regression coverage
+- LLM performance visibility
 
-- GameService API
-- ActorView, MemoryService, and ActorRuntime
-- DomainEvent and EventDrain
-- Golden Eval runner
-- Benchmark report schema
-
-Known future work:
-
-- token-level TTFT via generation streaming
-- provider token usage extraction when available
-- richer combat presentation
-- more content encounters driven by agentic narrative design
-- optional tighter YAML/TMX map synchronization
+The current goal is not to maximize system complexity. The goal is to make players
+clearly feel that AI characters can perceive, remember, disagree, and change the game.

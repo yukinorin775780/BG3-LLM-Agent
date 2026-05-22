@@ -103,6 +103,8 @@ class GameService:
         map_id: Optional[str] = None,
         target: Optional[str] = None,
         source: Optional[str] = None,
+        client_player_position: Optional[Dict[str, Any]] = None,
+        player_position: Optional[List[Any]] = None,
         stream_handler: Optional[StreamHandler] = None,
     ) -> ChatTurnResult:
         normalized_input = (user_input or "").strip()
@@ -152,6 +154,15 @@ class GameService:
                 # Recapture journal length after intro patch so intro entries
                 # are excluded from the init_sync response.
                 previous_journal_len = len(previous_state.get("journal_events") or [])
+
+                previous_state = await self._apply_client_player_position_to_checkpoint(
+                    graph=graph,
+                    config=config,
+                    state=previous_state,
+                    client_player_position=client_player_position,
+                    player_position=player_position,
+                    session_id=session_id,
+                )
 
                 if normalized_intent_key == "init_sync":
                     turn_ok = True
@@ -500,6 +511,139 @@ class GameService:
             raise StateAccessError("Failed to persist campaign intro patch.") from exc
         _ = session_id
         return await self._load_checkpoint_state(graph, config)
+
+    async def _apply_client_player_position_to_checkpoint(
+        self,
+        *,
+        graph: GraphProtocol,
+        config: Dict[str, Any],
+        state: Dict[str, Any],
+        client_player_position: Optional[Dict[str, Any]],
+        player_position: Optional[List[Any]],
+        session_id: str,
+    ) -> Dict[str, Any]:
+        coords = self._extract_client_player_grid_position(
+            client_player_position=client_player_position,
+            player_position=player_position,
+        )
+        if coords is None:
+            return state
+
+        x, y = coords
+        patch = self._build_client_player_position_patch(state=state, x=x, y=y)
+        if not patch:
+            emit_telemetry(
+                "client_player_position_ignored",
+                session_id=session_id,
+                x=x,
+                y=y,
+                reason="invalid_or_blocked",
+            )
+            logger.info(
+                "Ignored invalid client player position for session %s: x=%s y=%s",
+                session_id,
+                x,
+                y,
+            )
+            return state
+
+        try:
+            await graph.aupdate_state(
+                config,
+                patch,
+                as_node=START,
+            )
+        except Exception as exc:
+            raise StateAccessError("Failed to persist client player position.") from exc
+        return await self._load_checkpoint_state(graph, config)
+
+    @staticmethod
+    def _extract_client_player_grid_position(
+        *,
+        client_player_position: Optional[Dict[str, Any]],
+        player_position: Optional[List[Any]],
+    ) -> Optional[tuple[int, int]]:
+        candidates: List[Any] = []
+        if isinstance(client_player_position, dict):
+            candidates.append(client_player_position)
+        if isinstance(player_position, list):
+            candidates.append(player_position)
+
+        for candidate in candidates:
+            if isinstance(candidate, dict):
+                raw_x = candidate.get("x")
+                raw_y = candidate.get("y")
+            elif isinstance(candidate, list) and len(candidate) >= 2:
+                raw_x = candidate[0]
+                raw_y = candidate[1]
+            else:
+                continue
+            if (
+                isinstance(raw_x, int)
+                and not isinstance(raw_x, bool)
+                and isinstance(raw_y, int)
+                and not isinstance(raw_y, bool)
+            ):
+                return raw_x, raw_y
+        return None
+
+    @classmethod
+    def _build_client_player_position_patch(
+        cls,
+        *,
+        state: Dict[str, Any],
+        x: int,
+        y: int,
+    ) -> Dict[str, Any]:
+        if not cls._is_client_player_grid_position_valid(state=state, x=x, y=y):
+            return {}
+
+        entities = copy.deepcopy(state.get("entities") or {})
+        if not isinstance(entities, dict):
+            return {}
+        player = entities.get("player")
+        if not isinstance(player, dict):
+            return {}
+
+        player["x"] = x
+        player["y"] = y
+        entities["player"] = player
+        return {"entities": entities}
+
+    @staticmethod
+    def _is_client_player_grid_position_valid(
+        *,
+        state: Dict[str, Any],
+        x: int,
+        y: int,
+    ) -> bool:
+        map_data = state.get("map_data") if isinstance(state, dict) else None
+        if not isinstance(map_data, dict):
+            return False
+
+        width = map_data.get("width")
+        height = map_data.get("height")
+        if (
+            not isinstance(width, int)
+            or isinstance(width, bool)
+            or not isinstance(height, int)
+            or isinstance(height, bool)
+            or width <= 0
+            or height <= 0
+        ):
+            return False
+        if x < 0 or y < 0 or x >= width or y >= height:
+            return False
+
+        blocked_tiles = map_data.get("blocked_movement_tiles") or []
+        if isinstance(blocked_tiles, list):
+            for tile in blocked_tiles:
+                if not isinstance(tile, (list, tuple)) or len(tile) < 2:
+                    continue
+                tile_x, tile_y = tile[0], tile[1]
+                if tile_x == x and tile_y == y:
+                    return False
+        return True
 
     async def _process_background_step(
         self,
@@ -911,6 +1055,8 @@ async def process_chat_turn(
     map_id: Optional[str] = None,
     target: Optional[str] = None,
     source: Optional[str] = None,
+    client_player_position: Optional[Dict[str, Any]] = None,
+    player_position: Optional[List[Any]] = None,
     stream_handler: Optional[StreamHandler] = None,
     saver_factory: Callable[[str], Any] = AsyncSqliteSaver.from_conn_string,
     graph_builder: Callable[..., GraphProtocol] = build_graph,
@@ -934,5 +1080,7 @@ async def process_chat_turn(
         map_id=map_id,
         target=target,
         source=source,
+        client_player_position=client_player_position,
+        player_position=player_position,
         stream_handler=stream_handler,
     )

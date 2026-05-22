@@ -17,6 +17,17 @@ grid:
   - "W . . . . . . . . . . . . . . . . . . W"
   - "W W W W W W W W W W W W W W W W W W W W"
 environment_objects:
+  - id: "door_a_to_b"
+    type: "door"
+    name: "通往毒气走廊的门"
+    position: [3, 2]
+    room_id: "room_a_spawn"
+    is_open: false
+    is_locked: false
+    status: "closed"
+    connects_from: "room_a_spawn"
+    connects_to: "room_b_corridor"
+    alias_ids: ["ab_door", "corridor_entrance"]
   - id: "door_b_to_d"
     type: "door"
     name: "通往实验室的重门"
@@ -30,10 +41,15 @@ environment_objects:
   - id: "heavy_oak_door_1"
     type: "door"
     name: "通往地表的出口"
-    position: [14, 11]
+    position: [18, 3]
+    room_id: "room_exit"
     is_open: false
     is_locked: true
+    is_exit: true
     key_required: "heavy_iron_key"
+    requires_flag: "world_necromancer_lab_gribbo_defeated"
+    connects_from: "room_d_lab"
+    connects_to: "room_exit"
     alias_ids: ["exit_door"]
   - id: "gas_trap_1"
     type: "trap"
@@ -50,7 +66,8 @@ environment_objects:
   - id: "poison_valve"
     type: "trap"
     name: "毒气阀门"
-    position: [6, 9]
+    position: [6, 4]
+    room_id: "room_d_lab"
     is_hidden: false
     detect_dc: 10
     disarm_dc: 14
@@ -63,7 +80,8 @@ environment_objects:
   - id: "potion_tank"
     type: "object"
     name: "炼金药剂罐"
-    position: [7, 9]
+    position: [7, 4]
+    room_id: "room_d_lab"
     status: "unstable"
     alias_ids: ["alchemical_tank", "potion_tank"]
   - id: "door_b_to_c"
