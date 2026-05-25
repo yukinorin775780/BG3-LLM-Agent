@@ -233,3 +233,49 @@ __pycache__/
 
 .playwright-cli/
 output/
+
+# macOS / local editor
+.DS_Store
+.vscode/
+
+# Unity local caches and generated IDE files
+unity_client/**/Library/
+unity_client/**/Temp/
+unity_client/**/Obj/
+unity_client/**/Build/
+unity_client/**/Builds/
+unity_client/**/Logs/
+unity_client/**/UserSettings/
+unity_client/**/MemoryCaptures/
+unity_client/**/Recordings/
+unity_client/**/*.csproj
+unity_client/**/*.sln
+unity_client/**/*.user
+unity_client/**/*.pidb
+unity_client/**/*.booproj
+unity_client/**/*.svd
+unity_client/**/*.pdb
+unity_client/**/*.mdb
+unity_client/**/*.opendb
+unity_client/**/*.VC.db
+
+# Unity client generated files
+unity_client/**/[Ll]ibrary/
+unity_client/**/[Tt]emp/
+unity_client/**/[Oo]bj/
+unity_client/**/[Bb]uild/
+unity_client/**/[Bb]uilds/
+unity_client/**/[Ll]ogs/
+unity_client/**/[Uu]ser[Ss]ettings/
+unity_client/**/[Mm]emoryCaptures/
+unity_client/**/[Rr]ecordings/
+unity_client/**/*.csproj
+unity_client/**/*.sln
+unity_client/**/*.user
+unity_client/**/*.pidb
+unity_client/**/*.booproj
+unity_client/**/*.svd
+unity_client/**/*.pdb
+unity_client/**/*.mdb
+unity_client/**/*.opendb
+unity_client/**/*.VC.db
