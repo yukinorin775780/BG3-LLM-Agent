@@ -120,7 +120,7 @@
 </data>
  </layer>
  <objectgroup id="5" name="triggers">
-  <object id="1" name="corridor_approach" type="narrative_trigger" x="160" y="448" width="96" height="64">
+  <object id="1" name="corridor_approach" type="narrative_trigger" x="160" y="384" width="96" height="32">
    <properties>
      <property name="trigger_id" value="act1_corridor_approach" />
      <property name="trigger_text" value="门后的空气骤然变冷，狭窄石廊铺着普通灰石地砖；墙缝里传来若有若无的气压声。" />

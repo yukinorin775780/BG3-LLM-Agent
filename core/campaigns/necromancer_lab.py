@@ -868,6 +868,8 @@ def detect_trap_awareness_context(
         return None
 
     flags = _safe_dict(normalized_state.get("flags"))
+    if _flag_bool(flags.get("act2_astarion_perception_checked")):
+        return None
     detected_flag = _flag_bool(flags.get("astarion_detected_gas_trap"))
     revealed = _flag_bool(flags.get("necromancer_lab_poison_trap_revealed"))
     disarmed = _flag_bool(flags.get("necromancer_lab_poison_trap_disarmed"))
@@ -883,6 +885,12 @@ def detect_trap_awareness_context(
     # or an explicit trap status/flag so metadata does not leak early.
     if trap_status == "revealed":
         revealed = True
+    if disarmed or triggered or revealed:
+        return None
+    if not _corridor_is_accessible(normalized_state, flags):
+        return None
+    if not _player_near_trap(normalized_state, trap, max_distance=3):
+        return None
 
     can_detect = detected_flag or _astarion_detects_trap(entities)
     ctx = _safe_dict(intent_context)
@@ -926,6 +934,32 @@ def _coordinate_from_payload(payload: Mapping[str, Any]) -> Optional[tuple[int, 
 
 def _chebyshev_distance(left: tuple[int, int], right: tuple[int, int]) -> int:
     return max(abs(left[0] - right[0]), abs(left[1] - right[1]))
+
+
+def _corridor_is_accessible(state: Mapping[str, Any], flags: Mapping[str, Any]) -> bool:
+    if _flag_bool(flags.get("act2_corridor_entered")):
+        return True
+    visible_rooms = state.get("visible_rooms")
+    if isinstance(visible_rooms, list) and "room_b_corridor" in {
+        str(room or "").strip() for room in visible_rooms
+    }:
+        return True
+    map_data = _safe_dict(state.get("map_data"))
+    map_visible = map_data.get("visible_rooms")
+    if isinstance(map_visible, list) and "room_b_corridor" in {
+        str(room or "").strip() for room in map_visible
+    }:
+        return True
+    door = _object_payload(state, "door_a_to_b")
+    return bool(door.get("is_open", False)) or _normalize_id(door.get("status")) in {"open", "opened"}
+
+
+def _player_near_trap(state: Mapping[str, Any], trap: Mapping[str, Any], max_distance: int = 3) -> bool:
+    trap_coord = _coordinate_from_payload(trap)
+    player_coord = _coordinate_from_payload(_safe_dict(_safe_dict(state.get("entities")).get("player")))
+    if trap_coord is None or player_coord is None:
+        return False
+    return _chebyshev_distance(trap_coord, player_coord) <= max_distance
 
 
 def detect_poison_trap_trigger_context(
@@ -1306,18 +1340,6 @@ def detect_lab_intro_awareness(state: Dict[str, Any]) -> Optional[Dict[str, Any]
     flags["world_necromancer_lab_intro_entered"] = True
 
     journal_events.append("🧪 [实验室] 空气里弥漫着刺鼻的化学与腐败气味。")
-
-    if _astarion_detects_trap(entities):
-        flags["astarion_detected_gas_trap"] = {
-            "value": True,
-            "visibility": {
-                "scope": "actor",
-                "actors": ["astarion"],
-                "reason": "trap_awareness",
-            },
-        }
-        flags["world_necromancer_lab_trap_warned"] = True
-        journal_events.append("🗣️ [Astarion] 小心，前面有毒气机关的痕迹。")
 
     if _shadowheart_senses_necromancy(entities):
         flags["shadowheart_senses_necromancy"] = {

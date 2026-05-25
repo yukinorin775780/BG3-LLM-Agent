@@ -132,19 +132,33 @@
   /* ══════════════════════════════════════════════════════
    *  extractUIEvents(backendResponse, previousState?)
    * ══════════════════════════════════════════════════════ */
-  function extractUIEvents(backendResponse, previousState) {
+  function extractUIEvents(backendResponse, previousState, options) {
     const data = safeObj(backendResponse);
+    const opts = safeObj(options);
+    const prev = safeObj(previousState);
+    const stateProjectionOnly = opts.stateProjectionOnly === true
+      || normalizeId(prev._eventSource) === "state_poll"
+      || normalizeId(data._eventSource) === "state_poll";
 
-    const events = safeArr(data.ui_events).map(normalizeDirectUIEvent);
+    const events = stateProjectionOnly ? [] : safeArr(data.ui_events).map(normalizeDirectUIEvent);
     const gameState = safeObj(data.game_state || data.gameState || data.state);
     const journal = [
       ...safeArr(data.journal_events),
       ...safeArr(gameState.journal_events),
       ...safeArr(data.state && data.state.journal_events),
     ];
-    const prev = safeObj(previousState);
+    const prevGameState = safeObj(prev.game_state || prev.gameState || prev.state);
+    const prevJournal = new Set([
+      ...safeArr(prev.journal_events),
+      ...safeArr(prevGameState.journal_events),
+      ...safeArr(prev.state && prev.state.journal_events),
+    ].map((line) => String(line || "")));
 
-    journal.forEach((line) => {
+    const journalForInference = stateProjectionOnly
+      ? journal.filter((line) => prevJournal.has(String(line || "")) === false && prevJournal.size > 0)
+      : journal;
+
+    journalForInference.forEach((line) => {
       const text = String(line || "");
       inferFromLine(text, events);
     });
@@ -165,11 +179,13 @@
       safeObj(data.party_status),
       events
     );
-    inferInventoryDeltas(
-      safeObj(prev.player_inventory),
-      safeObj(data.player_inventory),
-      events
-    );
+    if (opts.suppressInventoryDeltas !== true && prev._suppressInventoryDeltas !== true) {
+      inferInventoryDeltas(
+        safeObj(prev.player_inventory),
+        safeObj(data.player_inventory),
+        events
+      );
+    }
     inferMemoryDeltas(
       safeObj(prev.actor_runtime_state || safeObj(prev.game_state).actor_runtime_state),
       safeObj(data.actor_runtime_state || safeObj(data.game_state).actor_runtime_state),
@@ -192,6 +208,7 @@
     dedupeMemoryEchoEvents(events);
     dedupeTrapSignalEvents(events);
     dedupeBossEvents(events);
+    dedupeItemGainedEvents(events);
 
     return events;
   }
@@ -1070,6 +1087,23 @@
           ...event.affectedActors.map(String),
         ].filter(Boolean)));
       }
+      events.splice(index, 1);
+    }
+  }
+
+  function dedupeItemGainedEvents(events) {
+    const seen = new Map();
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const event = events[index];
+      if (!event || event.type !== "item_gained") continue;
+      const item = String(event.item || event.label || "").trim().toLowerCase();
+      if (!item) continue;
+      if (!seen.has(item)) {
+        seen.set(item, event);
+        continue;
+      }
+      const kept = seen.get(item);
+      kept.count = (Number(kept.count) || 1) + (Number(event.count) || 1);
       events.splice(index, 1);
     }
   }

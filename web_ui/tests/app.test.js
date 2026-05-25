@@ -14,7 +14,7 @@ const HUD_RENDERERS_PATH = path.resolve(__dirname, "../hud-renderers.js");
 const GAME_JS_PATH = path.resolve(__dirname, "../game.js");
 const REAL_MAP_JSON_PATH = path.resolve(__dirname, "../assets/maps/necromancer_lab.json");
 const REAL_MAP_TMX_PATH = path.resolve(__dirname, "../../data/maps/necromancer_lab.tmx");
-const BARK_BUILD_ID = "20260521_owner_release_v9";
+const BARK_BUILD_ID = "20260522_act2_trap_semantics_v10";
 
 function extractBodyMarkup(htmlText) {
   const match = String(htmlText).match(/<body[^>]*>([\s\S]*?)<\/body>/i);
@@ -928,10 +928,13 @@ describe("web_ui/app.js UI bindings", () => {
     const corridor = result.triggers.find((trigger) => trigger.id === "act1_corridor_approach");
     expect(corridor).toBeDefined();
     expect(String(corridor.data.trigger_text || "")).not.toMatch(/绿色|毒雾|酸液|poison|gas|acid/i);
+    expect(corridor.y).toBe(12);
+    expect(corridor.h).toBe(1);
 
     const poisonTrap = result.triggers.find((trigger) => trigger.id === "poison_trap_1");
     expect(poisonTrap).toBeDefined();
     expect(poisonTrap.data.alias_id).toBe("gas_trap_1");
+    expect(Math.max(Math.abs(corridor.x - poisonTrap.x), Math.abs(corridor.y - poisonTrap.y))).toBeLessThanOrEqual(3);
   });
 
   test("test_necromancer_lab_v2_level_design_alignment_contract", async () => {
@@ -2515,12 +2518,13 @@ describe("web_ui/app.js UI bindings", () => {
      P1 FIX TESTS
      ═══════════════════════════════════════════ */
 
-  test("test_poll_dialogue_dispatches_ui_events", async () => {
+  test("test_poll_dialogue_dispatches_state_transition_events_without_journal_replay", async () => {
     const fetchSpy = spyOnFetch().mockResolvedValue(mockResponse({}));
     const api = await bootAppForTest();
 
     /* Set previous party state to detect affection delta */
     api.state.partyStatus = { astarion: { affection: 0 } };
+    api.state.hasStateProjectionBaseline = true;
 
     /* Now mock the next fetch (pollDialogueState calls /api/state) */
     fetchSpy.mockResolvedValueOnce(mockResponse({
@@ -2533,11 +2537,12 @@ describe("web_ui/app.js UI bindings", () => {
     await api.pollDialogueState();
     await flushAsync();
 
-    /* LoS blocked toast should have been created */
+    /* /api/state journal replay should not create a stale LoS toast. */
     const container = document.getElementById("toast-container");
     expect(container).not.toBeNull();
     const toasts = container.querySelectorAll(".hud-toast");
-    expect(toasts.length).toBeGreaterThanOrEqual(1);
+    expect(toasts.length).toBe(0);
+    expect(document.getElementById("companion-chip-container").textContent).toContain("Astarion +5");
   });
 
   test("test_fixture_has_act1_corridor_trigger", async () => {
@@ -2652,6 +2657,121 @@ describe("web_ui/app.js UI bindings", () => {
     expect(baseline.player_inventory.healing_potion).toBe(2);
     expect(baseline.environment_objects.gas_trap_1.status).toBe("disabled");
     expect(document.getElementById("world-state-diff-badge").textContent).toBe("0");
+  });
+
+  test("test_fresh_init_does_not_show_healing_potion_acquired_toast_or_trap_card", async () => {
+    spyOnFetch().mockResolvedValue(
+      mockResponse({
+        responses: [],
+        journal_events: ["🧪 [实验室] 空气里弥漫着刺鼻的化学与腐败气味。"],
+        current_location: "废弃死灵实验室",
+        party_status: {},
+        environment_objects: {
+          gas_trap_1: { id: "gas_trap_1", type: "trap", status: "hidden", is_hidden: true, x: 4, y: 6 },
+        },
+        player_inventory: { healing_potion: 2 },
+        combat_state: {},
+      })
+    );
+
+    await bootAppForTest("http://localhost/?qa_no_idle=1");
+
+    const toastText = document.getElementById("toast-container").textContent;
+    expect(toastText).not.toContain("healing_potion");
+    expect(toastText).not.toContain("治疗药水");
+    expect(document.body.textContent).not.toContain("Hidden Trap Spotted");
+  });
+
+  test("test_first_api_state_poll_projects_baseline_without_inventory_or_trap_events", async () => {
+    const fetchSpy = spyOnFetch().mockResolvedValue(mockResponse({}));
+    const api = await bootAppForTest("http://localhost/?qa_test=1");
+    fetchSpy.mockResolvedValueOnce(
+      mockResponse({
+        journal_events: ["[陷阱感知] astarion -> gas_trap_1"],
+        party_status: {},
+        environment_objects: {
+          gas_trap_1: { id: "gas_trap_1", type: "trap", status: "revealed", is_hidden: false, x: 4, y: 6 },
+        },
+        player_inventory: { healing_potion: 2 },
+        combat_state: {},
+      })
+    );
+
+    await api.pollDialogueState();
+    await flushAsync();
+
+    expect(document.getElementById("toast-container").textContent).not.toContain("healing_potion");
+    expect(document.body.textContent).not.toContain("Hidden Trap Spotted");
+  });
+
+  test("test_api_state_poll_ignores_stale_direct_ui_events_and_journal_replay", async () => {
+    const fetchSpy = spyOnFetch().mockResolvedValue(mockResponse({}));
+    const api = await bootAppForTest("http://localhost/?qa_test=1");
+    const staleProjection = {
+      ui_events: [{ type: "item_transfer", item: "healing_potion", count: 2 }],
+      journal_events: ["[陷阱感知] astarion -> gas_trap_1"],
+      party_status: {},
+      environment_objects: {
+        gas_trap_1: { id: "gas_trap_1", type: "trap", status: "revealed", is_hidden: false, x: 4, y: 6 },
+      },
+      player_inventory: { healing_potion: 2 },
+      combat_state: {},
+    };
+    fetchSpy.mockResolvedValueOnce(mockResponse(staleProjection));
+    fetchSpy.mockResolvedValueOnce(mockResponse(staleProjection));
+
+    await api.pollDialogueState();
+    await flushAsync();
+    await api.pollDialogueState();
+    await flushAsync();
+
+    expect(document.getElementById("toast-container").textContent).not.toContain("healing_potion");
+    expect(document.getElementById("toast-container").textContent).not.toContain("治疗药水");
+    expect(document.body.textContent).not.toContain("Hidden Trap Spotted");
+  });
+
+  test("test_state_poll_still_emits_true_trap_transition", async () => {
+    loadNewModules();
+    const events = window.BG3UIEventAdapter.extractUIEvents({
+      environment_objects: {
+        gas_trap_1: { id: "gas_trap_1", type: "trap", status: "triggered", is_hidden: false },
+      },
+      flags: { necromancer_lab_poison_trap_triggered: true },
+      journal_events: ["[陷阱感知] astarion -> gas_trap_1"],
+    }, {
+      _eventSource: "state_poll",
+      environment_objects: {
+        gas_trap_1: { id: "gas_trap_1", type: "trap", status: "revealed", is_hidden: false },
+      },
+      flags: { necromancer_lab_poison_trap_revealed: true },
+      journal_events: ["[陷阱感知] astarion -> gas_trap_1"],
+    });
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "trap_triggered", trapId: "gas_trap_1" }),
+    ]));
+    expect(events.filter((event) => event.type === "trap_insight")).toHaveLength(0);
+  });
+
+  test("test_duplicate_trap_insight_cards_are_deduped", async () => {
+    loadNewModules();
+    window.BG3HudRenderers.dispatchUIEvents([
+      { type: "trap_insight", actor: "astarion", trapId: "gas_trap_1" },
+      { type: "trap_insight", actor: "astarion", trapId: "gas_trap_1" },
+    ]);
+    expect(document.querySelectorAll(".agent-signal-card--trap-insight")).toHaveLength(1);
+  });
+
+  test("test_lab_key_loot_still_shows_real_item_acquired_feedback", async () => {
+    loadNewModules();
+    const events = window.BG3UIEventAdapter.extractUIEvents({
+      player_inventory: { lab_key: 1 },
+      journal_events: ["EventDrain item_transfer lab_key"],
+    }, {
+      player_inventory: {},
+    });
+    window.BG3HudRenderers.dispatchUIEvents(events);
+    expect(document.getElementById("toast-container").textContent).toContain("实验室钥匙");
+    expect(document.getElementById("inventory-hint-container").textContent).toContain("实验室钥匙");
   });
 
   test("test_interactable_type_maps_to_structured_intent_target", async () => {
@@ -5041,7 +5161,7 @@ describe("web_ui/app.js UI bindings", () => {
     expect(projectedParty.laezel).toMatchObject({ x: 1, y: 4, _projection_source: "local_party_trail" });
   });
 
-  test("test_opening_a_b_door_dispatches_act2_trap_insight_trace_without_backend_ui_event", async () => {
+  test("test_opening_a_b_door_does_not_dispatch_trap_insight_until_approach", async () => {
     const fetchSpy = spyOnFetch().mockResolvedValue(mockResponse({
       responses: [],
       journal_events: ["🚪 [交互] 玩家 打开了 通往毒气走廊的门。"],
@@ -5064,8 +5184,56 @@ describe("web_ui/app.js UI bindings", () => {
     });
     await flushAsync();
 
-    expect(document.querySelector(".agent-signal-card--trap-insight")).not.toBeNull();
-    expect(document.getElementById("director-trace-summary").textContent).toContain("Astarion noticed");
+    expect(document.querySelector(".agent-signal-card--trap-insight")).toBeNull();
+    expect(document.getElementById("director-trace-summary").textContent).not.toContain("Astarion noticed");
+  });
+
+  test("test_real_corridor_approach_uses_tiled_trap_position_for_awareness", async () => {
+    const fetchSpy = spyOnFetch().mockResolvedValue(mockResponse({
+      responses: [],
+      journal_events: ["[陷阱感知] astarion -> gas_trap_1"],
+      party_status: {},
+      environment_objects: {
+        gas_trap_1: { id: "gas_trap_1", type: "trap", status: "revealed", is_hidden: false, x: 4, y: 6 },
+      },
+      player_inventory: {},
+      combat_state: {},
+      game_state: {
+        flags: {
+          act2_astarion_perception_checked: true,
+          necromancer_lab_poison_trap_revealed: true,
+        },
+      },
+    }));
+    const api = await bootAppForTest("http://localhost/?qa_test=1&qa_no_idle=1");
+    fetchSpy.mockClear();
+    const rawMap = JSON.parse(fs.readFileSync(REAL_MAP_JSON_PATH, "utf8"));
+    api.applyNormalizedMap(window.BG3TiledAdapter.normalizeTiledMap(rawMap), { source: "json" });
+    api.revealRoomByDoorTarget("door_a_to_b");
+    api.refreshVisibilityProjection();
+    api.state.environmentObjects = {
+      door_a_to_b: { id: "door_a_to_b", type: "door", status: "open", is_open: true, x: 3, y: 2 },
+      gas_trap_1: { id: "gas_trap_1", type: "trap", status: "hidden", is_hidden: true, x: 4, y: 6 },
+    };
+    window.BG3TacticalMap.getPlayerGridPosition.mockReturnValue({ x: 2, y: 2 });
+    window.BG3InputController.setPlayerPosition(5, 13);
+    const dateSpy = jest.spyOn(Date, "now").mockReturnValue(1000);
+
+    window.BG3InputController.movePlayer(0, -1);
+    await flushAsync();
+
+    const chatCalls = fetchSpy.mock.calls.filter(([url]) => String(url).includes("/api/chat"));
+    expect(chatCalls).toHaveLength(1);
+    const payload = JSON.parse(chatCalls[0][1].body);
+    expect(payload).toMatchObject({
+      user_input: "阿斯代伦检查走廊里的可疑机关。",
+      intent: "CHAT",
+      target: "gas_trap_1",
+      source: "trap_awareness",
+      client_player_position: { x: 5, y: 12 },
+      player_position: [5, 12],
+    });
+    dateSpy.mockRestore();
   });
 
   test("test_act4_valve_backend_objects_hidden_until_lab_revealed", async () => {
@@ -6111,6 +6279,37 @@ describe("web_ui/app.js UI bindings", () => {
       expect.objectContaining({ id: "potion_tank", kind: "poison_valve", status: "triggered", label: "LEAK" }),
       expect.objectContaining({ id: "safe_valve", kind: "poison_valve", status: "disabled", label: "SAFE" }),
     ]));
+  });
+
+  test("test_act2_trap_visual_states_only_triggered_renders_poison_gas", async () => {
+    const tacticalMap = loadGameHelpers();
+    expect(tacticalMap.shouldRenderAct2PoisonGas({
+      gas_trap_1: { id: "gas_trap_1", type: "trap", status: "hidden", is_hidden: true },
+    })).toBe(false);
+    expect(tacticalMap.shouldRenderAct2PoisonGas({
+      gas_trap_1: { id: "gas_trap_1", type: "trap", status: "revealed", is_hidden: false },
+    })).toBe(false);
+    expect(tacticalMap.shouldRenderAct2PoisonGas({
+      gas_trap_1: { id: "gas_trap_1", type: "trap", status: "disabled", is_hidden: false },
+    })).toBe(false);
+    expect(tacticalMap.shouldRenderAct2PoisonGas({
+      gas_trap_1: { id: "gas_trap_1", type: "trap", status: "triggered", is_hidden: false },
+    })).toBe(true);
+  });
+
+  test("test_trap_revealed_overlay_is_suspicious_marker_not_poison_gas", async () => {
+    const tacticalMap = loadGameHelpers();
+    const entries = tacticalMap.resolveTrapOverlayEntries({
+      gas_trap_1: { id: "gas_trap_1", type: "trap", x: 4, y: 6, status: "revealed", is_hidden: false },
+    });
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      id: "gas_trap_1",
+      status: "revealed",
+      label: "TRAP",
+      fill: 0x4a3518,
+    });
+    expect(entries[0].label).not.toBe("POISON");
   });
 
   test("test_state_diff_highlights_act4_boss_flags_gribbo_and_key", async () => {

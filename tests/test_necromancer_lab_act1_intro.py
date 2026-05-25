@@ -21,9 +21,8 @@ def test_detect_lab_intro_awareness_returns_patch_for_necromancer_lab():
     flags = patch["flags"]
     assert flags["necromancer_lab_intro_seen"] is True
     assert flags["world_necromancer_lab_intro_entered"] is True
-    assert flags["astarion_detected_gas_trap"]["value"] is True
-    assert flags["astarion_detected_gas_trap"]["visibility"]["scope"] == "actor"
-    assert flags["astarion_detected_gas_trap"]["visibility"]["actors"] == ["astarion"]
+    assert "astarion_detected_gas_trap" not in flags
+    assert "world_necromancer_lab_trap_warned" not in flags
     assert flags["shadowheart_senses_necromancy"]["value"] is True
     assert flags["shadowheart_senses_necromancy"]["visibility"]["scope"] == "actor"
     assert flags["shadowheart_senses_necromancy"]["visibility"]["actors"] == ["shadowheart"]
@@ -33,7 +32,7 @@ def test_detect_lab_intro_awareness_returns_patch_for_necromancer_lab():
 
     events = patch["journal_events"]
     assert any("刺鼻" in line for line in events)
-    assert any("Astarion" in line and ("陷阱" in line or "机关" in line) for line in events)
+    assert not any("Astarion" in line and ("陷阱" in line or "机关" in line) for line in events)
     assert any("Shadowheart" in line and "死灵" in line for line in events)
 
 
@@ -61,7 +60,7 @@ def test_actor_view_visibility_after_lab_intro_does_not_leak_hidden_trap_metadat
     shadowheart_view = build_actor_view(merged, "shadowheart")
     laezel_view = build_actor_view(merged, "laezel")
 
-    assert astarion_view.visible_flags["astarion_detected_gas_trap"] is True
+    assert "astarion_detected_gas_trap" not in astarion_view.visible_flags
     assert "shadowheart_senses_necromancy" not in astarion_view.visible_flags
 
     assert shadowheart_view.visible_flags["shadowheart_senses_necromancy"] is True

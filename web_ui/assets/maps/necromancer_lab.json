@@ -2549,9 +2549,9 @@
           "name": "corridor_approach",
           "type": "narrative_trigger",
           "x": 160,
-          "y": 448,
+          "y": 384,
           "width": 96,
-          "height": 64,
+          "height": 32,
           "properties": [
             {
               "name": "trigger_id",

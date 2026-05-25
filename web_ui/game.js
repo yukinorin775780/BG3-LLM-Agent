@@ -151,7 +151,7 @@
 
   const REGION_THEMES = Object.freeze([
     { key: "entrance_hall", x: 0, y: 14, w: 12, h: 11, color: 0x6f4f2e, alpha: 0.1 },
-    { key: "poison_corridor", x: 1, y: 8, w: 8, h: 6, color: 0x3d7d4d, alpha: 0.13 },
+    { key: "poison_corridor", x: 1, y: 8, w: 8, h: 6, color: 0x4f4a3f, alpha: 0.08 },
     { key: "study", x: 18, y: 8, w: 7, h: 6, color: 0x5a4c80, alpha: 0.1 },
     { key: "surgery_exit", x: 9, y: 0, w: 8, h: 6, color: 0x4e6a82, alpha: 0.12 },
   ]);
@@ -377,6 +377,9 @@
     },
     resolveTrapOverlayEntries(environmentObjects) {
       return resolveTrapOverlayEntries(environmentObjects);
+    },
+    shouldRenderAct2PoisonGas(environmentObjects) {
+      return shouldRenderAct2PoisonGas(environmentObjects);
     },
     resolveFogOfWarCells(mapData) {
       return resolveFogOfWarCells(mapData);
@@ -907,6 +910,12 @@
     return "intact";
   }
 
+  function shouldRenderAct2PoisonGas(environmentObjects) {
+    const env = safeObject(environmentObjects);
+    const trap = safeObject(env.gas_trap_1 || env.poison_trap_1 || env.poison_trap_2);
+    return trapStatus(trap) === "triggered";
+  }
+
   function resolveTrapOverlayEntries(environmentObjects) {
     const entries = [];
     Object.entries(safeObject(environmentObjects)).forEach(([id, raw]) => {
@@ -1266,6 +1275,7 @@
       const hasGrid = grid.length > 0;
       const collision = Array.isArray(map.collision) ? map.collision : [];
       const groundTypes = Array.isArray(map.ground_types) ? map.ground_types : [];
+      const poisonGasActive = shouldRenderAct2PoisonGas(controller.latestState.environmentObjects);
 
       for (let y = 0; y < map.height; y += 1) {
         for (let x = 0; x < map.width; x += 1) {
@@ -1273,7 +1283,7 @@
           const blocked = Boolean(collision[y] && collision[y][x]);
           const isWall = cell === "W" || blocked;
           const groundType = Number(groundTypes[y] && groundTypes[y][x]) || 0;
-          const isToxic = groundType >= 2 && !isWall;
+          const isToxic = poisonGasActive && groundType >= 2 && !isWall;
           const frame = isWall
             ? pickFrame(TILE_FRAMES.wall, `wall:${x}:${y}`)
             : pickFrame(TILE_FRAMES.floor, `floor:${x}:${y}`);
@@ -1307,6 +1317,7 @@
       this.overlayTweens = [];
 
       const map = normalizeMapData(this.mapData);
+      const poisonGasActive = shouldRenderAct2PoisonGas(controller.latestState.environmentObjects);
       REGION_THEMES.forEach((region) => {
         if (region.x >= map.width || region.y >= map.height) return;
         const width = Math.min(region.w, map.width - region.x) * this.board.cell;
@@ -1326,7 +1337,7 @@
       for (let y = 0; y < map.height; y += 1) {
         for (let x = 0; x < map.width; x += 1) {
           const groundType = Number(ground[y] && ground[y][x]) || 0;
-          if (groundType < 2 || Boolean(collision[y] && collision[y][x])) continue;
+          if (!poisonGasActive || groundType < 2 || Boolean(collision[y] && collision[y][x])) continue;
           const world = this.gridToWorld(x, y);
           const fog = this.add.ellipse(world.x, world.y, this.board.cell * 0.72, this.board.cell * 0.52, 0x65cf87, 0.18)
             .setDepth(DEPTH_LAYERS.ambience);

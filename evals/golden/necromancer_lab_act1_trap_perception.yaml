@@ -21,9 +21,6 @@ steps:
           game_state.map_data.id: necromancer_lab
           game_state.flags.necromancer_lab_intro_seen: true
           game_state.flags.world_necromancer_lab_intro_entered: true
-          game_state.flags.world_necromancer_lab_trap_warned: true
-          game_state.flags.astarion_detected_gas_trap.value: true
-          game_state.flags.astarion_detected_gas_trap.visibility.scope: actor
           game_state.flags.shadowheart_senses_necromancy.value: true
           game_state.flags.shadowheart_senses_necromancy.visibility.scope: actor
         contains:
@@ -32,11 +29,12 @@ steps:
               duration: 3
           game_state.journal_events:
             - "🧪 [实验室] 空气里弥漫着刺鼻的化学与腐败气味。"
-            - "🗣️ [Astarion] 小心，前面有毒气机关的痕迹。"
             - "🗣️ [Shadowheart] 这里有死灵残留……我感觉很不对劲。"
       visibility:
         forbidden_paths:
           - environment_objects.gas_trap_1
+          - game_state.flags.world_necromancer_lab_trap_warned
+          - game_state.flags.astarion_detected_gas_trap
       telemetry:
         events_contains:
           - event_name: turn_finished
@@ -53,7 +51,7 @@ steps:
           game_state.flags.necromancer_lab_intro_seen: true
       visibility:
         forbidden_paths:
-          - game_state.journal_events.3
+          - game_state.journal_events.2
           - environment_objects.gas_trap_1
       telemetry:
         events_contains:

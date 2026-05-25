@@ -129,7 +129,7 @@ def test_world_init_builds_entities_from_prefab_spawns():
     assert door_b_to_d["key_required"] == "lab_key"
 
     assert gas_trap_1["entity_type"] == "trap"
-    assert gas_trap_1["x"] == 4 and gas_trap_1["y"] == 6
+    assert gas_trap_1["x"] == 5 and gas_trap_1["y"] == 11
 
 
 def test_necromancer_lab_state_does_not_include_goblin_camp_enemies():

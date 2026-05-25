@@ -229,7 +229,7 @@
         id: "gas_trap_1",
         type: "trap",
         name: "毒气陷阱",
-        position: [4, 6],
+        position: [5, 11],
         is_hidden: true,
         detect_dc: 13,
         disarm_dc: 15,

@@ -558,7 +558,6 @@ def test_process_chat_turn_init_sync_applies_necromancer_lab_intro_awareness_onc
         },
         "journal_events": [
             "🧪 [实验室] 空气里弥漫着刺鼻的化学与腐败气味。",
-            "🗣️ [Astarion] 小心，前面有毒气机关的痕迹。",
             "🗣️ [Shadowheart] 这里有死灵残留……我感觉很不对劲。",
         ],
         "entities": {
@@ -599,10 +598,8 @@ def test_process_chat_turn_init_sync_applies_necromancer_lab_intro_awareness_onc
     assert fake_graph.aupdate_state_calls[0]["payload"] == initial_world_state
     intro_payload = fake_graph.aupdate_state_calls[1]["payload"]
     assert intro_payload["flags"]["necromancer_lab_intro_seen"] is True
-    assert any(
-        "Astarion" in line and ("陷阱" in line or "机关" in line)
-        for line in intro_payload["journal_events"]
-    )
+    assert "astarion_detected_gas_trap" not in intro_payload["flags"]
+    assert not any("Astarion" in line and ("陷阱" in line or "机关" in line) for line in intro_payload["journal_events"])
     # P0-3: init_sync no longer leaks intro journal entries into the response.
     # The intro is still persisted in state, just not surfaced in the API delta.
     assert result["journal_events"] == []
@@ -1354,19 +1351,16 @@ def test_p0_init_sync_returns_empty_journal_on_fresh_necromancer_lab():
         "current_location": "死灵法师的废弃实验室",
         "environment_objects": {},
     }
-    # After init: 0 journal entries.  After campaign intro: 3 entries.
+    # After init: 0 journal entries.  After campaign intro: intro scent + Shadowheart only.
     intro_state = {
         **initial_world_state,
         "flags": {
             "necromancer_lab_intro_seen": True,
             "world_necromancer_lab_intro_entered": True,
-            "astarion_detected_gas_trap": {"value": True},
-            "world_necromancer_lab_trap_warned": True,
             "shadowheart_senses_necromancy": {"value": True},
         },
         "journal_events": [
             "🧪 [实验室] 空气里弥漫着刺鼻的化学与腐败气味。",
-            "🗣️ [Astarion] 小心，前面有毒气机关的痕迹。",
             "🗣️ [Shadowheart] 这里有死灵残留……我感觉很不对劲。",
         ],
     }

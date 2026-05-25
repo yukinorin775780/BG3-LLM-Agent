@@ -23,7 +23,22 @@ def _build_lab_state() -> dict:
     return state
 
 
+def _open_corridor_and_move_near_trap(state: dict) -> dict:
+    state = copy.deepcopy(state)
+    for bucket_name in ("entities", "environment_objects"):
+        door = state.get(bucket_name, {}).get("door_a_to_b")
+        if isinstance(door, dict):
+            door["is_open"] = True
+            door["status"] = "open"
+    player = state.get("entities", {}).get("player")
+    if isinstance(player, dict):
+        player["x"] = 5
+        player["y"] = 12
+    return state
+
+
 def _warn_about_trap(state: dict) -> dict:
+    state = _open_corridor_and_move_near_trap(state)
     state = {
         **state,
         "user_input": "前面安全吗？继续往前走。",
@@ -42,10 +57,16 @@ def _warn_about_trap(state: dict) -> dict:
 def test_trap_awareness_helper_and_initial_actor_view_do_not_leak_hidden_trap():
     state = _build_lab_state()
 
-    context = detect_trap_awareness_context(state, "继续往前走", {})
+    initial_context = detect_trap_awareness_context(state, "继续往前走", {})
     player_view = build_actor_view(state, "player")
     astarion_view = build_actor_view(state, "astarion")
 
+    assert initial_context is None
+    context = detect_trap_awareness_context(
+        _open_corridor_and_move_near_trap(state),
+        "继续往前走",
+        {},
+    )
     assert context is not None
     assert context["topic"] == "poison_trap"
     assert context["trap_id"] == "gas_trap_1"
@@ -60,6 +81,26 @@ def test_trap_awareness_helper_noops_outside_necromancer_lab():
     state["map_data"]["id"] = "goblin_camp"
 
     assert detect_trap_awareness_context(state, "继续往前走", {}) is None
+
+
+def test_trap_awareness_requires_corridor_access_proximity_and_single_check():
+    state = _build_lab_state()
+    assert detect_trap_awareness_context(state, "前面的走廊安全吗？", {}) is None
+
+    door_open_far = copy.deepcopy(state)
+    door_open_far["entities"]["door_a_to_b"]["is_open"] = True
+    door_open_far["entities"]["door_a_to_b"]["status"] = "open"
+    door_open_far["entities"]["player"]["x"] = 2
+    door_open_far["entities"]["player"]["y"] = 2
+    assert detect_trap_awareness_context(door_open_far, "前面的走廊安全吗？", {}) is None
+
+    near = _open_corridor_and_move_near_trap(state)
+    context = detect_trap_awareness_context(near, "前面的走廊安全吗？", {})
+    assert context is not None
+    assert context["trap_id"] == "gas_trap_1"
+
+    near["flags"]["act2_astarion_perception_checked"] = True
+    assert detect_trap_awareness_context(near, "前面的走廊安全吗？", {}) is None
 
 
 def test_poison_trap_trigger_helper_requires_necromancer_lab():
@@ -106,7 +147,7 @@ def test_astarion_disarms_revealed_trap_and_safe_crossing_does_not_poison():
             "intent": "MOVE",
             "intent_context": {
                 "action_actor": "player",
-                "action_target": "4,6",
+                "action_target": "5,11",
             },
         }
     )
@@ -126,7 +167,7 @@ def test_ignored_poison_trap_triggers_poison_once():
             "intent": "MOVE",
             "intent_context": {
                 "action_actor": "player",
-                "action_target": "4,6",
+                "action_target": "5,11",
             },
         }
     )
@@ -137,7 +178,7 @@ def test_ignored_poison_trap_triggers_poison_once():
             "intent": "MOVE",
             "intent_context": {
                 "action_actor": "player",
-                "action_target": "4,6",
+                "action_target": "5,11",
             },
         }
     )
@@ -206,7 +247,7 @@ def test_teammate_entering_poison_trap_zone_triggers_trap():
             "intent": "MOVE",
             "intent_context": {
                 "action_actor": "astarion",
-                "action_target": "4,6",
+                "action_target": "5,11",
             },
         }
     )

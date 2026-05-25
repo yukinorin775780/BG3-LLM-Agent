@@ -16,6 +16,8 @@
   let actSummaryEl = null;
   let toastQueue = [];
   let agentSignalQueue = [];
+  const activeToastKeys = new Set();
+  const seenAgentSignalKeys = new Set();
   let companionBarkQueue = [];
   let pendingCompanionBarks = [];
   let activeCompanionBark = null;
@@ -1004,9 +1006,12 @@
       .join(" / ");
   }
 
-  function appendAgentSignalCard(card, durationMs) {
+  function appendAgentSignalCard(card, durationMs, dedupeKey) {
     const host = getAgentSignalContainer();
     if (!host) return;
+    const key = dedupeKey ? String(dedupeKey).toLowerCase() : "";
+    if (key && seenAgentSignalKeys.has(key)) return;
+    if (key) seenAgentSignalKeys.add(key);
     host.appendChild(card);
     agentSignalQueue.push(card);
     while (agentSignalQueue.length > MAX_AGENT_SIGNAL_CARDS) {
@@ -1097,7 +1102,7 @@
       { label: "Trap", value: e.trapId || "gas_trap_1" },
       { label: "Suggested Action", value: "Ask Astarion to disarm it" },
     ]);
-    appendAgentSignalCard(card, 5600);
+    appendAgentSignalCard(card, 5600, "trap_insight:" + String(e.trapId || "gas_trap_1").toLowerCase());
   }
 
   function renderTrapDisarmedCard(event) {
@@ -1247,9 +1252,12 @@
   }
 
   /* ── Toast System ── */
-  function showToast(type, content, durationMs) {
+  function showToast(type, content, durationMs, dedupeKey) {
     const host = getToastContainer();
     if (!host) return;
+    const key = dedupeKey ? String(dedupeKey) : "";
+    if (key && activeToastKeys.has(key)) return;
+    if (key) activeToastKeys.add(key);
     const dur = Number(durationMs) || 3000;
     const el = document.createElement("div");
     el.className = "hud-toast hud-toast--" + (type || "info");
@@ -1272,6 +1280,7 @@
         if (el.parentNode) el.parentNode.removeChild(el);
         const idx = toastQueue.indexOf(el);
         if (idx >= 0) toastQueue.splice(idx, 1);
+        if (key) activeToastKeys.delete(key);
       }, 320);
     }, dur);
   }
@@ -1389,7 +1398,7 @@
     const icon = e.icon || "◻";
     const label = e.label || e.item || "物品";
     const text = icon + " " + label + " — 已入包";
-    showToast("item", text, 3000);
+    showToast("item", text, 3000, "item_gained:" + String(e.item || label).toLowerCase());
     const host = getInventoryHintContainer();
     if (host) {
       const card = document.createElement("div");

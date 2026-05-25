@@ -14,16 +14,26 @@ determinism:
     generation:
       - Gribbo 的手指松开，沉重的铁钥匙落进你掌心。
 steps:
-  - id: open_ab_enter_corridor
-    user_input: 打开 A-B 门，进入走廊入口。
-    intent: MOVE
+  - id: open_ab_door
+    user_input: 打开 A-B 门。
+    intent: INTERACT
     payload:
-      target: "3,5"
+      target: door_a_to_b
     expected:
       state:
         equals:
-          game_state.entities.player.x: 3
-          game_state.entities.player.y: 5
+          environment_objects.door_a_to_b.status: open
+          environment_objects.door_a_to_b.is_open: true
+  - id: approach_trap_marker
+    user_input: 走到走廊里的可疑地砖附近。
+    intent: MOVE
+    payload:
+      target: "5,12"
+    expected:
+      state:
+        equals:
+          game_state.entities.player.x: 5
+          game_state.entities.player.y: 12
   - id: astarion_reveals_trap
     user_input: 走廊里有什么不对劲吗？
     intent: chat

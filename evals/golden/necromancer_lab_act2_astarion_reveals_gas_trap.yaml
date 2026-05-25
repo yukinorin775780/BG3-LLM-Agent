@@ -10,6 +10,26 @@ determinism:
   randint: [12, 12, 12]
   random_values: [0.5]
 steps:
+  - id: open_ab_door
+    user_input: 打开 A-B 门。
+    intent: INTERACT
+    payload:
+      target: door_a_to_b
+    expected:
+      state:
+        equals:
+          environment_objects.door_a_to_b.status: open
+          environment_objects.door_a_to_b.is_open: true
+  - id: approach_trap_marker
+    user_input: 走到走廊里的可疑地砖附近。
+    intent: MOVE
+    payload:
+      target: "5,12"
+    expected:
+      state:
+        equals:
+          game_state.entities.player.x: 5
+          game_state.entities.player.y: 12
   - id: astarion_perception_reveals_suspicious_trap
     user_input: 进入走廊，前面安全吗？
     intent: chat

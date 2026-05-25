@@ -18,7 +18,7 @@
   const BACKEND_REQUEST_TIMEOUT_MS = Math.max(5000, Number(QA_PARAMS.get("qa_backend_timeout_ms")) || 12000);
   const SILENT_FALLBACK_TEXT = "📖 [环境] 一阵阴冷的穿堂风吹过，你暂时失去了对周围环境的感知。";
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-  const BARK_BUILD_ID = "20260521_owner_release_v9";
+  const BARK_BUILD_ID = "20260522_act2_trap_semantics_v10";
 
   window.__BG3_BARK_BUILD_ID__ = BARK_BUILD_ID;
   if (typeof document !== "undefined" && document.documentElement) {
@@ -118,6 +118,7 @@
     partyViewOpen: false,
     activePartyViewTab: "inventory",
     hasSyncedInitialState: false,
+    hasStateProjectionBaseline: false,
     turnCount: 0,
     idleTimer: null,
     dialoguePollTimer: null,
@@ -158,6 +159,7 @@
     worldFlags: {},
     barkEpoch: 0,
     act3BarkEpoch: 0,
+    lastProjectionJournalEvents: [],
   };
 
   const INTERACTION_SOURCES = new Set([
@@ -1043,7 +1045,7 @@
   function buildChatPayload(text, intent, character, options = {}) {
     const routed = resolveChatRouting(text, intent, options);
     const characterId = character ? normalizeId(character) : normalizeId(routed.actor);
-    const clientPosition = getClientPlayerGridPosition();
+    const clientPosition = resolveClientPlayerGridPositionForPayload(routed.target, options);
     const payload = {
       user_input: routed.userLine,
       intent: routed.intentValue,
@@ -1680,6 +1682,65 @@
     return null;
   }
 
+  function getLocalMovementPlayerGridPosition() {
+    const candidates = [getInputControllerPosition(), getTacticalPlayerPosition()];
+    for (const candidate of candidates) {
+      const x = Number(safeObject(candidate).x);
+      const y = Number(safeObject(candidate).y);
+      if (Number.isFinite(x) && Number.isFinite(y)) {
+        return { x: Math.round(x), y: Math.round(y) };
+      }
+    }
+    return null;
+  }
+
+  function normalizeGridPositionCandidate(candidate) {
+    const x = Number(safeObject(candidate).x);
+    const y = Number(safeObject(candidate).y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+    return { x: Math.round(x), y: Math.round(y) };
+  }
+
+  function resolveTargetGridPosition(targetId) {
+    const key = normalizeId(targetId);
+    if (!key) return null;
+    if (key.includes("trap") || key.includes("gas_trap") || key.includes("poison_trap")) {
+      return findTrapGridPosition(key);
+    }
+    const mapTarget = findMapInteractableById(state.fullNormalizedMap, key)
+      || findMapInteractableById(state.normalizedMap, key);
+    const mapPosition = normalizeGridPositionCandidate(mapTarget);
+    if (mapPosition) return mapPosition;
+    return normalizeGridPositionCandidate(state.environmentObjects[key]);
+  }
+
+  function resolveClientPlayerGridPositionForPayload(targetId, options = {}) {
+    const explicit = normalizeGridPositionCandidate(
+      safeObject(options).client_player_position
+      || safeObject(options).clientPosition
+      || safeObject(options).playerPosition
+    );
+    if (explicit) return explicit;
+    const source = normalizeId(safeObject(options).source);
+    const shouldPreferTargetNearest = [
+      "interaction",
+      "trap_awareness",
+      "trap_trigger",
+      "trigger_zone",
+    ].includes(source);
+    const target = resolveTargetGridPosition(targetId);
+    const tactical = normalizeGridPositionCandidate(getTacticalPlayerPosition());
+    const input = normalizeGridPositionCandidate(getInputControllerPosition());
+    if (shouldPreferTargetNearest && target && tactical && input) {
+      return chebyshevDistance(input, target) <= chebyshevDistance(tactical, target)
+        ? input
+        : tactical;
+    }
+    if (shouldPreferTargetNearest && target && input) return input;
+    if (shouldPreferTargetNearest && target && tactical) return tactical;
+    return getClientPlayerGridPosition();
+  }
+
   function syncLocalPlayerProjectionState(source = "client_local") {
     const coord = getClientPlayerGridPosition();
     if (!coord) return null;
@@ -2250,6 +2311,65 @@
     if (!rawId) return "";
     if (rawId.includes("gas_trap") || rawId.includes("poison_trap") || rawId.includes("trap")) return "gas_trap_1";
     return rawId;
+  }
+
+  function chebyshevDistance(a, b) {
+    if (!a || !b) return Number.POSITIVE_INFINITY;
+    return Math.max(
+      Math.abs(Math.round(Number(a.x)) - Math.round(Number(b.x))),
+      Math.abs(Math.round(Number(a.y)) - Math.round(Number(b.y)))
+    );
+  }
+
+  function findTrapGridPosition(trapId = "gas_trap_1") {
+    const aliases = trapAliases(trapId || "gas_trap_1");
+    const aliasSet = new Set(aliases);
+    const maps = [state.fullNormalizedMap, state.normalizedMap];
+    for (const map of maps) {
+      const match = findMapInteractableById(map, trapId)
+        || [
+          ...safeArray(safeObject(map).triggers),
+          ...safeArray(safeObject(map).interactables),
+        ].find((item) => {
+          const record = safeObject(item);
+          const data = safeObject(record.data);
+          return aliasSet.has(normalizeId(record.id))
+            || aliasSet.has(normalizeId(record.alias_id))
+            || aliasSet.has(normalizeId(record.source_id))
+            || aliasSet.has(normalizeId(data.alias_id))
+            || aliasSet.has(normalizeId(data.source_id));
+        });
+      if (!match) continue;
+      const x = Number(match.x);
+      const y = Number(match.y);
+      if (Number.isFinite(x) && Number.isFinite(y)) return { x, y };
+    }
+    for (const alias of aliases) {
+      const env = safeObject(state.environmentObjects[alias]);
+      const x = Number(env.x);
+      const y = Number(env.y);
+      if (Number.isFinite(x) && Number.isFinite(y)) return { x, y };
+    }
+    return { x: 4, y: 6 };
+  }
+
+  function shouldQueueTrapAwareness(trapId = "gas_trap_1") {
+    const flags = safeObject(state.worldFlags);
+    if (flags.act2_astarion_perception_checked === true) return false;
+    if (flags.necromancer_lab_poison_trap_disarmed === true || flags.necromancer_lab_poison_trap_triggered === true) return false;
+    const door = safeObject(state.environmentObjects.door_a_to_b || state.environmentObjects.ab_door);
+    const corridorVisible = state.roomVisibleIds.has(ROOM_B)
+      || safeArray(safeObject(state.mapData).visible_rooms).includes(ROOM_B)
+      || flags.act2_corridor_entered === true
+      || door.is_open === true
+      || ["open", "opened"].includes(normalizeId(door.status || door.state));
+    if (!corridorVisible) return false;
+    const trapState = safeObject(state.environmentObjects[trapId]);
+    const trapStatus = resolvedTrapVisualStatus(trapId, trapState);
+    if (trapStatus === "disabled" || trapStatus === "triggered" || trapStatus === "revealed") return false;
+    const player = getLocalMovementPlayerGridPosition();
+    const trap = findTrapGridPosition(trapId);
+    return chebyshevDistance(player, trap) <= 3;
   }
 
   function shouldTriggerTrapMechanic(trapId = "gas_trap_1") {
@@ -4796,16 +4916,18 @@
     }, IDLE_MS);
   }
 
-  function ensureAct2CorridorTrapInsightEvent(uiEvents, actionIntent, actionTarget) {
+  function ensureAct2CorridorTrapInsightEvent(uiEvents, actionIntent, actionTarget, actionSource) {
     const events = safeArray(uiEvents).slice();
     if (events.some((event) => normalizeId(safeObject(event).type) === "trap_insight")) return events;
-    if (normalizeId(actionIntent) !== "interact") return events;
-    if (!["door_a_to_b", "ab_door", "corridor_entrance"].includes(normalizeId(actionTarget))) return events;
+    if (normalizeId(actionIntent) !== "chat") return events;
+    if (normalizeId(actionTarget) !== "gas_trap_1") return events;
+    if (normalizeId(actionSource) !== "trap_awareness") return events;
+    if (!shouldQueueTrapAwareness()) return events;
     events.push({
       type: "trap_insight",
       actor: "astarion",
       trapId: "gas_trap_1",
-      source: "corridor_reveal",
+      source: "trap_awareness",
     });
     return events;
   }
@@ -4872,6 +4994,7 @@
       }
 
       const data = await response.json();
+      state.lastProjectionJournalEvents = extractEventLines(data);
       if (opts.incrementTurn !== false) {
         state.turnCount += 1;
       }
@@ -4902,6 +5025,9 @@
       updateMapDebug("sendStructuredAction:response");
       const actionIntent = normalizeId(payload.intent);
       const actionTarget = normalizeId(payload.target || routed.target);
+      if (actionIntent === "init_sync") {
+        state.hasStateProjectionBaseline = true;
+      }
       applyLocalAct3ReadProjection(actionIntent, actionTarget, data);
       if (actionIntent === "interact" && !responseIndicatesInteractionBlocked(data)) {
         if (actionTarget === "door_b_to_c" && !state.discoveredSecretDoorIds.has("door_b_to_c")) {
@@ -4929,9 +5055,11 @@
       updateRestControls(state.combatState);
       updateExplorationActProgress();
       let uiEvents = window.BG3UIEventAdapter
-        ? window.BG3UIEventAdapter.extractUIEvents(data, previousUIEventState)
+        ? window.BG3UIEventAdapter.extractUIEvents(data, previousUIEventState, {
+          suppressInventoryDeltas: actionIntent === "init_sync",
+        })
         : [];
-      uiEvents = ensureAct2CorridorTrapInsightEvent(uiEvents, actionIntent, actionTarget);
+      uiEvents = ensureAct2CorridorTrapInsightEvent(uiEvents, actionIntent, actionTarget, routed.source);
       const trace = window.BG3DirectorTrace && typeof window.BG3DirectorTrace.buildTraceNodes === "function"
         ? window.BG3DirectorTrace.buildTraceNodes(data, { userLine, intent: intentValue, uiEvents })
         : inferNodeTrace(data, userLine, intentValue);
@@ -5663,10 +5791,18 @@
       refreshWorldFlags(data);
       const partyStatus = safeObject(data.party_status);
       const environmentObjects = safeObject(data.environment_objects);
+      const playerInventory = safeObject(data.player_inventory);
       const combatState = safeObject(data.combat_state);
       const prevPollParty = { ...state.partyStatus };
+      const prevPollEnvironment = { ...state.environmentObjects };
+      const prevPollInventory = { ...state.playerInventory };
+      const prevPollCombat = { ...state.combatState };
+      const prevPollFlags = { ...safeObject(state.worldFlags) };
+      const prevPollJournal = safeArray(state.lastProjectionJournalEvents).slice();
+      const hadProjectionBaseline = state.hasStateProjectionBaseline === true;
       if (Object.keys(partyStatus).length) state.partyStatus = mergePartyStatusResponse(prevPollParty, partyStatus);
       if (Object.keys(environmentObjects).length) state.environmentObjects = environmentObjects;
+      if (Object.keys(playerInventory).length) state.playerInventory = playerInventory;
       state.combatState = combatState;
       const pollMapData = safeObject(data.map_data);
       if (Object.keys(pollMapData).length) {
@@ -5679,12 +5815,27 @@
       updateXrayPanel(data);
       renderTacticalGrid(state.partyStatus, state.environmentObjects, state.mapData);
       updateMapDebug("pollDialogueState");
-      /* P1-1: dispatch HUD events from state polling too */
-      const pollEvents = dispatchUIEventsFromResponse(data, { party_status: prevPollParty });
-      if (safeArray(pollEvents).some((event) => normalizeId(safeObject(event).type).startsWith("trap_"))) {
-        refreshVisibilityProjection();
-        renderTacticalGrid(state.partyStatus, state.environmentObjects, state.mapData);
+      if (!hadProjectionBaseline) {
+        state.hasStateProjectionBaseline = true;
+      } else {
+        const previousPollState = {
+          party_status: prevPollParty,
+          environment_objects: prevPollEnvironment,
+          player_inventory: prevPollInventory,
+          combat_state: prevPollCombat,
+          flags: prevPollFlags,
+          journal_events: prevPollJournal,
+          _eventSource: "state_poll",
+        };
+        const pollEvents = dispatchUIEventsFromResponse(data, previousPollState, undefined, {
+          stateProjectionOnly: true,
+        });
+        if (safeArray(pollEvents).some((event) => normalizeId(safeObject(event).type).startsWith("trap_"))) {
+          refreshVisibilityProjection();
+          renderTacticalGrid(state.partyStatus, state.environmentObjects, state.mapData);
+        }
       }
+      state.lastProjectionJournalEvents = extractEventLines(data);
     } catch (error) {
       if (error && error.name === "AbortError") {
         setNetworkState("链路在线", "ok");
@@ -5717,6 +5868,9 @@
     window.clearTimeout(state.idleTimer);
     const newSessionId = setSessionId(buildTimelineSessionId());
     clearTransientInteractionContext();
+    state.hasSyncedInitialState = false;
+    state.hasStateProjectionBaseline = false;
+    state.lastProjectionJournalEvents = [];
     state.seenLootTargets.clear();
     state.currentLootTargetId = "";
     state.turnCount = 0;
@@ -5795,6 +5949,19 @@
               options: {
                 target: trapTarget,
                 source: "trap_trigger",
+              },
+            });
+            return;
+          }
+          if (triggerId === "act1_corridor_approach") {
+            if (!shouldQueueTrapAwareness("gas_trap_1")) return;
+            sendStructuredAction({
+              text: "阿斯代伦检查走廊里的可疑机关。",
+              intent: "CHAT",
+              character: null,
+              options: {
+                target: "gas_trap_1",
+                source: "trap_awareness",
               },
             });
             return;
@@ -5953,11 +6120,11 @@
     return false;
   }
 
-  function dispatchUIEventsFromResponse(data, previousState, providedEvents) {
+  function dispatchUIEventsFromResponse(data, previousState, providedEvents, options) {
     if (!window.BG3UIEventAdapter || !window.BG3HudRenderers) return;
     const events = Array.isArray(providedEvents)
       ? providedEvents
-      : window.BG3UIEventAdapter.extractUIEvents(data, previousState);
+      : window.BG3UIEventAdapter.extractUIEvents(data, previousState, options);
     window.BG3HudRenderers.dispatchUIEvents(events);
     events.forEach((event) => {
       const ev = safeObject(event);
