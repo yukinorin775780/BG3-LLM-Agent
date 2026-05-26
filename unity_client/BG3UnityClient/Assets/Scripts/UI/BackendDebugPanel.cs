@@ -1,5 +1,6 @@
 using System.Text;
 using BG3UnityClient.Api;
+using BG3UnityClient.Gameplay;
 using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.InputSystem.UI;
@@ -16,12 +17,15 @@ namespace BG3UnityClient.UI
         [SerializeField] private InputField inputField;
         [SerializeField] private Button sendButton;
         [SerializeField] private Text outputText;
+        [SerializeField] private BarkPanel barkPanel;
 
         private void Awake()
         {
+            EnsureGameplayShell();
+
             if (backendClient == null)
             {
-                backendClient = FindObjectOfType<BackendClient>();
+                backendClient = Object.FindAnyObjectByType<BackendClient>();
             }
 
             if (sendButton != null)
@@ -33,6 +37,16 @@ namespace BG3UnityClient.UI
             {
                 CreateRuntimeUi();
             }
+
+            if (barkPanel == null)
+            {
+                barkPanel = Object.FindAnyObjectByType<BarkPanel>();
+            }
+        }
+
+        private static void EnsureGameplayShell()
+        {
+            SceneBootstrap.EnsureShellExists();
         }
 
         private void Start()
@@ -73,6 +87,11 @@ namespace BG3UnityClient.UI
             }
 
             var userInput = inputField == null ? string.Empty : inputField.text;
+            if (EventSystem.current != null)
+            {
+                EventSystem.current.SetSelectedGameObject(null);
+            }
+
             StartCoroutine(SendChat(userInput));
         }
 
@@ -83,8 +102,16 @@ namespace BG3UnityClient.UI
 
             yield return backendClient.PostChat(
                 userInput,
-                response => SetOutput(BuildChatSummary(userInput, response)),
-                error => SetOutput($"Error: {error}"));
+                response =>
+                {
+                    SetOutput(BuildChatSummary(userInput, response));
+                    barkPanel?.ShowResponse(response);
+                },
+                error =>
+                {
+                    SetOutput($"Error: {error}");
+                    barkPanel?.ShowError(error);
+                });
 
             SetSendEnabled(true);
         }
@@ -228,28 +255,31 @@ namespace BG3UnityClient.UI
             scaler.matchWidthOrHeight = 0.5f;
 
             var panel = CreateUiObject("BackendDebugPanel", canvasObject.transform);
-            SetTopLeft(panel, new Vector2(32f, -32f), new Vector2(560f, 500f));
+            SetTopLeft(panel, new Vector2(28f, -28f), new Vector2(430f, 330f));
             var panelImage = panel.gameObject.AddComponent<Image>();
             panelImage.color = new Color(0.08f, 0.09f, 0.11f, 0.92f);
             panelImage.raycastTarget = false;
 
-            var title = CreateText("Title", panel, "BG3 Unity Client", 24, FontStyle.Bold, TextAnchor.MiddleLeft, Color.white);
-            SetTopLeft(title.rectTransform, new Vector2(20f, -18f), new Vector2(520f, 36f));
+            var title = CreateText("Title", panel, "BG3 Unity Client", 22, FontStyle.Bold, TextAnchor.MiddleLeft, Color.white);
+            SetTopLeft(title.rectTransform, new Vector2(18f, -16f), new Vector2(394f, 32f));
 
             statusText = CreateText("ConnectionStatus", panel, "Connecting...", 16, FontStyle.Normal, TextAnchor.UpperLeft, new Color(0.74f, 0.88f, 1f, 1f));
-            SetTopLeft(statusText.rectTransform, new Vector2(20f, -62f), new Vector2(520f, 54f));
+            SetTopLeft(statusText.rectTransform, new Vector2(18f, -58f), new Vector2(394f, 50f));
 
             inputField = CreateInputField("ChatInput", panel, DefaultPrompt);
-            SetTopLeft(inputField.GetComponent<RectTransform>(), new Vector2(20f, -128f), new Vector2(390f, 44f));
+            SetTopLeft(inputField.GetComponent<RectTransform>(), new Vector2(18f, -120f), new Vector2(304f, 40f));
 
             sendButton = CreateButton("SendButton", panel, "Send");
-            SetTopLeft(sendButton.GetComponent<RectTransform>(), new Vector2(422f, -128f), new Vector2(118f, 44f));
+            SetTopLeft(sendButton.GetComponent<RectTransform>(), new Vector2(332f, -120f), new Vector2(80f, 40f));
             sendButton.onClick.AddListener(OnSendClicked);
 
             outputText = CreateText("OutputLog", panel, "Ready.", 15, FontStyle.Normal, TextAnchor.UpperLeft, new Color(0.92f, 0.94f, 0.95f, 1f));
             outputText.horizontalOverflow = HorizontalWrapMode.Wrap;
-            outputText.verticalOverflow = VerticalWrapMode.Overflow;
-            SetTopLeft(outputText.rectTransform, new Vector2(20f, -188f), new Vector2(520f, 282f));
+            outputText.verticalOverflow = VerticalWrapMode.Truncate;
+            SetTopLeft(outputText.rectTransform, new Vector2(18f, -174f), new Vector2(394f, 136f));
+
+            barkPanel = CreateBarkPanel(canvasObject.transform);
+            barkPanel.ShowMessage("Backend", "Party responses will appear here.");
 
             if (EventSystem.current == null)
             {
@@ -313,6 +343,32 @@ namespace BG3UnityClient.UI
             var button = root.gameObject.AddComponent<Button>();
             button.targetGraphic = image;
             return button;
+        }
+
+        private static BarkPanel CreateBarkPanel(Transform canvasTransform)
+        {
+            var root = CreateUiObject("BarkPanel", canvasTransform);
+            root.anchorMin = new Vector2(0.5f, 0f);
+            root.anchorMax = new Vector2(0.5f, 0f);
+            root.pivot = new Vector2(0.5f, 0f);
+            root.anchoredPosition = new Vector2(0f, 32f);
+            root.sizeDelta = new Vector2(760f, 116f);
+
+            var image = root.gameObject.AddComponent<Image>();
+            image.color = new Color(0.05f, 0.055f, 0.065f, 0.92f);
+            image.raycastTarget = false;
+
+            var speaker = CreateText("Speaker", root, "Backend", 18, FontStyle.Bold, TextAnchor.UpperLeft, new Color(1f, 0.78f, 0.44f, 1f));
+            SetTopLeft(speaker.rectTransform, new Vector2(18f, -12f), new Vector2(724f, 26f));
+
+            var body = CreateText("Body", root, "Party responses will appear here.", 17, FontStyle.Normal, TextAnchor.UpperLeft, new Color(0.96f, 0.97f, 0.98f, 1f));
+            body.horizontalOverflow = HorizontalWrapMode.Wrap;
+            body.verticalOverflow = VerticalWrapMode.Truncate;
+            SetTopLeft(body.rectTransform, new Vector2(18f, -42f), new Vector2(724f, 62f));
+
+            var panel = root.gameObject.AddComponent<BarkPanel>();
+            panel.Configure(speaker, body);
+            return panel;
         }
 
         private static void SetTopLeft(RectTransform rectTransform, Vector2 anchoredPosition, Vector2 size)
