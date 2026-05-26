@@ -158,6 +158,38 @@ namespace BG3UnityClient.Api
             return match.Success ? DecodeJsonString(match.Groups[1].Value) : string.Empty;
         }
 
+        public static ChatSpeakerResponse[] ExtractSpeakerResponses(string json)
+        {
+            if (string.IsNullOrEmpty(json))
+            {
+                return Array.Empty<ChatSpeakerResponse>();
+            }
+
+            var arraySlice = ExtractArraySlice(json, "responses");
+            if (string.IsNullOrEmpty(arraySlice))
+            {
+                return Array.Empty<ChatSpeakerResponse>();
+            }
+
+            var responses = new List<ChatSpeakerResponse>();
+            foreach (Match objectMatch in Regex.Matches(arraySlice, "\\{(.*?)\\}", RegexOptions.Singleline))
+            {
+                var objectJson = objectMatch.Groups[1].Value;
+                var speaker = ExtractStringFieldFromSlice(objectJson, "speaker");
+                var text = ExtractStringFieldFromSlice(objectJson, "text");
+                if (!string.IsNullOrEmpty(text))
+                {
+                    responses.Add(new ChatSpeakerResponse
+                    {
+                        speaker = speaker,
+                        text = text
+                    });
+                }
+            }
+
+            return responses.ToArray();
+        }
+
         public static string ExtractMapDataStringField(string json, string fieldName)
         {
             if (string.IsNullOrEmpty(json) || string.IsNullOrEmpty(fieldName))
@@ -213,6 +245,74 @@ namespace BG3UnityClient.Api
             }
 
             return count;
+        }
+
+        private static string ExtractArraySlice(string json, string fieldName)
+        {
+            var fieldIndex = json.IndexOf($"\"{fieldName}\"", StringComparison.Ordinal);
+            if (fieldIndex < 0)
+            {
+                return string.Empty;
+            }
+
+            var arrayStart = json.IndexOf('[', fieldIndex);
+            if (arrayStart < 0)
+            {
+                return string.Empty;
+            }
+
+            var depth = 0;
+            var inString = false;
+            var escaping = false;
+            for (var i = arrayStart; i < json.Length; i++)
+            {
+                var c = json[i];
+                if (inString)
+                {
+                    if (escaping)
+                    {
+                        escaping = false;
+                    }
+                    else if (c == '\\')
+                    {
+                        escaping = true;
+                    }
+                    else if (c == '"')
+                    {
+                        inString = false;
+                    }
+
+                    continue;
+                }
+
+                if (c == '"')
+                {
+                    inString = true;
+                }
+                else if (c == '[')
+                {
+                    depth++;
+                }
+                else if (c == ']')
+                {
+                    depth--;
+                    if (depth == 0)
+                    {
+                        return json.Substring(arrayStart + 1, i - arrayStart - 1);
+                    }
+                }
+            }
+
+            return string.Empty;
+        }
+
+        private static string ExtractStringFieldFromSlice(string json, string fieldName)
+        {
+            var match = Regex.Match(
+                json,
+                $"\"{Regex.Escape(fieldName)}\"\\s*:\\s*\"((?:\\\\.|[^\"])*)\"",
+                RegexOptions.Singleline);
+            return match.Success ? DecodeJsonString(match.Groups[1].Value) : string.Empty;
         }
 
         private static string DecodeJsonString(string value)

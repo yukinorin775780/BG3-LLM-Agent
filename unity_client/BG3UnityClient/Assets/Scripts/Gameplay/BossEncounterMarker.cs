@@ -5,8 +5,7 @@ namespace BG3UnityClient.Gameplay
     public enum BossDoorVisualState
     {
         Locked,
-        Ready,
-        Open
+        Ready
     }
 
     public sealed class BossEncounterMarker : MonoBehaviour
@@ -18,6 +17,7 @@ namespace BG3UnityClient.Gameplay
         [SerializeField] private Transform keyRoot;
         [SerializeField] private TextMesh gribboLabel;
         [SerializeField] private TextMesh doorLabel;
+        [SerializeField] private TextMesh tankLabel;
         [SerializeField] private bool bossReady;
         [SerializeField] private bool keyObtained;
         [SerializeField] private BossDoorVisualState doorState = BossDoorVisualState.Locked;
@@ -58,14 +58,6 @@ namespace BG3UnityClient.Gameplay
             ApplyVisualState();
         }
 
-        public void SetDoorOpen()
-        {
-            keyObtained = true;
-            doorState = BossDoorVisualState.Open;
-            EnsureVisuals();
-            ApplyVisualState();
-        }
-
         private void Awake()
         {
             EnsureVisuals();
@@ -89,6 +81,7 @@ namespace BG3UnityClient.Gameplay
         {
             FaceCamera(gribboLabel);
             FaceCamera(doorLabel);
+            FaceCamera(tankLabel);
         }
 
         private void EnsureVisuals()
@@ -156,7 +149,12 @@ namespace BG3UnityClient.Gameplay
 
             if (doorLabel == null)
             {
-                doorLabel = CreateLabel("ExitDoorLabel", "Exit Door", finalDoorRoot.position + new Vector3(0f, 1.4f, -0.2f), new Color(1f, 0.84f, 0.34f, 1f));
+                doorLabel = CreateLabel("ExitDoorLabel", "Final Exit", finalDoorRoot.position + new Vector3(0f, 1.4f, -0.2f), new Color(1f, 0.84f, 0.34f, 1f));
+            }
+
+            if (tankLabel == null)
+            {
+                tankLabel = CreateLabel("PoisonTankLabel", "Poison Tank", potionTankRoot.position + new Vector3(0f, 0.95f, 0f), new Color(0.62f, 1f, 0.62f, 1f));
             }
 
             if (gribboMaterial == null)
@@ -171,12 +169,12 @@ namespace BG3UnityClient.Gameplay
 
             if (tankMaterial == null)
             {
-                tankMaterial = CreateMaterial(new Color(0.32f, 0.82f, 0.34f, 1f));
+                tankMaterial = CreateMaterial(new Color(0.32f, 0.82f, 0.34f, 0.48f), true);
             }
 
             if (highlightMaterial == null)
             {
-                highlightMaterial = CreateMaterial(new Color(1f, 0.78f, 0.16f, 0.88f));
+                highlightMaterial = CreateMaterial(new Color(1f, 0.78f, 0.16f, 0.88f), true);
             }
 
             if (keyMaterial == null)
@@ -201,11 +199,7 @@ namespace BG3UnityClient.Gameplay
             if (doorMaterial != null)
             {
                 var doorColor = new Color(0.08f, 0.32f, 0.62f, 1f);
-                if (doorState == BossDoorVisualState.Open)
-                {
-                    doorColor = new Color(0.08f, 0.58f, 0.32f, 1f);
-                }
-                else if (doorState == BossDoorVisualState.Ready)
+                if (doorState == BossDoorVisualState.Ready)
                 {
                     doorColor = new Color(0.96f, 0.66f, 0.18f, 1f);
                 }
@@ -225,9 +219,7 @@ namespace BG3UnityClient.Gameplay
 
             if (finalDoorRoot != null)
             {
-                finalDoorRoot.localRotation = doorState == BossDoorVisualState.Open
-                    ? Quaternion.Euler(0f, 58f, 0f)
-                    : Quaternion.identity;
+                finalDoorRoot.localRotation = Quaternion.identity;
             }
         }
 
@@ -282,7 +274,7 @@ namespace BG3UnityClient.Gameplay
             return visual;
         }
 
-        private static Material CreateMaterial(Color color)
+        private static Material CreateMaterial(Color color, bool transparent = false)
         {
             var shader = Shader.Find("Universal Render Pipeline/Unlit")
                 ?? Shader.Find("Unlit/Color")
@@ -295,6 +287,17 @@ namespace BG3UnityClient.Gameplay
             }
 
             var material = new Material(shader);
+            if (transparent)
+            {
+                material.renderQueue = (int)UnityEngine.Rendering.RenderQueue.Transparent;
+                SetFloatIfPresent(material, "_Surface", 1f);
+                SetFloatIfPresent(material, "_Blend", 0f);
+                SetIntIfPresent(material, "_SrcBlend", (int)UnityEngine.Rendering.BlendMode.SrcAlpha);
+                SetIntIfPresent(material, "_DstBlend", (int)UnityEngine.Rendering.BlendMode.OneMinusSrcAlpha);
+                SetIntIfPresent(material, "_ZWrite", 0);
+                material.EnableKeyword("_SURFACE_TYPE_TRANSPARENT");
+            }
+
             SetMaterialColor(material, color);
             return material;
         }
@@ -324,6 +327,22 @@ namespace BG3UnityClient.Gameplay
             if (material.HasProperty("_Color"))
             {
                 material.SetColor("_Color", color);
+            }
+        }
+
+        private static void SetFloatIfPresent(Material material, string propertyName, float value)
+        {
+            if (material != null && material.HasProperty(propertyName))
+            {
+                material.SetFloat(propertyName, value);
+            }
+        }
+
+        private static void SetIntIfPresent(Material material, string propertyName, int value)
+        {
+            if (material != null && material.HasProperty(propertyName))
+            {
+                material.SetInt(propertyName, value);
             }
         }
 

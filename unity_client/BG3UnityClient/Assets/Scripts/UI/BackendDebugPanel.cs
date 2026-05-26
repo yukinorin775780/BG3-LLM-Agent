@@ -1,5 +1,5 @@
-using System.Text;
 using System;
+using System.Text;
 using BG3UnityClient.Api;
 using BG3UnityClient.Gameplay;
 using UnityEngine;
@@ -14,7 +14,6 @@ namespace BG3UnityClient.UI
         private const string DefaultPrompt = "Is something wrong in the corridor?";
         private const string StrategyPrompt = "我们怎么处理他？队友们有什么建议，怎么拿钥匙？";
         private const string DiaryTruthPrompt = "I know what the potion did to you. You are not a guard. You are an experiment. Give me the key and we will get you out.";
-        private const string OpenDoorPrompt = "用 heavy_iron_key 打开 heavy_oak_door_1。";
 
         private static readonly string[] BossSetupCommands =
         {
@@ -35,18 +34,18 @@ namespace BG3UnityClient.UI
         [SerializeField] private Button setupBossButton;
         [SerializeField] private Button askStrategyButton;
         [SerializeField] private Button useDiaryTruthButton;
-        [SerializeField] private Button openFinalDoorButton;
         [SerializeField] private Text outputText;
         [SerializeField] private BarkPanel barkPanel;
         [SerializeField] private TrapZone trapZone;
         [SerializeField] private BossEncounterMarker bossEncounter;
+        [SerializeField] private BossEncounterZone bossZone;
+        [SerializeField] private KeyPickupFeedback keyFeedback;
 
         private string connectionStatusLine = "Connecting...";
         private string sessionStatusLine = "session=(unknown)";
         private TrapVisualState trapState = TrapVisualState.Hidden;
         private bool bossReady;
         private bool keyObtained;
-        private BossDoorVisualState doorState = BossDoorVisualState.Locked;
         private bool bossRequestInFlight;
 
         private void Awake()
@@ -84,6 +83,17 @@ namespace BG3UnityClient.UI
             {
                 bossEncounter = UnityEngine.Object.FindAnyObjectByType<BossEncounterMarker>();
                 SyncBossStateFromMarker();
+            }
+
+            if (bossZone == null)
+            {
+                bossZone = UnityEngine.Object.FindAnyObjectByType<BossEncounterZone>();
+                bossZone?.AttachDebugPanel(this);
+            }
+
+            if (keyFeedback == null)
+            {
+                keyFeedback = UnityEngine.Object.FindAnyObjectByType<KeyPickupFeedback>();
             }
         }
 
@@ -145,10 +155,6 @@ namespace BG3UnityClient.UI
                 useDiaryTruthButton.onClick.RemoveListener(OnUseDiaryTruthClicked);
             }
 
-            if (openFinalDoorButton != null)
-            {
-                openFinalDoorButton.onClick.RemoveListener(OnOpenFinalDoorClicked);
-            }
         }
 
         private void OnSendClicked()
@@ -311,6 +317,45 @@ namespace BG3UnityClient.UI
             SetOutput($"{title}\n\n{value}");
         }
 
+        public void AttachBossZone(BossEncounterZone zone)
+        {
+            bossZone = zone;
+            if (zone != null && zone.EncounterReady)
+            {
+                SetBossEncounterReady(true);
+            }
+            else
+            {
+                RefreshBossButtons();
+            }
+        }
+
+        public void SetBossEncounterReady(bool ready)
+        {
+            if (!ready)
+            {
+                return;
+            }
+
+            var wasReady = bossReady;
+            bossReady = true;
+            if (bossEncounter == null)
+            {
+                bossEncounter = UnityEngine.Object.FindAnyObjectByType<BossEncounterMarker>();
+            }
+
+            bossEncounter?.SetBossReady(true);
+            RefreshStatusText();
+            RefreshBossButtons();
+
+            if (!wasReady)
+            {
+                SetOutput("Boss Encounter Ready\n\nGribbo, the poison tank, and the final exit are in view. Prepare context if needed, then ask the party for strategy.");
+                barkPanel?.ShowMessage("Boss Encounter Ready", "Gribbo is close. Ask the party how to handle him.");
+                Debug.Log("BG3 boss encounter ready UI applied.");
+            }
+        }
+
         private void SetConnectionStatus(string connectionLine, string sessionLine)
         {
             connectionStatusLine = connectionLine;
@@ -322,7 +367,7 @@ namespace BG3UnityClient.UI
         {
             if (statusText != null)
             {
-                statusText.text = $"{connectionStatusLine}\n{sessionStatusLine}\nTrap: {trapState}\nBoss: {(bossReady ? "Ready" : "Not Ready")}\nKey: {(keyObtained ? "Obtained" : "Missing")}\nDoor: {doorState}";
+                statusText.text = $"{connectionStatusLine}\n{sessionStatusLine}\nTrap: {trapState}\nBoss: {(bossReady ? "Encounter Ready" : "Approach Gribbo")}\nKey: {(keyObtained ? "Heavy Iron Key Obtained" : "Missing")}";
             }
         }
 
@@ -360,7 +405,7 @@ namespace BG3UnityClient.UI
             scaler.matchWidthOrHeight = 0.5f;
 
             var panel = CreateUiObject("BackendDebugPanel", canvasObject.transform);
-            SetTopLeft(panel, new Vector2(28f, -28f), new Vector2(430f, 560f));
+            SetTopLeft(panel, new Vector2(28f, -28f), new Vector2(430f, 520f));
             var panelImage = panel.gameObject.AddComponent<Image>();
             panelImage.color = new Color(0.08f, 0.09f, 0.11f, 0.92f);
             panelImage.raycastTarget = false;
@@ -368,44 +413,40 @@ namespace BG3UnityClient.UI
             var title = CreateText("Title", panel, "BG3 Unity Client", 22, FontStyle.Bold, TextAnchor.MiddleLeft, Color.white);
             SetTopLeft(title.rectTransform, new Vector2(18f, -16f), new Vector2(394f, 32f));
 
-            statusText = CreateText("ConnectionStatus", panel, "Connecting...", 16, FontStyle.Normal, TextAnchor.UpperLeft, new Color(0.74f, 0.88f, 1f, 1f));
-            SetTopLeft(statusText.rectTransform, new Vector2(18f, -56f), new Vector2(394f, 112f));
+            statusText = CreateText("ConnectionStatus", panel, "Connecting...", 15, FontStyle.Normal, TextAnchor.UpperLeft, new Color(0.74f, 0.88f, 1f, 1f));
+            SetTopLeft(statusText.rectTransform, new Vector2(18f, -56f), new Vector2(394f, 104f));
 
             inputField = CreateInputField("ChatInput", panel, DefaultPrompt);
-            SetTopLeft(inputField.GetComponent<RectTransform>(), new Vector2(18f, -180f), new Vector2(304f, 40f));
+            SetTopLeft(inputField.GetComponent<RectTransform>(), new Vector2(18f, -170f), new Vector2(304f, 40f));
 
             sendButton = CreateButton("SendButton", panel, "Send");
-            SetTopLeft(sendButton.GetComponent<RectTransform>(), new Vector2(332f, -180f), new Vector2(80f, 40f));
+            SetTopLeft(sendButton.GetComponent<RectTransform>(), new Vector2(332f, -170f), new Vector2(80f, 40f));
             sendButton.onClick.AddListener(OnSendClicked);
 
             disarmButton = CreateButton("DisarmButton", panel, "Ask Astarion to Disarm");
-            SetTopLeft(disarmButton.GetComponent<RectTransform>(), new Vector2(18f, -232f), new Vector2(194f, 36f));
+            SetTopLeft(disarmButton.GetComponent<RectTransform>(), new Vector2(18f, -222f), new Vector2(194f, 36f));
             disarmButton.onClick.AddListener(OnDisarmClicked);
 
             triggerTrapButton = CreateButton("TriggerTrapButton", panel, "Trigger Trap");
-            SetTopLeft(triggerTrapButton.GetComponent<RectTransform>(), new Vector2(218f, -232f), new Vector2(194f, 36f));
+            SetTopLeft(triggerTrapButton.GetComponent<RectTransform>(), new Vector2(218f, -222f), new Vector2(194f, 36f));
             triggerTrapButton.onClick.AddListener(OnTriggerTrapClicked);
 
-            setupBossButton = CreateButton("SetupBossButton", panel, "Setup Boss Context");
-            SetTopLeft(setupBossButton.GetComponent<RectTransform>(), new Vector2(18f, -276f), new Vector2(194f, 36f));
+            setupBossButton = CreateButton("SetupBossButton", panel, "Prepare Boss Context");
+            SetTopLeft(setupBossButton.GetComponent<RectTransform>(), new Vector2(18f, -266f), new Vector2(194f, 36f));
             setupBossButton.onClick.AddListener(OnSetupBossContextClicked);
 
             askStrategyButton = CreateButton("AskStrategyButton", panel, "Ask Party Strategy");
-            SetTopLeft(askStrategyButton.GetComponent<RectTransform>(), new Vector2(218f, -276f), new Vector2(194f, 36f));
+            SetTopLeft(askStrategyButton.GetComponent<RectTransform>(), new Vector2(218f, -266f), new Vector2(194f, 36f));
             askStrategyButton.onClick.AddListener(OnAskStrategyClicked);
 
-            useDiaryTruthButton = CreateButton("UseDiaryTruthButton", panel, "Use Diary Truth");
-            SetTopLeft(useDiaryTruthButton.GetComponent<RectTransform>(), new Vector2(18f, -320f), new Vector2(194f, 36f));
+            useDiaryTruthButton = CreateButton("UseDiaryTruthButton", panel, "Truth Negotiation");
+            SetTopLeft(useDiaryTruthButton.GetComponent<RectTransform>(), new Vector2(18f, -310f), new Vector2(394f, 36f));
             useDiaryTruthButton.onClick.AddListener(OnUseDiaryTruthClicked);
-
-            openFinalDoorButton = CreateButton("OpenFinalDoorButton", panel, "Open Final Door");
-            SetTopLeft(openFinalDoorButton.GetComponent<RectTransform>(), new Vector2(218f, -320f), new Vector2(194f, 36f));
-            openFinalDoorButton.onClick.AddListener(OnOpenFinalDoorClicked);
 
             outputText = CreateText("OutputLog", panel, "Ready.", 15, FontStyle.Normal, TextAnchor.UpperLeft, new Color(0.92f, 0.94f, 0.95f, 1f));
             outputText.horizontalOverflow = HorizontalWrapMode.Wrap;
             outputText.verticalOverflow = VerticalWrapMode.Truncate;
-            SetTopLeft(outputText.rectTransform, new Vector2(18f, -372f), new Vector2(394f, 164f));
+            SetTopLeft(outputText.rectTransform, new Vector2(18f, -358f), new Vector2(394f, 144f));
 
             barkPanel = CreateBarkPanel(canvasObject.transform);
             barkPanel.ShowMessage("Backend", "Party responses will appear here.");
@@ -508,41 +549,10 @@ namespace BG3UnityClient.UI
                 }));
         }
 
-        private void OnOpenFinalDoorClicked()
-        {
-            ClearSelectedUi();
-            if (!keyObtained)
-            {
-                SetOutput("Open Final Door\n\nKey Missing: use diary truth or another boss route first.");
-                return;
-            }
-
-            if (backendClient == null)
-            {
-                ApplyDoorOpen();
-                SetOutput("Open Final Door\n\nFinal door opened locally; backend unavailable.");
-                return;
-            }
-
-            var payload = CreateBossPayload(OpenDoorPrompt, "unity_final_door_button", "INTERACT");
-            payload.target = "heavy_oak_door_1";
-            payload.client_player_position = new ClientPlayerPositionDto(17, 4);
-            StartCoroutine(RunBossRequest(
-                "Open Final Door",
-                payload,
-                response =>
-                {
-                    ApplyDoorOpen();
-                    barkPanel?.ShowResponses(response);
-                    SetOutput(BuildBossActionSummary("Open Final Door", response, TryResolveDoorOpen(response) ? "Final door opened." : "Final door opened locally after backend 200."));
-                    Debug.Log("BG3 final door open visual applied.");
-                }));
-        }
-
         private System.Collections.IEnumerator SetupBossContext()
         {
             SetBossRequestInFlight(true);
-            SetOutput("Setup Boss Context\n\nSeeding Act4 boss flags...");
+            SetOutput("Prepare Boss Context\n\nDebug-only for Unity spike: seeding Act4 boss flags through the existing chat command path.");
 
             ApiChatResponse lastResponse = null;
             string lastError = null;
@@ -561,7 +571,7 @@ namespace BG3UnityClient.UI
 
                 if (!string.IsNullOrEmpty(lastError))
                 {
-                    SetOutput($"Setup Boss Context\n\nFailed on `{command}`\n{lastError}");
+                    SetOutput($"Prepare Boss Context\n\nFailed on `{command}`\n{lastError}");
                     barkPanel?.ShowError(lastError);
                     SetBossRequestInFlight(false);
                     yield break;
@@ -569,9 +579,9 @@ namespace BG3UnityClient.UI
             }
 
             ApplyBossReady();
-            SetOutput(BuildBossActionSummary("Setup Boss Context", lastResponse, "Boss Ready. Diary truth route is seeded for this Unity prototype."));
-            barkPanel?.ShowMessage("Boss", "Boss context ready. Ask the party for strategy.");
-            Debug.Log("BG3 boss context setup completed.");
+            SetOutput(BuildBossActionSummary("Prepare Boss Context", lastResponse, "Debug-only setup complete. Diary truth route is seeded for this Unity prototype."));
+            barkPanel?.ShowMessage("Boss Context", "Debug-only setup complete. Ask the party for strategy.");
+            Debug.Log("BG3 boss context setup completed through debug-only Unity spike flags.");
             SetBossRequestInFlight(false);
         }
 
@@ -642,10 +652,6 @@ namespace BG3UnityClient.UI
                 useDiaryTruthButton.interactable = backendClient != null && bossReady && !keyObtained && !bossRequestInFlight;
             }
 
-            if (openFinalDoorButton != null)
-            {
-                openFinalDoorButton.interactable = keyObtained && doorState != BossDoorVisualState.Open && !bossRequestInFlight;
-            }
         }
 
         private void SetBossRequestInFlight(bool inFlight)
@@ -665,7 +671,6 @@ namespace BG3UnityClient.UI
 
             bossReady = bossEncounter.BossReady;
             keyObtained = bossEncounter.KeyObtained;
-            doorState = bossEncounter.DoorState;
             RefreshStatusText();
             RefreshBossButtons();
         }
@@ -682,23 +687,14 @@ namespace BG3UnityClient.UI
         {
             bossReady = true;
             keyObtained = true;
-            if (doorState == BossDoorVisualState.Locked)
-            {
-                doorState = BossDoorVisualState.Ready;
-            }
-
             bossEncounter?.SetBossReady(true);
             bossEncounter?.SetKeyObtained(true);
-            RefreshStatusText();
-            RefreshBossButtons();
-        }
+            if (keyFeedback == null)
+            {
+                keyFeedback = UnityEngine.Object.FindAnyObjectByType<KeyPickupFeedback>();
+            }
 
-        private void ApplyDoorOpen()
-        {
-            bossReady = true;
-            keyObtained = true;
-            doorState = BossDoorVisualState.Open;
-            bossEncounter?.SetDoorOpen();
+            keyFeedback?.ShowKeyObtained();
             RefreshStatusText();
             RefreshBossButtons();
         }
@@ -730,12 +726,10 @@ namespace BG3UnityClient.UI
 
             if (TryResolveKeyObtained(response))
             {
-                builder.AppendLine("Key: Obtained");
-            }
-
-            if (TryResolveDoorOpen(response))
-            {
-                builder.AppendLine("Door: Open");
+                builder.AppendLine("Key: Heavy Iron Key Obtained");
+                builder.AppendLine("heavy_iron_key");
+                builder.AppendLine("key_surrendered");
+                builder.AppendLine("gribbo -> player");
             }
         }
 
@@ -913,29 +907,6 @@ namespace BG3UnityClient.UI
                 "[boss解决] negotiation -> key_surrendered",
                 "[物品转移] gribbo -> player heavy_iron_key",
                 "key_surrendered");
-        }
-
-        private static bool TryResolveDoorOpen(ApiChatResponse response)
-        {
-            if (response == null)
-            {
-                return false;
-            }
-
-            if (response.demo_cleared)
-            {
-                return true;
-            }
-
-            if (BackendClient.ExtractBooleanField(response.raw_json, "act4_final_exit_opened")
-                || BackendClient.ExtractBooleanField(response.raw_json, "necromancer_lab_escape_complete")
-                || BackendClient.ExtractBooleanField(response.raw_json, "demo_cleared"))
-            {
-                return true;
-            }
-
-            var haystack = BuildBossHaystack(response);
-            return ContainsAny(haystack, "demo cleared");
         }
 
         private static string BuildBossHaystack(ApiChatResponse response)

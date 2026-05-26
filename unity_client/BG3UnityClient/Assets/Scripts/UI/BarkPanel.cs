@@ -6,8 +6,11 @@ namespace BG3UnityClient.UI
 {
     public sealed class BarkPanel : MonoBehaviour
     {
+        [SerializeField] private float queuedLineSeconds = 1.35f;
         [SerializeField] private Text speakerText;
         [SerializeField] private Text bodyText;
+
+        private Coroutine queueRoutine;
 
         public void Configure(Text speaker, Text body)
         {
@@ -41,7 +44,8 @@ namespace BG3UnityClient.UI
                 return;
             }
 
-            var lines = new System.Text.StringBuilder();
+            var entries = new BarkEntry[response.responses.Length];
+            var count = 0;
             for (var i = 0; i < response.responses.Length; i++)
             {
                 var entry = response.responses[i];
@@ -50,15 +54,17 @@ namespace BG3UnityClient.UI
                     continue;
                 }
 
-                if (lines.Length > 0)
-                {
-                    lines.AppendLine();
-                }
-
-                lines.Append($"{ResolveSpeaker(entry.speaker)}: {entry.text}");
+                entries[count] = new BarkEntry(ResolveSpeaker(entry.speaker), entry.text);
+                count++;
             }
 
-            ShowMessage("Party", lines.Length == 0 ? BuildFallbackText(response) : lines.ToString());
+            if (count == 0)
+            {
+                ShowMessage("Party", BuildFallbackText(response));
+                return;
+            }
+
+            QueueEntries(entries, count);
         }
 
         public void ShowLines(string speaker, params string[] lines)
@@ -69,7 +75,8 @@ namespace BG3UnityClient.UI
                 return;
             }
 
-            var builder = new System.Text.StringBuilder();
+            var entries = new BarkEntry[lines.Length];
+            var count = 0;
             for (var i = 0; i < lines.Length; i++)
             {
                 if (string.IsNullOrEmpty(lines[i]))
@@ -77,15 +84,26 @@ namespace BG3UnityClient.UI
                     continue;
                 }
 
-                if (builder.Length > 0)
+                var parsedSpeaker = speaker;
+                var text = lines[i];
+                var separatorIndex = lines[i].IndexOf(':');
+                if (separatorIndex > 0 && separatorIndex + 1 < lines[i].Length)
                 {
-                    builder.AppendLine();
+                    parsedSpeaker = ResolveSpeaker(lines[i].Substring(0, separatorIndex));
+                    text = lines[i].Substring(separatorIndex + 1).Trim();
                 }
 
-                builder.Append(lines[i]);
+                entries[count] = new BarkEntry(parsedSpeaker, text);
+                count++;
             }
 
-            ShowMessage(speaker, builder.ToString());
+            if (count == 0)
+            {
+                ShowMessage(speaker, string.Empty);
+                return;
+            }
+
+            QueueEntries(entries, count);
         }
 
         public void ShowError(string error)
@@ -94,6 +112,46 @@ namespace BG3UnityClient.UI
         }
 
         public void ShowMessage(string speaker, string text)
+        {
+            StopQueue();
+            if (speakerText != null)
+            {
+                speakerText.text = string.IsNullOrEmpty(speaker) ? "Backend" : speaker;
+            }
+
+            if (bodyText != null)
+            {
+                bodyText.text = string.IsNullOrEmpty(text) ? "(no text)" : text;
+            }
+        }
+
+        private void QueueEntries(BarkEntry[] entries, int count)
+        {
+            StopQueue();
+            queueRoutine = StartCoroutine(ShowQueue(entries, count));
+        }
+
+        private System.Collections.IEnumerator ShowQueue(BarkEntry[] entries, int count)
+        {
+            for (var i = 0; i < count; i++)
+            {
+                SetMessage(entries[i].speaker, entries[i].text);
+                yield return new WaitForSeconds(queuedLineSeconds);
+            }
+
+            queueRoutine = null;
+        }
+
+        private void StopQueue()
+        {
+            if (queueRoutine != null)
+            {
+                StopCoroutine(queueRoutine);
+                queueRoutine = null;
+            }
+        }
+
+        private void SetMessage(string speaker, string text)
         {
             if (speakerText != null)
             {
@@ -129,7 +187,7 @@ namespace BG3UnityClient.UI
                 return "Narrator";
             }
 
-            var normalized = rawSpeaker.Trim().ToLowerInvariant().Replace("_", "").Replace("-", "").Replace("'", "");
+            var normalized = rawSpeaker.Trim().ToLowerInvariant().Replace("_", "").Replace("-", "").Replace("'", "").Replace("’", "");
             switch (normalized)
             {
                 case "astarion":
@@ -145,6 +203,18 @@ namespace BG3UnityClient.UI
                     return "Narrator";
                 default:
                     return rawSpeaker;
+            }
+        }
+
+        private readonly struct BarkEntry
+        {
+            public readonly string speaker;
+            public readonly string text;
+
+            public BarkEntry(string speaker, string text)
+            {
+                this.speaker = speaker;
+                this.text = text;
             }
         }
     }

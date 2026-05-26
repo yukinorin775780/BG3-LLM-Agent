@@ -105,17 +105,33 @@ namespace BG3UnityClient.Api
 
             if (responses == null || responses.Length == 0 || string.IsNullOrEmpty(responses[0]?.text))
             {
-                var text = BackendClient.ExtractFirstResponseField(rawJson, "text");
-                if (!string.IsNullOrEmpty(text))
+                var extractedResponses = BackendClient.ExtractSpeakerResponses(rawJson);
+                if (extractedResponses.Length > 0)
                 {
-                    responses = new[]
+                    responses = extractedResponses;
+                }
+                else
+                {
+                    var text = BackendClient.ExtractFirstResponseField(rawJson, "text");
+                    if (!string.IsNullOrEmpty(text))
                     {
-                        new ChatSpeakerResponse
+                        responses = new[]
                         {
-                            speaker = BackendClient.ExtractFirstResponseField(rawJson, "speaker"),
-                            text = text
-                        }
-                    };
+                            new ChatSpeakerResponse
+                            {
+                                speaker = BackendClient.ExtractFirstResponseField(rawJson, "speaker"),
+                                text = text
+                            }
+                        };
+                    }
+                }
+            }
+            else
+            {
+                var extractedResponses = BackendClient.ExtractSpeakerResponses(rawJson);
+                if (extractedResponses.Length > responses.Length)
+                {
+                    responses = extractedResponses;
                 }
             }
 
