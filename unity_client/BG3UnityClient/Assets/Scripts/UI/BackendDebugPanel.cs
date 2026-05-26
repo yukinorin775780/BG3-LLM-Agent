@@ -31,12 +31,20 @@ namespace BG3UnityClient.UI
         [SerializeField] private Button sendButton;
         [SerializeField] private Button disarmButton;
         [SerializeField] private Button triggerTrapButton;
+        [SerializeField] private Button readChemicalNotesButton;
+        [SerializeField] private Button readDiaryButton;
         [SerializeField] private Button setupBossButton;
         [SerializeField] private Button askStrategyButton;
         [SerializeField] private Button useDiaryTruthButton;
+        [SerializeField] private Button outputToggleButton;
         [SerializeField] private Text outputText;
+        [SerializeField] private Text outputPreviewText;
+        [SerializeField] private RectTransform debugPanelRoot;
+        [SerializeField] private RectTransform outputContainer;
         [SerializeField] private BarkPanel barkPanel;
+        [SerializeField] private ActObjectiveHud actHud;
         [SerializeField] private TrapZone trapZone;
+        [SerializeField] private ActFlowController actFlow;
         [SerializeField] private BossEncounterMarker bossEncounter;
         [SerializeField] private BossEncounterZone bossZone;
         [SerializeField] private KeyPickupFeedback keyFeedback;
@@ -47,6 +55,7 @@ namespace BG3UnityClient.UI
         private bool bossReady;
         private bool keyObtained;
         private bool bossRequestInFlight;
+        private bool outputExpanded;
 
         private void Awake()
         {
@@ -72,6 +81,11 @@ namespace BG3UnityClient.UI
                 barkPanel = UnityEngine.Object.FindAnyObjectByType<BarkPanel>();
             }
 
+            if (actHud == null)
+            {
+                actHud = UnityEngine.Object.FindAnyObjectByType<ActObjectiveHud>();
+            }
+
             if (trapZone == null)
             {
                 trapZone = UnityEngine.Object.FindAnyObjectByType<TrapZone>();
@@ -95,6 +109,13 @@ namespace BG3UnityClient.UI
             {
                 keyFeedback = UnityEngine.Object.FindAnyObjectByType<KeyPickupFeedback>();
             }
+
+            if (actFlow == null)
+            {
+                actFlow = UnityEngine.Object.FindAnyObjectByType<ActFlowController>();
+            }
+
+            actFlow?.AttachDebugPanel(this, barkPanel);
         }
 
         private static void EnsureGameplayShell()
@@ -110,6 +131,7 @@ namespace BG3UnityClient.UI
             }
 
             SetConnectionStatus($"Connecting: {backendClient?.MapId ?? "(unknown)"}", $"session={backendClient?.SessionId ?? "(unknown)"}");
+            RefreshActFlowUi();
             SetOutput("Ready.");
 
             if (backendClient != null)
@@ -140,6 +162,16 @@ namespace BG3UnityClient.UI
                 triggerTrapButton.onClick.RemoveListener(OnTriggerTrapClicked);
             }
 
+            if (readChemicalNotesButton != null)
+            {
+                readChemicalNotesButton.onClick.RemoveListener(OnReadChemicalNotesClicked);
+            }
+
+            if (readDiaryButton != null)
+            {
+                readDiaryButton.onClick.RemoveListener(OnReadDiaryClicked);
+            }
+
             if (setupBossButton != null)
             {
                 setupBossButton.onClick.RemoveListener(OnSetupBossContextClicked);
@@ -155,6 +187,10 @@ namespace BG3UnityClient.UI
                 useDiaryTruthButton.onClick.RemoveListener(OnUseDiaryTruthClicked);
             }
 
+            if (outputToggleButton != null)
+            {
+                outputToggleButton.onClick.RemoveListener(OnToggleOutputClicked);
+            }
         }
 
         private void OnSendClicked()
@@ -310,11 +346,49 @@ namespace BG3UnityClient.UI
             trapState = value;
             RefreshStatusText();
             RefreshTrapButtons();
+            RefreshActFlowUi();
         }
 
         public void ShowTrapOutput(string title, string value)
         {
             SetOutput($"{title}\n\n{value}");
+        }
+
+        public void AttachActFlow(ActFlowController flow)
+        {
+            actFlow = flow;
+            RefreshActFlowUi();
+        }
+
+        public void RefreshActFlowUi()
+        {
+            if (actFlow != null)
+            {
+                SetAct(actFlow.CurrentActTitle, actFlow.CurrentObjective);
+            }
+            else
+            {
+                SetAct("Act 1 - Safe Room", "Open the door / move toward corridor.");
+            }
+
+            RefreshTrapButtons();
+            RefreshBossButtons();
+            RefreshActButtons();
+        }
+
+        public void ShowActOutput(string title, string value)
+        {
+            SetOutput($"{title}\n\n{value}");
+        }
+
+        public void ApplyActBossReady()
+        {
+            ApplyBossReady();
+        }
+
+        public void ApplyActKeyObtained()
+        {
+            ApplyKeyObtained();
         }
 
         public void AttachBossZone(BossEncounterZone zone)
@@ -352,6 +426,15 @@ namespace BG3UnityClient.UI
             {
                 SetOutput("Boss Encounter Ready\n\nGribbo, the poison tank, and the final exit are in view. Prepare context if needed, then ask the party for strategy.");
                 barkPanel?.ShowMessage("Boss Encounter Ready", "Gribbo is close. Ask the party how to handle him.");
+                if (actFlow != null)
+                {
+                    RefreshActFlowUi();
+                }
+                else
+                {
+                    SetAct("Act 4 - Gribbo Lab", "Convince Gribbo to surrender the key.");
+                }
+
                 Debug.Log("BG3 boss encounter ready UI applied.");
             }
         }
@@ -377,6 +460,32 @@ namespace BG3UnityClient.UI
             {
                 outputText.text = value;
             }
+
+            if (outputPreviewText != null)
+            {
+                outputPreviewText.text = FirstLine(value);
+            }
+        }
+
+        public void SetAct(string title, string objective)
+        {
+            if (actHud == null)
+            {
+                actHud = UnityEngine.Object.FindAnyObjectByType<ActObjectiveHud>();
+            }
+
+            actHud?.SetAct(title, objective);
+        }
+
+        private static string FirstLine(string value)
+        {
+            if (string.IsNullOrEmpty(value))
+            {
+                return "Ready.";
+            }
+
+            var newline = value.IndexOf('\n');
+            return newline < 0 ? value : value.Substring(0, newline);
         }
 
         private static string FirstNonEmpty(params string[] values)
@@ -404,52 +513,82 @@ namespace BG3UnityClient.UI
             scaler.referenceResolution = new Vector2(1280f, 720f);
             scaler.matchWidthOrHeight = 0.5f;
 
-            var panel = CreateUiObject("BackendDebugPanel", canvasObject.transform);
-            SetTopLeft(panel, new Vector2(28f, -28f), new Vector2(430f, 520f));
-            var panelImage = panel.gameObject.AddComponent<Image>();
+            actHud = CreateActObjectiveHud(canvasObject.transform);
+
+            debugPanelRoot = CreateUiObject("BackendDebugPanel", canvasObject.transform);
+            SetTopLeft(debugPanelRoot, new Vector2(18f, -104f), new Vector2(318f, 336f));
+            var panelImage = debugPanelRoot.gameObject.AddComponent<Image>();
             panelImage.color = new Color(0.08f, 0.09f, 0.11f, 0.92f);
             panelImage.raycastTarget = false;
+            AddBorder(debugPanelRoot, new Color(0.46f, 0.56f, 0.62f, 0.36f), 1f);
 
-            var title = CreateText("Title", panel, "BG3 Unity Client", 22, FontStyle.Bold, TextAnchor.MiddleLeft, Color.white);
-            SetTopLeft(title.rectTransform, new Vector2(18f, -16f), new Vector2(394f, 32f));
+            var title = CreateText("Title", debugPanelRoot, "DEV", 14, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(0.78f, 0.9f, 1f, 1f));
+            SetTopLeft(title.rectTransform, new Vector2(12f, -10f), new Vector2(76f, 22f));
 
-            statusText = CreateText("ConnectionStatus", panel, "Connecting...", 15, FontStyle.Normal, TextAnchor.UpperLeft, new Color(0.74f, 0.88f, 1f, 1f));
-            SetTopLeft(statusText.rectTransform, new Vector2(18f, -56f), new Vector2(394f, 104f));
+            outputToggleButton = CreateButton("OutputToggleButton", debugPanelRoot, "Log");
+            SetTopLeft(outputToggleButton.GetComponent<RectTransform>(), new Vector2(244f, -10f), new Vector2(62f, 24f));
+            outputToggleButton.onClick.AddListener(OnToggleOutputClicked);
 
-            inputField = CreateInputField("ChatInput", panel, DefaultPrompt);
-            SetTopLeft(inputField.GetComponent<RectTransform>(), new Vector2(18f, -170f), new Vector2(304f, 40f));
+            statusText = CreateText("ConnectionStatus", debugPanelRoot, "Connecting...", 11, FontStyle.Normal, TextAnchor.UpperLeft, new Color(0.74f, 0.88f, 1f, 1f));
+            statusText.horizontalOverflow = HorizontalWrapMode.Wrap;
+            statusText.verticalOverflow = VerticalWrapMode.Truncate;
+            SetTopLeft(statusText.rectTransform, new Vector2(12f, -38f), new Vector2(294f, 70f));
 
-            sendButton = CreateButton("SendButton", panel, "Send");
-            SetTopLeft(sendButton.GetComponent<RectTransform>(), new Vector2(332f, -170f), new Vector2(80f, 40f));
+            inputField = CreateInputField("ChatInput", debugPanelRoot, DefaultPrompt);
+            SetTopLeft(inputField.GetComponent<RectTransform>(), new Vector2(12f, -118f), new Vector2(232f, 31f));
+
+            sendButton = CreateButton("SendButton", debugPanelRoot, "Send");
+            SetTopLeft(sendButton.GetComponent<RectTransform>(), new Vector2(252f, -118f), new Vector2(54f, 31f));
             sendButton.onClick.AddListener(OnSendClicked);
 
-            disarmButton = CreateButton("DisarmButton", panel, "Ask Astarion to Disarm");
-            SetTopLeft(disarmButton.GetComponent<RectTransform>(), new Vector2(18f, -222f), new Vector2(194f, 36f));
+            disarmButton = CreateButton("DisarmButton", debugPanelRoot, "Disarm");
+            SetTopLeft(disarmButton.GetComponent<RectTransform>(), new Vector2(12f, -160f), new Vector2(142f, 28f));
             disarmButton.onClick.AddListener(OnDisarmClicked);
 
-            triggerTrapButton = CreateButton("TriggerTrapButton", panel, "Trigger Trap");
-            SetTopLeft(triggerTrapButton.GetComponent<RectTransform>(), new Vector2(218f, -222f), new Vector2(194f, 36f));
+            triggerTrapButton = CreateButton("TriggerTrapButton", debugPanelRoot, "Trigger");
+            SetTopLeft(triggerTrapButton.GetComponent<RectTransform>(), new Vector2(164f, -160f), new Vector2(142f, 28f));
             triggerTrapButton.onClick.AddListener(OnTriggerTrapClicked);
 
-            setupBossButton = CreateButton("SetupBossButton", panel, "Prepare Boss Context");
-            SetTopLeft(setupBossButton.GetComponent<RectTransform>(), new Vector2(18f, -266f), new Vector2(194f, 36f));
+            readChemicalNotesButton = CreateButton("ReadChemicalNotesButton", debugPanelRoot, "Chem Notes");
+            SetTopLeft(readChemicalNotesButton.GetComponent<RectTransform>(), new Vector2(12f, -194f), new Vector2(142f, 28f));
+            readChemicalNotesButton.onClick.AddListener(OnReadChemicalNotesClicked);
+
+            readDiaryButton = CreateButton("ReadDiaryButton", debugPanelRoot, "Diary");
+            SetTopLeft(readDiaryButton.GetComponent<RectTransform>(), new Vector2(164f, -194f), new Vector2(142f, 28f));
+            readDiaryButton.onClick.AddListener(OnReadDiaryClicked);
+
+            setupBossButton = CreateButton("SetupBossButton", debugPanelRoot, "Prep Debug");
+            SetTopLeft(setupBossButton.GetComponent<RectTransform>(), new Vector2(12f, -228f), new Vector2(142f, 28f));
             setupBossButton.onClick.AddListener(OnSetupBossContextClicked);
 
-            askStrategyButton = CreateButton("AskStrategyButton", panel, "Ask Party Strategy");
-            SetTopLeft(askStrategyButton.GetComponent<RectTransform>(), new Vector2(218f, -266f), new Vector2(194f, 36f));
+            askStrategyButton = CreateButton("AskStrategyButton", debugPanelRoot, "Strategy");
+            SetTopLeft(askStrategyButton.GetComponent<RectTransform>(), new Vector2(164f, -228f), new Vector2(142f, 28f));
             askStrategyButton.onClick.AddListener(OnAskStrategyClicked);
 
-            useDiaryTruthButton = CreateButton("UseDiaryTruthButton", panel, "Truth Negotiation");
-            SetTopLeft(useDiaryTruthButton.GetComponent<RectTransform>(), new Vector2(18f, -310f), new Vector2(394f, 36f));
+            useDiaryTruthButton = CreateButton("UseDiaryTruthButton", debugPanelRoot, "Truth");
+            SetTopLeft(useDiaryTruthButton.GetComponent<RectTransform>(), new Vector2(12f, -262f), new Vector2(294f, 28f));
             useDiaryTruthButton.onClick.AddListener(OnUseDiaryTruthClicked);
 
-            outputText = CreateText("OutputLog", panel, "Ready.", 15, FontStyle.Normal, TextAnchor.UpperLeft, new Color(0.92f, 0.94f, 0.95f, 1f));
+            outputPreviewText = CreateText("OutputPreview", debugPanelRoot, "Ready.", 11, FontStyle.Normal, TextAnchor.MiddleLeft, new Color(0.82f, 0.86f, 0.88f, 0.92f));
+            outputPreviewText.horizontalOverflow = HorizontalWrapMode.Wrap;
+            outputPreviewText.verticalOverflow = VerticalWrapMode.Truncate;
+            SetTopLeft(outputPreviewText.rectTransform, new Vector2(12f, -301f), new Vector2(294f, 22f));
+
+            outputContainer = CreateUiObject("OutputContainer", debugPanelRoot);
+            SetTopLeft(outputContainer, new Vector2(12f, -334f), new Vector2(294f, 98f));
+            var outputBackground = outputContainer.gameObject.AddComponent<Image>();
+            outputBackground.color = new Color(0.015f, 0.018f, 0.022f, 0.7f);
+            outputBackground.raycastTarget = false;
+            AddBorder(outputContainer, new Color(0.42f, 0.48f, 0.52f, 0.32f), 1f);
+
+            outputText = CreateText("OutputLog", outputContainer, "Ready.", 11, FontStyle.Normal, TextAnchor.UpperLeft, new Color(0.92f, 0.94f, 0.95f, 1f));
             outputText.horizontalOverflow = HorizontalWrapMode.Wrap;
             outputText.verticalOverflow = VerticalWrapMode.Truncate;
-            SetTopLeft(outputText.rectTransform, new Vector2(18f, -358f), new Vector2(394f, 144f));
+            StretchWithPadding(outputText.rectTransform, 8f, 7f);
+            RefreshDebugPanelLayout();
 
             barkPanel = CreateBarkPanel(canvasObject.transform);
-            barkPanel.ShowMessage("Backend", "Party responses will appear here.");
+            barkPanel.ShowMessage("Narrator", "The corridor falls quiet.");
 
             if (EventSystem.current == null)
             {
@@ -460,11 +599,45 @@ namespace BG3UnityClient.UI
             RefreshStatusText();
             RefreshTrapButtons();
             RefreshBossButtons();
+            RefreshActButtons();
+        }
+
+        private void OnToggleOutputClicked()
+        {
+            outputExpanded = !outputExpanded;
+            RefreshDebugPanelLayout();
+            ClearSelectedUi();
+        }
+
+        private void RefreshDebugPanelLayout()
+        {
+            if (debugPanelRoot != null)
+            {
+                debugPanelRoot.sizeDelta = new Vector2(318f, outputExpanded ? 444f : 336f);
+            }
+
+            if (outputContainer != null)
+            {
+                outputContainer.gameObject.SetActive(outputExpanded);
+            }
+
+            if (outputPreviewText != null)
+            {
+                outputPreviewText.gameObject.SetActive(!outputExpanded);
+            }
+
+            SetButtonLabel(outputToggleButton, outputExpanded ? "Hide" : "Log");
         }
 
         private void OnDisarmClicked()
         {
             ClearSelectedUi();
+
+            if (actFlow != null)
+            {
+                actFlow.RequestTrapDisarm();
+                return;
+            }
 
             trapZone?.AskAstarionToDisarm();
         }
@@ -476,9 +649,41 @@ namespace BG3UnityClient.UI
             trapZone?.TriggerTrapDebug();
         }
 
+        private void OnReadChemicalNotesClicked()
+        {
+            ClearSelectedUi();
+
+            if (actFlow == null)
+            {
+                SetOutput("Read Chemical Notes\n\nError: ActFlowController missing.");
+                return;
+            }
+
+            actFlow.ReadChemicalNotes();
+        }
+
+        private void OnReadDiaryClicked()
+        {
+            ClearSelectedUi();
+
+            if (actFlow == null)
+            {
+                SetOutput("Read Necromancer Diary\n\nError: ActFlowController missing.");
+                return;
+            }
+
+            actFlow.ReadNecromancerDiary();
+        }
+
         private void OnSetupBossContextClicked()
         {
             ClearSelectedUi();
+            if (actFlow != null)
+            {
+                actFlow.PrepareBossContextDebugOnly();
+                return;
+            }
+
             if (backendClient == null)
             {
                 SetOutput("Setup Boss Context\n\nError: BackendClient missing.");
@@ -494,6 +699,12 @@ namespace BG3UnityClient.UI
         private void OnAskStrategyClicked()
         {
             ClearSelectedUi();
+            if (actFlow != null)
+            {
+                actFlow.AskPartyStrategy();
+                return;
+            }
+
             if (backendClient == null)
             {
                 SetOutput("Ask Party Strategy\n\nError: BackendClient missing.");
@@ -525,6 +736,12 @@ namespace BG3UnityClient.UI
         private void OnUseDiaryTruthClicked()
         {
             ClearSelectedUi();
+            if (actFlow != null)
+            {
+                actFlow.UseDiaryTruth();
+                return;
+            }
+
             if (backendClient == null)
             {
                 SetOutput("Use Diary Truth\n\nError: BackendClient missing.");
@@ -624,40 +841,63 @@ namespace BG3UnityClient.UI
 
         private void RefreshTrapButtons()
         {
+            var flowInFlight = actFlow != null && actFlow.RequestInFlight;
+            var flowAllowsTrap = actFlow == null || actFlow.CurrentAct == ActFlowStage.Act2PoisonCorridor;
             if (disarmButton != null)
             {
-                disarmButton.interactable = trapZone != null && trapState == TrapVisualState.Revealed;
+                disarmButton.interactable = trapZone != null && trapState == TrapVisualState.Revealed && flowAllowsTrap && !flowInFlight;
             }
 
             if (triggerTrapButton != null)
             {
-                triggerTrapButton.interactable = trapZone != null && trapState != TrapVisualState.Disabled && trapState != TrapVisualState.Triggered;
+                triggerTrapButton.interactable = trapZone != null && trapState != TrapVisualState.Disabled && trapState != TrapVisualState.Triggered && !flowInFlight;
             }
         }
 
         private void RefreshBossButtons()
         {
+            var flowInFlight = actFlow != null && actFlow.RequestInFlight;
+            var flowAllowsBoss = actFlow == null || actFlow.CurrentAct == ActFlowStage.Act4GribboLab;
             if (setupBossButton != null)
             {
-                setupBossButton.interactable = backendClient != null && !bossRequestInFlight;
+                setupBossButton.interactable = backendClient != null && !bossRequestInFlight && !flowInFlight;
             }
 
             if (askStrategyButton != null)
             {
-                askStrategyButton.interactable = backendClient != null && bossReady && !bossRequestInFlight;
+                askStrategyButton.interactable = backendClient != null && bossReady && !bossRequestInFlight && !flowInFlight && flowAllowsBoss;
             }
 
             if (useDiaryTruthButton != null)
             {
-                useDiaryTruthButton.interactable = backendClient != null && bossReady && !keyObtained && !bossRequestInFlight;
+                useDiaryTruthButton.interactable = backendClient != null && bossReady && !keyObtained && !bossRequestInFlight && !flowInFlight && flowAllowsBoss;
             }
 
+        }
+
+        private void RefreshActButtons()
+        {
+            var canRead = actFlow != null
+                && actFlow.CurrentAct == ActFlowStage.Act3SecretStudy
+                && backendClient != null
+                && !actFlow.RequestInFlight;
+
+            if (readChemicalNotesButton != null)
+            {
+                readChemicalNotesButton.interactable = canRead;
+            }
+
+            if (readDiaryButton != null)
+            {
+                readDiaryButton.interactable = canRead;
+            }
         }
 
         private void SetBossRequestInFlight(bool inFlight)
         {
             bossRequestInFlight = inFlight;
             RefreshBossButtons();
+            RefreshActButtons();
         }
 
         private void SyncBossStateFromMarker()
@@ -679,6 +919,15 @@ namespace BG3UnityClient.UI
         {
             bossReady = true;
             bossEncounter?.SetBossReady(true);
+            if (actFlow == null)
+            {
+                SetAct("Act 4 - Gribbo Lab", "Convince Gribbo to surrender the key.");
+            }
+            else
+            {
+                RefreshActFlowUi();
+            }
+
             RefreshStatusText();
             RefreshBossButtons();
         }
@@ -695,6 +944,15 @@ namespace BG3UnityClient.UI
             }
 
             keyFeedback?.ShowKeyObtained();
+            if (actFlow == null)
+            {
+                SetAct("Act 4 - Gribbo Lab", "Heavy Iron Key obtained.");
+            }
+            else
+            {
+                RefreshActFlowUi();
+            }
+
             RefreshStatusText();
             RefreshBossButtons();
         }
@@ -780,7 +1038,7 @@ namespace BG3UnityClient.UI
             return builder.ToString();
         }
 
-        private static string[] BuildStrategyLines(ApiChatResponse response)
+        public static string[] BuildStrategyLines(ApiChatResponse response)
         {
             var lines = new string[3];
             FillStrategyFromResponses(response, lines);
@@ -884,7 +1142,7 @@ namespace BG3UnityClient.UI
             lines[index] = $"{speakerLabel}: {stance}";
         }
 
-        private static bool TryResolveKeyObtained(ApiChatResponse response)
+        public static bool TryResolveKeyObtained(ApiChatResponse response)
         {
             if (response == null)
             {
@@ -1026,13 +1284,13 @@ namespace BG3UnityClient.UI
         {
             var root = CreateUiObject(name, parent);
             var image = root.gameObject.AddComponent<Image>();
-            image.color = new Color(0.95f, 0.96f, 0.98f, 1f);
+            image.color = new Color(0.9f, 0.93f, 0.94f, 0.96f);
 
-            var placeholder = CreateText("Placeholder", root, value, 15, FontStyle.Italic, TextAnchor.MiddleLeft, new Color(0.46f, 0.48f, 0.52f, 0.75f));
-            StretchWithPadding(placeholder.rectTransform, 12f, 8f);
+            var placeholder = CreateText("Placeholder", root, value, 12, FontStyle.Italic, TextAnchor.MiddleLeft, new Color(0.46f, 0.48f, 0.52f, 0.75f));
+            StretchWithPadding(placeholder.rectTransform, 8f, 5f);
 
-            var text = CreateText("Text", root, value, 15, FontStyle.Normal, TextAnchor.MiddleLeft, new Color(0.08f, 0.09f, 0.11f, 1f));
-            StretchWithPadding(text.rectTransform, 12f, 8f);
+            var text = CreateText("Text", root, value, 12, FontStyle.Normal, TextAnchor.MiddleLeft, new Color(0.08f, 0.09f, 0.11f, 1f));
+            StretchWithPadding(text.rectTransform, 8f, 5f);
 
             var input = root.gameObject.AddComponent<InputField>();
             input.targetGraphic = image;
@@ -1047,14 +1305,50 @@ namespace BG3UnityClient.UI
         {
             var root = CreateUiObject(name, parent);
             var image = root.gameObject.AddComponent<Image>();
-            image.color = new Color(0.24f, 0.48f, 0.82f, 1f);
+            image.color = new Color(0.16f, 0.34f, 0.48f, 0.96f);
 
-            var text = CreateText("Text", root, label, 16, FontStyle.Bold, TextAnchor.MiddleCenter, Color.white);
+            var text = CreateText("Text", root, label, 12, FontStyle.Bold, TextAnchor.MiddleCenter, Color.white);
+            text.resizeTextForBestFit = true;
+            text.resizeTextMinSize = 9;
+            text.resizeTextMaxSize = 12;
             StretchWithPadding(text.rectTransform, 4f, 4f);
 
             var button = root.gameObject.AddComponent<Button>();
             button.targetGraphic = image;
             return button;
+        }
+
+        private static ActObjectiveHud CreateActObjectiveHud(Transform canvasTransform)
+        {
+            var root = CreateUiObject("ActObjectiveHud", canvasTransform);
+            SetTopLeft(root, new Vector2(18f, -18f), new Vector2(420f, 68f));
+
+            var image = root.gameObject.AddComponent<Image>();
+            image.color = new Color(0.025f, 0.032f, 0.04f, 0.76f);
+            image.raycastTarget = false;
+            AddBorder(root, new Color(0.78f, 0.66f, 0.44f, 0.58f), 1.5f);
+
+            var accent = CreateUiObject("Accent", root);
+            accent.anchorMin = new Vector2(0f, 0f);
+            accent.anchorMax = new Vector2(0f, 1f);
+            accent.pivot = new Vector2(0f, 0.5f);
+            accent.anchoredPosition = Vector2.zero;
+            accent.sizeDelta = new Vector2(4f, 0f);
+            var accentImage = accent.gameObject.AddComponent<Image>();
+            accentImage.color = new Color(1f, 0.64f, 0.2f, 0.92f);
+            accentImage.raycastTarget = false;
+
+            var title = CreateText("ActTitle", root, "Act 1 - Safe Room", 17, FontStyle.Bold, TextAnchor.UpperLeft, new Color(1f, 0.86f, 0.54f, 1f));
+            SetTopLeft(title.rectTransform, new Vector2(16f, -10f), new Vector2(388f, 24f));
+
+            var objective = CreateText("Objective", root, "Open the door / move toward corridor.", 14, FontStyle.Normal, TextAnchor.UpperLeft, new Color(0.88f, 0.93f, 0.94f, 0.95f));
+            objective.horizontalOverflow = HorizontalWrapMode.Wrap;
+            objective.verticalOverflow = VerticalWrapMode.Truncate;
+            SetTopLeft(objective.rectTransform, new Vector2(16f, -36f), new Vector2(388f, 24f));
+
+            var hud = root.gameObject.AddComponent<ActObjectiveHud>();
+            hud.Configure(title, objective);
+            return hud;
         }
 
         private static BarkPanel CreateBarkPanel(Transform canvasTransform)
@@ -1063,24 +1357,70 @@ namespace BG3UnityClient.UI
             root.anchorMin = new Vector2(0.5f, 0f);
             root.anchorMax = new Vector2(0.5f, 0f);
             root.pivot = new Vector2(0.5f, 0f);
-            root.anchoredPosition = new Vector2(0f, 32f);
-            root.sizeDelta = new Vector2(760f, 116f);
+            root.anchoredPosition = new Vector2(0f, 26f);
+            root.sizeDelta = new Vector2(780f, 126f);
 
             var image = root.gameObject.AddComponent<Image>();
-            image.color = new Color(0.05f, 0.055f, 0.065f, 0.92f);
+            image.color = new Color(0.025f, 0.028f, 0.034f, 0.9f);
             image.raycastTarget = false;
+            AddBorder(root, new Color(0.8f, 0.62f, 0.38f, 0.62f), 2f);
 
-            var speaker = CreateText("Speaker", root, "Backend", 18, FontStyle.Bold, TextAnchor.UpperLeft, new Color(1f, 0.78f, 0.44f, 1f));
-            SetTopLeft(speaker.rectTransform, new Vector2(18f, -12f), new Vector2(724f, 26f));
+            var group = root.gameObject.AddComponent<CanvasGroup>();
+            group.alpha = 1f;
+            group.blocksRaycasts = false;
+            group.interactable = false;
 
-            var body = CreateText("Body", root, "Party responses will appear here.", 17, FontStyle.Normal, TextAnchor.UpperLeft, new Color(0.96f, 0.97f, 0.98f, 1f));
+            var speakerPlate = CreateUiObject("SpeakerPlate", root);
+            SetTopLeft(speakerPlate, new Vector2(18f, -14f), new Vector2(184f, 28f));
+            var plateImage = speakerPlate.gameObject.AddComponent<Image>();
+            plateImage.color = new Color(0.18f, 0.12f, 0.06f, 0.92f);
+            plateImage.raycastTarget = false;
+
+            var speaker = CreateText("Speaker", speakerPlate, "Narrator", 16, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(1f, 0.78f, 0.44f, 1f));
+            StretchWithPadding(speaker.rectTransform, 10f, 4f);
+
+            var queue = CreateText("Queue", root, string.Empty, 13, FontStyle.Bold, TextAnchor.MiddleRight, new Color(0.82f, 0.74f, 0.62f, 0.9f));
+            SetTopLeft(queue.rectTransform, new Vector2(692f, -16f), new Vector2(70f, 24f));
+
+            var body = CreateText("Body", root, "The corridor falls quiet.", 18, FontStyle.Normal, TextAnchor.UpperLeft, new Color(0.96f, 0.97f, 0.98f, 1f));
             body.horizontalOverflow = HorizontalWrapMode.Wrap;
             body.verticalOverflow = VerticalWrapMode.Truncate;
-            SetTopLeft(body.rectTransform, new Vector2(18f, -42f), new Vector2(724f, 62f));
+            body.lineSpacing = 1.05f;
+            SetTopLeft(body.rectTransform, new Vector2(24f, -52f), new Vector2(732f, 58f));
 
             var panel = root.gameObject.AddComponent<BarkPanel>();
-            panel.Configure(speaker, body);
+            panel.Configure(speaker, body, queue, group);
             return panel;
+        }
+
+        private static void AddBorder(RectTransform root, Color color, float thickness)
+        {
+            AddBorderSide("BorderTop", root, color, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(0.5f, 1f), new Vector2(0f, thickness));
+            AddBorderSide("BorderBottom", root, color, new Vector2(0f, 0f), new Vector2(1f, 0f), new Vector2(0.5f, 0f), new Vector2(0f, thickness));
+            AddBorderSide("BorderLeft", root, color, new Vector2(0f, 0f), new Vector2(0f, 1f), new Vector2(0f, 0.5f), new Vector2(thickness, 0f));
+            AddBorderSide("BorderRight", root, color, new Vector2(1f, 0f), new Vector2(1f, 1f), new Vector2(1f, 0.5f), new Vector2(thickness, 0f));
+        }
+
+        private static void AddBorderSide(string name, RectTransform root, Color color, Vector2 anchorMin, Vector2 anchorMax, Vector2 pivot, Vector2 sizeDelta)
+        {
+            var side = CreateUiObject(name, root);
+            side.anchorMin = anchorMin;
+            side.anchorMax = anchorMax;
+            side.pivot = pivot;
+            side.anchoredPosition = Vector2.zero;
+            side.sizeDelta = sizeDelta;
+            var image = side.gameObject.AddComponent<Image>();
+            image.color = color;
+            image.raycastTarget = false;
+        }
+
+        private static void SetButtonLabel(Button button, string label)
+        {
+            var text = button == null ? null : button.GetComponentInChildren<Text>();
+            if (text != null)
+            {
+                text.text = label;
+            }
         }
 
         private static void SetTopLeft(RectTransform rectTransform, Vector2 anchoredPosition, Vector2 size)

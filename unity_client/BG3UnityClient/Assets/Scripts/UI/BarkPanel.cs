@@ -6,16 +6,25 @@ namespace BG3UnityClient.UI
 {
     public sealed class BarkPanel : MonoBehaviour
     {
-        [SerializeField] private float queuedLineSeconds = 1.35f;
+        [SerializeField] private float queuedLineSeconds = 2.15f;
         [SerializeField] private Text speakerText;
         [SerializeField] private Text bodyText;
+        [SerializeField] private Text queueText;
+        [SerializeField] private CanvasGroup canvasGroup;
 
         private Coroutine queueRoutine;
 
         public void Configure(Text speaker, Text body)
         {
+            Configure(speaker, body, null, null);
+        }
+
+        public void Configure(Text speaker, Text body, Text queue, CanvasGroup group)
+        {
             speakerText = speaker;
             bodyText = body;
+            queueText = queue;
+            canvasGroup = group;
         }
 
         public void ShowResponse(ApiChatResponse response)
@@ -114,6 +123,8 @@ namespace BG3UnityClient.UI
         public void ShowMessage(string speaker, string text)
         {
             StopQueue();
+            SetVisible(true);
+            SetQueueLabel(string.Empty);
             if (speakerText != null)
             {
                 speakerText.text = string.IsNullOrEmpty(speaker) ? "Backend" : speaker;
@@ -133,13 +144,16 @@ namespace BG3UnityClient.UI
 
         private System.Collections.IEnumerator ShowQueue(BarkEntry[] entries, int count)
         {
+            SetVisible(true);
             for (var i = 0; i < count; i++)
             {
                 SetMessage(entries[i].speaker, entries[i].text);
+                SetQueueLabel(count > 1 ? $"{i + 1}/{count}" : string.Empty);
                 yield return new WaitForSeconds(queuedLineSeconds);
             }
 
             queueRoutine = null;
+            SetQueueLabel(string.Empty);
         }
 
         private void StopQueue()
@@ -153,6 +167,7 @@ namespace BG3UnityClient.UI
 
         private void SetMessage(string speaker, string text)
         {
+            SetVisible(true);
             if (speakerText != null)
             {
                 speakerText.text = string.IsNullOrEmpty(speaker) ? "Backend" : speaker;
@@ -161,6 +176,26 @@ namespace BG3UnityClient.UI
             if (bodyText != null)
             {
                 bodyText.text = string.IsNullOrEmpty(text) ? "(no text)" : text;
+            }
+        }
+
+        private void SetVisible(bool visible)
+        {
+            if (canvasGroup == null)
+            {
+                return;
+            }
+
+            canvasGroup.alpha = visible ? 1f : 0f;
+            canvasGroup.blocksRaycasts = false;
+            canvasGroup.interactable = false;
+        }
+
+        private void SetQueueLabel(string value)
+        {
+            if (queueText != null)
+            {
+                queueText.text = value;
             }
         }
 

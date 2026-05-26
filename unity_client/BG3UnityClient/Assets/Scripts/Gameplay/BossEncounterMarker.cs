@@ -15,9 +15,9 @@ namespace BG3UnityClient.Gameplay
         [SerializeField] private Transform potionTankRoot;
         [SerializeField] private Transform doorHighlightRoot;
         [SerializeField] private Transform keyRoot;
-        [SerializeField] private TextMesh gribboLabel;
-        [SerializeField] private TextMesh doorLabel;
-        [SerializeField] private TextMesh tankLabel;
+        [SerializeField] private WorldBillboardLabel gribboLabel;
+        [SerializeField] private WorldBillboardLabel doorLabel;
+        [SerializeField] private WorldBillboardLabel tankLabel;
         [SerializeField] private bool bossReady;
         [SerializeField] private bool keyObtained;
         [SerializeField] private BossDoorVisualState doorState = BossDoorVisualState.Locked;
@@ -75,13 +75,6 @@ namespace BG3UnityClient.Gameplay
             {
                 gribboRoot.localScale = gribboBaseScale;
             }
-        }
-
-        private void LateUpdate()
-        {
-            FaceCamera(gribboLabel);
-            FaceCamera(doorLabel);
-            FaceCamera(tankLabel);
         }
 
         private void EnsureVisuals()
@@ -144,17 +137,32 @@ namespace BG3UnityClient.Gameplay
 
             if (gribboLabel == null)
             {
-                gribboLabel = CreateLabel("GribboLabel", "Gribbo", gribboRoot.position + new Vector3(0f, 1.45f, 0f), new Color(0.86f, 1f, 0.38f, 1f));
+                gribboLabel = CreateLabel(
+                    "GribboLabel",
+                    "Gribbo",
+                    gribboRoot.position + new Vector3(0f, 1.5f, 0f),
+                    new Color(0.86f, 0.96f, 0.48f, 1f),
+                    new Vector2(0.48f, 0.16f));
             }
 
             if (doorLabel == null)
             {
-                doorLabel = CreateLabel("ExitDoorLabel", "Final Exit", finalDoorRoot.position + new Vector3(0f, 1.4f, -0.2f), new Color(1f, 0.84f, 0.34f, 1f));
+                doorLabel = CreateLabel(
+                    "ExitDoorLabel",
+                    "Final Exit",
+                    finalDoorRoot.position + new Vector3(0f, 1.42f, -0.18f),
+                    new Color(1f, 0.84f, 0.34f, 1f),
+                    new Vector2(0.68f, 0.16f));
             }
 
             if (tankLabel == null)
             {
-                tankLabel = CreateLabel("PoisonTankLabel", "Poison Tank", potionTankRoot.position + new Vector3(0f, 0.95f, 0f), new Color(0.62f, 1f, 0.62f, 1f));
+                tankLabel = CreateLabel(
+                    "PoisonTankLabel",
+                    "Poison Tank",
+                    potionTankRoot.position + new Vector3(0f, 1.08f, 0f),
+                    new Color(0.62f, 1f, 0.62f, 1f),
+                    new Vector2(0.72f, 0.16f));
             }
 
             if (gribboMaterial == null)
@@ -221,34 +229,21 @@ namespace BG3UnityClient.Gameplay
             {
                 finalDoorRoot.localRotation = Quaternion.identity;
             }
+
+            if (doorLabel != null)
+            {
+                doorLabel.SetText(keyObtained ? "Exit Ready" : "Final Exit");
+            }
         }
 
-        private TextMesh CreateLabel(string objectName, string label, Vector3 position, Color color)
+        private WorldBillboardLabel CreateLabel(string objectName, string label, Vector3 position, Color color, Vector2 size)
         {
-            var labelObject = new GameObject(objectName, typeof(TextMesh));
+            var labelObject = new GameObject(objectName, typeof(WorldBillboardLabel));
             labelObject.transform.SetParent(transform, true);
             labelObject.transform.position = position;
-
-            var textMesh = labelObject.GetComponent<TextMesh>();
-            textMesh.text = label;
-            textMesh.anchor = TextAnchor.MiddleCenter;
-            textMesh.alignment = TextAlignment.Center;
-            textMesh.characterSize = 0.16f;
-            textMesh.fontSize = 48;
-            textMesh.color = color;
-            var font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf")
-                ?? Resources.GetBuiltinResource<Font>("Arial.ttf");
-            if (font != null)
-            {
-                textMesh.font = font;
-                var renderer = labelObject.GetComponent<MeshRenderer>();
-                if (renderer != null)
-                {
-                    renderer.sharedMaterial = font.material;
-                }
-            }
-
-            return textMesh;
+            var billboard = labelObject.GetComponent<WorldBillboardLabel>();
+            billboard.Configure(label, position, color, new Color(0.018f, 0.022f, 0.028f, 0.76f), size);
+            return billboard;
         }
 
         private static GameObject CreateCylinder(string objectName, Vector3 localScale, Vector3 position)
@@ -346,19 +341,5 @@ namespace BG3UnityClient.Gameplay
             }
         }
 
-        private static void FaceCamera(TextMesh textMesh)
-        {
-            if (textMesh == null || Camera.main == null)
-            {
-                return;
-            }
-
-            var labelTransform = textMesh.transform;
-            var direction = labelTransform.position - Camera.main.transform.position;
-            if (direction.sqrMagnitude > 0.001f)
-            {
-                labelTransform.rotation = Quaternion.LookRotation(direction.normalized, Vector3.up);
-            }
-        }
     }
 }
