@@ -279,3 +279,7 @@ unity_client/**/*.pdb
 unity_client/**/*.mdb
 unity_client/**/*.opendb
 unity_client/**/*.VC.db
+
+
+# Personal interview notes
+docs/runtime-knowledge-base/
