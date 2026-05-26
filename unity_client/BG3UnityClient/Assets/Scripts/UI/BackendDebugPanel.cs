@@ -16,8 +16,15 @@ namespace BG3UnityClient.UI
         [SerializeField] private Text statusText;
         [SerializeField] private InputField inputField;
         [SerializeField] private Button sendButton;
+        [SerializeField] private Button disarmButton;
+        [SerializeField] private Button triggerTrapButton;
         [SerializeField] private Text outputText;
         [SerializeField] private BarkPanel barkPanel;
+        [SerializeField] private TrapZone trapZone;
+
+        private string connectionStatusLine = "Connecting...";
+        private string sessionStatusLine = "session=(unknown)";
+        private TrapVisualState trapState = TrapVisualState.Hidden;
 
         private void Awake()
         {
@@ -42,6 +49,13 @@ namespace BG3UnityClient.UI
             {
                 barkPanel = Object.FindAnyObjectByType<BarkPanel>();
             }
+
+            if (trapZone == null)
+            {
+                trapZone = Object.FindAnyObjectByType<TrapZone>();
+                trapZone?.AttachDebugPanel(this);
+                trapZone?.AttachBarkPanel(barkPanel);
+            }
         }
 
         private static void EnsureGameplayShell()
@@ -56,7 +70,7 @@ namespace BG3UnityClient.UI
                 inputField.text = DefaultPrompt;
             }
 
-            SetStatus($"Connecting: {backendClient?.MapId ?? "(unknown)"}\nsession={backendClient?.SessionId ?? "(unknown)"}");
+            SetConnectionStatus($"Connecting: {backendClient?.MapId ?? "(unknown)"}", $"session={backendClient?.SessionId ?? "(unknown)"}");
             SetOutput("Ready.");
 
             if (backendClient != null)
@@ -65,7 +79,7 @@ namespace BG3UnityClient.UI
             }
             else
             {
-                SetStatus("BackendClient missing.");
+                SetConnectionStatus("BackendClient missing.", sessionStatusLine);
                 SetOutput("Error: BackendClient missing.");
             }
         }
@@ -75,6 +89,16 @@ namespace BG3UnityClient.UI
             if (sendButton != null)
             {
                 sendButton.onClick.RemoveListener(OnSendClicked);
+            }
+
+            if (disarmButton != null)
+            {
+                disarmButton.onClick.RemoveListener(OnDisarmClicked);
+            }
+
+            if (triggerTrapButton != null)
+            {
+                triggerTrapButton.onClick.RemoveListener(OnTriggerTrapClicked);
             }
         }
 
@@ -104,6 +128,7 @@ namespace BG3UnityClient.UI
                 userInput,
                 response =>
                 {
+                    trapZone?.HandleExternalChatResponse(response, userInput);
                     SetOutput(BuildChatSummary(userInput, response));
                     barkPanel?.ShowResponse(response);
                 },
@@ -121,12 +146,12 @@ namespace BG3UnityClient.UI
             var state = response.ResolvedState;
             var resolvedMapId = FirstNonEmpty(state?.map_data?.id, response.map_id, backendClient.MapId, "(unknown)");
             var resolvedSessionId = FirstNonEmpty(response.session_id, backendClient.SessionId, "(unknown)");
-            SetStatus($"Connected: {resolvedMapId}\nsession={resolvedSessionId}");
+            SetConnectionStatus($"Connected: {resolvedMapId}", $"session={resolvedSessionId}");
         }
 
         private void OnStateError(string error)
         {
-            SetStatus($"Connection failed: {error}");
+            SetConnectionStatus($"Connection failed: {error}", sessionStatusLine);
         }
 
         private string BuildChatSummary(string userInput, ApiChatResponse response)
@@ -154,6 +179,10 @@ namespace BG3UnityClient.UI
 
             AppendJournalSummary(builder, response);
             AppendRollSummary(builder, response.ResolvedLatestRoll);
+            if (TrapZone.TryResolveTrapState(response, out var resolvedTrapState))
+            {
+                builder.AppendLine($"Trap: {resolvedTrapState}");
+            }
 
             return builder.ToString();
         }
@@ -213,11 +242,36 @@ namespace BG3UnityClient.UI
             }
         }
 
-        private void SetStatus(string value)
+        public void AttachTrapZone(TrapZone zone)
+        {
+            trapZone = zone;
+            SetTrapState(zone == null ? TrapVisualState.Hidden : zone.State);
+        }
+
+        public void SetTrapState(TrapVisualState value)
+        {
+            trapState = value;
+            RefreshStatusText();
+            RefreshTrapButtons();
+        }
+
+        public void ShowTrapOutput(string title, string value)
+        {
+            SetOutput($"{title}\n\n{value}");
+        }
+
+        private void SetConnectionStatus(string connectionLine, string sessionLine)
+        {
+            connectionStatusLine = connectionLine;
+            sessionStatusLine = sessionLine;
+            RefreshStatusText();
+        }
+
+        private void RefreshStatusText()
         {
             if (statusText != null)
             {
-                statusText.text = value;
+                statusText.text = $"{connectionStatusLine}\n{sessionStatusLine}\nTrap: {trapState}";
             }
         }
 
@@ -255,7 +309,7 @@ namespace BG3UnityClient.UI
             scaler.matchWidthOrHeight = 0.5f;
 
             var panel = CreateUiObject("BackendDebugPanel", canvasObject.transform);
-            SetTopLeft(panel, new Vector2(28f, -28f), new Vector2(430f, 330f));
+            SetTopLeft(panel, new Vector2(28f, -28f), new Vector2(430f, 390f));
             var panelImage = panel.gameObject.AddComponent<Image>();
             panelImage.color = new Color(0.08f, 0.09f, 0.11f, 0.92f);
             panelImage.raycastTarget = false;
@@ -264,19 +318,27 @@ namespace BG3UnityClient.UI
             SetTopLeft(title.rectTransform, new Vector2(18f, -16f), new Vector2(394f, 32f));
 
             statusText = CreateText("ConnectionStatus", panel, "Connecting...", 16, FontStyle.Normal, TextAnchor.UpperLeft, new Color(0.74f, 0.88f, 1f, 1f));
-            SetTopLeft(statusText.rectTransform, new Vector2(18f, -58f), new Vector2(394f, 50f));
+            SetTopLeft(statusText.rectTransform, new Vector2(18f, -58f), new Vector2(394f, 72f));
 
             inputField = CreateInputField("ChatInput", panel, DefaultPrompt);
-            SetTopLeft(inputField.GetComponent<RectTransform>(), new Vector2(18f, -120f), new Vector2(304f, 40f));
+            SetTopLeft(inputField.GetComponent<RectTransform>(), new Vector2(18f, -142f), new Vector2(304f, 40f));
 
             sendButton = CreateButton("SendButton", panel, "Send");
-            SetTopLeft(sendButton.GetComponent<RectTransform>(), new Vector2(332f, -120f), new Vector2(80f, 40f));
+            SetTopLeft(sendButton.GetComponent<RectTransform>(), new Vector2(332f, -142f), new Vector2(80f, 40f));
             sendButton.onClick.AddListener(OnSendClicked);
+
+            disarmButton = CreateButton("DisarmButton", panel, "Ask Astarion to Disarm");
+            SetTopLeft(disarmButton.GetComponent<RectTransform>(), new Vector2(18f, -194f), new Vector2(194f, 36f));
+            disarmButton.onClick.AddListener(OnDisarmClicked);
+
+            triggerTrapButton = CreateButton("TriggerTrapButton", panel, "Trigger Trap");
+            SetTopLeft(triggerTrapButton.GetComponent<RectTransform>(), new Vector2(218f, -194f), new Vector2(194f, 36f));
+            triggerTrapButton.onClick.AddListener(OnTriggerTrapClicked);
 
             outputText = CreateText("OutputLog", panel, "Ready.", 15, FontStyle.Normal, TextAnchor.UpperLeft, new Color(0.92f, 0.94f, 0.95f, 1f));
             outputText.horizontalOverflow = HorizontalWrapMode.Wrap;
             outputText.verticalOverflow = VerticalWrapMode.Truncate;
-            SetTopLeft(outputText.rectTransform, new Vector2(18f, -174f), new Vector2(394f, 136f));
+            SetTopLeft(outputText.rectTransform, new Vector2(18f, -242f), new Vector2(394f, 126f));
 
             barkPanel = CreateBarkPanel(canvasObject.transform);
             barkPanel.ShowMessage("Backend", "Party responses will appear here.");
@@ -285,6 +347,42 @@ namespace BG3UnityClient.UI
             {
                 var eventSystemObject = new GameObject("BackendDebugEventSystem", typeof(EventSystem), typeof(InputSystemUIInputModule));
                 eventSystemObject.GetComponent<InputSystemUIInputModule>().AssignDefaultActions();
+            }
+
+            RefreshStatusText();
+            RefreshTrapButtons();
+        }
+
+        private void OnDisarmClicked()
+        {
+            if (EventSystem.current != null)
+            {
+                EventSystem.current.SetSelectedGameObject(null);
+            }
+
+            trapZone?.AskAstarionToDisarm();
+        }
+
+        private void OnTriggerTrapClicked()
+        {
+            if (EventSystem.current != null)
+            {
+                EventSystem.current.SetSelectedGameObject(null);
+            }
+
+            trapZone?.TriggerTrapDebug();
+        }
+
+        private void RefreshTrapButtons()
+        {
+            if (disarmButton != null)
+            {
+                disarmButton.interactable = trapZone != null && trapState == TrapVisualState.Revealed;
+            }
+
+            if (triggerTrapButton != null)
+            {
+                triggerTrapButton.interactable = trapZone != null && trapState != TrapVisualState.Disabled && trapState != TrapVisualState.Triggered;
             }
         }
 

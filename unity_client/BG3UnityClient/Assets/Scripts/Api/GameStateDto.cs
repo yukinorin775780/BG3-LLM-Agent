@@ -12,6 +12,8 @@ namespace BG3UnityClient.Api
         public GameStateDto game_state;
         public bool demo_cleared;
 
+        [NonSerialized] public string raw_json;
+
         public GameStateDto ResolvedState
         {
             get
@@ -36,6 +38,8 @@ namespace BG3UnityClient.Api
 
         public void ApplyFallbacks(string rawJson, string fallbackSessionId)
         {
+            raw_json = rawJson;
+
             if (string.IsNullOrEmpty(session_id))
             {
                 session_id = fallbackSessionId;

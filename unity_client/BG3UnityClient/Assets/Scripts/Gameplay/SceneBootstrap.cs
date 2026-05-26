@@ -1,3 +1,5 @@
+using BG3UnityClient.Api;
+using BG3UnityClient.UI;
 using UnityEngine;
 using UnityEngine.SceneManagement;
 
@@ -43,10 +45,11 @@ namespace BG3UnityClient.Gameplay
             player.transform.rotation = Quaternion.LookRotation(Vector3.forward, Vector3.up);
             player.AddComponent<PlayerController>().ConfigureBounds(MovementHalfExtent, MovementHalfExtent);
 
-            CreateCompanion(root.transform, "Astarion", new Vector3(-0.65f, CharacterY, -3.25f), new Color(0.48f, 0.05f, 0.08f), player.transform, 1.35f, -0.55f);
+            var astarion = CreateCompanion(root.transform, "Astarion", new Vector3(-0.65f, CharacterY, -3.25f), new Color(0.48f, 0.05f, 0.08f), player.transform, 1.35f, -0.55f);
             CreateCompanion(root.transform, "Shadowheart", new Vector3(0.65f, CharacterY, -4.35f), new Color(0.18f, 0.12f, 0.42f), player.transform, 2.35f, 0.55f);
             CreateCompanion(root.transform, "Lae'zel", new Vector3(0f, CharacterY, -5.2f), new Color(0.18f, 0.48f, 0.18f), player.transform, 3.25f, 0f);
 
+            CreateTrapMoment(root.transform, player.transform, astarion.transform);
             ConfigureCamera(player.transform);
             ConfigureLighting();
             Debug.Log("BG3 tactical room shell ready: player + 3 companions.");
@@ -73,12 +76,6 @@ namespace BG3UnityClient.Gameplay
             door.transform.localScale = new Vector3(1.8f, 2.1f, 0.22f);
             SetMaterial(door, new Color(0.12f, 0.36f, 0.52f));
 
-            var trapMarker = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
-            trapMarker.name = "TrapMarkerPlaceholder";
-            trapMarker.transform.SetParent(root, true);
-            trapMarker.transform.position = new Vector3(2.3f, 0.06f, 1.55f);
-            trapMarker.transform.localScale = new Vector3(0.38f, 0.05f, 0.38f);
-            SetMaterial(trapMarker, new Color(1f, 0.62f, 0.12f));
         }
 
         private static void CreateWall(Transform root, string name, Vector3 position, Vector3 scale)
@@ -101,7 +98,7 @@ namespace BG3UnityClient.Gameplay
             return capsule;
         }
 
-        private static void CreateCompanion(
+        private static GameObject CreateCompanion(
             Transform root,
             string name,
             Vector3 position,
@@ -113,6 +110,29 @@ namespace BG3UnityClient.Gameplay
             var companion = CreateCapsule(name, position, color);
             companion.transform.SetParent(root, true);
             companion.AddComponent<CompanionFollower>().Configure(player, distance, sideOffset, MovementHalfExtent, MovementHalfExtent);
+            return companion;
+        }
+
+        private static void CreateTrapMoment(Transform root, Transform player, Transform astarion)
+        {
+            var trapPosition = new Vector3(2.3f, 0f, 1.55f);
+
+            var markerObject = new GameObject("GasTrapMarker");
+            markerObject.transform.SetParent(root, true);
+            var marker = markerObject.AddComponent<TrapMarker>();
+            marker.Configure(trapPosition);
+
+            var zoneObject = new GameObject("GasTrapProximityZone");
+            zoneObject.transform.SetParent(root, true);
+            zoneObject.transform.position = trapPosition;
+            var zone = zoneObject.AddComponent<TrapZone>();
+            zone.Configure(
+                Object.FindAnyObjectByType<BackendClient>(),
+                marker,
+                player,
+                astarion,
+                Object.FindAnyObjectByType<BackendDebugPanel>(),
+                Object.FindAnyObjectByType<BarkPanel>());
         }
 
         private static void ConfigureCamera(Transform player)

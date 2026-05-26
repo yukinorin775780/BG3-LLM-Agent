@@ -20,8 +20,13 @@ namespace BG3UnityClient.Api
 
         public IEnumerator PostChat(string userInput, Action<ApiChatResponse> onSuccess, Action<string> onError)
         {
-            var url = $"{baseUrl.TrimEnd('/')}/api/chat";
             var payload = new ApiChatRequest(sessionId, mapId, userInput, "unity_client");
+            yield return PostChat(payload, onSuccess, onError);
+        }
+
+        public IEnumerator PostChat(ApiChatRequest payload, Action<ApiChatResponse> onSuccess, Action<string> onError)
+        {
+            var url = $"{baseUrl.TrimEnd('/')}/api/chat";
             var body = Encoding.UTF8.GetBytes(JsonUtility.ToJson(payload));
 
             using (var request = new UnityWebRequest(url, UnityWebRequest.kHttpVerbPOST))
