@@ -33,6 +33,61 @@ namespace BG3UnityClient.UI
             ShowMessage(speaker, text);
         }
 
+        public void ShowResponses(ApiChatResponse response)
+        {
+            if (response == null || response.responses == null || response.responses.Length <= 1)
+            {
+                ShowResponse(response);
+                return;
+            }
+
+            var lines = new System.Text.StringBuilder();
+            for (var i = 0; i < response.responses.Length; i++)
+            {
+                var entry = response.responses[i];
+                if (entry == null || string.IsNullOrEmpty(entry.text))
+                {
+                    continue;
+                }
+
+                if (lines.Length > 0)
+                {
+                    lines.AppendLine();
+                }
+
+                lines.Append($"{ResolveSpeaker(entry.speaker)}: {entry.text}");
+            }
+
+            ShowMessage("Party", lines.Length == 0 ? BuildFallbackText(response) : lines.ToString());
+        }
+
+        public void ShowLines(string speaker, params string[] lines)
+        {
+            if (lines == null || lines.Length == 0)
+            {
+                ShowMessage(speaker, string.Empty);
+                return;
+            }
+
+            var builder = new System.Text.StringBuilder();
+            for (var i = 0; i < lines.Length; i++)
+            {
+                if (string.IsNullOrEmpty(lines[i]))
+                {
+                    continue;
+                }
+
+                if (builder.Length > 0)
+                {
+                    builder.AppendLine();
+                }
+
+                builder.Append(lines[i]);
+            }
+
+            ShowMessage(speaker, builder.ToString());
+        }
+
         public void ShowError(string error)
         {
             ShowMessage("Backend Error", error);

@@ -50,6 +50,7 @@ namespace BG3UnityClient.Gameplay
             CreateCompanion(root.transform, "Lae'zel", new Vector3(0f, CharacterY, -5.2f), new Color(0.18f, 0.48f, 0.18f), player.transform, 3.25f, 0f);
 
             CreateTrapMoment(root.transform, player.transform, astarion.transform);
+            CreateBossMoment(root.transform);
             ConfigureCamera(player.transform);
             ConfigureLighting();
             Debug.Log("BG3 tactical room shell ready: player + 3 companions.");
@@ -133,6 +134,17 @@ namespace BG3UnityClient.Gameplay
                 astarion,
                 Object.FindAnyObjectByType<BackendDebugPanel>(),
                 Object.FindAnyObjectByType<BarkPanel>());
+        }
+
+        private static void CreateBossMoment(Transform root)
+        {
+            var bossObject = new GameObject("BossEncounterMarker");
+            bossObject.transform.SetParent(root, true);
+            var bossMarker = bossObject.AddComponent<BossEncounterMarker>();
+            bossMarker.Configure(
+                new Vector3(-2.8f, CharacterY, 3.45f),
+                new Vector3(0f, 1.05f, 5.65f),
+                new Vector3(2.85f, 0.5f, 3.1f));
         }
 
         private static void ConfigureCamera(Transform player)

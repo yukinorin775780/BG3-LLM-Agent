@@ -1,4 +1,5 @@
 using System.Text;
+using System;
 using BG3UnityClient.Api;
 using BG3UnityClient.Gameplay;
 using UnityEngine;
@@ -11,6 +12,19 @@ namespace BG3UnityClient.UI
     public sealed class BackendDebugPanel : MonoBehaviour
     {
         private const string DefaultPrompt = "Is something wrong in the corridor?";
+        private const string StrategyPrompt = "我们怎么处理他？队友们有什么建议，怎么拿钥匙？";
+        private const string DiaryTruthPrompt = "I know what the potion did to you. You are not a guard. You are an experiment. Give me the key and we will get you out.";
+        private const string OpenDoorPrompt = "用 heavy_iron_key 打开 heavy_oak_door_1。";
+
+        private static readonly string[] BossSetupCommands =
+        {
+            "/flag necromancer_lab_diary_decoded true",
+            "/flag act3_diary_decoded true",
+            "/flag act3_gribbo_potion_truth_known true",
+            "/flag act4_gribbo_confrontation_started true",
+            "/flag act4_diary_truth_available true",
+            "/flag necromancer_lab_force_truth_negotiation_success true"
+        };
 
         [SerializeField] private BackendClient backendClient;
         [SerializeField] private Text statusText;
@@ -18,13 +32,22 @@ namespace BG3UnityClient.UI
         [SerializeField] private Button sendButton;
         [SerializeField] private Button disarmButton;
         [SerializeField] private Button triggerTrapButton;
+        [SerializeField] private Button setupBossButton;
+        [SerializeField] private Button askStrategyButton;
+        [SerializeField] private Button useDiaryTruthButton;
+        [SerializeField] private Button openFinalDoorButton;
         [SerializeField] private Text outputText;
         [SerializeField] private BarkPanel barkPanel;
         [SerializeField] private TrapZone trapZone;
+        [SerializeField] private BossEncounterMarker bossEncounter;
 
         private string connectionStatusLine = "Connecting...";
         private string sessionStatusLine = "session=(unknown)";
         private TrapVisualState trapState = TrapVisualState.Hidden;
+        private bool bossReady;
+        private bool keyObtained;
+        private BossDoorVisualState doorState = BossDoorVisualState.Locked;
+        private bool bossRequestInFlight;
 
         private void Awake()
         {
@@ -32,7 +55,7 @@ namespace BG3UnityClient.UI
 
             if (backendClient == null)
             {
-                backendClient = Object.FindAnyObjectByType<BackendClient>();
+                backendClient = UnityEngine.Object.FindAnyObjectByType<BackendClient>();
             }
 
             if (sendButton != null)
@@ -47,14 +70,20 @@ namespace BG3UnityClient.UI
 
             if (barkPanel == null)
             {
-                barkPanel = Object.FindAnyObjectByType<BarkPanel>();
+                barkPanel = UnityEngine.Object.FindAnyObjectByType<BarkPanel>();
             }
 
             if (trapZone == null)
             {
-                trapZone = Object.FindAnyObjectByType<TrapZone>();
+                trapZone = UnityEngine.Object.FindAnyObjectByType<TrapZone>();
                 trapZone?.AttachDebugPanel(this);
                 trapZone?.AttachBarkPanel(barkPanel);
+            }
+
+            if (bossEncounter == null)
+            {
+                bossEncounter = UnityEngine.Object.FindAnyObjectByType<BossEncounterMarker>();
+                SyncBossStateFromMarker();
             }
         }
 
@@ -100,6 +129,26 @@ namespace BG3UnityClient.UI
             {
                 triggerTrapButton.onClick.RemoveListener(OnTriggerTrapClicked);
             }
+
+            if (setupBossButton != null)
+            {
+                setupBossButton.onClick.RemoveListener(OnSetupBossContextClicked);
+            }
+
+            if (askStrategyButton != null)
+            {
+                askStrategyButton.onClick.RemoveListener(OnAskStrategyClicked);
+            }
+
+            if (useDiaryTruthButton != null)
+            {
+                useDiaryTruthButton.onClick.RemoveListener(OnUseDiaryTruthClicked);
+            }
+
+            if (openFinalDoorButton != null)
+            {
+                openFinalDoorButton.onClick.RemoveListener(OnOpenFinalDoorClicked);
+            }
         }
 
         private void OnSendClicked()
@@ -130,7 +179,7 @@ namespace BG3UnityClient.UI
                 {
                     trapZone?.HandleExternalChatResponse(response, userInput);
                     SetOutput(BuildChatSummary(userInput, response));
-                    barkPanel?.ShowResponse(response);
+                    barkPanel?.ShowResponses(response);
                 },
                 error =>
                 {
@@ -183,6 +232,8 @@ namespace BG3UnityClient.UI
             {
                 builder.AppendLine($"Trap: {resolvedTrapState}");
             }
+
+            AppendBossSummary(builder, response);
 
             return builder.ToString();
         }
@@ -271,7 +322,7 @@ namespace BG3UnityClient.UI
         {
             if (statusText != null)
             {
-                statusText.text = $"{connectionStatusLine}\n{sessionStatusLine}\nTrap: {trapState}";
+                statusText.text = $"{connectionStatusLine}\n{sessionStatusLine}\nTrap: {trapState}\nBoss: {(bossReady ? "Ready" : "Not Ready")}\nKey: {(keyObtained ? "Obtained" : "Missing")}\nDoor: {doorState}";
             }
         }
 
@@ -309,7 +360,7 @@ namespace BG3UnityClient.UI
             scaler.matchWidthOrHeight = 0.5f;
 
             var panel = CreateUiObject("BackendDebugPanel", canvasObject.transform);
-            SetTopLeft(panel, new Vector2(28f, -28f), new Vector2(430f, 390f));
+            SetTopLeft(panel, new Vector2(28f, -28f), new Vector2(430f, 560f));
             var panelImage = panel.gameObject.AddComponent<Image>();
             panelImage.color = new Color(0.08f, 0.09f, 0.11f, 0.92f);
             panelImage.raycastTarget = false;
@@ -318,27 +369,43 @@ namespace BG3UnityClient.UI
             SetTopLeft(title.rectTransform, new Vector2(18f, -16f), new Vector2(394f, 32f));
 
             statusText = CreateText("ConnectionStatus", panel, "Connecting...", 16, FontStyle.Normal, TextAnchor.UpperLeft, new Color(0.74f, 0.88f, 1f, 1f));
-            SetTopLeft(statusText.rectTransform, new Vector2(18f, -58f), new Vector2(394f, 72f));
+            SetTopLeft(statusText.rectTransform, new Vector2(18f, -56f), new Vector2(394f, 112f));
 
             inputField = CreateInputField("ChatInput", panel, DefaultPrompt);
-            SetTopLeft(inputField.GetComponent<RectTransform>(), new Vector2(18f, -142f), new Vector2(304f, 40f));
+            SetTopLeft(inputField.GetComponent<RectTransform>(), new Vector2(18f, -180f), new Vector2(304f, 40f));
 
             sendButton = CreateButton("SendButton", panel, "Send");
-            SetTopLeft(sendButton.GetComponent<RectTransform>(), new Vector2(332f, -142f), new Vector2(80f, 40f));
+            SetTopLeft(sendButton.GetComponent<RectTransform>(), new Vector2(332f, -180f), new Vector2(80f, 40f));
             sendButton.onClick.AddListener(OnSendClicked);
 
             disarmButton = CreateButton("DisarmButton", panel, "Ask Astarion to Disarm");
-            SetTopLeft(disarmButton.GetComponent<RectTransform>(), new Vector2(18f, -194f), new Vector2(194f, 36f));
+            SetTopLeft(disarmButton.GetComponent<RectTransform>(), new Vector2(18f, -232f), new Vector2(194f, 36f));
             disarmButton.onClick.AddListener(OnDisarmClicked);
 
             triggerTrapButton = CreateButton("TriggerTrapButton", panel, "Trigger Trap");
-            SetTopLeft(triggerTrapButton.GetComponent<RectTransform>(), new Vector2(218f, -194f), new Vector2(194f, 36f));
+            SetTopLeft(triggerTrapButton.GetComponent<RectTransform>(), new Vector2(218f, -232f), new Vector2(194f, 36f));
             triggerTrapButton.onClick.AddListener(OnTriggerTrapClicked);
+
+            setupBossButton = CreateButton("SetupBossButton", panel, "Setup Boss Context");
+            SetTopLeft(setupBossButton.GetComponent<RectTransform>(), new Vector2(18f, -276f), new Vector2(194f, 36f));
+            setupBossButton.onClick.AddListener(OnSetupBossContextClicked);
+
+            askStrategyButton = CreateButton("AskStrategyButton", panel, "Ask Party Strategy");
+            SetTopLeft(askStrategyButton.GetComponent<RectTransform>(), new Vector2(218f, -276f), new Vector2(194f, 36f));
+            askStrategyButton.onClick.AddListener(OnAskStrategyClicked);
+
+            useDiaryTruthButton = CreateButton("UseDiaryTruthButton", panel, "Use Diary Truth");
+            SetTopLeft(useDiaryTruthButton.GetComponent<RectTransform>(), new Vector2(18f, -320f), new Vector2(194f, 36f));
+            useDiaryTruthButton.onClick.AddListener(OnUseDiaryTruthClicked);
+
+            openFinalDoorButton = CreateButton("OpenFinalDoorButton", panel, "Open Final Door");
+            SetTopLeft(openFinalDoorButton.GetComponent<RectTransform>(), new Vector2(218f, -320f), new Vector2(194f, 36f));
+            openFinalDoorButton.onClick.AddListener(OnOpenFinalDoorClicked);
 
             outputText = CreateText("OutputLog", panel, "Ready.", 15, FontStyle.Normal, TextAnchor.UpperLeft, new Color(0.92f, 0.94f, 0.95f, 1f));
             outputText.horizontalOverflow = HorizontalWrapMode.Wrap;
             outputText.verticalOverflow = VerticalWrapMode.Truncate;
-            SetTopLeft(outputText.rectTransform, new Vector2(18f, -242f), new Vector2(394f, 126f));
+            SetTopLeft(outputText.rectTransform, new Vector2(18f, -372f), new Vector2(394f, 164f));
 
             barkPanel = CreateBarkPanel(canvasObject.transform);
             barkPanel.ShowMessage("Backend", "Party responses will appear here.");
@@ -351,26 +418,198 @@ namespace BG3UnityClient.UI
 
             RefreshStatusText();
             RefreshTrapButtons();
+            RefreshBossButtons();
         }
 
         private void OnDisarmClicked()
         {
-            if (EventSystem.current != null)
-            {
-                EventSystem.current.SetSelectedGameObject(null);
-            }
+            ClearSelectedUi();
 
             trapZone?.AskAstarionToDisarm();
         }
 
         private void OnTriggerTrapClicked()
         {
-            if (EventSystem.current != null)
-            {
-                EventSystem.current.SetSelectedGameObject(null);
-            }
+            ClearSelectedUi();
 
             trapZone?.TriggerTrapDebug();
+        }
+
+        private void OnSetupBossContextClicked()
+        {
+            ClearSelectedUi();
+            if (backendClient == null)
+            {
+                SetOutput("Setup Boss Context\n\nError: BackendClient missing.");
+                return;
+            }
+
+            if (!bossRequestInFlight)
+            {
+                StartCoroutine(SetupBossContext());
+            }
+        }
+
+        private void OnAskStrategyClicked()
+        {
+            ClearSelectedUi();
+            if (backendClient == null)
+            {
+                SetOutput("Ask Party Strategy\n\nError: BackendClient missing.");
+                return;
+            }
+
+            var payload = CreateBossPayload(StrategyPrompt, "boss_strategy_button", null);
+            StartCoroutine(RunBossRequest(
+                "Ask Party Strategy",
+                payload,
+                response =>
+                {
+                    ApplyBossReady();
+                    var strategyLines = BuildStrategyLines(response);
+                    if (strategyLines.Length > 0)
+                    {
+                        barkPanel?.ShowLines("Party Strategy", strategyLines);
+                    }
+                    else
+                    {
+                        barkPanel?.ShowResponses(response);
+                    }
+
+                    SetOutput(BuildBossActionSummary("Ask Party Strategy", response, "Boss: Ready"));
+                    Debug.Log("BG3 boss strategy response received.");
+                }));
+        }
+
+        private void OnUseDiaryTruthClicked()
+        {
+            ClearSelectedUi();
+            if (backendClient == null)
+            {
+                SetOutput("Use Diary Truth\n\nError: BackendClient missing.");
+                return;
+            }
+
+            var payload = CreateBossPayload(DiaryTruthPrompt, "boss_diary_truth", null);
+            StartCoroutine(RunBossRequest(
+                "Use Diary Truth",
+                payload,
+                response =>
+                {
+                    ApplyBossReady();
+                    if (TryResolveKeyObtained(response))
+                    {
+                        ApplyKeyObtained();
+                    }
+
+                    barkPanel?.ShowResponses(response);
+                    SetOutput(BuildBossActionSummary("Use Diary Truth", response, keyObtained ? "Key Obtained" : "Key not confirmed"));
+                    Debug.Log($"BG3 boss diary truth response received: keyObtained={keyObtained}");
+                }));
+        }
+
+        private void OnOpenFinalDoorClicked()
+        {
+            ClearSelectedUi();
+            if (!keyObtained)
+            {
+                SetOutput("Open Final Door\n\nKey Missing: use diary truth or another boss route first.");
+                return;
+            }
+
+            if (backendClient == null)
+            {
+                ApplyDoorOpen();
+                SetOutput("Open Final Door\n\nFinal door opened locally; backend unavailable.");
+                return;
+            }
+
+            var payload = CreateBossPayload(OpenDoorPrompt, "unity_final_door_button", "INTERACT");
+            payload.target = "heavy_oak_door_1";
+            payload.client_player_position = new ClientPlayerPositionDto(17, 4);
+            StartCoroutine(RunBossRequest(
+                "Open Final Door",
+                payload,
+                response =>
+                {
+                    ApplyDoorOpen();
+                    barkPanel?.ShowResponses(response);
+                    SetOutput(BuildBossActionSummary("Open Final Door", response, TryResolveDoorOpen(response) ? "Final door opened." : "Final door opened locally after backend 200."));
+                    Debug.Log("BG3 final door open visual applied.");
+                }));
+        }
+
+        private System.Collections.IEnumerator SetupBossContext()
+        {
+            SetBossRequestInFlight(true);
+            SetOutput("Setup Boss Context\n\nSeeding Act4 boss flags...");
+
+            ApiChatResponse lastResponse = null;
+            string lastError = null;
+            for (var i = 0; i < BossSetupCommands.Length; i++)
+            {
+                var command = BossSetupCommands[i];
+                var payload = new ApiChatRequest(backendClient.SessionId, backendClient.MapId, command, "unity_boss_setup");
+                yield return backendClient.PostChat(
+                    payload,
+                    response =>
+                    {
+                        lastResponse = response;
+                        lastError = null;
+                    },
+                    error => lastError = error);
+
+                if (!string.IsNullOrEmpty(lastError))
+                {
+                    SetOutput($"Setup Boss Context\n\nFailed on `{command}`\n{lastError}");
+                    barkPanel?.ShowError(lastError);
+                    SetBossRequestInFlight(false);
+                    yield break;
+                }
+            }
+
+            ApplyBossReady();
+            SetOutput(BuildBossActionSummary("Setup Boss Context", lastResponse, "Boss Ready. Diary truth route is seeded for this Unity prototype."));
+            barkPanel?.ShowMessage("Boss", "Boss context ready. Ask the party for strategy.");
+            Debug.Log("BG3 boss context setup completed.");
+            SetBossRequestInFlight(false);
+        }
+
+        private System.Collections.IEnumerator RunBossRequest(string label, ApiChatRequest payload, Action<ApiChatResponse> onSuccess)
+        {
+            if (bossRequestInFlight)
+            {
+                yield break;
+            }
+
+            SetBossRequestInFlight(true);
+            SetOutput($"{label}\n\nSending boss request...");
+            Debug.Log($"BG3 boss request sent: {label} target={payload.target} source={payload.source}");
+
+            yield return backendClient.PostChat(
+                payload,
+                response =>
+                {
+                    onSuccess?.Invoke(response);
+                    SetBossRequestInFlight(false);
+                },
+                error =>
+                {
+                    SetOutput($"{label}\n\nError: {error}");
+                    barkPanel?.ShowError(error);
+                    Debug.LogWarning($"BG3 boss request failed: {label}: {error}");
+                    SetBossRequestInFlight(false);
+                });
+        }
+
+        private ApiChatRequest CreateBossPayload(string userInput, string source, string intent)
+        {
+            return new ApiChatRequest(backendClient.SessionId, backendClient.MapId, userInput, source)
+            {
+                intent = intent,
+                target = "gribbo",
+                client_player_position = new ClientPlayerPositionDto(4, 9)
+            };
         }
 
         private void RefreshTrapButtons()
@@ -384,6 +623,410 @@ namespace BG3UnityClient.UI
             {
                 triggerTrapButton.interactable = trapZone != null && trapState != TrapVisualState.Disabled && trapState != TrapVisualState.Triggered;
             }
+        }
+
+        private void RefreshBossButtons()
+        {
+            if (setupBossButton != null)
+            {
+                setupBossButton.interactable = backendClient != null && !bossRequestInFlight;
+            }
+
+            if (askStrategyButton != null)
+            {
+                askStrategyButton.interactable = backendClient != null && bossReady && !bossRequestInFlight;
+            }
+
+            if (useDiaryTruthButton != null)
+            {
+                useDiaryTruthButton.interactable = backendClient != null && bossReady && !keyObtained && !bossRequestInFlight;
+            }
+
+            if (openFinalDoorButton != null)
+            {
+                openFinalDoorButton.interactable = keyObtained && doorState != BossDoorVisualState.Open && !bossRequestInFlight;
+            }
+        }
+
+        private void SetBossRequestInFlight(bool inFlight)
+        {
+            bossRequestInFlight = inFlight;
+            RefreshBossButtons();
+        }
+
+        private void SyncBossStateFromMarker()
+        {
+            if (bossEncounter == null)
+            {
+                RefreshStatusText();
+                RefreshBossButtons();
+                return;
+            }
+
+            bossReady = bossEncounter.BossReady;
+            keyObtained = bossEncounter.KeyObtained;
+            doorState = bossEncounter.DoorState;
+            RefreshStatusText();
+            RefreshBossButtons();
+        }
+
+        private void ApplyBossReady()
+        {
+            bossReady = true;
+            bossEncounter?.SetBossReady(true);
+            RefreshStatusText();
+            RefreshBossButtons();
+        }
+
+        private void ApplyKeyObtained()
+        {
+            bossReady = true;
+            keyObtained = true;
+            if (doorState == BossDoorVisualState.Locked)
+            {
+                doorState = BossDoorVisualState.Ready;
+            }
+
+            bossEncounter?.SetBossReady(true);
+            bossEncounter?.SetKeyObtained(true);
+            RefreshStatusText();
+            RefreshBossButtons();
+        }
+
+        private void ApplyDoorOpen()
+        {
+            bossReady = true;
+            keyObtained = true;
+            doorState = BossDoorVisualState.Open;
+            bossEncounter?.SetDoorOpen();
+            RefreshStatusText();
+            RefreshBossButtons();
+        }
+
+        private static void ClearSelectedUi()
+        {
+            if (EventSystem.current != null)
+            {
+                EventSystem.current.SetSelectedGameObject(null);
+            }
+        }
+
+        private static void AppendBossSummary(StringBuilder builder, ApiChatResponse response)
+        {
+            if (response == null)
+            {
+                return;
+            }
+
+            var strategyLines = BuildStrategyLines(response);
+            if (strategyLines.Length > 0)
+            {
+                builder.AppendLine("Boss strategy:");
+                for (var i = 0; i < strategyLines.Length; i++)
+                {
+                    builder.AppendLine(strategyLines[i]);
+                }
+            }
+
+            if (TryResolveKeyObtained(response))
+            {
+                builder.AppendLine("Key: Obtained");
+            }
+
+            if (TryResolveDoorOpen(response))
+            {
+                builder.AppendLine("Door: Open");
+            }
+        }
+
+        private static string BuildBossActionSummary(string label, ApiChatResponse response, string headline)
+        {
+            var builder = new StringBuilder();
+            builder.AppendLine(label);
+
+            if (!string.IsNullOrEmpty(headline))
+            {
+                builder.AppendLine(headline);
+            }
+
+            if (response == null)
+            {
+                builder.AppendLine("No backend response.");
+                return builder.ToString();
+            }
+
+            if (response.responses != null)
+            {
+                var limit = Mathf.Min(3, response.responses.Length);
+                for (var i = 0; i < limit; i++)
+                {
+                    var entry = response.responses[i];
+                    if (entry != null && !string.IsNullOrEmpty(entry.text))
+                    {
+                        builder.AppendLine($"{NormalizeSpeakerLabel(entry.speaker)}: {entry.text}");
+                    }
+                }
+            }
+
+            AppendBossSummary(builder, response);
+
+            if (response.journal_events != null)
+            {
+                builder.AppendLine($"Journal events: {response.JournalEventCount}");
+                var limit = Mathf.Min(5, response.journal_events.Length);
+                for (var i = 0; i < limit; i++)
+                {
+                    if (!string.IsNullOrEmpty(response.journal_events[i]))
+                    {
+                        builder.AppendLine($"- {response.journal_events[i]}");
+                    }
+                }
+            }
+
+            return builder.ToString();
+        }
+
+        private static string[] BuildStrategyLines(ApiChatResponse response)
+        {
+            var lines = new string[3];
+            FillStrategyFromResponses(response, lines);
+            FillStrategyFromJournal(response, lines);
+
+            var count = 0;
+            for (var i = 0; i < lines.Length; i++)
+            {
+                if (!string.IsNullOrEmpty(lines[i]))
+                {
+                    count++;
+                }
+            }
+
+            if (count == 0)
+            {
+                return Array.Empty<string>();
+            }
+
+            var compact = new string[count];
+            var writeIndex = 0;
+            for (var i = 0; i < lines.Length; i++)
+            {
+                if (!string.IsNullOrEmpty(lines[i]))
+                {
+                    compact[writeIndex] = lines[i];
+                    writeIndex++;
+                }
+            }
+
+            return compact;
+        }
+
+        private static void FillStrategyFromResponses(ApiChatResponse response, string[] lines)
+        {
+            if (response?.responses == null)
+            {
+                return;
+            }
+
+            for (var i = 0; i < response.responses.Length; i++)
+            {
+                var entry = response.responses[i];
+                if (entry == null || string.IsNullOrEmpty(entry.text))
+                {
+                    continue;
+                }
+
+                var index = SpeakerIndex(entry.speaker);
+                if (index >= 0 && string.IsNullOrEmpty(lines[index]))
+                {
+                    lines[index] = $"{NormalizeSpeakerLabel(entry.speaker)}: {entry.text}";
+                }
+            }
+        }
+
+        private static void FillStrategyFromJournal(ApiChatResponse response, string[] lines)
+        {
+            if (response?.journal_events == null)
+            {
+                return;
+            }
+
+            for (var i = 0; i < response.journal_events.Length; i++)
+            {
+                var value = response.journal_events[i];
+                if (string.IsNullOrEmpty(value) || !value.Contains("[Boss方案]"))
+                {
+                    continue;
+                }
+
+                var normalized = value.ToLowerInvariant();
+                SetJournalStrategyLine(lines, normalized, "astarion", "Astarion");
+                SetJournalStrategyLine(lines, normalized, "shadowheart", "Shadowheart");
+                SetJournalStrategyLine(lines, normalized, "laezel", "Lae'zel");
+            }
+        }
+
+        private static void SetJournalStrategyLine(string[] lines, string normalizedJournal, string speakerId, string speakerLabel)
+        {
+            var index = SpeakerIndex(speakerId);
+            if (index < 0 || !string.IsNullOrEmpty(lines[index]) || !normalizedJournal.Contains(speakerId))
+            {
+                return;
+            }
+
+            var stance = "strategy";
+            if (normalizedJournal.Contains("steal_key"))
+            {
+                stance = "steal_key";
+            }
+            else if (normalizedJournal.Contains("contain_corruption"))
+            {
+                stance = "contain_corruption";
+            }
+            else if (normalizedJournal.Contains("execute"))
+            {
+                stance = "execute";
+            }
+
+            lines[index] = $"{speakerLabel}: {stance}";
+        }
+
+        private static bool TryResolveKeyObtained(ApiChatResponse response)
+        {
+            if (response == null)
+            {
+                return false;
+            }
+
+            if (response.HasHeavyIronKey)
+            {
+                return true;
+            }
+
+            var haystack = BuildBossHaystack(response);
+            if (BackendClient.ExtractBooleanField(response.raw_json, "act4_heavy_iron_key_obtained"))
+            {
+                return true;
+            }
+
+            return ContainsAny(
+                haystack,
+                "[boss解决] negotiation -> key_surrendered",
+                "[物品转移] gribbo -> player heavy_iron_key",
+                "key_surrendered");
+        }
+
+        private static bool TryResolveDoorOpen(ApiChatResponse response)
+        {
+            if (response == null)
+            {
+                return false;
+            }
+
+            if (response.demo_cleared)
+            {
+                return true;
+            }
+
+            if (BackendClient.ExtractBooleanField(response.raw_json, "act4_final_exit_opened")
+                || BackendClient.ExtractBooleanField(response.raw_json, "necromancer_lab_escape_complete")
+                || BackendClient.ExtractBooleanField(response.raw_json, "demo_cleared"))
+            {
+                return true;
+            }
+
+            var haystack = BuildBossHaystack(response);
+            return ContainsAny(haystack, "demo cleared");
+        }
+
+        private static string BuildBossHaystack(ApiChatResponse response)
+        {
+            var builder = new StringBuilder();
+            builder.Append(response.raw_json);
+            builder.Append('\n');
+            builder.Append(response.FirstResponseSpeaker);
+            builder.Append('\n');
+            builder.Append(response.FirstResponseText);
+
+            if (response.responses != null)
+            {
+                for (var i = 0; i < response.responses.Length; i++)
+                {
+                    builder.Append('\n');
+                    builder.Append(response.responses[i]?.speaker);
+                    builder.Append(':');
+                    builder.Append(response.responses[i]?.text);
+                }
+            }
+
+            if (response.journal_events != null)
+            {
+                for (var i = 0; i < response.journal_events.Length; i++)
+                {
+                    builder.Append('\n');
+                    builder.Append(response.journal_events[i]);
+                }
+            }
+
+            return builder.ToString().ToLowerInvariant();
+        }
+
+        private static int SpeakerIndex(string speaker)
+        {
+            var normalized = NormalizeSpeakerId(speaker);
+            if (normalized == "astarion")
+            {
+                return 0;
+            }
+
+            if (normalized == "shadowheart")
+            {
+                return 1;
+            }
+
+            return normalized == "laezel" ? 2 : -1;
+        }
+
+        private static string NormalizeSpeakerId(string speaker)
+        {
+            return string.IsNullOrEmpty(speaker)
+                ? string.Empty
+                : speaker.Trim().ToLowerInvariant().Replace("_", string.Empty).Replace("-", string.Empty).Replace("'", string.Empty).Replace("’", string.Empty);
+        }
+
+        private static string NormalizeSpeakerLabel(string speaker)
+        {
+            var normalized = NormalizeSpeakerId(speaker);
+            switch (normalized)
+            {
+                case "astarion":
+                    return "Astarion";
+                case "shadowheart":
+                    return "Shadowheart";
+                case "laezel":
+                    return "Lae'zel";
+                case "gribbo":
+                    return "Gribbo";
+                default:
+                    return string.IsNullOrEmpty(speaker) ? "Backend" : speaker;
+            }
+        }
+
+        private static bool ContainsAny(string value, params string[] markers)
+        {
+            if (string.IsNullOrEmpty(value))
+            {
+                return false;
+            }
+
+            for (var i = 0; i < markers.Length; i++)
+            {
+                if (!string.IsNullOrEmpty(markers[i]) && value.Contains(markers[i].ToLowerInvariant()))
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         private static RectTransform CreateUiObject(string name, Transform parent)

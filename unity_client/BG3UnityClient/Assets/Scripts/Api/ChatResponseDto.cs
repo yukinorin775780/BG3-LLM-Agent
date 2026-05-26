@@ -10,6 +10,7 @@ namespace BG3UnityClient.Api
         public string current_location;
         public ChatGameStateDto game_state;
         public ChatGameStateDto state;
+        public ChatPlayerInventoryDto player_inventory;
         public ChatLatestRollDto latest_roll;
         public bool demo_cleared;
 
@@ -27,6 +28,20 @@ namespace BG3UnityClient.Api
                 }
 
                 return responses[0].text ?? string.Empty;
+            }
+        }
+
+        public bool HasHeavyIronKey
+        {
+            get
+            {
+                if (player_inventory != null && player_inventory.heavy_iron_key > 0)
+                {
+                    return true;
+                }
+
+                return BackendClient.ExtractInventoryCount(raw_json, "player_inventory", "heavy_iron_key") > 0
+                    || BackendClient.ExtractBooleanField(raw_json, "act4_heavy_iron_key_obtained");
             }
         }
 
@@ -124,6 +139,14 @@ namespace BG3UnityClient.Api
         public string current_location;
         public string[] journal_events;
         public ChatLatestRollDto latest_roll;
+    }
+
+    [Serializable]
+    public sealed class ChatPlayerInventoryDto
+    {
+        public int heavy_iron_key;
+        public int lab_key;
+        public int healing_potion;
     }
 
     [Serializable]

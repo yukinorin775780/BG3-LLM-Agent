@@ -178,6 +178,43 @@ namespace BG3UnityClient.Api
             return match.Success ? DecodeJsonString(match.Groups[1].Value) : string.Empty;
         }
 
+        public static bool ExtractBooleanField(string json, string fieldName)
+        {
+            if (string.IsNullOrEmpty(json) || string.IsNullOrEmpty(fieldName))
+            {
+                return false;
+            }
+
+            return Regex.IsMatch(
+                json,
+                $"\"{Regex.Escape(fieldName)}\"\\s*:\\s*true",
+                RegexOptions.IgnoreCase);
+        }
+
+        public static int ExtractInventoryCount(string json, string objectName, string itemId)
+        {
+            if (string.IsNullOrEmpty(json) || string.IsNullOrEmpty(objectName) || string.IsNullOrEmpty(itemId))
+            {
+                return 0;
+            }
+
+            var objectIndex = json.IndexOf($"\"{objectName}\"", StringComparison.Ordinal);
+            if (objectIndex < 0)
+            {
+                return 0;
+            }
+
+            var searchLength = Math.Min(1200, json.Length - objectIndex);
+            var objectSlice = json.Substring(objectIndex, searchLength);
+            var match = Regex.Match(objectSlice, $"\"{Regex.Escape(itemId)}\"\\s*:\\s*(\\d+)");
+            if (!match.Success || !int.TryParse(match.Groups[1].Value, out var count))
+            {
+                return 0;
+            }
+
+            return count;
+        }
+
         private static string DecodeJsonString(string value)
         {
             if (string.IsNullOrEmpty(value))
