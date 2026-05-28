@@ -1,3 +1,4 @@
+using System;
 using System.Text;
 using System.Text.RegularExpressions;
 using BG3UnityClient.Api;
@@ -25,6 +26,8 @@ namespace BG3UnityClient.Gameplay
         private bool requestInFlight;
         private bool disarmInFlight;
         private Coroutine astarionMoveRoutine;
+
+        public event Action<TrapVisualState> TrapStateChanged;
 
         public TrapVisualState State => trapMarker == null ? TrapVisualState.Hidden : trapMarker.State;
 
@@ -302,6 +305,11 @@ namespace BG3UnityClient.Gameplay
                 return false;
             }
 
+            if (!animateDisarm && label == "Perception" && resolvedState == TrapVisualState.Disabled)
+            {
+                resolvedState = TrapVisualState.Revealed;
+            }
+
             ApplyTrapState(resolvedState, $"{label}: backend inferred {resolvedState}.");
             if (animateDisarm && resolvedState == TrapVisualState.Disabled)
             {
@@ -315,6 +323,7 @@ namespace BG3UnityClient.Gameplay
         {
             trapMarker?.SetState(nextState);
             debugPanel?.SetTrapState(nextState);
+            TrapStateChanged?.Invoke(nextState);
             if (!string.IsNullOrEmpty(detail))
             {
                 debugPanel?.ShowTrapOutput($"Trap: {nextState}", detail);

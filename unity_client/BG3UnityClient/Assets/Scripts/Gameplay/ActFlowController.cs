@@ -40,7 +40,12 @@ namespace BG3UnityClient.Gameplay
         [SerializeField] private Transform player;
         [SerializeField] private Transform secretStudyRoot;
         [SerializeField] private Transform gribboLabRoot;
+        [SerializeField] private ObjectiveMarker blueDoorObjectiveMarker;
+        [SerializeField] private ObjectiveMarker trapObjectiveMarker;
+        [SerializeField] private ObjectiveMarker studyObjectiveMarker;
+        [SerializeField] private ObjectiveMarker gribboObjectiveMarker;
         [SerializeField] private Vector3 safeRoomAnchor = new Vector3(0f, 1f, -3.55f);
+        [SerializeField] private Vector3 poisonCorridorAnchor = new Vector3(0.3f, 1f, 0.35f);
         [SerializeField] private Vector3 secretStudyAnchor = new Vector3(-3.75f, 1f, 0.85f);
         [SerializeField] private Vector3 gribboLabAnchor = new Vector3(-0.65f, 1f, 2.85f);
 
@@ -49,10 +54,12 @@ namespace BG3UnityClient.Gameplay
         private bool keyObtained;
         private bool requestInFlight;
         private bool act3AdvanceStarted;
+        private TrapZone subscribedTrapZone;
 
         public ActFlowStage CurrentAct => currentAct;
         public string CurrentActTitle => GetActTitle(currentAct);
         public string CurrentObjective => GetObjective(currentAct);
+        public string CurrentControlHint => GetControlHint(currentAct);
         public bool ChemicalNotesRead => chemicalNotesRead;
         public bool DiaryTruthKnown => diaryTruthKnown;
         public bool KeyObtained => keyObtained;
@@ -68,18 +75,26 @@ namespace BG3UnityClient.Gameplay
             KeyPickupFeedback feedback,
             Transform playerTransform,
             Transform studyRoot,
-            Transform labRoot)
+            Transform labRoot,
+            ObjectiveMarker blueDoorMarker,
+            ObjectiveMarker trapMarker,
+            ObjectiveMarker studyMarker,
+            ObjectiveMarker gribboMarker)
         {
             backendClient = client;
             debugPanel = panel;
             barkPanel = bark;
-            trapZone = trap;
+            BindTrapZone(trap);
             bossEncounter = bossMarker;
             bossZone = bossEncounterZone;
             keyFeedback = feedback;
             player = playerTransform;
             secretStudyRoot = studyRoot;
             gribboLabRoot = labRoot;
+            blueDoorObjectiveMarker = blueDoorMarker;
+            trapObjectiveMarker = trapMarker;
+            studyObjectiveMarker = studyMarker;
+            gribboObjectiveMarker = gribboMarker;
             debugPanel?.AttachActFlow(this);
             ApplyPresentation();
         }
@@ -266,19 +281,20 @@ namespace BG3UnityClient.Gameplay
             MovePartyTo(safeRoomAnchor, Vector3.forward);
             ApplyPresentation();
             RefreshDebugUi();
+            ShowActTransitionFeedback();
+            barkPanel?.ShowMessage("Narrator", "The safe room is clear. Move to the blue door.");
         }
 
         private void Update()
         {
-            if (currentAct != ActFlowStage.Act2PoisonCorridor || act3AdvanceStarted || trapZone == null)
-            {
-                return;
-            }
+            TryStartAct3AdvanceAfterTrapDisabled();
+        }
 
-            if (trapZone.State == TrapVisualState.Disabled)
+        private void OnDestroy()
+        {
+            if (subscribedTrapZone != null)
             {
-                act3AdvanceStarted = true;
-                StartCoroutine(AdvanceToAct3AfterTrapDisarm());
+                subscribedTrapZone.TrapStateChanged -= OnTrapStateChanged;
             }
         }
 
@@ -323,7 +339,6 @@ namespace BG3UnityClient.Gameplay
                 "Secret study entry requested.");
 
             SetAct(ActFlowStage.Act3SecretStudy);
-            MovePartyTo(secretStudyAnchor, Vector3.forward);
             SetRequestInFlight(false);
         }
 
@@ -466,6 +481,7 @@ namespace BG3UnityClient.Gameplay
             currentAct = nextAct;
             ApplyPresentation();
             RefreshDebugUi();
+            ShowActTransitionFeedback();
             Debug.Log($"BG3 act flow advanced: {currentAct}");
         }
 
@@ -498,11 +514,30 @@ namespace BG3UnityClient.Gameplay
                 trapZone.enabled = currentAct == ActFlowStage.Act2PoisonCorridor;
             }
 
+            SetMarkerActive(blueDoorObjectiveMarker, currentAct == ActFlowStage.Act1SafeRoom);
+            SetMarkerActive(
+                trapObjectiveMarker,
+                currentAct == ActFlowStage.Act2PoisonCorridor
+                && (trapZone == null || trapZone.State != TrapVisualState.Disabled));
+            SetMarkerActive(studyObjectiveMarker, currentAct == ActFlowStage.Act3SecretStudy);
+            SetMarkerActive(gribboObjectiveMarker, currentAct == ActFlowStage.Act4GribboLab && !keyObtained);
+
+            if (currentAct == ActFlowStage.Act2PoisonCorridor)
+            {
+                MovePartyTo(poisonCorridorAnchor, new Vector3(0.82f, 0f, 0.58f));
+            }
+            else if (currentAct == ActFlowStage.Act3SecretStudy)
+            {
+                MovePartyTo(secretStudyAnchor, Vector3.forward);
+            }
+
             if (currentAct == ActFlowStage.Act4GribboLab)
             {
                 MovePartyTo(gribboLabAnchor, Vector3.forward);
                 ApplyBossReady();
             }
+
+            FrameCurrentAct(true);
         }
 
         private void MovePartyTo(Vector3 playerPosition, Vector3 forward)
@@ -545,8 +580,16 @@ namespace BG3UnityClient.Gameplay
         {
             keyObtained = true;
             bossEncounter?.SetKeyObtained(true);
-            keyFeedback?.ShowKeyObtained();
-            debugPanel?.ApplyActKeyObtained();
+            SetMarkerActive(gribboObjectiveMarker, false);
+            if (debugPanel != null)
+            {
+                debugPanel.ApplyActKeyObtained();
+            }
+            else
+            {
+                keyFeedback?.ShowKeyObtained();
+            }
+
             RefreshDebugUi();
         }
 
@@ -631,7 +674,11 @@ namespace BG3UnityClient.Gameplay
 
             if (trapZone == null)
             {
-                trapZone = UnityEngine.Object.FindAnyObjectByType<TrapZone>();
+                BindTrapZone(UnityEngine.Object.FindAnyObjectByType<TrapZone>());
+            }
+            else
+            {
+                BindTrapZone(trapZone);
             }
 
             if (bossEncounter == null)
@@ -654,11 +701,139 @@ namespace BG3UnityClient.Gameplay
                 var playerObject = GameObject.Find("Player");
                 player = playerObject == null ? null : playerObject.transform;
             }
+
+            if (blueDoorObjectiveMarker == null)
+            {
+                blueDoorObjectiveMarker = ResolveMarker("BlueDoorObjectiveMarker");
+            }
+
+            if (trapObjectiveMarker == null)
+            {
+                trapObjectiveMarker = ResolveMarker("TrapObjectiveMarker");
+            }
+
+            if (studyObjectiveMarker == null)
+            {
+                studyObjectiveMarker = ResolveMarker("StudyObjectiveMarker");
+            }
+
+            if (gribboObjectiveMarker == null)
+            {
+                gribboObjectiveMarker = ResolveMarker("GribboObjectiveMarker");
+            }
         }
 
         private void RefreshDebugUi()
         {
-            debugPanel?.RefreshActFlowUi();
+            var huds = UnityEngine.Object.FindObjectsByType<ActObjectiveHud>(FindObjectsSortMode.None);
+            for (var i = 0; i < huds.Length; i++)
+            {
+                huds[i].SetAct(CurrentActTitle, CurrentObjective);
+                huds[i].SetProgress((int)currentAct);
+                huds[i].SetControlHint(CurrentControlHint);
+            }
+
+            debugPanel?.AttachActFlow(this);
+        }
+
+        private void BindTrapZone(TrapZone zone)
+        {
+            if (subscribedTrapZone == zone)
+            {
+                trapZone = zone;
+                return;
+            }
+
+            if (subscribedTrapZone != null)
+            {
+                subscribedTrapZone.TrapStateChanged -= OnTrapStateChanged;
+            }
+
+            trapZone = zone;
+            subscribedTrapZone = zone;
+
+            if (subscribedTrapZone != null)
+            {
+                subscribedTrapZone.TrapStateChanged += OnTrapStateChanged;
+            }
+        }
+
+        private void OnTrapStateChanged(TrapVisualState state)
+        {
+            if (state == TrapVisualState.Disabled)
+            {
+                TryStartAct3AdvanceAfterTrapDisabled();
+                return;
+            }
+
+            RefreshDebugUi();
+        }
+
+        private void TryStartAct3AdvanceAfterTrapDisabled()
+        {
+            if (currentAct != ActFlowStage.Act2PoisonCorridor || act3AdvanceStarted || trapZone == null || trapZone.State != TrapVisualState.Disabled)
+            {
+                return;
+            }
+
+            act3AdvanceStarted = true;
+            Debug.Log("BG3 act flow trap disabled observed; advancing to Act3.");
+            StartCoroutine(AdvanceToAct3AfterTrapDisarm());
+        }
+
+        private void ShowActTransitionFeedback()
+        {
+            debugPanel?.ShowActToast(CurrentActTitle);
+        }
+
+        private void FrameCurrentAct(bool snap)
+        {
+            var camera = Camera.main;
+            if (camera == null)
+            {
+                return;
+            }
+
+            var follow = camera.GetComponent<TopDownCameraFollow>();
+            if (follow == null)
+            {
+                return;
+            }
+
+            switch (currentAct)
+            {
+                case ActFlowStage.Act1SafeRoom:
+                    follow.SetFraming(new Vector3(0f, 10.2f, -8.8f), new Vector3(0f, 0.8f, 2.65f), 50f);
+                    break;
+                case ActFlowStage.Act2PoisonCorridor:
+                    follow.SetFraming(new Vector3(0f, 9.2f, -7.2f), new Vector3(1.2f, 0.8f, 1.15f), 49f);
+                    break;
+                case ActFlowStage.Act3SecretStudy:
+                    follow.SetFraming(new Vector3(0f, 8.7f, -6.8f), new Vector3(-0.25f, 0.8f, 0.45f), 48f);
+                    break;
+                case ActFlowStage.Act4GribboLab:
+                    follow.SetFraming(new Vector3(0f, 9.2f, -7.2f), new Vector3(-1.35f, 0.8f, 0.7f), 48f);
+                    break;
+            }
+
+            if (snap)
+            {
+                follow.SnapToTarget();
+            }
+        }
+
+        private static void SetMarkerActive(ObjectiveMarker marker, bool active)
+        {
+            if (marker != null)
+            {
+                marker.gameObject.SetActive(active);
+            }
+        }
+
+        private static ObjectiveMarker ResolveMarker(string objectName)
+        {
+            var markerObject = GameObject.Find(objectName);
+            return markerObject == null ? null : markerObject.GetComponent<ObjectiveMarker>();
         }
 
         private static string GetActTitle(ActFlowStage act)
@@ -666,13 +841,13 @@ namespace BG3UnityClient.Gameplay
             switch (act)
             {
                 case ActFlowStage.Act1SafeRoom:
-                    return "Act 1 - Safe Room";
+                    return "Act 1 — Safe Room";
                 case ActFlowStage.Act2PoisonCorridor:
-                    return "Act 2 - Poison Corridor";
+                    return "Act 2 — Poison Corridor";
                 case ActFlowStage.Act3SecretStudy:
-                    return "Act 3 - Secret Study";
+                    return "Act 3 — Secret Study";
                 case ActFlowStage.Act4GribboLab:
-                    return "Act 4 - Gribbo Lab";
+                    return "Act 4 — Gribbo Lab";
                 default:
                     return "Act Flow";
             }
@@ -683,25 +858,57 @@ namespace BG3UnityClient.Gameplay
             switch (act)
             {
                 case ActFlowStage.Act1SafeRoom:
-                    return "Open the door / move toward the corridor trigger.";
+                    return "Move to the blue door to enter the poison corridor.";
                 case ActFlowStage.Act2PoisonCorridor:
+                    if (trapZone != null && trapZone.State == TrapVisualState.Disabled)
+                    {
+                        return "Trap disabled. Follow the revealed route into the secret study.";
+                    }
+
                     if (trapZone != null && trapZone.State == TrapVisualState.Revealed)
                     {
                         return "Astarion spotted the trap. Ask him to disarm it.";
                     }
 
-                    return "Approach the trap zone so Astarion can make the perception call.";
+                    return "Approach the amber trap marker.";
                 case ActFlowStage.Act3SecretStudy:
                     if (!chemicalNotesRead)
                     {
-                        return "Read Chemical Notes, then decode the Necromancer Diary.";
+                        return "Read Chemical Notes, then Read Necromancer Diary.";
                     }
 
-                    return diaryTruthKnown ? "Diary truth confirmed. Continue to Act4." : "Read the Necromancer Diary to confirm Gribbo context.";
+                    return diaryTruthKnown ? "Diary truth confirmed. Move into Gribbo Lab." : "Read Necromancer Diary to learn Gribbo's truth.";
                 case ActFlowStage.Act4GribboLab:
-                    return keyObtained ? "Heavy Iron Key obtained. Final exit is out of scope." : "Ask Party Strategy, then Use Diary Truth for the key.";
+                    return keyObtained ? "Heavy Iron Key obtained." : "Ask Party Strategy, then Use Diary Truth.";
                 default:
                     return string.Empty;
+            }
+        }
+
+        private string GetControlHint(ActFlowStage act)
+        {
+            switch (act)
+            {
+                case ActFlowStage.Act1SafeRoom:
+                    return "WASD: move to the blue door trigger.";
+                case ActFlowStage.Act2PoisonCorridor:
+                    if (trapZone != null && trapZone.State == TrapVisualState.Disabled)
+                    {
+                        return "Trap disabled. Act 3 opens automatically.";
+                    }
+
+                    if (trapZone != null && trapZone.State == TrapVisualState.Revealed)
+                    {
+                        return "Press 1/R or click Ask Astarion to Disarm.";
+                    }
+
+                    return "WASD: approach the amber marker to trigger perception.";
+                case ActFlowStage.Act3SecretStudy:
+                    return chemicalNotesRead ? "Press 2/T or click Read Necromancer Diary." : "Press 1/R or click Read Chemical Notes.";
+                case ActFlowStage.Act4GribboLab:
+                    return keyObtained ? "Heavy Iron Key obtained. Demo beat complete." : "1/R Ask Party Strategy; 2/T Use Diary Truth.";
+                default:
+                    return "WASD move | click action buttons or use shortcuts.";
             }
         }
 

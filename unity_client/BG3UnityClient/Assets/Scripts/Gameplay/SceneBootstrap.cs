@@ -55,7 +55,47 @@ namespace BG3UnityClient.Gameplay
             var bossMarker = CreateBossMoment(root.transform);
             var bossZone = CreateBossZone(root.transform, player.transform, bossMarker);
             var keyFeedback = CreateKeyFeedback(root.transform, player.transform);
-            var actFlow = CreateActFlow(root.transform, player.transform, trapZone, bossMarker, bossZone, keyFeedback, studyRoot.transform, gribboLabRoot.transform);
+            var blueDoorMarker = CreateObjectiveMarker(
+                root.transform,
+                "BlueDoorObjectiveMarker",
+                "Blue Door",
+                new Vector3(0f, 0f, 4.55f),
+                new Color(0.34f, 0.72f, 1f, 0.9f),
+                new Vector3(1.18f, 0.024f, 0.84f));
+            var trapObjectiveMarker = CreateObjectiveMarker(
+                root.transform,
+                "TrapObjectiveMarker",
+                "Trap Zone",
+                new Vector3(2.3f, 0f, 1.55f),
+                new Color(1f, 0.62f, 0.12f, 0.9f),
+                new Vector3(0.96f, 0.024f, 0.96f));
+            var studyObjectiveMarker = CreateObjectiveMarker(
+                studyRoot.transform,
+                "StudyObjectiveMarker",
+                "Read Evidence",
+                new Vector3(-3.84f, 0f, 1.02f),
+                new Color(0.82f, 0.92f, 1f, 0.88f),
+                new Vector3(1.12f, 0.024f, 0.72f));
+            var gribboObjectiveMarker = CreateObjectiveMarker(
+                root.transform,
+                "GribboObjectiveMarker",
+                "Gribbo",
+                new Vector3(-2.8f, 0f, 3.45f),
+                new Color(0.86f, 1f, 0.38f, 0.9f),
+                new Vector3(1.04f, 0.024f, 1.04f));
+            var actFlow = CreateActFlow(
+                root.transform,
+                player.transform,
+                trapZone,
+                bossMarker,
+                bossZone,
+                keyFeedback,
+                studyRoot.transform,
+                gribboLabRoot.transform,
+                blueDoorMarker,
+                trapObjectiveMarker,
+                studyObjectiveMarker,
+                gribboObjectiveMarker);
             CreateAct2CorridorTrigger(root.transform, player.transform, actFlow);
             ConfigureCamera(player.transform);
             ConfigureLighting();
@@ -85,7 +125,7 @@ namespace BG3UnityClient.Gameplay
             door.transform.SetParent(root, true);
             door.transform.position = new Vector3(0f, 1.05f, 5.78f);
             door.transform.localScale = new Vector3(1.8f, 2.1f, 0.22f);
-            SetMaterial(door, new Color(0.14f, 0.23f, 0.31f));
+            SetMaterial(door, new Color(0.12f, 0.44f, 0.92f));
 
         }
 
@@ -253,7 +293,11 @@ namespace BG3UnityClient.Gameplay
             BossEncounterZone bossZone,
             KeyPickupFeedback keyFeedback,
             Transform studyRoot,
-            Transform labRoot)
+            Transform labRoot,
+            ObjectiveMarker blueDoorMarker,
+            ObjectiveMarker trapObjectiveMarker,
+            ObjectiveMarker studyObjectiveMarker,
+            ObjectiveMarker gribboObjectiveMarker)
         {
             var flowObject = new GameObject("ActFlowController");
             flowObject.transform.SetParent(root, true);
@@ -268,7 +312,11 @@ namespace BG3UnityClient.Gameplay
                 keyFeedback,
                 player,
                 studyRoot,
-                labRoot);
+                labRoot,
+                blueDoorMarker,
+                trapObjectiveMarker,
+                studyObjectiveMarker,
+                gribboObjectiveMarker);
             return flow;
         }
 
@@ -276,13 +324,22 @@ namespace BG3UnityClient.Gameplay
         {
             var triggerObject = new GameObject("Act2CorridorTrigger");
             triggerObject.transform.SetParent(root, true);
-            triggerObject.transform.position = new Vector3(0f, 0f, -0.58f);
+            triggerObject.transform.position = new Vector3(0f, 0f, 4.55f);
             triggerObject.AddComponent<ActFlowTriggerZone>().Configure(
                 actFlow,
                 player,
                 ActFlowStage.Act2PoisonCorridor,
                 1.25f);
-            CreateWorldLabel(root, "CorridorTriggerLabel", "Corridor", new Vector3(-1.15f, 0.2f, -0.58f), new Color(0.58f, 0.82f, 1f));
+            CreateWorldLabel(root, "CorridorTriggerLabel", "Blue Door", new Vector3(-1.15f, 0.55f, 4.55f), new Color(0.58f, 0.82f, 1f));
+        }
+
+        private static ObjectiveMarker CreateObjectiveMarker(Transform root, string name, string label, Vector3 position, Color color, Vector3 ringScale)
+        {
+            var markerObject = new GameObject(name);
+            markerObject.transform.SetParent(root, true);
+            var marker = markerObject.AddComponent<ObjectiveMarker>();
+            marker.Configure(label, position, color, ringScale);
+            return marker;
         }
 
         private static void CreateReadableMarker(Transform root, string name, string label, Vector3 position, Color color)
@@ -317,7 +374,7 @@ namespace BG3UnityClient.Gameplay
                 camera = cameraObject.GetComponent<Camera>();
             }
 
-            camera.fieldOfView = 45f;
+            camera.fieldOfView = 50f;
             camera.nearClipPlane = 0.1f;
             camera.farClipPlane = 100f;
 
@@ -327,9 +384,9 @@ namespace BG3UnityClient.Gameplay
                 follow = camera.gameObject.AddComponent<TopDownCameraFollow>();
             }
 
-            camera.transform.position = player.position + new Vector3(0f, 8.5f, -7.5f);
-            camera.transform.LookAt(player.position + Vector3.up * 0.8f, Vector3.up);
             follow.Configure(player);
+            follow.SetFraming(new Vector3(0f, 10.2f, -8.8f), new Vector3(0f, 0.8f, 2.65f), 50f);
+            follow.SnapToTarget();
         }
 
         private static void ConfigureLighting()

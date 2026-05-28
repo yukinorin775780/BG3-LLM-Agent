@@ -4,6 +4,7 @@ using BG3UnityClient.Api;
 using BG3UnityClient.Gameplay;
 using UnityEngine;
 using UnityEngine.EventSystems;
+using UnityEngine.InputSystem;
 using UnityEngine.InputSystem.UI;
 using UnityEngine.UI;
 
@@ -11,7 +12,7 @@ namespace BG3UnityClient.UI
 {
     public sealed class BackendDebugPanel : MonoBehaviour
     {
-        private const string DefaultPrompt = "Is something wrong in the corridor?";
+        private const string DefaultPrompt = "What should we do next?";
         private const string StrategyPrompt = "我们怎么处理他？队友们有什么建议，怎么拿钥匙？";
         private const string DiaryTruthPrompt = "I know what the potion did to you. You are not a guard. You are an experiment. Give me the key and we will get you out.";
 
@@ -36,6 +37,7 @@ namespace BG3UnityClient.UI
         [SerializeField] private Button setupBossButton;
         [SerializeField] private Button askStrategyButton;
         [SerializeField] private Button useDiaryTruthButton;
+        [SerializeField] private Button debugActionsToggleButton;
         [SerializeField] private Button outputToggleButton;
         [SerializeField] private Text outputText;
         [SerializeField] private Text outputPreviewText;
@@ -55,6 +57,7 @@ namespace BG3UnityClient.UI
         private bool bossReady;
         private bool keyObtained;
         private bool bossRequestInFlight;
+        private bool debugActionsExpanded;
         private bool outputExpanded;
 
         private void Awake()
@@ -190,6 +193,34 @@ namespace BG3UnityClient.UI
             if (outputToggleButton != null)
             {
                 outputToggleButton.onClick.RemoveListener(OnToggleOutputClicked);
+            }
+
+            if (debugActionsToggleButton != null)
+            {
+                debugActionsToggleButton.onClick.RemoveListener(OnToggleDebugActionsClicked);
+            }
+        }
+
+        private void Update()
+        {
+            if (actFlow == null || IsTextInputFocused())
+            {
+                return;
+            }
+
+            var keyboard = Keyboard.current;
+            if (keyboard == null)
+            {
+                return;
+            }
+
+            if (keyboard.digit1Key.wasPressedThisFrame || keyboard.numpad1Key.wasPressedThisFrame || keyboard.rKey.wasPressedThisFrame)
+            {
+                InvokePrimaryActShortcut();
+            }
+            else if (keyboard.digit2Key.wasPressedThisFrame || keyboard.numpad2Key.wasPressedThisFrame || keyboard.tKey.wasPressedThisFrame)
+            {
+                InvokeSecondaryActShortcut();
             }
         }
 
@@ -362,13 +393,21 @@ namespace BG3UnityClient.UI
 
         public void RefreshActFlowUi()
         {
+            var latestFlow = UnityEngine.Object.FindAnyObjectByType<ActFlowController>();
+            if (latestFlow != null)
+            {
+                actFlow = latestFlow;
+            }
+
             if (actFlow != null)
             {
                 SetAct(actFlow.CurrentActTitle, actFlow.CurrentObjective);
+                SetActProgress((int)actFlow.CurrentAct, actFlow.CurrentControlHint);
             }
             else
             {
-                SetAct("Act 1 - Safe Room", "Open the door / move toward corridor.");
+                SetAct("Act 1 — Safe Room", "Move to the blue door to enter the poison corridor.");
+                SetActProgress(1, "WASD: move to the blue door trigger.");
             }
 
             RefreshTrapButtons();
@@ -432,7 +471,7 @@ namespace BG3UnityClient.UI
                 }
                 else
                 {
-                    SetAct("Act 4 - Gribbo Lab", "Convince Gribbo to surrender the key.");
+                    SetAct("Act 4 — Gribbo Lab", "Ask Party Strategy, then Use Diary Truth to get the key.");
                 }
 
                 Debug.Log("BG3 boss encounter ready UI applied.");
@@ -450,7 +489,7 @@ namespace BG3UnityClient.UI
         {
             if (statusText != null)
             {
-                statusText.text = $"{connectionStatusLine}\n{sessionStatusLine}\nTrap: {trapState}\nBoss: {(bossReady ? "Encounter Ready" : "Approach Gribbo")}\nKey: {(keyObtained ? "Heavy Iron Key Obtained" : "Missing")}";
+                statusText.text = $"{connectionStatusLine}\n{sessionStatusLine} | Trap: {trapState} | Boss: {(bossReady ? "Ready" : "Pending")} | Key: {(keyObtained ? "Obtained" : "Missing")}";
             }
         }
 
@@ -475,6 +514,27 @@ namespace BG3UnityClient.UI
             }
 
             actHud?.SetAct(title, objective);
+        }
+
+        public void SetActProgress(int actNumber, string controlHint)
+        {
+            if (actHud == null)
+            {
+                actHud = UnityEngine.Object.FindAnyObjectByType<ActObjectiveHud>();
+            }
+
+            actHud?.SetProgress(actNumber);
+            actHud?.SetControlHint(controlHint);
+        }
+
+        public void ShowActToast(string title)
+        {
+            if (actHud == null)
+            {
+                actHud = UnityEngine.Object.FindAnyObjectByType<ActObjectiveHud>();
+            }
+
+            actHud?.ShowActToast(title);
         }
 
         private static string FirstLine(string value)
@@ -516,14 +576,18 @@ namespace BG3UnityClient.UI
             actHud = CreateActObjectiveHud(canvasObject.transform);
 
             debugPanelRoot = CreateUiObject("BackendDebugPanel", canvasObject.transform);
-            SetTopLeft(debugPanelRoot, new Vector2(18f, -104f), new Vector2(318f, 336f));
+            SetTopLeft(debugPanelRoot, new Vector2(18f, -104f), new Vector2(318f, 226f));
             var panelImage = debugPanelRoot.gameObject.AddComponent<Image>();
             panelImage.color = new Color(0.08f, 0.09f, 0.11f, 0.92f);
             panelImage.raycastTarget = false;
             AddBorder(debugPanelRoot, new Color(0.46f, 0.56f, 0.62f, 0.36f), 1f);
 
             var title = CreateText("Title", debugPanelRoot, "DEV", 14, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(0.78f, 0.9f, 1f, 1f));
-            SetTopLeft(title.rectTransform, new Vector2(12f, -10f), new Vector2(76f, 22f));
+            SetTopLeft(title.rectTransform, new Vector2(12f, -10f), new Vector2(108f, 22f));
+
+            debugActionsToggleButton = CreateButton("DebugActionsToggleButton", debugPanelRoot, "Debug");
+            SetTopLeft(debugActionsToggleButton.GetComponent<RectTransform>(), new Vector2(174f, -10f), new Vector2(62f, 24f));
+            debugActionsToggleButton.onClick.AddListener(OnToggleDebugActionsClicked);
 
             outputToggleButton = CreateButton("OutputToggleButton", debugPanelRoot, "Log");
             SetTopLeft(outputToggleButton.GetComponent<RectTransform>(), new Vector2(244f, -10f), new Vector2(62f, 24f));
@@ -532,50 +596,50 @@ namespace BG3UnityClient.UI
             statusText = CreateText("ConnectionStatus", debugPanelRoot, "Connecting...", 11, FontStyle.Normal, TextAnchor.UpperLeft, new Color(0.74f, 0.88f, 1f, 1f));
             statusText.horizontalOverflow = HorizontalWrapMode.Wrap;
             statusText.verticalOverflow = VerticalWrapMode.Truncate;
-            SetTopLeft(statusText.rectTransform, new Vector2(12f, -38f), new Vector2(294f, 70f));
+            SetTopLeft(statusText.rectTransform, new Vector2(12f, -38f), new Vector2(294f, 42f));
 
             inputField = CreateInputField("ChatInput", debugPanelRoot, DefaultPrompt);
-            SetTopLeft(inputField.GetComponent<RectTransform>(), new Vector2(12f, -118f), new Vector2(232f, 31f));
+            SetTopLeft(inputField.GetComponent<RectTransform>(), new Vector2(12f, -90f), new Vector2(212f, 31f));
 
             sendButton = CreateButton("SendButton", debugPanelRoot, "Send");
-            SetTopLeft(sendButton.GetComponent<RectTransform>(), new Vector2(252f, -118f), new Vector2(54f, 31f));
+            SetTopLeft(sendButton.GetComponent<RectTransform>(), new Vector2(232f, -90f), new Vector2(74f, 31f));
             sendButton.onClick.AddListener(OnSendClicked);
 
-            disarmButton = CreateButton("DisarmButton", debugPanelRoot, "Disarm");
-            SetTopLeft(disarmButton.GetComponent<RectTransform>(), new Vector2(12f, -160f), new Vector2(142f, 28f));
+            disarmButton = CreateButton("DisarmButton", debugPanelRoot, "Ask Astarion to Disarm");
+            SetTopLeft(disarmButton.GetComponent<RectTransform>(), new Vector2(12f, -132f), new Vector2(294f, 30f));
             disarmButton.onClick.AddListener(OnDisarmClicked);
 
-            triggerTrapButton = CreateButton("TriggerTrapButton", debugPanelRoot, "Trigger");
-            SetTopLeft(triggerTrapButton.GetComponent<RectTransform>(), new Vector2(164f, -160f), new Vector2(142f, 28f));
+            triggerTrapButton = CreateButton("TriggerTrapButton", debugPanelRoot, "Trigger Trap (Debug)");
+            SetTopLeft(triggerTrapButton.GetComponent<RectTransform>(), new Vector2(12f, -168f), new Vector2(294f, 30f));
             triggerTrapButton.onClick.AddListener(OnTriggerTrapClicked);
 
-            readChemicalNotesButton = CreateButton("ReadChemicalNotesButton", debugPanelRoot, "Chem Notes");
-            SetTopLeft(readChemicalNotesButton.GetComponent<RectTransform>(), new Vector2(12f, -194f), new Vector2(142f, 28f));
+            readChemicalNotesButton = CreateButton("ReadChemicalNotesButton", debugPanelRoot, "Read Chemical Notes");
+            SetTopLeft(readChemicalNotesButton.GetComponent<RectTransform>(), new Vector2(12f, -132f), new Vector2(294f, 30f));
             readChemicalNotesButton.onClick.AddListener(OnReadChemicalNotesClicked);
 
-            readDiaryButton = CreateButton("ReadDiaryButton", debugPanelRoot, "Diary");
-            SetTopLeft(readDiaryButton.GetComponent<RectTransform>(), new Vector2(164f, -194f), new Vector2(142f, 28f));
+            readDiaryButton = CreateButton("ReadDiaryButton", debugPanelRoot, "Read Necromancer Diary");
+            SetTopLeft(readDiaryButton.GetComponent<RectTransform>(), new Vector2(12f, -168f), new Vector2(294f, 30f));
             readDiaryButton.onClick.AddListener(OnReadDiaryClicked);
 
-            setupBossButton = CreateButton("SetupBossButton", debugPanelRoot, "Prep Debug");
-            SetTopLeft(setupBossButton.GetComponent<RectTransform>(), new Vector2(12f, -228f), new Vector2(142f, 28f));
+            setupBossButton = CreateButton("SetupBossButton", debugPanelRoot, "Prep Debug (Debug)");
+            SetTopLeft(setupBossButton.GetComponent<RectTransform>(), new Vector2(12f, -204f), new Vector2(294f, 30f));
             setupBossButton.onClick.AddListener(OnSetupBossContextClicked);
 
-            askStrategyButton = CreateButton("AskStrategyButton", debugPanelRoot, "Strategy");
-            SetTopLeft(askStrategyButton.GetComponent<RectTransform>(), new Vector2(164f, -228f), new Vector2(142f, 28f));
+            askStrategyButton = CreateButton("AskStrategyButton", debugPanelRoot, "Ask Party Strategy");
+            SetTopLeft(askStrategyButton.GetComponent<RectTransform>(), new Vector2(12f, -132f), new Vector2(294f, 30f));
             askStrategyButton.onClick.AddListener(OnAskStrategyClicked);
 
-            useDiaryTruthButton = CreateButton("UseDiaryTruthButton", debugPanelRoot, "Truth");
-            SetTopLeft(useDiaryTruthButton.GetComponent<RectTransform>(), new Vector2(12f, -262f), new Vector2(294f, 28f));
+            useDiaryTruthButton = CreateButton("UseDiaryTruthButton", debugPanelRoot, "Use Diary Truth");
+            SetTopLeft(useDiaryTruthButton.GetComponent<RectTransform>(), new Vector2(12f, -168f), new Vector2(294f, 30f));
             useDiaryTruthButton.onClick.AddListener(OnUseDiaryTruthClicked);
 
             outputPreviewText = CreateText("OutputPreview", debugPanelRoot, "Ready.", 11, FontStyle.Normal, TextAnchor.MiddleLeft, new Color(0.82f, 0.86f, 0.88f, 0.92f));
             outputPreviewText.horizontalOverflow = HorizontalWrapMode.Wrap;
             outputPreviewText.verticalOverflow = VerticalWrapMode.Truncate;
-            SetTopLeft(outputPreviewText.rectTransform, new Vector2(12f, -301f), new Vector2(294f, 22f));
+            SetTopLeft(outputPreviewText.rectTransform, new Vector2(12f, -210f), new Vector2(294f, 22f));
 
             outputContainer = CreateUiObject("OutputContainer", debugPanelRoot);
-            SetTopLeft(outputContainer, new Vector2(12f, -334f), new Vector2(294f, 98f));
+            SetTopLeft(outputContainer, new Vector2(12f, -210f), new Vector2(294f, 110f));
             var outputBackground = outputContainer.gameObject.AddComponent<Image>();
             outputBackground.color = new Color(0.015f, 0.018f, 0.022f, 0.7f);
             outputBackground.raycastTarget = false;
@@ -588,7 +652,7 @@ namespace BG3UnityClient.UI
             RefreshDebugPanelLayout();
 
             barkPanel = CreateBarkPanel(canvasObject.transform);
-            barkPanel.ShowMessage("Narrator", "The corridor falls quiet.");
+            barkPanel.ShowMessage("Narrator", "The safe room is clear. Move to the blue door.");
 
             if (EventSystem.current == null)
             {
@@ -609,24 +673,94 @@ namespace BG3UnityClient.UI
             ClearSelectedUi();
         }
 
+        private void OnToggleDebugActionsClicked()
+        {
+            debugActionsExpanded = !debugActionsExpanded;
+            RefreshActFlowUi();
+            ClearSelectedUi();
+        }
+
         private void RefreshDebugPanelLayout()
         {
+            var cursorY = -90f;
+
+            if (statusText != null)
+            {
+                SetTopLeft(statusText.rectTransform, new Vector2(12f, -38f), new Vector2(294f, 42f));
+            }
+
+            if (IsActive(inputField) || IsActive(sendButton))
+            {
+                if (inputField != null)
+                {
+                    SetTopLeft(inputField.GetComponent<RectTransform>(), new Vector2(12f, cursorY), new Vector2(212f, 31f));
+                }
+
+                if (sendButton != null)
+                {
+                    SetTopLeft(sendButton.GetComponent<RectTransform>(), new Vector2(232f, cursorY), new Vector2(74f, 31f));
+                }
+
+                cursorY -= 42f;
+            }
+
+            PositionActionButton(disarmButton, ref cursorY);
+            PositionActionButton(triggerTrapButton, ref cursorY);
+            PositionActionButton(readChemicalNotesButton, ref cursorY);
+            PositionActionButton(readDiaryButton, ref cursorY);
+            PositionActionButton(askStrategyButton, ref cursorY);
+            PositionActionButton(useDiaryTruthButton, ref cursorY);
+            PositionActionButton(setupBossButton, ref cursorY);
+
             if (debugPanelRoot != null)
             {
-                debugPanelRoot.sizeDelta = new Vector2(318f, outputExpanded ? 444f : 336f);
+                debugPanelRoot.sizeDelta = new Vector2(318f, Mathf.Max(154f, -cursorY + (outputExpanded ? 136f : 48f)));
             }
 
             if (outputContainer != null)
             {
                 outputContainer.gameObject.SetActive(outputExpanded);
+                if (outputExpanded)
+                {
+                    SetTopLeft(outputContainer, new Vector2(12f, cursorY), new Vector2(294f, 110f));
+                }
             }
 
             if (outputPreviewText != null)
             {
                 outputPreviewText.gameObject.SetActive(!outputExpanded);
+                if (!outputExpanded)
+                {
+                    SetTopLeft(outputPreviewText.rectTransform, new Vector2(12f, cursorY), new Vector2(294f, 22f));
+                }
             }
 
-            SetButtonLabel(outputToggleButton, outputExpanded ? "Hide" : "Log");
+            SetButtonLabel(outputToggleButton, outputExpanded ? "Hide Log" : "Log");
+            SetButtonLabel(debugActionsToggleButton, debugActionsExpanded ? "Hide Debug" : "Debug");
+        }
+
+        private static void PositionActionButton(Button button, ref float cursorY)
+        {
+            if (!IsActive(button))
+            {
+                return;
+            }
+
+            SetTopLeft(button.GetComponent<RectTransform>(), new Vector2(12f, cursorY), new Vector2(294f, 30f));
+            cursorY -= 36f;
+        }
+
+        private static bool IsActive(Component component)
+        {
+            return component != null && component.gameObject.activeSelf;
+        }
+
+        private static void SetControlActive(Component component, bool active)
+        {
+            if (component != null && component.gameObject.activeSelf != active)
+            {
+                component.gameObject.SetActive(active);
+            }
         }
 
         private void OnDisarmClicked()
@@ -766,6 +900,35 @@ namespace BG3UnityClient.UI
                 }));
         }
 
+        private void InvokePrimaryActShortcut()
+        {
+            switch (actFlow.CurrentAct)
+            {
+                case ActFlowStage.Act2PoisonCorridor:
+                    OnDisarmClicked();
+                    break;
+                case ActFlowStage.Act3SecretStudy:
+                    OnReadChemicalNotesClicked();
+                    break;
+                case ActFlowStage.Act4GribboLab:
+                    OnAskStrategyClicked();
+                    break;
+            }
+        }
+
+        private void InvokeSecondaryActShortcut()
+        {
+            switch (actFlow.CurrentAct)
+            {
+                case ActFlowStage.Act3SecretStudy:
+                    OnReadDiaryClicked();
+                    break;
+                case ActFlowStage.Act4GribboLab:
+                    OnUseDiaryTruthClicked();
+                    break;
+            }
+        }
+
         private System.Collections.IEnumerator SetupBossContext()
         {
             SetBossRequestInFlight(true);
@@ -850,7 +1013,7 @@ namespace BG3UnityClient.UI
 
             if (triggerTrapButton != null)
             {
-                triggerTrapButton.interactable = trapZone != null && trapState != TrapVisualState.Disabled && trapState != TrapVisualState.Triggered && !flowInFlight;
+                triggerTrapButton.interactable = trapZone != null && trapState != TrapVisualState.Disabled && trapState != TrapVisualState.Triggered && flowAllowsTrap && !flowInFlight;
             }
         }
 
@@ -860,7 +1023,7 @@ namespace BG3UnityClient.UI
             var flowAllowsBoss = actFlow == null || actFlow.CurrentAct == ActFlowStage.Act4GribboLab;
             if (setupBossButton != null)
             {
-                setupBossButton.interactable = backendClient != null && !bossRequestInFlight && !flowInFlight;
+                setupBossButton.interactable = backendClient != null && !bossRequestInFlight && !flowInFlight && flowAllowsBoss;
             }
 
             if (askStrategyButton != null)
@@ -877,6 +1040,24 @@ namespace BG3UnityClient.UI
 
         private void RefreshActButtons()
         {
+            var activeAct = actFlow == null ? ActFlowStage.Act1SafeRoom : actFlow.CurrentAct;
+            var debugActionsAvailable = activeAct == ActFlowStage.Act2PoisonCorridor || activeAct == ActFlowStage.Act4GribboLab;
+            if (!debugActionsAvailable)
+            {
+                debugActionsExpanded = false;
+            }
+
+            SetControlActive(inputField, activeAct == ActFlowStage.Act1SafeRoom);
+            SetControlActive(sendButton, activeAct == ActFlowStage.Act1SafeRoom);
+            SetControlActive(debugActionsToggleButton, debugActionsAvailable);
+            SetControlActive(disarmButton, activeAct == ActFlowStage.Act2PoisonCorridor);
+            SetControlActive(triggerTrapButton, activeAct == ActFlowStage.Act2PoisonCorridor && debugActionsExpanded);
+            SetControlActive(readChemicalNotesButton, activeAct == ActFlowStage.Act3SecretStudy);
+            SetControlActive(readDiaryButton, activeAct == ActFlowStage.Act3SecretStudy);
+            SetControlActive(askStrategyButton, activeAct == ActFlowStage.Act4GribboLab);
+            SetControlActive(useDiaryTruthButton, activeAct == ActFlowStage.Act4GribboLab);
+            SetControlActive(setupBossButton, activeAct == ActFlowStage.Act4GribboLab && debugActionsExpanded);
+
             var canRead = actFlow != null
                 && actFlow.CurrentAct == ActFlowStage.Act3SecretStudy
                 && backendClient != null
@@ -891,6 +1072,8 @@ namespace BG3UnityClient.UI
             {
                 readDiaryButton.interactable = canRead;
             }
+
+            RefreshDebugPanelLayout();
         }
 
         private void SetBossRequestInFlight(bool inFlight)
@@ -921,7 +1104,7 @@ namespace BG3UnityClient.UI
             bossEncounter?.SetBossReady(true);
             if (actFlow == null)
             {
-                SetAct("Act 4 - Gribbo Lab", "Convince Gribbo to surrender the key.");
+                SetAct("Act 4 — Gribbo Lab", "Ask Party Strategy, then Use Diary Truth to get the key.");
             }
             else
             {
@@ -946,7 +1129,7 @@ namespace BG3UnityClient.UI
             keyFeedback?.ShowKeyObtained();
             if (actFlow == null)
             {
-                SetAct("Act 4 - Gribbo Lab", "Heavy Iron Key obtained.");
+                SetAct("Act 4 — Gribbo Lab", "Heavy Iron Key obtained.");
             }
             else
             {
@@ -963,6 +1146,22 @@ namespace BG3UnityClient.UI
             {
                 EventSystem.current.SetSelectedGameObject(null);
             }
+        }
+
+        private static bool IsTextInputFocused()
+        {
+            var selected = EventSystem.current == null ? null : EventSystem.current.currentSelectedGameObject;
+            if (selected == null)
+            {
+                return false;
+            }
+
+            if (!selected.activeInHierarchy)
+            {
+                return false;
+            }
+
+            return selected.GetComponent<InputField>() != null || selected.GetComponentInParent<InputField>() != null;
         }
 
         private static void AppendBossSummary(StringBuilder builder, ApiChatResponse response)
@@ -1321,7 +1520,7 @@ namespace BG3UnityClient.UI
         private static ActObjectiveHud CreateActObjectiveHud(Transform canvasTransform)
         {
             var root = CreateUiObject("ActObjectiveHud", canvasTransform);
-            SetTopLeft(root, new Vector2(18f, -18f), new Vector2(420f, 68f));
+            SetTopLeft(root, new Vector2(18f, -18f), new Vector2(560f, 118f));
 
             var image = root.gameObject.AddComponent<Image>();
             image.color = new Color(0.025f, 0.032f, 0.04f, 0.76f);
@@ -1338,16 +1537,46 @@ namespace BG3UnityClient.UI
             accentImage.color = new Color(1f, 0.64f, 0.2f, 0.92f);
             accentImage.raycastTarget = false;
 
-            var title = CreateText("ActTitle", root, "Act 1 - Safe Room", 17, FontStyle.Bold, TextAnchor.UpperLeft, new Color(1f, 0.86f, 0.54f, 1f));
-            SetTopLeft(title.rectTransform, new Vector2(16f, -10f), new Vector2(388f, 24f));
+            var title = CreateText("ActTitle", root, "Act 1 — Safe Room", 17, FontStyle.Bold, TextAnchor.UpperLeft, new Color(1f, 0.86f, 0.54f, 1f));
+            SetTopLeft(title.rectTransform, new Vector2(16f, -10f), new Vector2(520f, 24f));
 
-            var objective = CreateText("Objective", root, "Open the door / move toward corridor.", 14, FontStyle.Normal, TextAnchor.UpperLeft, new Color(0.88f, 0.93f, 0.94f, 0.95f));
+            var progress = CreateText("ActProgress", root, "[Act1 Safe Room] -> Act2 Corridor -> Act3 Study -> Act4 Gribbo", 11, FontStyle.Bold, TextAnchor.UpperLeft, new Color(0.72f, 0.92f, 0.9f, 0.88f));
+            progress.horizontalOverflow = HorizontalWrapMode.Wrap;
+            progress.verticalOverflow = VerticalWrapMode.Truncate;
+            SetTopLeft(progress.rectTransform, new Vector2(16f, -34f), new Vector2(520f, 18f));
+
+            var objective = CreateText("Objective", root, "Move to the blue door to enter the poison corridor.", 13, FontStyle.Normal, TextAnchor.UpperLeft, new Color(0.88f, 0.93f, 0.94f, 0.95f));
             objective.horizontalOverflow = HorizontalWrapMode.Wrap;
             objective.verticalOverflow = VerticalWrapMode.Truncate;
-            SetTopLeft(objective.rectTransform, new Vector2(16f, -36f), new Vector2(388f, 24f));
+            SetTopLeft(objective.rectTransform, new Vector2(16f, -56f), new Vector2(520f, 32f));
+
+            var hint = CreateText("ControlHint", root, "WASD: move to the blue door trigger.", 11, FontStyle.Normal, TextAnchor.UpperLeft, new Color(0.78f, 0.82f, 0.78f, 0.9f));
+            hint.horizontalOverflow = HorizontalWrapMode.Wrap;
+            hint.verticalOverflow = VerticalWrapMode.Truncate;
+            SetTopLeft(hint.rectTransform, new Vector2(16f, -92f), new Vector2(520f, 18f));
+
+            var toastRoot = CreateUiObject("ActTitleToast", canvasTransform);
+            toastRoot.anchorMin = new Vector2(0.5f, 1f);
+            toastRoot.anchorMax = new Vector2(0.5f, 1f);
+            toastRoot.pivot = new Vector2(0.5f, 1f);
+            toastRoot.anchoredPosition = new Vector2(0f, -24f);
+            toastRoot.sizeDelta = new Vector2(360f, 48f);
+
+            var toastGroup = toastRoot.gameObject.AddComponent<CanvasGroup>();
+            toastGroup.alpha = 0f;
+            toastGroup.blocksRaycasts = false;
+            toastGroup.interactable = false;
+
+            var toastImage = toastRoot.gameObject.AddComponent<Image>();
+            toastImage.color = new Color(0.08f, 0.06f, 0.035f, 0.9f);
+            toastImage.raycastTarget = false;
+            AddBorder(toastRoot, new Color(1f, 0.68f, 0.24f, 0.74f), 1.5f);
+
+            var toastText = CreateText("ActToastText", toastRoot, "Act 1 — Safe Room", 18, FontStyle.Bold, TextAnchor.MiddleCenter, new Color(1f, 0.86f, 0.52f, 1f));
+            StretchWithPadding(toastText.rectTransform, 14f, 6f);
 
             var hud = root.gameObject.AddComponent<ActObjectiveHud>();
-            hud.Configure(title, objective);
+            hud.Configure(title, objective, progress, hint, toastGroup, toastText);
             return hud;
         }
 
@@ -1382,7 +1611,7 @@ namespace BG3UnityClient.UI
             var queue = CreateText("Queue", root, string.Empty, 13, FontStyle.Bold, TextAnchor.MiddleRight, new Color(0.82f, 0.74f, 0.62f, 0.9f));
             SetTopLeft(queue.rectTransform, new Vector2(692f, -16f), new Vector2(70f, 24f));
 
-            var body = CreateText("Body", root, "The corridor falls quiet.", 18, FontStyle.Normal, TextAnchor.UpperLeft, new Color(0.96f, 0.97f, 0.98f, 1f));
+            var body = CreateText("Body", root, "The safe room is clear. Move to the blue door.", 18, FontStyle.Normal, TextAnchor.UpperLeft, new Color(0.96f, 0.97f, 0.98f, 1f));
             body.horizontalOverflow = HorizontalWrapMode.Wrap;
             body.verticalOverflow = VerticalWrapMode.Truncate;
             body.lineSpacing = 1.05f;
