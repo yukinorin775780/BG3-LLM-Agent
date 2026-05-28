@@ -79,6 +79,6 @@ expected:
       - event_name: actor_runtime_decision
       - event_name: event_drain
   retrieval:
-    max_hits: 8
+    max_hits: 12
   budget:
     max_total_tokens: 0

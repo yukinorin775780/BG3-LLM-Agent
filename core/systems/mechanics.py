@@ -624,6 +624,71 @@ def _move_toward_target(
     return target_x, target_y - (1 if dy > 0 else -1)
 
 
+def _select_adjacent_move_destination(
+    *,
+    state: Any,
+    entities: Dict[str, Any],
+    actor_id: str,
+    actor_x: int,
+    actor_y: int,
+    target_x: int,
+    target_y: int,
+    map_data: Dict[str, Any],
+) -> tuple[int, int]:
+    if _chebyshev_distance(
+        actor_x=actor_x,
+        actor_y=actor_y,
+        target_x=target_x,
+        target_y=target_y,
+    ) <= 1:
+        return actor_x, actor_y
+
+    preferred = _move_toward_target(
+        actor_x=actor_x,
+        actor_y=actor_y,
+        target_x=target_x,
+        target_y=target_y,
+    )
+    candidates: List[tuple[int, int]] = [preferred]
+    for dx, dy in (
+        (0, 1),
+        (1, 0),
+        (-1, 0),
+        (0, -1),
+        (1, 1),
+        (-1, 1),
+        (1, -1),
+        (-1, -1),
+    ):
+        candidate = (target_x + dx, target_y + dy)
+        if candidate not in candidates:
+            candidates.append(candidate)
+
+    candidates.sort(
+        key=lambda item: (
+            _chebyshev_distance(
+                actor_x=actor_x,
+                actor_y=actor_y,
+                target_x=item[0],
+                target_y=item[1],
+            ),
+            abs(item[0] - actor_x) + abs(item[1] - actor_y),
+        )
+    )
+    for candidate_x, candidate_y in candidates:
+        collision_error = _validate_move_destination(
+            state=state,
+            entities=entities,
+            actor_id=actor_id,
+            destination_x=candidate_x,
+            destination_y=candidate_y,
+            map_data_override=map_data if isinstance(map_data, dict) else {},
+        )
+        if not collision_error:
+            return candidate_x, candidate_y
+    return preferred
+
+
 def _chebyshev_distance(
     *,
     actor_x: int,
@@ -6350,8 +6415,29 @@ def execute_move_action(state: Any) -> Dict[str, Any]:
         x=target_x,
         y=target_y,
     ) is not None
+    move_source = str(intent_context.get("source") or state.get("source") or "").strip().lower()
+    user_input_text = str(state.get("user_input") or "").strip().lower()
+    is_explicit_approach_text = (
+        intent == "APPROACH"
+        or move_source in {"ui_text_normalized", "ui_text_move", "text_approach"}
+        or any(
+            marker in user_input_text
+            for marker in ("走到", "靠近", "接近", "前往", "移动到", "approach", "walk to", "go to", "move to")
+        )
+    )
     if is_coordinate_target or is_transition_tile_target:
         new_x, new_y = target_x, target_y
+    elif is_explicit_approach_text:
+        new_x, new_y = _select_adjacent_move_destination(
+            state=state,
+            entities=entities,
+            actor_id=actor_id,
+            actor_x=actor_x,
+            actor_y=actor_y,
+            target_x=target_x,
+            target_y=target_y,
+            map_data=map_data if isinstance(map_data, dict) else {},
+        )
     else:
         new_x, new_y = _move_toward_target(
             actor_x=actor_x,
@@ -6893,7 +6979,16 @@ def execute_interact_action(state: Any) -> Dict[str, Any]:
     new_is_open = not bool(door.get("is_open", False))
     door["is_open"] = new_is_open
     door["status"] = "open" if new_is_open else "closed"
+    _sync_object_state(
+        entities=entities,
+        environment_objects=environment_objects,
+        target_id=target_id,
+        updates={"is_open": new_is_open, "status": "open" if new_is_open else "closed"},
+    )
     _sync_door_state_to_map(map_data=map_data, entities=entities)
+    flags = dict(state.get("flags") or {})
+    if normalized_target_id == "door_a_to_b" and new_is_open:
+        flags["act2_corridor_entered"] = True
     actor_name = _display_entity_name(actor, actor_id)
     door_name = _display_entity_name(door, target_id)
     action_text = "打开了" if new_is_open else "关上了"
@@ -6901,7 +6996,9 @@ def execute_interact_action(state: Any) -> Dict[str, Any]:
     payload: Dict[str, Any] = {
         "journal_events": [f"🚪 [交互] {actor_name} {action_text} {door_name}。"],
         "entities": entities,
+        "environment_objects": environment_objects,
         "map_data": map_data,
+        "flags": flags,
         "demo_cleared": bool(state.get("demo_cleared", False)),
         "raw_roll_data": _build_action_result(
             intent="INTERACT",

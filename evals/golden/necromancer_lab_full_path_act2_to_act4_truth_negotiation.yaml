@@ -24,6 +24,7 @@ steps:
         equals:
           environment_objects.door_a_to_b.status: open
           environment_objects.door_a_to_b.is_open: true
+          game_state.flags.act2_corridor_entered: true
   - id: approach_trap_marker
     user_input: 走到走廊里的可疑地砖附近。
     intent: MOVE
@@ -53,15 +54,29 @@ steps:
         contains:
           game_state.journal_events:
             - "[陷阱解除] astarion -> gas_trap_1"
-  - id: move_to_bd_door
-    user_input: 靠近 B-D 实验室重门。
+  - id: cross_disabled_trap_tile
+    user_input: 踩过已解除的 gas_trap_1 压力板。
     intent: MOVE
     payload:
-      target: "4,8"
+      target: "5,11"
     expected:
       state:
         equals:
-          game_state.entities.player.x: 4
+          game_state.entities.player.x: 5
+          game_state.entities.player.y: 11
+        visibility:
+          forbidden_paths:
+            - game_state.flags.necromancer_lab_poison_trap_triggered
+            - game_state.flags.act2_gas_trap_triggered
+  - id: move_to_bd_door
+    user_input: 走到 door_b_to_d 附近。
+    intent: MOVE
+    payload:
+      target: door_b_to_d
+    expected:
+      state:
+        equals:
+          game_state.entities.player.x: 5
           game_state.entities.player.y: 8
   - id: inspect_bd_door_without_key
     user_input: 检查 B-D 门。
@@ -119,6 +134,45 @@ steps:
         contains:
           game_state.journal_events:
             - "[目标更新] 找到 Gribbo。他持有重铁钥匙，并且知道毒气防线的真相。"
+  - id: loot_study_chest_for_lab_key
+    user_input: 搜刮 study_chest，拿走 lab_key。
+    intent: ui_action_loot
+    character: player
+    payload:
+      target: study_chest
+    expected:
+      state:
+        equals:
+          game_state.player_inventory.lab_key: 1
+        contains:
+          game_state.journal_events:
+            - "💰 [搜刮] 玩家 从 死灵法师的战利品箱 上搜刮到了: lab_key x 1, 金币 x 25。"
+      visibility:
+        forbidden_paths:
+          - game_state.environment_objects.chest_1.inventory.lab_key
+  - id: return_to_bd_door
+    user_input: 走到 door_b_to_d 附近。
+    intent: MOVE
+    payload:
+      target: door_b_to_d
+    expected:
+      state:
+        equals:
+          game_state.entities.player.x: 6
+          game_state.entities.player.y: 6
+  - id: open_bd_door_with_lab_key
+    user_input: 用 lab_key 打开 door_b_to_d。
+    intent: INTERACT
+    payload:
+      target: door_b_to_d
+    expected:
+      state:
+        equals:
+          game_state.environment_objects.door_b_to_d.status: open
+          game_state.environment_objects.door_b_to_d.is_open: true
+          game_state.entities.door_b_to_d.status: open
+          game_state.entities.door_b_to_d.is_open: true
+          game_state.flags.act2_corridor_exit_opened_with_key: true
   - id: enter_boss_room
     user_input: 进入实验室，和 Gribbo 谈谈。
     intent: chat
@@ -168,20 +222,20 @@ steps:
             payload:
               transaction_accepted_count: 1
   - id: approach_final_exit
-    user_input: 移动到 17,4
+    user_input: 走到 heavy_oak_door_1 附近。
     intent: MOVE
     payload:
-      target: "17,4"
+      target: heavy_oak_door_1
     expected:
       state:
         equals:
           game_state.entities.player.x: 17
           game_state.entities.player.y: 4
   - id: open_final_exit
-    user_input: 用 heavy_iron_key 打开 exit_door。
+    user_input: 用 heavy_iron_key 打开 heavy_oak_door_1。
     intent: INTERACT
     payload:
-      target: exit_door
+      target: heavy_oak_door_1
     expected:
       state:
         equals:

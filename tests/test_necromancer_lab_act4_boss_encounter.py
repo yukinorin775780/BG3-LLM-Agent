@@ -74,6 +74,49 @@ def test_party_strategy_split_uses_runtime_metadata_journal():
     assert "heavy_iron_key" not in drained.get("player_inventory", {})
 
 
+def test_party_strategy_after_decoded_diary_is_not_overridden_by_diary_pressure():
+    state = _lab_state()
+    state["flags"]["necromancer_lab_diary_decoded"] = True
+    state["flags"]["act4_gribbo_confrontation_started"] = True
+    turn_state = {**state, "user_input": "我们怎么处理他？队友们有什么建议，怎么拿钥匙？"}
+
+    dm_patch = asyncio.run(dm_node(turn_state))
+    routed = {**turn_state, **dm_patch}
+
+    assert routed["intent_context"]["reason"] == "act4_gribbo_boss_strategy"
+    assert routed["intent_context"]["gribbo_boss_strategy_context"]["stances"] == {
+        "astarion": "steal_key",
+        "shadowheart": "contain_corruption",
+        "laezel": "execute",
+    }
+    assert routed["intent_context"].get("diary_negotiation_context") == {}
+    assert routed["current_speaker"] == "astarion"
+    assert routed["speaker_queue"] == ["shadowheart", "laezel"]
+
+    class _FakeRetriever:
+        def retrieve_for_actor(self, query):
+            _ = query
+            return []
+
+        def retrieve_for_director(self, query):
+            _ = query
+            return []
+
+    fake_memory_service = Mock()
+    fake_memory_service.retriever = _FakeRetriever()
+    with patch("core.actors.executor.get_default_memory_service", return_value=fake_memory_service):
+        invocation_patch = asyncio.run(
+            actor_invocation_node(routed, actor_registry=get_default_actor_registry())
+        )
+
+    drained = event_drain_node({**routed, **invocation_patch})
+
+    assert "[Boss方案] astarion -> steal_key" in drained["journal_events"]
+    assert "[Boss方案] shadowheart -> contain_corruption" in drained["journal_events"]
+    assert "[Boss方案] laezel -> execute" in drained["journal_events"]
+    assert "heavy_iron_key" not in drained.get("player_inventory", {})
+
+
 def test_party_strategy_does_not_trigger_from_secret_study_context():
     state = _lab_state()
     state["flags"]["act3_secret_study_entered"] = True
@@ -141,6 +184,14 @@ def test_truth_negotiation_dm_priority_over_diary_evidence_branch():
     assert dm_patch["intent_context"]["gribbo_boss_resolution_context"]["route"] == "truth_negotiation"
     assert dm_patch["intent_context"].get("diary_negotiation_context") == {}
     assert dm_patch["intent_context"]["reason"] == "act4_gribbo_boss_truth_negotiation"
+
+    result = mechanics.execute_gribbo_boss_resolution_action({**state, **dm_patch})
+    drained = _drain_after_mechanics(state, result)
+
+    assert drained["flags"]["act4_negotiation_success"] is True
+    assert drained["flags"]["act4_heavy_iron_key_obtained"] is True
+    assert drained["player_inventory"]["heavy_iron_key"] == 1
+    assert "[物品转移] gribbo -> player heavy_iron_key" in drained["journal_events"]
 
 
 def test_astarion_steal_key_failure_triggers_poison_valve():

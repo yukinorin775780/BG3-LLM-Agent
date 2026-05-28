@@ -1000,9 +1000,7 @@
       && (!resolvedIntent || normalizedIntent === "INTERACT")
     ) {
       resolvedIntent = "INTERACT";
-      if (!String(resolvedTarget || "").trim()) {
-        resolvedTarget = resolvedDoorTarget || "heavy_oak_door_1";
-      }
+      resolvedTarget = resolvedDoorTarget || resolvedTarget || "heavy_oak_door_1";
       resolvedSource = resolvedSource || "text_input";
     }
 
@@ -1738,7 +1736,33 @@
     }
     if (shouldPreferTargetNearest && target && input) return input;
     if (shouldPreferTargetNearest && target && tactical) return tactical;
+    const backendSyncedPlayer = safeObject(safeObject(state.partyStatus).player);
+    if (normalizeId(backendSyncedPlayer._projection_source) === "client_backend_move") {
+      const backendSyncedPosition = normalizeGridPositionCandidate(backendSyncedPlayer);
+      if (backendSyncedPosition) return backendSyncedPosition;
+    }
     return getClientPlayerGridPosition();
+  }
+
+  function setClientPlayerGridPositionFromBackend(position, source = "client_backend_move") {
+    const normalized = normalizeGridPositionCandidate(position);
+    if (!normalized) return false;
+    if (
+      window.BG3InputController
+      && typeof window.BG3InputController.setPlayerPosition === "function"
+    ) {
+      window.BG3InputController.setPlayerPosition(normalized.x, normalized.y);
+    }
+    state.partyStatus = {
+      ...safeObject(state.partyStatus),
+      player: {
+        ...safeObject(safeObject(state.partyStatus).player),
+        x: normalized.x,
+        y: normalized.y,
+        _projection_source: source,
+      },
+    };
+    return true;
   }
 
   function syncLocalPlayerProjectionState(source = "client_local") {
@@ -2628,7 +2652,9 @@
         normalizeId(key) === "player"
         && normalizeId(previousRecord._projection_source).startsWith("client_")
       ) {
-        const local = getClientPlayerGridPosition();
+        const local = normalizeId(previousRecord._projection_source) === "client_backend_move"
+          ? normalizeGridPositionCandidate(previousRecord)
+          : getClientPlayerGridPosition();
         if (local) {
           mergedRecord.x = local.x;
           mergedRecord.y = local.y;
@@ -2682,6 +2708,14 @@
       updateWorldStateDiff(before, buildShowcaseSnapshot({
         journal_events: ["[探索] " + key + " opened"],
       }), { autoExpand: true });
+    }
+    if (key === "door_a_to_b") {
+      void sendMessage("", "INTERACT", null, {
+        target: key,
+        source: "interaction",
+        incrementTurn: false,
+        skipLogUpdate: true,
+      });
     }
     return true;
   }
@@ -4918,17 +4952,9 @@
 
   function ensureAct2CorridorTrapInsightEvent(uiEvents, actionIntent, actionTarget, actionSource) {
     const events = safeArray(uiEvents).slice();
-    if (events.some((event) => normalizeId(safeObject(event).type) === "trap_insight")) return events;
-    if (normalizeId(actionIntent) !== "chat") return events;
-    if (normalizeId(actionTarget) !== "gas_trap_1") return events;
-    if (normalizeId(actionSource) !== "trap_awareness") return events;
-    if (!shouldQueueTrapAwareness()) return events;
-    events.push({
-      type: "trap_insight",
-      actor: "astarion",
-      trapId: "gas_trap_1",
-      source: "trap_awareness",
-    });
+    void actionIntent;
+    void actionTarget;
+    void actionSource;
     return events;
   }
 
@@ -4998,6 +5024,11 @@
       if (opts.incrementTurn !== false) {
         state.turnCount += 1;
       }
+      const actionIntent = normalizeId(payload.intent);
+      const actionTarget = normalizeId(payload.target || routed.target);
+      if (["move", "approach"].includes(actionIntent)) {
+        setClientPlayerGridPositionFromBackend(safeObject(safeObject(data.party_status).player));
+      }
       const previousWorldFlagsSnapshot = { ...safeObject(state.worldFlags) };
       refreshWorldFlags(data);
       const wasCombatActive = isCombatStateActive(state.combatState);
@@ -5023,8 +5054,6 @@
         state.mapData = mergeVisualMapData(state.mapData, state.normalizedMap);
       }
       updateMapDebug("sendStructuredAction:response");
-      const actionIntent = normalizeId(payload.intent);
-      const actionTarget = normalizeId(payload.target || routed.target);
       if (actionIntent === "init_sync") {
         state.hasStateProjectionBaseline = true;
       }

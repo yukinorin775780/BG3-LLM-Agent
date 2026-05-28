@@ -4,6 +4,7 @@ Input / World Tick 节点：斜杠命令与世界心跳。
 
 import copy
 import json
+import re
 
 from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
@@ -51,6 +52,7 @@ _GRIBBO_ATTACK_MARKERS = ("攻击 gribbo", "attack gribbo", "攻击格里布", "
 _TRAP_DISARM_ACTOR_MARKERS = ("阿斯代伦", "astarion")
 _TRAP_DISARM_TARGET_MARKERS = ("陷阱", "毒气", "gas_trap_1", "poison_trap", "trap")
 _TRAP_DISARM_ACTION_MARKERS = ("解除", "拆", "拆掉", "拆除", "disarm", "disable")
+_TRAP_DISARM_STATE_MARKERS = ("已解除", "已经解除", "解除的", "已拆除", "已经拆除", "disabled", "disarmed")
 _LAB_DOOR_MARKERS = (
     "door_b_to_d",
     "b-d",
@@ -99,6 +101,30 @@ _GRIBBO_MERCY_STANCE_MARKERS = (
 )
 _GRIBBO_MERCY_CHOICE_MARKERS = ("mercy", "spare", "forgive", "放过", "饶了", "饶他", "不杀", "留他一命")
 _GRIBBO_EXECUTE_CHOICE_MARKERS = ("execute", "kill", "finish him", "处决", "杀了", "解决他", "别留活口")
+_EXPLICIT_OBJECT_TARGET_ALIASES = (
+    ("heavy_oak_door_1", ("heavy_oak_door_1", "exit_door", "最终门", "出口门", "final exit", "final door")),
+    ("door_b_to_d", ("door_b_to_d", "b-d", "bd门", "b_d", "实验室门", "实验室重门", "lab door", "laboratory door")),
+    ("door_a_to_b", ("door_a_to_b", "a-b", "ab门", "a_b", "走廊入口", "corridor entrance")),
+    ("gas_trap_1", ("gas_trap_1", "poison_trap_1", "poison_trap_2", "毒气压力板", "毒气陷阱")),
+    ("chest_1", ("study_chest", "chest_1", "书房箱子", "书房宝箱", "战利品箱")),
+    ("cracked_wall", ("cracked_wall", "hollow_wall", "secret_study_wall", "裂墙", "开裂的墙壁")),
+    ("gribbo", ("gribbo", "格里布", "格里波")),
+)
+_EXPLICIT_INTERACT_MARKERS = (
+    "打开",
+    "开门",
+    "使用",
+    "用 ",
+    "钥匙",
+    "open",
+    "unlock",
+    "use",
+    "interact",
+)
+_EXPLICIT_MOVE_MARKERS = ("走到", "靠近", "接近", "前往", "移动到", "approach", "walk to", "go to", "move to")
+_EXPLICIT_READ_MARKERS = ("阅读", "查看", "读", "read", "inspect", "check")
+_EXPLICIT_LOOT_MARKERS = ("搜刮", "拿走", "拾取", "loot", "take")
+_COORDINATE_TARGET_RE = re.compile(r"^\s*-?\d+\s*,\s*-?\d+\s*$")
 
 
 def _looks_like_act3_choice(map_id: str, user_input: str) -> bool:
@@ -121,6 +147,40 @@ def _contains_marker(user_input: str, markers: tuple[str, ...]) -> bool:
     text = str(user_input or "").strip()
     lowered = text.lower()
     return any(marker in text or marker in lowered for marker in markers)
+
+
+def _explicit_object_target_from_text(user_input: str) -> str:
+    text = str(user_input or "").strip()
+    lowered = text.lower()
+    if not text:
+        return ""
+    for target_id, aliases in _EXPLICIT_OBJECT_TARGET_ALIASES:
+        if any(alias in text or alias in lowered for alias in aliases):
+            return target_id
+    return ""
+
+
+def _looks_like_coordinate_target(target: str) -> bool:
+    return bool(_COORDINATE_TARGET_RE.match(str(target or "")))
+
+
+def _looks_like_explicit_object_action(user_input: str, target_id: str) -> str:
+    if not target_id:
+        return ""
+    if _contains_marker(user_input, _EXPLICIT_MOVE_MARKERS):
+        return "MOVE"
+    if target_id == "gas_trap_1" and _contains_marker(user_input, _TRAP_DISARM_ACTION_MARKERS):
+        if _contains_marker(user_input, _TRAP_DISARM_STATE_MARKERS):
+            return ""
+        return "DISARM"
+    if target_id == "chest_1" and _contains_marker(user_input, _EXPLICIT_LOOT_MARKERS):
+        return "LOOT"
+    if target_id in {"necromancer_diary", "chemical_notes", "iron_key_sketch"} and _contains_marker(user_input, _EXPLICIT_READ_MARKERS):
+        return "READ"
+    if target_id.startswith("door_") or target_id == "heavy_oak_door_1":
+        if _contains_marker(user_input, _EXPLICIT_INTERACT_MARKERS):
+            return "INTERACT"
+    return ""
 
 
 def _looks_like_read_diary_text(map_id: str, user_input: str) -> bool:
@@ -158,6 +218,7 @@ def _looks_like_astarion_trap_disarm(map_id: str, user_input: str) -> bool:
     return (
         _contains_marker(user_input, _TRAP_DISARM_TARGET_MARKERS)
         and _contains_marker(user_input, _TRAP_DISARM_ACTION_MARKERS)
+        and not _contains_marker(user_input, _TRAP_DISARM_STATE_MARKERS)
         and (
             _contains_marker(user_input, _TRAP_DISARM_ACTOR_MARKERS)
             or _contains_marker(user_input, ("gas_trap_1", "poison_trap"))
@@ -246,7 +307,8 @@ def input_node(state: GameState) -> dict:
     incoming_intent_key = incoming_intent.lower()
     incoming_target = str(state.get("target") or "").strip()
     incoming_source = str(state.get("source") or "").strip().lower()
-    intent_context = {}
+    raw_intent_context = state.get("intent_context") if isinstance(state.get("intent_context"), dict) else {}
+    intent_context = copy.deepcopy(raw_intent_context)
     if incoming_target:
         intent_context["action_target"] = incoming_target.lower()
     if incoming_source:
@@ -285,6 +347,10 @@ def input_node(state: GameState) -> dict:
         # 保留服务端传入的系统意图（如挂机闲聊），勿覆盖为 pending
         if incoming_intent_key in {"trigger_idle_banter", "init_sync"}:
             return {**base, "intent": incoming_intent}
+        # Web UI interactions may be pure structured actions with no text.
+        # Preserve those intents so E-key/local UI actions can reach mechanics.
+        if incoming_intent and incoming_intent_key not in {"pending", "chat"}:
+            return {**base, "intent": incoming_intent, "intent_context": intent_context}
         return base
 
     if not user_input.startswith("/"):
@@ -292,6 +358,29 @@ def input_node(state: GameState) -> dict:
         read_target_key = incoming_target.lower()
         read_target_missing = not read_target_key or read_target_key in {"unknown", "null", "none"}
         map_id = str((state.get("map_data") or {}).get("id") or "").strip().lower()
+        preserve_structured_move_target = (
+            incoming_intent_key in {"move", "approach"}
+            and _looks_like_coordinate_target(incoming_target)
+        )
+        explicit_object_target = _explicit_object_target_from_text(user_input) if _is_necromancer_lab_map(map_id) else ""
+        explicit_object_action = (
+            ""
+            if preserve_structured_move_target
+            else _looks_like_explicit_object_action(user_input, explicit_object_target)
+        )
+        if explicit_object_action:
+            intent_context["action_target"] = explicit_object_target
+            intent_context["source"] = "ui_text_normalized"
+            if explicit_object_action == "DISARM":
+                intent_context["action_actor"] = "astarion" if _contains_marker(user_input, _TRAP_DISARM_ACTOR_MARKERS) else "player"
+                intent_context["action"] = "disarm_trap"
+            return {
+                **base,
+                "intent": explicit_object_action,
+                "target": explicit_object_target,
+                "source": "ui_text_normalized",
+                "intent_context": intent_context,
+            }
         study_context_target = _resolve_study_context_read_target(map_id, user_input)
         if study_context_target and (read_target_missing or read_target_key in _CHEMICAL_NOTES_MARKERS or read_target_key in _IRON_KEY_SKETCH_MARKERS):
             intent_context["action_target"] = study_context_target
@@ -323,7 +412,7 @@ def input_node(state: GameState) -> dict:
                 "source": "ui_text_normalized",
                 "intent_context": intent_context,
             }
-        if _looks_like_astarion_trap_disarm(map_id, user_input):
+        if not preserve_structured_move_target and _looks_like_astarion_trap_disarm(map_id, user_input):
             intent_context["action_actor"] = "astarion"
             intent_context["action_target"] = "gas_trap_1"
             intent_context["source"] = "ui_text_normalized"

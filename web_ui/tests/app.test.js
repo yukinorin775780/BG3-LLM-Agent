@@ -1460,9 +1460,12 @@ describe("web_ui/app.js UI bindings", () => {
         responses: [],
         journal_events: [],
         party_status: {},
-        environment_objects: {},
-        player_inventory: { healing_potion: 2 },
+        environment_objects: {
+          door_a_to_b: { id: "door_a_to_b", type: "door", status: "open", is_open: true, x: 3, y: 2 },
+        },
+        player_inventory: {},
         combat_state: {},
+        game_state: { flags: { act2_corridor_entered: true } },
       })
     );
     const api = await bootAppForTest();
@@ -1483,7 +1486,12 @@ describe("web_ui/app.js UI bindings", () => {
     await flushAsync();
 
     const chatCalls = fetchSpy.mock.calls.filter(([url]) => String(url).includes("/api/chat"));
-    expect(chatCalls.length).toBe(0);
+    expect(chatCalls.length).toBe(1);
+    expect(JSON.parse(chatCalls[0][1].body)).toMatchObject({
+      intent: "INTERACT",
+      target: "door_a_to_b",
+      source: "interaction",
+    });
     expect(api.state.roomVisibleIds.has("room_b_corridor")).toBe(true);
     expect(api.state.playerInventory.healing_potion).toBeUndefined();
 
@@ -1966,11 +1974,15 @@ describe("web_ui/app.js UI bindings", () => {
 
     expect(api.state.roomVisibleIds.has("room_b_corridor")).toBe(true);
     expect(window.BG3TacticalMap.refreshMapOnly).toHaveBeenCalledTimes(1);
-    expect(window.BG3TacticalMap.update).not.toHaveBeenCalled();
     const [mapData] = window.BG3TacticalMap.refreshMapOnly.mock.calls[0];
     expect(mapData.visible_rooms || mapData.visibleRooms).toContain("room_b_corridor");
-    expect(fetchSpy.mock.calls.filter(([url]) => String(url).includes("/api/chat"))).toHaveLength(0);
-    expect(window.BG3DirectorTrace.getState()).toBe("idle");
+    const chatCalls = fetchSpy.mock.calls.filter(([url]) => String(url).includes("/api/chat"));
+    expect(chatCalls).toHaveLength(1);
+    expect(JSON.parse(chatCalls[0][1].body)).toMatchObject({
+      intent: "INTERACT",
+      target: "door_a_to_b",
+      source: "interaction",
+    });
   });
 
   test("test_polling_without_companion_coordinates_preserves_local_party_trail_positions", async () => {
@@ -5186,6 +5198,90 @@ describe("web_ui/app.js UI bindings", () => {
 
     expect(document.querySelector(".agent-signal-card--trap-insight")).toBeNull();
     expect(document.getElementById("director-trace-summary").textContent).not.toContain("Astarion noticed");
+  });
+
+  test("test_hidden_trap_spotted_card_requires_backend_reveal_signal", async () => {
+    const fetchSpy = spyOnFetch().mockResolvedValue(mockResponse({
+      responses: [{ speaker: "astarion", text: "我听见了。继续。" }],
+      journal_events: [],
+      party_status: {},
+      environment_objects: {
+        gas_trap_1: { id: "gas_trap_1", type: "trap", status: "hidden", is_hidden: true, x: 5, y: 11 },
+      },
+      player_inventory: {},
+      combat_state: {},
+      game_state: { flags: {} },
+    }));
+    const api = await bootAppForTest("http://localhost/?qa_test=1&qa_no_idle=1");
+    fetchSpy.mockClear();
+
+    await api.sendStructuredAction({
+      text: "阿斯代伦检查走廊里的可疑机关。",
+      intent: "CHAT",
+      options: { target: "gas_trap_1", source: "trap_awareness" },
+    });
+    await flushAsync();
+
+    expect(document.querySelector(".agent-signal-card--trap-insight")).toBeNull();
+  });
+
+  test("test_e_opening_a_b_door_sends_backend_sync", async () => {
+    const fetchSpy = spyOnFetch().mockResolvedValue(mockResponse({
+      responses: [],
+      journal_events: ["🚪 [交互] 玩家 打开了 通往毒气走廊的门。"],
+      party_status: {},
+      environment_objects: {
+        door_a_to_b: { id: "door_a_to_b", type: "door", status: "open", is_open: true, x: 3, y: 2 },
+      },
+      player_inventory: {},
+      combat_state: {},
+      game_state: { flags: { act2_corridor_entered: true } },
+    }));
+    const api = await bootAppForTest("http://localhost/?qa_test=1&qa_no_idle=1");
+    fetchSpy.mockClear();
+
+    api.handleLocalExplorationDoor("door_a_to_b");
+    await flushAsync();
+
+    const chatCall = fetchSpy.mock.calls.find(([url]) => String(url).includes("/api/chat"));
+    expect(chatCall).toBeDefined();
+    const payload = JSON.parse(chatCall[1].body);
+    expect(payload).toMatchObject({
+      intent: "INTERACT",
+      target: "door_a_to_b",
+      source: "interaction",
+    });
+  });
+
+  test("test_text_move_response_updates_local_player_position_for_next_payload", async () => {
+    const fetchSpy = spyOnFetch().mockResolvedValue(mockResponse({
+      responses: [],
+      journal_events: ["🚶 [空间移动] 玩家移动到了 通往地表的出口 附近。"],
+      party_status: { player: { id: "player", x: 17, y: 4, hp: 20 } },
+      environment_objects: {
+        heavy_oak_door_1: { id: "heavy_oak_door_1", type: "door", status: "closed", x: 18, y: 3 },
+      },
+      player_inventory: { heavy_iron_key: 1 },
+      combat_state: {},
+      game_state: { flags: {} },
+    }));
+    const api = await bootAppForTest("http://localhost/?qa_test=1&qa_no_idle=1");
+    fetchSpy.mockClear();
+    window.BG3InputController.setPlayerPosition(7, 8);
+
+    await api.sendStructuredAction({
+      text: "走到 heavy_oak_door_1 附近。",
+      intent: "MOVE",
+      options: { target: "heavy_oak_door_1", source: "ui_text_move" },
+    });
+    await flushAsync();
+
+    const next = api.buildChatPayload("用 heavy_iron_key 打开 heavy_oak_door_1。", null, null, {
+      source: "dialogue_input",
+      target: "gribbo",
+    }).payload;
+    expect(next.target).toBe("heavy_oak_door_1");
+    expect(next.client_player_position).toEqual({ x: 17, y: 4 });
   });
 
   test("test_real_corridor_approach_uses_tiled_trap_position_for_awareness", async () => {

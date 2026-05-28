@@ -5,6 +5,7 @@ DM 分析、多人发言推进、旁白节点。
 import asyncio
 import copy
 import random
+import re
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from typing import Optional
 
@@ -62,6 +63,7 @@ _GRIBBO_ATTACK_MARKERS = ("攻击 gribbo", "attack gribbo", "攻击格里布", "
 _TRAP_DISARM_ACTOR_MARKERS = ("阿斯代伦", "astarion")
 _TRAP_DISARM_TARGET_MARKERS = ("陷阱", "毒气", "gas_trap_1", "poison_trap", "trap")
 _TRAP_DISARM_ACTION_MARKERS = ("解除", "拆", "拆掉", "拆除", "disarm", "disable")
+_TRAP_DISARM_STATE_MARKERS = ("已解除", "已经解除", "解除的", "已拆除", "已经拆除", "disabled", "disarmed")
 _LAB_DOOR_MARKERS = (
     "door_b_to_d",
     "b-d",
@@ -98,6 +100,35 @@ _DOOR_GUIDANCE_QUESTION_MARKERS = (
     "where",
     "how",
 )
+_EXPLICIT_OBJECT_TARGET_ALIASES = (
+    ("heavy_oak_door_1", ("heavy_oak_door_1", "exit_door", "最终门", "出口门", "final exit", "final door")),
+    ("door_b_to_d", ("door_b_to_d", "b-d", "bd门", "b_d", "实验室门", "实验室重门", "lab door", "laboratory door")),
+    ("door_a_to_b", ("door_a_to_b", "a-b", "ab门", "a_b", "走廊入口", "corridor entrance")),
+    ("gas_trap_1", ("gas_trap_1", "poison_trap_1", "poison_trap_2", "毒气压力板", "毒气陷阱")),
+    ("chest_1", ("study_chest", "chest_1", "书房箱子", "书房宝箱", "战利品箱")),
+    ("cracked_wall", ("cracked_wall", "hollow_wall", "secret_study_wall", "裂墙", "开裂的墙壁")),
+    ("gribbo", ("gribbo", "格里布", "格里波")),
+)
+_EXPLICIT_TARGET_ACTION_MARKERS = (
+    "打开",
+    "开门",
+    "使用",
+    "用 ",
+    "钥匙",
+    "解除",
+    "拆除",
+    "阅读",
+    "查看",
+    "搜刮",
+    "拿走",
+    "open",
+    "unlock",
+    "use",
+    "disarm",
+    "read",
+    "loot",
+)
+_COORDINATE_TARGET_RE = re.compile(r"^\s*-?\d+\s*,\s*-?\d+\s*$")
 
 
 def _has_scripted_necromancer_reason(analysis: dict) -> bool:
@@ -287,14 +318,14 @@ def _apply_gribbo_boss_resolution_override(*, state: GameState, analysis: dict) 
 
 def _apply_key_guidance_override(*, state: GameState, analysis: dict) -> dict:
     existing_action = str((analysis or {}).get("action_type") or "").strip().upper()
-    if existing_action in {"DISARM", "LOOT", "READ", "INTERACT", "MOVE", "APPROACH", "TRIGGER_TRAP", "ATTACK", "CAST_SPELL", "UNLOCK"}:
-        return analysis
     context = detect_key_guidance_context(
         dict(state or {}),
         str(state.get("user_input") or ""),
         "",
     )
     if not context:
+        return analysis
+    if existing_action in {"DISARM", "LOOT", "READ", "MOVE", "APPROACH", "TRIGGER_TRAP", "ATTACK", "CAST_SPELL", "UNLOCK"}:
         return analysis
 
     overridden = dict(analysis or {})
@@ -317,6 +348,8 @@ def _apply_diary_negotiation_override(*, state: GameState, analysis: dict) -> di
     if isinstance(existing_context, dict) and existing_context.get("gribbo_boss_intro_context"):
         return analysis
     if isinstance(existing_context, dict) and existing_context.get("gribbo_boss_resolution_context"):
+        return analysis
+    if isinstance(existing_context, dict) and existing_context.get("gribbo_boss_strategy_context"):
         return analysis
     context = detect_diary_negotiation_context(
         dict(state or {}),
@@ -341,6 +374,7 @@ def _looks_like_astarion_trap_disarm(user_input: str) -> bool:
     return (
         _contains_marker(user_input, _TRAP_DISARM_TARGET_MARKERS)
         and _contains_marker(user_input, _TRAP_DISARM_ACTION_MARKERS)
+        and not _contains_marker(user_input, _TRAP_DISARM_STATE_MARKERS)
         and (
             _contains_marker(user_input, _TRAP_DISARM_ACTOR_MARKERS)
             or _contains_marker(user_input, ("gas_trap_1", "poison_trap"))
@@ -539,6 +573,21 @@ def _contains_marker(user_input: str, markers: tuple[str, ...]) -> bool:
     text = str(user_input or "").strip()
     lowered = text.lower()
     return any(marker in text or marker in lowered for marker in markers)
+
+
+def _looks_like_coordinate_target(target: str) -> bool:
+    return bool(_COORDINATE_TARGET_RE.match(str(target or "")))
+
+
+def _explicit_object_target_from_text(user_input: str) -> str:
+    text = str(user_input or "").strip()
+    lowered = text.lower()
+    if not text or not _contains_marker(text, _EXPLICIT_TARGET_ACTION_MARKERS):
+        return ""
+    for target_id, aliases in _EXPLICIT_OBJECT_TARGET_ALIASES:
+        if any(alias in text or alias in lowered for alias in aliases):
+            return target_id
+    return ""
 
 
 def _looks_like_read_diary_text(user_input: str) -> bool:
@@ -814,9 +863,12 @@ def _apply_necromancer_door_target_fallback(*, state: GameState, analysis: dict)
 
     action_type = str(out.get("action_type") or "").strip().upper()
     action_target = str(out.get("action_target") or "").strip().lower()
+    explicit_text_target = _explicit_object_target_from_text(user_input)
     if action_type in {"", "CHAT", "INTERACT", "START_DIALOGUE", "DIALOGUE_REPLY"}:
         out["action_type"] = "INTERACT"
-    if not action_target:
+    if explicit_text_target in {"door_a_to_b", "door_b_to_d", "heavy_oak_door_1"}:
+        out["action_target"] = explicit_text_target
+    elif not action_target:
         out["action_target"] = "heavy_oak_door_1"
     return out
 
@@ -849,12 +901,34 @@ def _build_structured_client_analysis(
     action_type = client_intent
     source = str(state.get("source") or "").strip().lower()
     active_dialogue_target = str(state.get("active_dialogue_target") or "").strip().lower()
+    explicit_text_target = _explicit_object_target_from_text(str(state.get("user_input") or ""))
+    preserve_structured_move_target = (
+        client_intent in {"MOVE", "APPROACH"}
+        and _looks_like_coordinate_target(action_target)
+    )
+    preserve_structured_read_target = (
+        client_intent == "READ"
+        and bool(action_target)
+        and action_target not in {"unknown", "null", "none"}
+    )
+    if (
+        _is_necromancer_lab(state)
+        and explicit_text_target
+        and not preserve_structured_move_target
+        and not preserve_structured_read_target
+        and client_intent in {"READ", "INTERACT", "DISARM", "MOVE", "APPROACH", "LOOT", "UNLOCK"}
+    ):
+        action_target = explicit_text_target
     if client_intent == "CHAT" and action_target == "gribbo":
         action_type = "DIALOGUE_REPLY" if active_dialogue_target == "gribbo" else "START_DIALOGUE"
     if client_intent == "INTERACT" and source == "trap_trigger" and action_target == "gas_trap_1":
         action_type = "TRIGGER_TRAP"
 
-    if _is_necromancer_lab(state) and action_target == "heavy_oak_door_1":
+    if (
+        _is_necromancer_lab(state)
+        and action_target == "heavy_oak_door_1"
+        and client_intent not in {"MOVE", "APPROACH"}
+    ):
         if not _looks_like_door_attack(str(state.get("user_input") or "")):
             action_type = "INTERACT"
     elif _is_necromancer_lab(state) and client_intent == "INTERACT" and not action_target:
