@@ -106,6 +106,16 @@
     };
   }
 
+  function hasRollPayload(raw) {
+    const r = safeObj(raw);
+    const inner = r.result && typeof r.result === "object" ? r.result : null;
+    const src = inner || r;
+    if (Number(src.raw_roll) || Number(src.roll)) return true;
+    if (safeArr(src.rolls).length > 0) return true;
+    if (Number(inner ? 0 : r.result)) return true;
+    return Number(src.dc) > 0 || Number(r.dc) > 0;
+  }
+
   /* ══════════════════════════════════════════════════════
    *  normalizeLoSEvent(data, text)
    *  Handles blocked_by (backend field) and blockedTiles.
@@ -163,8 +173,13 @@
       inferFromLine(text, events);
     });
 
-    /* latest_roll field (multiple shapes supported) */
-    if (data.latest_roll) {
+    /*
+     * latest_roll belongs to the narrative/chat response that produced it.
+     * State polling often returns the same latest_roll snapshot repeatedly; if
+     * we emit it during projection-only updates, the UI shows duplicate dice
+     * cards even though the backend only rolled once.
+     */
+    if (!stateProjectionOnly && data.latest_roll && hasRollPayload(data.latest_roll)) {
       events.push(normalizeRollEvent(data.latest_roll));
     }
 

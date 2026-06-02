@@ -1,8 +1,7 @@
 import asyncio
+from unittest.mock import patch
 
-from core.graph.nodes.actor_invocation import actor_invocation_node
 from core.graph.nodes.dm import dm_node
-from core.graph.nodes.event_drain import event_drain_node
 from core.graph.nodes.input import input_node
 from core.systems import mechanics
 from core.systems.world_init import get_initial_world_state
@@ -17,36 +16,50 @@ def _lab_state() -> dict:
     return state
 
 
-def _reveal_trap_with_astarion(state: dict) -> dict:
-    state = {
-        **state,
-        "user_input": "前面的走廊安全吗？",
-        "intent": "chat",
-        "pending_events": [],
-        "speaker_responses": [],
-    }
-    dm_patch = {
-        "intent": "CHAT",
-        "current_speaker": "astarion",
-        "speaker_queue": [],
-        "intent_context": {
-            "trap_awareness_context": {
-                "topic": "poison_trap",
-                "trap_id": "gas_trap_1",
-                "actor_id": "astarion",
-                "can_detect": True,
-                "can_disarm": True,
-                "revealed": False,
-                "disarmed": False,
-                "triggered": False,
-            }
+def _open_corridor(state: dict) -> dict:
+    for bucket_name in ("entities", "environment_objects"):
+        door = state.get(bucket_name, {}).get("door_a_to_b")
+        if isinstance(door, dict):
+            door["is_open"] = True
+            door["status"] = "open"
+    state["flags"]["act2_corridor_entered"] = True
+    return state
+
+
+def _move_near_trap_with_astarion_perception(
+    state: dict,
+    *,
+    raw_roll: int = 12,
+    total: int = 17,
+    success: bool = True,
+) -> dict:
+    state = _open_corridor(state)
+    with patch(
+        "core.systems.mechanics.roll_d20",
+        return_value={
+            "total": total,
+            "raw_roll": raw_roll,
+            "rolls": [raw_roll],
+            "is_success": success,
+            "result_type": "SUCCESS" if success else "FAILURE",
+            "log_str": f"🎲 ({raw_roll}) + +5 = {total} vs DC 13 [{'SUCCESS' if success else 'FAILURE'}]",
         },
-    }
-    after_dm = {**state, **dm_patch}
-    invocation_patch = asyncio.run(actor_invocation_node(after_dm))
-    after_invocation = {**after_dm, **invocation_patch}
-    drain_patch = event_drain_node(after_invocation)
-    return {**after_invocation, **drain_patch}
+    ):
+        result = mechanics.execute_move_action(
+            {
+                **state,
+                "intent": "MOVE",
+                "intent_context": {
+                    "action_actor": "player",
+                    "action_target": "5,12",
+                },
+            }
+        )
+    return {**state, **result}
+
+
+def _reveal_trap_with_astarion(state: dict) -> dict:
+    return _move_near_trap_with_astarion_perception(state)
 
 
 def test_act2_astarion_warning_sets_act2_perception_flags():
@@ -57,7 +70,91 @@ def test_act2_astarion_warning_sets_act2_perception_flags():
     assert state["flags"]["act2_astarion_perception_success"] is True
     assert state["flags"]["act2_gas_trap_revealed"] is True
     assert state["flags"]["necromancer_lab_poison_trap_revealed"] is True
+    latest_roll = state["raw_roll_data"]
+    assert latest_roll["actor"] == "astarion"
+    assert latest_roll["skill"] == "perception"
+    assert latest_roll["dc"] == 13
     assert any("[陷阱感知] astarion -> gas_trap_1" in line for line in state["journal_events"])
+
+
+def test_act2_astarion_proximity_perception_failure_keeps_trap_hidden():
+    state = _move_near_trap_with_astarion_perception(
+        _lab_state(),
+        raw_roll=2,
+        total=7,
+        success=False,
+    )
+
+    assert state["flags"]["act2_astarion_perception_checked"] is True
+    assert state["flags"]["act2_astarion_perception_success"] is False
+    assert "act2_gas_trap_revealed" not in state["flags"]
+    assert "necromancer_lab_poison_trap_revealed" not in state["flags"]
+    assert state["environment_objects"]["gas_trap_1"]["is_hidden"] is True
+    assert state["entities"]["gas_trap_1"]["is_hidden"] is True
+    assert state["environment_objects"]["gas_trap_1"].get("status", "armed") in {"armed", "hidden"}
+    assert state["raw_roll_data"]["actor"] == "astarion"
+    assert state["raw_roll_data"]["skill"] == "perception"
+    assert state["raw_roll_data"]["dc"] == 13
+    assert any("[陷阱感知失败] astarion -> gas_trap_1" in line for line in state["journal_events"])
+
+
+def test_act2_astarion_perception_checked_does_not_repeat_near_trap():
+    checked = _move_near_trap_with_astarion_perception(
+        _lab_state(),
+        raw_roll=2,
+        total=7,
+        success=False,
+    )
+
+    with patch("core.systems.mechanics.roll_d20", side_effect=AssertionError("roll should not repeat")):
+        repeated = mechanics.execute_move_action(
+            {
+                **checked,
+                "intent": "MOVE",
+                "intent_context": {
+                    "action_actor": "player",
+                    "action_target": "5,10",
+                },
+            }
+        )
+
+    assert repeated["flags"]["act2_astarion_perception_checked"] is True
+    assert repeated["flags"]["act2_astarion_perception_success"] is False
+    assert repeated["raw_roll_data"]["intent"] == "MOVE"
+    assert not any("[陷阱感知]" in line for line in repeated["journal_events"])
+    assert not any("[陷阱感知失败]" in line for line in repeated["journal_events"])
+
+
+def test_act2_failed_perception_then_stepping_on_trap_triggers_poison():
+    checked = _move_near_trap_with_astarion_perception(
+        _lab_state(),
+        raw_roll=2,
+        total=7,
+        success=False,
+    )
+
+    with patch("core.systems.mechanics.roll_d20", side_effect=AssertionError("perception should not repeat")):
+        triggered = mechanics.execute_move_action(
+            {
+                **checked,
+                "intent": "MOVE",
+                "intent_context": {
+                    "action_actor": "player",
+                    "action_target": "5,11",
+                },
+            }
+        )
+
+    assert triggered["flags"]["act2_astarion_perception_checked"] is True
+    assert triggered["flags"]["act2_astarion_perception_success"] is False
+    assert triggered["flags"]["necromancer_lab_poison_trap_triggered"] is True
+    assert triggered["flags"]["act2_gas_trap_triggered"] is True
+    assert triggered["environment_objects"]["gas_trap_1"]["status"] == "triggered"
+    assert any(
+        effect.get("type") == "poisoned"
+        for effect in triggered["entities"]["player"]["status_effects"]
+    )
+    assert any("[毒气陷阱] gas_trap_1 triggered" in line for line in triggered["journal_events"])
 
 
 def test_act2_astarion_disarm_success_sets_act2_flags():

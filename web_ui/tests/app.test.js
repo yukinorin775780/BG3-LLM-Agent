@@ -69,6 +69,7 @@ async function bootAppForTest(url = "http://localhost/?qa_test=1") {
     update: jest.fn(),
     resize: jest.fn(),
     movePlayerLocal: jest.fn(),
+    rollbackPlayerLocal: jest.fn(),
     getPlayerGridPosition: jest.fn().mockReturnValue({ x: 2, y: 2 }),
     drawLoSBlockerOverlay: jest.fn(),
     clearLoSBlockerOverlay: jest.fn(),
@@ -815,6 +816,48 @@ describe("web_ui/app.js UI bindings", () => {
     const roll2 = events2.find((e) => e.type === "roll_result");
     expect(roll2).toBeDefined();
     expect(roll2.roll).toBe(18);
+  });
+
+  test("test_state_poll_does_not_replay_latest_roll_dice_card", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    await bootAppForTest();
+
+    const chatEvents = window.BG3UIEventAdapter.extractUIEvents({
+      journal_events: [],
+      party_status: {},
+      latest_roll: { result: { raw_roll: 6, dc: 13, is_success: false }, skill: "Perception", actor: "Astarion" },
+    });
+    expect(chatEvents.some((event) => event.type === "roll_result")).toBe(true);
+
+    const pollEvents = window.BG3UIEventAdapter.extractUIEvents(
+      {
+        journal_events: [],
+        party_status: {},
+        latest_roll: { result: { raw_roll: 6, dc: 13, is_success: false }, skill: "Perception", actor: "Astarion" },
+        _eventSource: "state_poll",
+      },
+      { _eventSource: "state_poll" },
+      { stateProjectionOnly: true }
+    );
+    expect(pollEvents.some((event) => event.type === "roll_result")).toBe(false);
+  });
+
+  test("test_action_result_without_dice_payload_does_not_spawn_dice_card", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    await bootAppForTest();
+
+    const events = window.BG3UIEventAdapter.extractUIEvents({
+      journal_events: [],
+      party_status: {},
+      latest_roll: {
+        intent: "MOVE",
+        actor: "player",
+        target: "5,10",
+        result: { is_success: true, result_type: "SUCCESS" },
+      },
+    });
+
+    expect(events.some((event) => event.type === "roll_result")).toBe(false);
   });
 
   test("test_tiled_objectgroup_parsing", async () => {
@@ -5323,7 +5366,7 @@ describe("web_ui/app.js UI bindings", () => {
     const payload = JSON.parse(chatCalls[0][1].body);
     expect(payload).toMatchObject({
       user_input: "阿斯代伦检查走廊里的可疑机关。",
-      intent: "CHAT",
+      intent: "PERCEPTION",
       target: "gas_trap_1",
       source: "trap_awareness",
       client_player_position: { x: 5, y: 12 },
@@ -5513,6 +5556,126 @@ describe("web_ui/app.js UI bindings", () => {
     dateSpy.mockRestore();
   });
 
+  test("test_astarion_perception_success_on_trigger_tile_rolls_back_and_suppresses_trap_trigger", async () => {
+    const fetchSpy = spyOnFetch().mockResolvedValue(mockResponse({
+      responses: [{ speaker: "astarion", text: "Stop. Trap." }],
+      journal_events: ["[陷阱感知] astarion -> gas_trap_1"],
+      latest_roll: {
+        intent: "PERCEPTION",
+        actor: "astarion",
+        target: "gas_trap_1",
+        skill: "perception",
+        dc: 13,
+        modifier: 5,
+        result: { raw_roll: 16, total: 21, is_success: true },
+      },
+      party_status: {},
+      environment_objects: {
+        gas_trap_1: { id: "gas_trap_1", type: "trap", status: "revealed", is_hidden: false, x: 5, y: 2 },
+      },
+      player_inventory: {},
+      combat_state: {},
+      game_state: {
+        flags: {
+          act2_astarion_perception_checked: true,
+          act2_astarion_perception_success: true,
+          necromancer_lab_poison_trap_revealed: true,
+        },
+      },
+    }));
+    const api = await bootAppForTest("http://localhost/?qa_test=1&qa_no_idle=1");
+    fetchSpy.mockClear();
+    api.applyNormalizedMap(buildTrapCorridorTestMap(), { source: "json" });
+    api.revealRoomByDoorTarget("door_a_to_b");
+    api.refreshVisibilityProjection();
+    api.state.environmentObjects = {
+      door_a_to_b: { id: "door_a_to_b", type: "door", status: "open", is_open: true, x: 3, y: 2 },
+      gas_trap_1: { id: "gas_trap_1", type: "trap", status: "hidden", is_hidden: true, x: 5, y: 2 },
+    };
+    window.BG3TacticalMap.getLocalPartyTokenPositions.mockReturnValue({
+      astarion: { x: 4, y: 3, _projection_source: "local_party_trail" },
+      shadowheart: { x: 3, y: 3, _projection_source: "local_party_trail" },
+      laezel: { x: 2, y: 3, _projection_source: "local_party_trail" },
+    });
+    window.BG3InputController.setPlayerPosition(4, 2);
+    const dateSpy = jest.spyOn(Date, "now").mockReturnValue(1000);
+
+    window.BG3InputController.movePlayer(1, 0);
+    await flushAsync();
+
+    const chatCalls = fetchSpy.mock.calls.filter(([url]) => String(url).includes("/api/chat"));
+    expect(chatCalls).toHaveLength(1);
+    const payload = JSON.parse(chatCalls[0][1].body);
+    expect(payload).toMatchObject({
+      intent: "PERCEPTION",
+      target: "gas_trap_1",
+      source: "trap_awareness",
+      client_player_position: { x: 5, y: 2 },
+    });
+    expect(window.BG3InputController.getPlayerPosition()).toEqual({ x: 4, y: 2 });
+    expect(window.BG3TacticalMap.rollbackPlayerLocal).toHaveBeenCalledWith(4, 2);
+    expect(window.BG3TacticalMap.playTrapHazardPulse).not.toHaveBeenCalled();
+    expect(document.querySelector(".agent-signal-card--trap-triggered")).toBeNull();
+    const lastCall = window.BG3TacticalMap.update.mock.calls.at(-1);
+    expect(lastCall[0].player).toMatchObject({ x: 4, y: 2 });
+    expect(lastCall[0].astarion).toMatchObject({ x: 4, y: 3, _projection_source: "local_party_trail" });
+    expect(lastCall[0].shadowheart).toMatchObject({ x: 3, y: 3, _projection_source: "local_party_trail" });
+    expect(lastCall[0].laezel).toMatchObject({ x: 2, y: 3, _projection_source: "local_party_trail" });
+    expect(lastCall[1].gas_trap_1).toMatchObject({ status: "revealed", is_hidden: false });
+    dateSpy.mockRestore();
+  });
+
+  test("test_astarion_perception_failure_on_trigger_tile_allows_trap_trigger", async () => {
+    const fetchSpy = spyOnFetch()
+      .mockResolvedValueOnce(mockResponse({
+        responses: [],
+        journal_events: ["[陷阱感知失败] astarion -> gas_trap_1"],
+        latest_roll: {
+          intent: "PERCEPTION",
+          actor: "astarion",
+          target: "gas_trap_1",
+          skill: "perception",
+          dc: 13,
+          modifier: 5,
+          result: { raw_roll: 2, total: 7, is_success: false },
+        },
+        party_status: {},
+        environment_objects: {
+          gas_trap_1: { id: "gas_trap_1", type: "trap", status: "hidden", is_hidden: true, x: 5, y: 2 },
+        },
+        player_inventory: {},
+        combat_state: {},
+      }))
+      .mockResolvedValueOnce(mockResponse(trapTriggeredResponse()));
+    const api = await bootAppForTest("http://localhost/?qa_test=1&qa_no_idle=1");
+    fetchSpy.mockClear();
+    api.applyNormalizedMap(buildTrapCorridorTestMap(), { source: "json" });
+    api.revealRoomByDoorTarget("door_a_to_b");
+    api.refreshVisibilityProjection();
+    api.state.environmentObjects = {
+      door_a_to_b: { id: "door_a_to_b", type: "door", status: "open", is_open: true, x: 3, y: 2 },
+      gas_trap_1: { id: "gas_trap_1", type: "trap", status: "hidden", is_hidden: true, x: 5, y: 2 },
+    };
+    window.BG3InputController.setPlayerPosition(4, 2);
+    const dateSpy = jest.spyOn(Date, "now").mockReturnValue(1000);
+
+    window.BG3InputController.movePlayer(1, 0);
+    await flushAsync();
+    await flushAsync();
+
+    const payloads = fetchSpy.mock.calls
+      .filter(([url]) => String(url).includes("/api/chat"))
+      .map(([, options]) => JSON.parse(options.body));
+    expect(payloads).toHaveLength(2);
+    expect(payloads[0]).toMatchObject({ intent: "PERCEPTION", target: "gas_trap_1", source: "trap_awareness" });
+    expect(payloads[1]).toMatchObject({ intent: "INTERACT", target: "gas_trap_1", source: "trap_trigger" });
+    expect(window.BG3InputController.getPlayerPosition()).toEqual({ x: 5, y: 2 });
+    expect(window.BG3TacticalMap.rollbackPlayerLocal).not.toHaveBeenCalled();
+    expect(document.querySelector(".agent-signal-card--trap-triggered")).not.toBeNull();
+    expect(window.BG3TacticalMap.playTrapHazardPulse).toHaveBeenCalled();
+    dateSpy.mockRestore();
+  });
+
   test("test_entering_disabled_trap_zone_does_not_post_trap_trigger", async () => {
     const fetchSpy = spyOnFetch().mockResolvedValue(mockResponse({}));
     const api = await bootAppForTest("http://localhost/?qa_test=1&qa_no_idle=1");
@@ -5521,6 +5684,26 @@ describe("web_ui/app.js UI bindings", () => {
     api.revealRoomByDoorTarget("door_a_to_b");
     api.refreshVisibilityProjection();
     api.state.worldFlags = { necromancer_lab_poison_trap_disarmed: true };
+    api.state.environmentObjects = {
+      gas_trap_1: { id: "gas_trap_1", type: "trap", status: "disabled", is_hidden: false, x: 5, y: 2 },
+    };
+    window.BG3InputController.setPlayerPosition(4, 2);
+    const dateSpy = jest.spyOn(Date, "now").mockReturnValue(1000);
+
+    window.BG3InputController.movePlayer(1, 0);
+    await flushAsync();
+
+    expect(fetchSpy.mock.calls.filter(([url]) => String(url).includes("/api/chat"))).toHaveLength(0);
+    dateSpy.mockRestore();
+  });
+
+  test("test_entering_disabled_status_trap_zone_does_not_post_trap_trigger", async () => {
+    const fetchSpy = spyOnFetch().mockResolvedValue(mockResponse({}));
+    const api = await bootAppForTest("http://localhost/?qa_test=1&qa_no_idle=1");
+    fetchSpy.mockClear();
+    api.applyNormalizedMap(buildTrapCorridorTestMap(), { source: "json" });
+    api.revealRoomByDoorTarget("door_a_to_b");
+    api.refreshVisibilityProjection();
     api.state.environmentObjects = {
       gas_trap_1: { id: "gas_trap_1", type: "trap", status: "disabled", is_hidden: false, x: 5, y: 2 },
     };

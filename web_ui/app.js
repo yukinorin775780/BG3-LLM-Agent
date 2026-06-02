@@ -160,6 +160,7 @@
     barkEpoch: 0,
     act3BarkEpoch: 0,
     lastProjectionJournalEvents: [],
+    pendingTrapAwarenessMove: null,
   };
 
   const INTERACTION_SOURCES = new Set([
@@ -2409,6 +2410,148 @@
       const status = normalizeId(record.status || record.state || "");
       return ["disabled", "disarmed", "triggered", "active", "burst"].includes(status);
     });
+  }
+
+  function pointInsideTrigger(position, trigger) {
+    const pos = normalizeGridPositionCandidate(position);
+    const record = safeObject(trigger);
+    if (!pos) return false;
+    const x = Number(record.x);
+    const y = Number(record.y);
+    const w = Math.max(1, Number(record.w) || 1);
+    const h = Math.max(1, Number(record.h) || 1);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
+    return pos.x >= x && pos.x < x + w && pos.y >= y && pos.y < y + h;
+  }
+
+  function rememberPendingTrapAwarenessMove(trapId, trigger, moveContext = {}) {
+    const from = normalizeGridPositionCandidate(safeObject(moveContext).from)
+      || getLocalMovementPlayerGridPosition();
+    const to = normalizeGridPositionCandidate(safeObject(moveContext).to)
+      || getLocalMovementPlayerGridPosition();
+    state.pendingTrapAwarenessMove = {
+      trapId: normalizeId(trapId || "gas_trap_1") || "gas_trap_1",
+      triggerId: String((trigger && trigger.id) || safeObject(moveContext).triggerId || ""),
+      trigger: { ...safeObject(trigger) },
+      from,
+      to,
+    };
+  }
+
+  function flagsFromResponse(data = {}) {
+    const payload = safeObject(data);
+    const gameState = safeObject(payload.game_state || payload.gameState || payload.state);
+    const nestedState = safeObject(payload.state);
+    return {
+      ...safeObject(state.worldFlags),
+      ...safeObject(gameState.flags),
+      ...safeObject(nestedState.flags),
+      ...safeObject(payload.flags),
+    };
+  }
+
+  function responseIndicatesAct2PerceptionSuccess(data = {}, uiEvents = []) {
+    const flags = flagsFromResponse(data);
+    const payload = safeObject(data);
+    const gameState = safeObject(payload.game_state || payload.gameState || payload.state);
+    const roll = safeObject(payload.latest_roll || payload.raw_roll_data || gameState.latest_roll || gameState.raw_roll_data);
+    const rollResult = safeObject(roll.result);
+    const env = safeObject(safeObject(data).environment_objects);
+    const trap = safeObject(env.gas_trap_1);
+    const status = normalizeId(trap.status || trap.state || "");
+    return Boolean(
+      flags.act2_astarion_perception_success === true
+      || flags.act2_gas_trap_revealed === true
+      || flags.necromancer_lab_poison_trap_revealed === true
+      || status === "revealed"
+      || (
+        normalizeId(roll.actor) === "astarion"
+        && normalizeId(roll.target) === "gas_trap_1"
+        && normalizeId(roll.skill) === "perception"
+        && (rollResult.is_success === true || roll.is_success === true)
+      )
+      || safeArray(uiEvents).some((event) => normalizeId(safeObject(event).type) === "trap_insight")
+    );
+  }
+
+  function responseIndicatesAct2PerceptionFailure(data = {}) {
+    const flags = flagsFromResponse(data);
+    const payload = safeObject(data);
+    const gameState = safeObject(payload.game_state || payload.gameState || payload.state);
+    const roll = safeObject(payload.latest_roll || payload.raw_roll_data || gameState.latest_roll || gameState.raw_roll_data);
+    const rollResult = safeObject(roll.result);
+    const journal = safeArray(payload.journal_events).join("\n");
+    return flags.act2_astarion_perception_checked === true
+      && flags.act2_astarion_perception_success === false
+      || (
+        normalizeId(roll.actor) === "astarion"
+        && normalizeId(roll.target) === "gas_trap_1"
+        && normalizeId(roll.skill) === "perception"
+        && (rollResult.is_success === false || roll.is_success === false)
+      )
+      || /\[陷阱感知失败\]\s*astarion\s*->\s*gas_trap_1/i.test(journal);
+  }
+
+  function rollbackLocalPlayerTo(position, reason = "trap_interrupt") {
+    const coord = normalizeGridPositionCandidate(position);
+    if (!coord) return false;
+    if (window.BG3InputController && typeof window.BG3InputController.rollbackPlayerTo === "function") {
+      window.BG3InputController.rollbackPlayerTo(coord.x, coord.y);
+    } else if (window.BG3InputController && typeof window.BG3InputController.setPlayerPosition === "function") {
+      window.BG3InputController.setPlayerPosition(coord.x, coord.y);
+      if (window.BG3TacticalMap && typeof window.BG3TacticalMap.rollbackPlayerLocal === "function") {
+        window.BG3TacticalMap.rollbackPlayerLocal(coord.x, coord.y);
+      }
+    }
+    state.partyStatus = {
+      ...safeObject(state.partyStatus),
+      player: {
+        ...safeObject(safeObject(state.partyStatus).player),
+        x: coord.x,
+        y: coord.y,
+        name: safeObject(safeObject(state.partyStatus).player).name || "玩家",
+        faction: safeObject(safeObject(state.partyStatus).player).faction || "player",
+        _projection_source: "client_" + normalizeId(reason || "trap_interrupt"),
+      },
+    };
+    renderTacticalGrid(state.partyStatus, state.environmentObjects, state.mapData);
+    return true;
+  }
+
+  async function resolvePendingTrapAwarenessMove(data, context = {}) {
+    const pending = safeObject(state.pendingTrapAwarenessMove);
+    if (!Object.keys(pending).length) return false;
+    const source = normalizeId(safeObject(context).source);
+    const target = normalizeId(safeObject(context).target);
+    if (source !== "trap_awareness" || target !== normalizeId(pending.trapId || "gas_trap_1")) {
+      return false;
+    }
+
+    const uiEvents = safeArray(safeObject(context).uiEvents);
+    const success = responseIndicatesAct2PerceptionSuccess(data, uiEvents);
+    const failure = responseIndicatesAct2PerceptionFailure(data);
+    if (!success && !failure) return false;
+
+    state.pendingTrapAwarenessMove = null;
+    if (success) {
+      return rollbackLocalPlayerTo(pending.from, "trap_interrupt");
+    }
+
+    const current = getLocalMovementPlayerGridPosition();
+    const stillInsideTrigger = pointInsideTrigger(current, pending.trigger)
+      || pointInsideTrigger(pending.to, pending.trigger);
+    if (stillInsideTrigger && shouldTriggerTrapMechanic(pending.trapId || "gas_trap_1")) {
+      await sendStructuredAction({
+        text: "触发毒气陷阱",
+        intent: "INTERACT",
+        character: null,
+        options: {
+          target: pending.trapId || "gas_trap_1",
+          source: "trap_trigger",
+        },
+      });
+    }
+    return true;
   }
 
   function discoverSecretDoor(doorId) {
@@ -5179,6 +5322,11 @@
       if (intentValue.toLowerCase() !== "init_sync") {
         triggerSpeechBubbles(data, { dispatchedEvents, skipUIEvents: true });
       }
+      await resolvePendingTrapAwarenessMove(data, {
+        source: routed.source,
+        target: actionTarget,
+        uiEvents: dispatchedEvents,
+      });
       maybeShowLootModal(data.environment_objects, { intent: intentValue });
       setNetworkState("链路在线", "ok");
       return data;
@@ -5957,7 +6105,7 @@
       window.BG3InputController.init({
         normalizedMap: state.normalizedMap || normalizedMap,
         playerStart: normalizedMap.playerStart,
-        onNarrativeTrigger: (trigger) => {
+        onNarrativeTrigger: (trigger, movementContext = {}) => {
           const triggerId = normalizeId(trigger && trigger.id);
           const triggerType = normalizeId(trigger && trigger.type);
           const isTrapMechanicTrigger = triggerType === "trap" || triggerId.includes("trap");
@@ -5970,6 +6118,19 @@
           const triggerEventId = (trigger && trigger.id) ? String(trigger.id) : "unknown";
           if (isTrapMechanicTrigger) {
             const trapTarget = normalizeTrapTriggerTarget(trigger) || "gas_trap_1";
+            if (shouldQueueTrapAwareness(trapTarget)) {
+              rememberPendingTrapAwarenessMove(trapTarget, trigger, movementContext);
+              sendStructuredAction({
+                text: "阿斯代伦检查走廊里的可疑机关。",
+                intent: "PERCEPTION",
+                character: null,
+                options: {
+                  target: trapTarget,
+                  source: "trap_awareness",
+                },
+              });
+              return;
+            }
             if (!shouldTriggerTrapMechanic(trapTarget)) return;
             sendStructuredAction({
               text: "触发毒气陷阱",
@@ -5986,7 +6147,7 @@
             if (!shouldQueueTrapAwareness("gas_trap_1")) return;
             sendStructuredAction({
               text: "阿斯代伦检查走廊里的可疑机关。",
-              intent: "CHAT",
+              intent: "PERCEPTION",
               character: null,
               options: {
                 target: "gas_trap_1",

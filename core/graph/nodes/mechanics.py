@@ -62,6 +62,20 @@ def mechanics_node(state: GameState) -> dict:
         result = mechanics.execute_disarm_action(state)
     elif normalized_intent == "UNLOCK":
         result = mechanics.execute_unlock_action(state)
+    elif normalized_intent == "PERCEPTION":
+        intent_context = state.get("intent_context") if isinstance(state, dict) else {}
+        source = ""
+        target = ""
+        if isinstance(intent_context, dict):
+            source = str(intent_context.get("source") or "").strip().lower()
+            target = str(intent_context.get("action_target") or "").strip().lower()
+        if target == "gas_trap_1" and (
+            source == "trap_awareness"
+            or (isinstance(intent_context, dict) and intent_context.get("trap_awareness_context"))
+        ):
+            result = mechanics.execute_astarion_trap_perception_action(state)
+        else:
+            result = mechanics.execute_skill_check(state)
     elif normalized_intent in ("END_TURN", "PASS_TURN", "WAIT_TURN"):
         result = mechanics.execute_end_turn_action(state)
     else:

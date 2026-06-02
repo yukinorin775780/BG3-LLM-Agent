@@ -92,6 +92,8 @@ BARK_TRIGGER_TYPES = frozenset(
         "ENVIRONMENTAL_SHOVE",
     }
 )
+ACT2_ASTARION_TRAP_PERCEPTION_BONUS = 5
+ACT2_TRAP_PERCEPTION_RADIUS = 3
 
 
 def _astarion_memory_echo_type_from_state(state: Any) -> str:
@@ -2628,6 +2630,8 @@ def _evaluate_traps_after_move(
     for trap_id, trap in trap_pairs:
         if trap_id not in entities:
             continue
+        if trap_id == "gas_trap_1":
+            continue
         is_hidden = bool(trap.get("is_hidden", True))
         if not is_hidden:
             continue
@@ -3039,6 +3043,256 @@ def _is_necromancer_lab_map(state: Any) -> bool:
 
 def _is_lab_corridor_door(target_id: str) -> bool:
     return _normalize_entity_id(target_id) == "door_b_to_d"
+
+
+def _flag_bool(value: Any) -> bool:
+    if isinstance(value, dict):
+        return bool(value.get("value", False))
+    return bool(value)
+
+
+def _act2_corridor_accessible_for_trap_perception(
+    *,
+    state: Any,
+    flags: Dict[str, Any],
+    entities: Dict[str, Any],
+    environment_objects: Dict[str, Any],
+    map_data: Dict[str, Any],
+) -> bool:
+    if _flag_bool(flags.get("act2_corridor_entered")):
+        return True
+
+    for bucket in (entities, environment_objects):
+        door = bucket.get("door_a_to_b") if isinstance(bucket, dict) else None
+        if isinstance(door, dict) and (
+            bool(door.get("is_open", False))
+            or str(door.get("status") or "").strip().lower() in {"open", "opened"}
+        ):
+            return True
+
+    visible_rooms = []
+    if isinstance(state, dict):
+        visible_rooms.extend(state.get("visible_rooms") or [])
+    if isinstance(map_data, dict):
+        visible_rooms.extend(map_data.get("visible_rooms") or [])
+    return "room_b_corridor" in {str(room or "").strip() for room in visible_rooms}
+
+
+def _entity_near_trap(
+    *,
+    entity: Dict[str, Any],
+    trap: Dict[str, Any],
+    max_distance: int,
+) -> bool:
+    entity_x = _coerce_int(entity.get("x"), -9999)
+    entity_y = _coerce_int(entity.get("y"), -9999)
+    trap_x = _coerce_int(trap.get("x"), -9998)
+    trap_y = _coerce_int(trap.get("y"), -9998)
+    return _chebyshev_distance(
+        actor_x=entity_x,
+        actor_y=entity_y,
+        target_x=trap_x,
+        target_y=trap_y,
+    ) <= max_distance
+
+
+def _party_member_near_trap_for_astarion_perception(
+    *,
+    entities: Dict[str, Any],
+    moved_actor_id: str,
+    trap: Dict[str, Any],
+) -> bool:
+    candidate_ids: List[str] = []
+    normalized_actor = _normalize_entity_id(moved_actor_id)
+    if normalized_actor:
+        candidate_ids.append(normalized_actor)
+    candidate_ids.append("player")
+
+    seen: set[str] = set()
+    for candidate_id in candidate_ids:
+        if candidate_id in seen:
+            continue
+        seen.add(candidate_id)
+        entity = entities.get(candidate_id)
+        if not isinstance(entity, dict):
+            continue
+        if not _is_alive_entity(entity):
+            continue
+        if not _is_player_side_entity(candidate_id, entity):
+            continue
+        if _entity_near_trap(
+            entity=entity,
+            trap=trap,
+            max_distance=ACT2_TRAP_PERCEPTION_RADIUS,
+        ):
+            return True
+    return False
+
+
+def _act2_gas_trap_is_unresolved(
+    *,
+    trap: Dict[str, Any],
+    flags: Dict[str, Any],
+) -> bool:
+    status = str(trap.get("status") or "armed").strip().lower()
+    if status in {"revealed", "disabled", "disarmed", "triggered"}:
+        return False
+    if _flag_bool(flags.get("act2_astarion_perception_checked")):
+        return False
+    if _flag_bool(flags.get("necromancer_lab_poison_trap_revealed")):
+        return False
+    if _flag_bool(flags.get("necromancer_lab_poison_trap_disarmed")):
+        return False
+    if _flag_bool(flags.get("necromancer_lab_poison_trap_triggered")):
+        return False
+    return True
+
+
+def _sync_act2_gas_trap_revealed(
+    *,
+    entities: Dict[str, Any],
+    environment_objects: Dict[str, Any],
+    trap_id: str,
+) -> None:
+    for bucket in (entities, environment_objects):
+        trap = bucket.get(trap_id)
+        if not isinstance(trap, dict):
+            continue
+        trap["status"] = "revealed"
+        trap["is_hidden"] = False
+
+
+def _resolve_astarion_trap_perception_roll(
+    *,
+    state: Any,
+    entities: Dict[str, Any],
+    environment_objects: Dict[str, Any],
+    flags: Dict[str, Any],
+    map_data: Dict[str, Any],
+    moved_actor_id: str = "player",
+    require_proximity: bool = True,
+) -> Dict[str, Any]:
+    if not _is_necromancer_lab_map({"map_data": map_data}):
+        return {}
+
+    trap_id = "gas_trap_1"
+    trap = entities.get(trap_id)
+    if not isinstance(trap, dict):
+        trap = environment_objects.get(trap_id)
+    if not isinstance(trap, dict):
+        return {}
+
+    if not _act2_gas_trap_is_unresolved(trap=trap, flags=flags):
+        return {}
+
+    astarion = entities.get("astarion")
+    if not isinstance(astarion, dict) or not _is_alive_entity(astarion):
+        return {}
+
+    if not _act2_corridor_accessible_for_trap_perception(
+        state=state,
+        flags=flags,
+        entities=entities,
+        environment_objects=environment_objects,
+        map_data=map_data,
+    ):
+        return {}
+
+    if require_proximity and not _party_member_near_trap_for_astarion_perception(
+        entities=entities,
+        moved_actor_id=moved_actor_id,
+        trap=trap,
+    ):
+        return {}
+
+    detect_dc = max(1, _coerce_int(trap.get("detect_dc"), 13))
+    modifier = ACT2_ASTARION_TRAP_PERCEPTION_BONUS
+    roll = roll_d20(dc=detect_dc, modifier=modifier, roll_type="normal")
+    success = bool(roll.get("is_success", False))
+
+    flags["act2_corridor_entered"] = True
+    flags["act2_astarion_perception_checked"] = True
+    flags["act2_astarion_perception_success"] = success
+
+    if success:
+        flags["act2_gas_trap_revealed"] = True
+        flags["necromancer_lab_poison_trap_revealed"] = True
+        flags["astarion_detected_gas_trap"] = {
+            "value": True,
+            "visibility": {
+                "scope": "actor",
+                "actors": ["astarion"],
+                "reason": "trap_awareness",
+            },
+        }
+        _sync_act2_gas_trap_revealed(
+            entities=entities,
+            environment_objects=environment_objects,
+            trap_id=trap_id,
+        )
+        journal_events = [
+            f"[陷阱感知] astarion -> {trap_id}",
+            f"👁️ [感知检定] Astarion 发现了 gas_trap_1 (1d20{modifier:+d}={_coerce_int(roll.get('total'), 0)} vs DC {detect_dc})。",
+        ]
+    else:
+        journal_events = [
+            f"[陷阱感知失败] astarion -> {trap_id}",
+            f"👁️ [感知检定] Astarion 没有发现 gas_trap_1 (1d20{modifier:+d}={_coerce_int(roll.get('total'), 0)} vs DC {detect_dc})。",
+        ]
+
+    return {
+        "journal_events": journal_events,
+        "raw_roll_data": {
+            "intent": "PERCEPTION",
+            "actor": "astarion",
+            "target": trap_id,
+            "skill": "perception",
+            "ability": "WIS",
+            "dc": detect_dc,
+            "modifier": modifier,
+            "source": "trap_awareness",
+            "result": roll,
+        },
+    }
+
+
+def execute_astarion_trap_perception_action(state: Any) -> Dict[str, Any]:
+    entities = copy.deepcopy(state.get("entities") or {})
+    environment_objects = copy.deepcopy(state.get("environment_objects") or {})
+    flags = dict(state.get("flags") or {})
+    map_data = (
+        copy.deepcopy(state.get("map_data"))
+        if isinstance(state.get("map_data"), dict)
+        else {}
+    )
+    intent_context = state.get("intent_context") if isinstance(state.get("intent_context"), dict) else {}
+    actor_id = _normalize_entity_id(intent_context.get("action_actor") or "player") or "player"
+    result = _resolve_astarion_trap_perception_roll(
+        state=state,
+        entities=entities,
+        environment_objects=environment_objects,
+        flags=flags,
+        map_data=map_data,
+        moved_actor_id=actor_id,
+        require_proximity=True,
+    )
+    if result:
+        return {
+            "journal_events": list(result.get("journal_events") or []),
+            "entities": entities,
+            "environment_objects": environment_objects,
+            "flags": flags,
+            "map_data": map_data,
+            "raw_roll_data": result["raw_roll_data"],
+        }
+
+    return {
+        "journal_events": [],
+        "entities": entities,
+        "environment_objects": environment_objects,
+        "flags": flags,
+        "map_data": map_data,
+    }
 
 
 def _mark_act2_trap_revealed(flags: Dict[str, Any]) -> None:
@@ -6472,6 +6726,16 @@ def execute_move_action(state: Any) -> Dict[str, Any]:
     actor_name = _display_entity_name(actor, actor_id)
 
     journal_events = [f"🚶 [空间移动] {actor_name}移动到了 {target_name} 附近。"]
+    perception_result = _resolve_astarion_trap_perception_roll(
+        state=state,
+        entities=entities,
+        environment_objects=environment_objects,
+        flags=flags,
+        map_data=map_data if isinstance(map_data, dict) else {},
+        moved_actor_id=actor_id,
+        require_proximity=True,
+    )
+    journal_events.extend(list(perception_result.get("journal_events") or []))
     trap_events = _evaluate_traps_after_move(
         entities=entities,
         map_data=map_data if isinstance(map_data, dict) else {},
@@ -6526,7 +6790,7 @@ def execute_move_action(state: Any) -> Dict[str, Any]:
         "environment_objects": environment_objects,
         "flags": flags,
         "map_data": map_data if isinstance(map_data, dict) else {},
-        "raw_roll_data": _build_action_result(
+        "raw_roll_data": perception_result.get("raw_roll_data") or _build_action_result(
             intent=intent,
             actor=actor_id,
             target=target_id,

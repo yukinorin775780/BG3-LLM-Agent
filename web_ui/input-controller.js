@@ -84,11 +84,30 @@
     return visibleRoomIds.includes(normalizeId(safeObj(room).id));
   }
 
+  function refreshTriggerOccupancy(x, y) {
+    if (!normalizedMap) return;
+    const currentIds = new Set();
+    safeArr(normalizedMap.triggers).forEach((t) => {
+      const tid = t.id || "";
+      if (x >= t.x && x < t.x + (t.w || 1) && y >= t.y && y < t.y + (t.h || 1)) {
+        currentIds.add(tid);
+      }
+    });
+    firedTriggerIds.forEach((tid) => {
+      if (!currentIds.has(tid)) {
+        firedTriggerIds.delete(tid);
+      }
+    });
+    activeTriggerIds.clear();
+    currentIds.forEach((tid) => activeTriggerIds.add(tid));
+  }
+
   function movePlayer(dx, dy) {
     if (!enabled) return false;
     if (Date.now() - lastMoveAt < COOLDOWN) return false;
     const nx = playerPos.x + dx, ny = playerPos.y + dy;
     if (isBlocked(nx, ny)) return false;
+    const previousPos = { x: playerPos.x, y: playerPos.y };
     lastMoveAt = Date.now();
     playerPos = { x: nx, y: ny };
     if (window.BG3TacticalMap && typeof window.BG3TacticalMap.movePlayerLocal === "function") {
@@ -97,13 +116,13 @@
     if (window.BG3DirectorTrace && typeof window.BG3DirectorTrace.setIdle === "function") {
       window.BG3DirectorTrace.setIdle();
     }
-    checkTriggers(nx, ny);
+    checkTriggers(nx, ny, previousPos);
     updateHint();
     if (typeof onPlayerMoved === "function") onPlayerMoved(nx, ny);
     return true;
   }
 
-  function checkTriggers(x, y) {
+  function checkTriggers(x, y, previousPos) {
     if (!normalizedMap) return;
 
     /* Determine which trigger zones the player is currently inside */
@@ -115,7 +134,13 @@
         /* Fire only if not already fired for this entry */
         if (!firedTriggerIds.has(tid)) {
           firedTriggerIds.add(tid);
-          if (typeof onNarrativeTrigger === "function") onNarrativeTrigger(t);
+          if (typeof onNarrativeTrigger === "function") {
+            onNarrativeTrigger(t, {
+              triggerId: tid,
+              from: previousPos ? { x: previousPos.x, y: previousPos.y } : null,
+              to: { x, y },
+            });
+          }
         }
       }
     });
@@ -335,6 +360,14 @@
 
   function setMap(m) { normalizedMap = m; firedTriggerIds.clear(); activeTriggerIds.clear(); currentHighlightedInteractable = null; updateHint(); }
   function setPlayerPosition(x, y) { playerPos = { x: Number(x) || 0, y: Number(y) || 0 }; updateHint(); }
+  function rollbackPlayerTo(x, y) {
+    playerPos = { x: Number(x) || 0, y: Number(y) || 0 };
+    if (window.BG3TacticalMap && typeof window.BG3TacticalMap.rollbackPlayerLocal === "function") {
+      window.BG3TacticalMap.rollbackPlayerLocal(playerPos.x, playerPos.y);
+    }
+    refreshTriggerOccupancy(playerPos.x, playerPos.y);
+    updateHint();
+  }
   function getPlayerPosition() { return { ...playerPos }; }
   function getCurrentHighlightedInteractable() {
     return currentHighlightedInteractable ? { ...currentHighlightedInteractable } : null;
@@ -353,6 +386,6 @@
   window.BG3InputController = Object.freeze({
     init, setMap, setPlayerPosition, getPlayerPosition, setEnabled,
     movePlayer, interact, findNearbyInteractable, getCurrentHighlightedInteractable,
-    updateHint, setHintFormatter, destroy,
+    rollbackPlayerTo, updateHint, setHintFormatter, destroy,
   });
 })();

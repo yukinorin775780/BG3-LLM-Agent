@@ -30,16 +30,6 @@ steps:
         equals:
           game_state.entities.player.x: 5
           game_state.entities.player.y: 12
-  - id: astarion_perception_reveals_suspicious_trap
-    user_input: 进入走廊，前面安全吗？
-    intent: chat
-    expected:
-      responses:
-        contains:
-          - 毒气
-          - 压力板
-      state:
-        equals:
           game_state.flags.act2_corridor_entered: true
           game_state.flags.act2_astarion_perception_checked: true
           game_state.flags.act2_astarion_perception_success: true
@@ -47,15 +37,15 @@ steps:
           game_state.flags.necromancer_lab_poison_trap_revealed: true
           game_state.flags.astarion_detected_gas_trap.value: true
           game_state.environment_objects.gas_trap_1.status: revealed
-          game_state.actor_invocation_mode: runtime
-          game_state.pending_events: []
+          game_state.environment_objects.gas_trap_1.is_hidden: false
+          game_state.latest_roll.actor: astarion
+          game_state.latest_roll.skill: perception
+          game_state.latest_roll.dc: 13
+          game_state.latest_roll.modifier: 5
+          game_state.latest_roll.result.is_success: true
         contains:
           game_state.journal_events:
             - "[陷阱感知] astarion -> gas_trap_1"
-      telemetry:
-        events_contains:
-          - event_name: actor_runtime_decision
-          - event_name: event_drain
 expected:
   budget:
     max_total_tokens: 0

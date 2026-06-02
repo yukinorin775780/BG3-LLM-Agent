@@ -1,14 +1,13 @@
 import asyncio
 import copy
+from unittest.mock import patch
 
 from core.actors.builders import build_actor_view
 from core.campaigns.necromancer_lab import (
     detect_poison_trap_trigger_context,
     detect_trap_awareness_context,
 )
-from core.graph.nodes.actor_invocation import actor_invocation_node
 from core.graph.nodes.dm import dm_node
-from core.graph.nodes.event_drain import event_drain_node
 from core.graph.nodes.input import input_node
 from core.systems import mechanics
 from core.systems.world_init import get_initial_world_state
@@ -39,19 +38,29 @@ def _open_corridor_and_move_near_trap(state: dict) -> dict:
 
 def _warn_about_trap(state: dict) -> dict:
     state = _open_corridor_and_move_near_trap(state)
-    state = {
-        **state,
-        "user_input": "前面安全吗？继续往前走。",
-        "intent": "chat",
-        "pending_events": [],
-        "speaker_responses": [],
-    }
-    dm_patch = asyncio.run(dm_node(state))
-    after_dm = {**state, **dm_patch}
-    invocation_patch = asyncio.run(actor_invocation_node(after_dm))
-    after_invocation = {**after_dm, **invocation_patch}
-    drain_patch = event_drain_node(after_invocation)
-    return {**after_invocation, **drain_patch}
+    state["flags"]["act2_corridor_entered"] = True
+    with patch(
+        "core.systems.mechanics.roll_d20",
+        return_value={
+            "total": 17,
+            "raw_roll": 12,
+            "rolls": [12],
+            "is_success": True,
+            "result_type": "SUCCESS",
+            "log_str": "🎲 (12) + +5 = 17 vs DC 13 [SUCCESS]",
+        },
+    ):
+        result = mechanics.execute_move_action(
+            {
+                **state,
+                "intent": "MOVE",
+                "intent_context": {
+                    "action_actor": "player",
+                    "action_target": "5,12",
+                },
+            }
+        )
+    return {**state, **result}
 
 
 def test_trap_awareness_helper_and_initial_actor_view_do_not_leak_hidden_trap():
@@ -103,6 +112,19 @@ def test_trap_awareness_requires_corridor_access_proximity_and_single_check():
     assert detect_trap_awareness_context(near, "前面的走廊安全吗？", {}) is None
 
 
+def test_dm_routes_trap_awareness_to_astarion_perception_roll():
+    state = _open_corridor_and_move_near_trap(_build_lab_state())
+    state["flags"]["act2_corridor_entered"] = True
+
+    dm_patch = asyncio.run(dm_node({**state, "user_input": "前面的走廊安全吗？", "intent": "chat"}))
+
+    assert dm_patch["intent"] == "PERCEPTION"
+    assert dm_patch["intent_context"]["action_actor"] == "astarion"
+    assert dm_patch["intent_context"]["action_target"] == "gas_trap_1"
+    assert dm_patch["intent_context"]["source"] == "trap_awareness"
+    assert dm_patch["intent_context"]["trap_awareness_context"]["detect_dc"] == 13
+
+
 def test_poison_trap_trigger_helper_requires_necromancer_lab():
     state = _build_lab_state()
     state["map_data"]["id"] = "goblin_camp"
@@ -121,10 +143,12 @@ def test_astarion_warning_reveals_poison_trap_and_writes_journal():
 
     assert state["flags"]["necromancer_lab_poison_trap_revealed"] is True
     assert state["flags"]["astarion_detected_gas_trap"]["value"] is True
+    assert state["raw_roll_data"]["actor"] == "astarion"
+    assert state["raw_roll_data"]["skill"] == "perception"
+    assert state["raw_roll_data"]["dc"] == 13
     assert state["environment_objects"]["gas_trap_1"]["is_hidden"] is False
     assert state["entities"]["gas_trap_1"]["is_hidden"] is False
     assert any("[陷阱感知] astarion -> gas_trap_1" in line for line in state["journal_events"])
-    assert any("毒气压力板" in text for _, text in state["speaker_responses"])
 
 
 def test_astarion_disarms_revealed_trap_and_safe_crossing_does_not_poison():

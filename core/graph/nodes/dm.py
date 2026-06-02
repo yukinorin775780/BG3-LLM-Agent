@@ -428,12 +428,15 @@ def _apply_trap_awareness_override(*, state: GameState, analysis: dict) -> dict:
         return analysis
 
     overridden = dict(analysis or {})
-    overridden["action_type"] = "CHAT"
-    overridden["action_actor"] = "player"
+    overridden["action_type"] = "PERCEPTION"
+    overridden["action_actor"] = "astarion"
     overridden["action_target"] = "gas_trap_1"
     overridden["reason"] = "necromancer_lab_trap_awareness"
-    overridden["responders"] = ["astarion"]
+    overridden["responders"] = []
     intent_context = dict(overridden.get("intent_context") or {})
+    intent_context["action_actor"] = "astarion"
+    intent_context["action_target"] = "gas_trap_1"
+    intent_context["source"] = "trap_awareness"
     intent_context["trap_awareness_context"] = context
     overridden["intent_context"] = intent_context
     return overridden

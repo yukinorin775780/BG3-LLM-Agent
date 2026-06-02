@@ -892,7 +892,12 @@ def detect_trap_awareness_context(
     if not _player_near_trap(normalized_state, trap, max_distance=3):
         return None
 
-    can_detect = detected_flag or _astarion_detects_trap(entities)
+    detect_dc = 13
+    try:
+        detect_dc = int(trap.get("detect_dc") or 13)
+    except (TypeError, ValueError):
+        detect_dc = 13
+    can_detect = True
     ctx = _safe_dict(intent_context)
     target = _normalize_id(ctx.get("action_target") or normalized_state.get("target"))
     text = str(user_input or "").strip()
@@ -909,7 +914,9 @@ def detect_trap_awareness_context(
         "trap_id": "gas_trap_1",
         "actor_id": "astarion",
         "can_detect": bool(can_detect),
-        "can_disarm": bool(can_detect and not disarmed and not triggered),
+        "can_disarm": False,
+        "perception_bonus": 5,
+        "detect_dc": detect_dc,
         "revealed": bool(revealed),
         "disarmed": bool(disarmed),
         "triggered": bool(triggered),

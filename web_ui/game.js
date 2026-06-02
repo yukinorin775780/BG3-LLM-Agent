@@ -259,6 +259,29 @@
       });
       this.moveCompanionsLocalFormation(gridX, gridY);
     },
+    rollbackPlayerLocal(gridX, gridY) {
+      if (!this.scene) return;
+      const token = this.scene.tokens.get("player");
+      if (!token) return;
+      const x = Math.round(Number(gridX));
+      const y = Math.round(Number(gridY));
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+      token.entity.x = x;
+      token.entity.y = y;
+      token.entity.data = {
+        ...safeObject(token.entity.data),
+        x,
+        y,
+        _projection_source: "client_trap_interrupt",
+      };
+      this.scene.moveToken(token, x, y, true);
+      this.scene.updateCameraFollow();
+      if (this.latestState && this.latestState.partyStatus && this.latestState.partyStatus.player) {
+        this.latestState.partyStatus.player.x = x;
+        this.latestState.partyStatus.player.y = y;
+        this.latestState.partyStatus.player._projection_source = "client_trap_interrupt";
+      }
+    },
     resetLocalPartyTrail() {
       this.localPartyTrail = [];
       this.lastMoveDirection = { ...DEFAULT_FOLLOW_DIRECTION };
