@@ -1,4 +1,4 @@
-# BG3 LLM Agent
+# BG3 LLM Agent — LLM-driven RPG Agent Runtime
 
 **LLM-driven NPC behavior and dialogue agents for RPG games.**
 
@@ -12,6 +12,22 @@ instead of raw LLM text.
 ![FastAPI](https://img.shields.io/badge/API-FastAPI-green)
 ![Golden Eval](https://img.shields.io/badge/Eval-Golden_Replay-purple)
 ![Benchmark](https://img.shields.io/badge/Benchmark-Real_LLM-violet)
+
+## Latest Demo
+
+The current verified portfolio cut is a 1920x1080 Web demo recorded from a fresh
+session with real UI input only: WASD, `E`, the page input box, and the send button.
+
+- **Local final cut**: `artifacts/demo_recording/full_web_demo_20260622T220713/final_demo.mp4`
+- **Duration**: 183 seconds
+- **Format**: 1920x1080 H.264 MP4, English subtitles burned in
+- **Acceptance**: `demo_cleared=true`, `act4_final_exit_opened=true`,
+  `player_inventory.heavy_iron_key=1`
+- **Release notes**: [Demo Release 2026-06-22](docs/demo_release_2026-06-22.md)
+
+The video file is intentionally not committed to the repository. For GitHub or
+portfolio publishing, upload `final_demo.mp4` to a GitHub Release or external
+portfolio host, then replace this local path with the public URL.
 
 ## Portfolio Pitch
 
@@ -32,6 +48,12 @@ The result is a compact but complete AI CRPG encounter: the player escapes a
 necromancer lab while companions notice hidden traps, react to discoveries, remember
 social choices, argue about a boss, and unlock different outcomes based on what the
 player learned earlier.
+
+The important design constraint is that LLM output does not directly mutate the
+world. Player intent, dice checks, NPC proposals, memory writes, inventory transfer,
+status effects, and final objective completion all pass through explicit runtime
+systems. The demo is intentionally small so that every AI-visible moment is also
+player-visible and testable.
 
 ## What This Demonstrates
 
@@ -70,12 +92,14 @@ The demo path is intentionally small, but it exercises the full agent stack:
    The UI shows companion bark, trap marker, dice/state feedback, and map effects.
 
 3. **Act 3: Secret Study**
-   A failed direct route becomes useful: the party finds a hidden study, reads
+   The direct route can fail forward. A failed lockpick reveals a cracked wall
+   beside the locked lab door. The party enters a connected secret study, reads
    chemical notes, decodes the necromancer diary, and gains information about Gribbo.
 
 4. **Act 4: Gribbo Boss Encounter**
-   The final obstacle is not a health bar. Gribbo holds the key, guards the exit,
-   and reacts differently if the player discovered the truth about the potion.
+   The final obstacle is not a chatbot. Gribbo holds the key, guards the exit,
+   and controls an unstable poison system. The party proposes competing plans,
+   and diary truth acts as an encounter advantage rather than a free skip.
 
 5. **Final Exit**
    The heavy iron key opens the final door and clears the demo.
@@ -169,6 +193,19 @@ filtered environment objects, peer state, visible history, and memory snippets.
 memory writes, world flags, affection changes, damage/status effects, and journal
 events are committed through deterministic code paths.
 
+## Why This Is Not Just an NPC Chatbot
+
+- **Spatial continuity**: Act 2, Act 3, and Act 4 are connected by doors, hidden
+  entrances, keys, and player movement rather than pure text jumps.
+- **Fail-forward routing**: failing the direct lab-door lockpick reveals the Secret
+  Study path instead of simply blocking progress.
+- **Information advantage**: reading the diary changes the Gribbo encounter; skipping
+  the study removes that advantage.
+- **Combat-lite encounter spine**: the boss room combines party strategy, key control,
+  poison-valve pressure, dice checks, and deterministic item transfer.
+- **Replayable correctness**: the same beats are covered by Jest, pytest, golden evals,
+  and a fresh-session browser acceptance recording.
+
 ## Backend Highlights
 
 ### ActorView / Visibility
@@ -261,7 +298,8 @@ Open Showcase Mode:
 http://127.0.0.1:8000/web_ui/?map_id=necromancer_lab&qa_showcase=1&qa_no_idle=1
 ```
 
-For a 60-90 second portfolio recording plan, see
+For the current portfolio recording plan and accepted cut, see
+[Demo Release 2026-06-22](docs/demo_release_2026-06-22.md) and
 [Portfolio Demo Script](docs/portfolio_demo_script.md).
 
 ## Testing / Eval / Benchmark
@@ -324,12 +362,14 @@ archive/v1_legacy/     archived prototype code, not the current runtime
 
 ## Portfolio Roadmap
 
-The core vertical slice is designed to show one dungeon-quality encounter. The
-next useful extensions are portfolio-facing rather than infrastructure-heavy:
+The core vertical slice is now designed to show one dungeon-quality AI encounter.
+The next useful extensions are portfolio-facing rather than infrastructure-heavy:
 
-- record a 60-90 second demo video or GIF covering Act 2 -> Act 4
+- upload the accepted `final_demo.mp4` to a GitHub Release or portfolio host
 - add a static architecture image derived from the Mermaid graph above
+- add a short voiceover pass using the existing English/Chinese narration scripts
 - add a short dialogue comparison page for memory/no-memory boss outcomes
+- record a short Unity 3D client teaser as a secondary demo
 - add one more NPC using the existing ActorRuntime and ActorView contracts
 - add token-level generation streaming when the provider path supports it cleanly
 - expand combat presentation without replacing the event pipeline
