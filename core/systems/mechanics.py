@@ -781,7 +781,15 @@ def _sync_door_state_to_map(
                 if ex != ox or ey != oy:
                     continue
                 is_open = bool(entity.get("is_open", False))
+                is_locked = bool(entity.get("is_locked", False))
+                status = str(entity.get("status") or ("open" if is_open else "closed")).strip() or ("open" if is_open else "closed")
                 obstacle["is_open"] = is_open
+                obstacle["is_locked"] = False if is_open else is_locked
+                obstacle["status"] = "open" if is_open else status
+                if entity.get("key_required") is not None:
+                    obstacle["key_required"] = entity.get("key_required")
+                if entity.get("lockpick_dc") is not None:
+                    obstacle["lockpick_dc"] = entity.get("lockpick_dc")
                 obstacle["blocks_movement"] = not is_open
                 obstacle["blocks_los"] = not is_open
                 break
@@ -3368,6 +3376,42 @@ def _mark_lab_corridor_door_base_flags(flags: Dict[str, Any]) -> None:
 def _mark_secret_study_hint(flags: Dict[str, Any]) -> None:
     flags["act2_secret_study_hint_given"] = True
     flags["act2_secret_study_route_unlocked"] = True
+
+
+def _state_has_act4_diary_truth(state: Any) -> bool:
+    flags = dict(state.get("flags") or {}) if isinstance(state, dict) else {}
+    if (
+        _flag_bool(flags.get("necromancer_lab_diary_decoded"))
+        or _flag_bool(flags.get("act3_gribbo_potion_truth_known"))
+        or _flag_bool(flags.get("act3_party_knows_gribbo_truth"))
+    ):
+        return True
+    runtime_state = state.get("actor_runtime_state") if isinstance(state, dict) else {}
+    if not isinstance(runtime_state, dict):
+        return False
+    memory_texts: List[str] = []
+    for bucket_id in ("player", "__party_shared__"):
+        bucket = runtime_state.get(bucket_id)
+        if not isinstance(bucket, dict):
+            continue
+        notes = bucket.get("memory_notes")
+        if isinstance(notes, list):
+            memory_texts.extend(str(item) for item in notes)
+    joined = "\n".join(memory_texts)
+    return bool(
+        joined
+        and ("Gribbo" in joined or "gribbo" in joined.lower())
+        and ("heavy_iron_key" in joined or "药剂" in joined or "毒气陷阱" in joined)
+    )
+
+
+def _mark_act4_boss_room_context(flags: Dict[str, Any], state: Any) -> None:
+    flags["act4_boss_room_entered"] = True
+    flags.setdefault("act4_poison_valve_intact", True)
+    flags.setdefault("act4_poison_valve_triggered", False)
+    flags.setdefault("act4_lab_poison_leak", False)
+    if _state_has_act4_diary_truth(state):
+        flags["act4_diary_truth_available"] = True
 
 
 def _is_explicit_lab_lockpick_attempt(state: Any, intent_context: Dict[str, Any]) -> bool:
@@ -7073,6 +7117,34 @@ def execute_interact_action(state: Any) -> Dict[str, Any]:
     if normalized_target_id == "door_b_to_d":
         flags = dict(state.get("flags") or {})
         _mark_lab_corridor_door_base_flags(flags)
+        if bool(door.get("is_open", False)) or str(door.get("status") or "").strip().lower() in {"open", "opened"}:
+            door["is_locked"] = False
+            door["is_open"] = True
+            door["status"] = "open"
+            _sync_object_state(
+                entities=entities,
+                environment_objects=environment_objects,
+                target_id=target_id,
+                updates={"is_locked": False, "is_open": True, "status": "open"},
+            )
+            _sync_door_state_to_map(map_data=map_data, entities=entities)
+            _mark_act4_boss_room_context(flags, state)
+            return {
+                "journal_events": ["🚪 [交互] 通往实验室的重门已经开启。"],
+                "entities": entities,
+                "environment_objects": environment_objects,
+                "map_data": map_data,
+                "flags": flags,
+                "demo_cleared": bool(state.get("demo_cleared", False)),
+                "raw_roll_data": _build_action_result(
+                    intent="INTERACT",
+                    actor=actor_id,
+                    target=target_id,
+                    is_success=True,
+                    result_type="ALREADY_OPEN",
+                    extra={"is_open": True},
+                ),
+            }
         has_lab_key = _has_inventory_item(
             actor_id=actor_id,
             item_id="lab_key",
@@ -7113,6 +7185,7 @@ def execute_interact_action(state: Any) -> Dict[str, Any]:
         _sync_door_state_to_map(map_data=map_data, entities=entities)
         flags["act2_corridor_exit_opened_with_key"] = True
         flags["act2_lockpick_success_route_to_boss"] = False
+        _mark_act4_boss_room_context(flags, state)
         return {
             "journal_events": ["🚪 [交互] lab_key 嵌入锁孔，通往实验室的重门打开了。"],
             "entities": entities,
@@ -7130,6 +7203,33 @@ def execute_interact_action(state: Any) -> Dict[str, Any]:
             ),
         }
     if normalized_target_id == "heavy_oak_door_1" and not has_heavy_key:
+        if bool(door.get("is_open", False)) or str(door.get("status") or "").strip().lower() in {"open", "opened"}:
+            _sync_object_state(
+                entities=entities,
+                environment_objects=environment_objects,
+                target_id=target_id,
+                updates={"is_locked": False, "is_open": True, "status": "open"},
+            )
+            _sync_door_state_to_map(map_data=map_data, entities=entities)
+            flags = dict(state.get("flags") or {})
+            if bool(state.get("demo_cleared", False)):
+                flags["act4_final_exit_opened"] = True
+            return {
+                "journal_events": ["🚪 [交互] 通往地表的出口已经开启。"],
+                "entities": entities,
+                "environment_objects": environment_objects,
+                "map_data": map_data,
+                "flags": flags,
+                "demo_cleared": bool(state.get("demo_cleared", False)),
+                "raw_roll_data": _build_action_result(
+                    intent="INTERACT",
+                    actor=actor_id,
+                    target=target_id,
+                    is_success=True,
+                    result_type="ALREADY_OPEN",
+                    extra={"is_open": True, "demo_cleared": bool(state.get("demo_cleared", False))},
+                ),
+            }
         payload: Dict[str, Any] = {
             "journal_events": ["🚪 [系统] 门被锁死了，你需要一把沉重的铁钥匙。"],
             "entities": entities,
@@ -7826,6 +7926,7 @@ def execute_unlock_action(state: Any) -> Dict[str, Any]:
             _sync_door_state_to_map(map_data=map_data, entities=entities)
             flags["act2_corridor_exit_lockpick_success"] = True
             flags["act2_lockpick_success_route_to_boss"] = True
+            _mark_act4_boss_room_context(flags, state)
             return {
                 "journal_events": [
                     f"🔓 [撬锁成功] {actor_name} 撬开了通往实验室的重门 (1d20: {total} vs DC {lockpick_dc})。"

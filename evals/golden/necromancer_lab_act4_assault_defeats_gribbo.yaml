@@ -15,6 +15,15 @@ steps:
   - id: force_success
     user_input: /flag necromancer_lab_force_assault_success true
     intent: chat
+  - id: setup_boss_strategy
+    user_input: /flag act4_boss_room_entered true
+    intent: command
+  - id: setup_boss_confrontation
+    user_input: /flag act4_gribbo_confrontation_started true
+    intent: command
+  - id: setup_strategy_discussed
+    user_input: /flag act4_boss_strategy_discussed true
+    intent: command
   - id: assault_gribbo
     user_input: Lae'zel，解决他。别让他碰阀门。
     intent: chat

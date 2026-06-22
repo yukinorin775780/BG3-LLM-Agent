@@ -77,6 +77,7 @@ class ChatRequest(BaseModel):
     map_id: Optional[str] = None  # 可选：新会话初始化地图（如 necromancer_lab）
     target: Optional[str] = None  # 可选：结构化目标 id（如 gribbo / heavy_oak_door_1）
     source: Optional[str] = None  # 可选：请求来源（如 interaction / ui_click）
+    intent_context: Optional[Dict[str, Any]] = None  # 可选：前端结构化动作上下文
     client_player_position: Optional[Dict[str, int]] = None  # 可选：前端本地玩家网格坐标
     player_position: Optional[List[int]] = None  # 兼容旧/简化 payload: [x, y]
 
@@ -85,6 +86,9 @@ class ChatResponse(BaseModel):
     responses: List[Dict[str, str]]  # 例如: [{"speaker": "astarion", "text": "亲爱的..."}]
     journal_events: List[str]  # 本回合发生的新事件
     current_location: str  # 当前位置
+    map_data: Optional[Dict[str, Any]] = None
+    visible_rooms: Optional[List[str]] = None
+    flags: Optional[Dict[str, Any]] = None
     environment_objects: Dict[str, Any]  # 场景里的可交互物品 (如箱子、门)
     party_status: Dict[str, Any]  # 队友的血量、好感度等状态
     player_inventory: Dict[str, Any]  # 玩家背包
@@ -115,6 +119,7 @@ async def chat_endpoint(req: ChatRequest) -> ChatResponse:
         map_id=req.map_id,
         target=req.target,
         source=req.source,
+        intent_context=req.intent_context,
         client_player_position=req.client_player_position,
         player_position=req.player_position,
     )

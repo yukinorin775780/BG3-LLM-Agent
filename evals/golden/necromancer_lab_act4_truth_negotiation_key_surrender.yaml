@@ -22,6 +22,13 @@ steps:
       state:
         equals:
           game_state.flags.act4_gribbo_confrontation_started: true
+  - id: setup_strategy_discussed
+    user_input: /flag act4_boss_strategy_discussed true
+    intent: command
+    expected:
+      state:
+        equals:
+          game_state.flags.act4_boss_strategy_discussed: true
   - id: truth_persuasion
     user_input: 我知道药剂对你做了什么。你不是守卫，你是实验品。把钥匙给我，我们带你离开。
     intent: chat

@@ -533,6 +533,11 @@ def get_initial_world_state(map_id: str = "goblin_camp") -> Dict[str, Any]:
     map_data = get_map_data(map_id)
     if not isinstance(map_data, dict) or not map_data:
         map_data = get_map_data("goblin_camp")
+    visible_rooms = []
+    if str(map_data.get("id") or "").strip().lower() == "necromancer_lab":
+        visible_rooms = ["room_a_spawn"]
+        map_data = copy.deepcopy(map_data)
+        map_data["visible_rooms"] = visible_rooms
     has_spawn_table = isinstance(map_data.get("spawns"), list) and len(map_data.get("spawns", [])) > 0
 
     entities = _build_initial_entities(use_spawn_table=has_spawn_table)
@@ -544,6 +549,7 @@ def get_initial_world_state(map_id: str = "goblin_camp") -> Dict[str, Any]:
     return {
         "entities": entities,
         "map_data": map_data,
+        "visible_rooms": list(visible_rooms),
         "player_inventory": init_player_inv,
         "turn_count": 0,
         "combat_phase": "OUT_OF_COMBAT",

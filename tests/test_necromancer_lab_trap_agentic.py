@@ -125,6 +125,30 @@ def test_dm_routes_trap_awareness_to_astarion_perception_roll():
     assert dm_patch["intent_context"]["trap_awareness_context"]["detect_dc"] == 13
 
 
+def test_dm_preserves_structured_trap_awareness_perception_intent():
+    state = _open_corridor_and_move_near_trap(_build_lab_state())
+    state["flags"]["act2_corridor_entered"] = True
+
+    dm_patch = asyncio.run(dm_node({
+        **state,
+        "user_input": "阿斯代伦检查走廊里的可疑机关。",
+        "intent": "PERCEPTION",
+        "target": "gas_trap_1",
+        "source": "trap_awareness",
+        "intent_context": {
+            "action_actor": "astarion",
+            "action_target": "gas_trap_1",
+            "source": "trap_awareness",
+        },
+    }))
+
+    assert dm_patch["intent"] == "PERCEPTION"
+    assert dm_patch["intent_context"]["source"] == "trap_awareness"
+    assert dm_patch["intent_context"]["action_actor"] == "astarion"
+    assert dm_patch["intent_context"]["action_target"] == "gas_trap_1"
+    assert dm_patch["intent_context"]["trap_awareness_context"]["detect_dc"] == 13
+
+
 def test_poison_trap_trigger_helper_requires_necromancer_lab():
     state = _build_lab_state()
     state["map_data"]["id"] = "goblin_camp"

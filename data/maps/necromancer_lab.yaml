@@ -87,7 +87,7 @@ environment_objects:
   - id: "door_b_to_c"
     type: "door"
     name: "隐藏书房侧门"
-    position: [8, 7]
+    position: [4, 8]
     is_open: false
     is_locked: false
     is_hidden: true
@@ -99,7 +99,7 @@ environment_objects:
   - id: "cracked_wall"
     type: "object"
     name: "开裂的墙壁"
-    position: [8, 7]
+    position: [4, 8]
     status: "hidden"
     is_hidden: true
     room_id: "room_b_corridor"
@@ -107,7 +107,8 @@ environment_objects:
   - id: "chest_1"
     type: "locked_chest"
     name: "死灵法师的战利品箱"
-    position: [16, 2]
+    position: [3, 12]
+    room_id: "room_c_secret_study"
     status: "open"
     is_locked: false
     unlock_dc: 14
@@ -118,19 +119,19 @@ environment_objects:
   - id: "necromancer_diary"
     type: "readable"
     name: "沾满血污的日记本"
-    position: [3, 3]
+    position: [2, 10]
     lore_id: "necromancer_diary_1"
     room_id: "room_c_secret_study"
   - id: "chemical_notes"
     type: "readable"
     name: "化学残页"
-    position: [15, 4]
+    position: [3, 10]
     lore_id: "necromancer_chemical_notes"
     room_id: "room_c_secret_study"
   - id: "iron_key_sketch"
     type: "readable"
     name: "重铁钥匙草图"
-    position: [16, 3]
+    position: [2, 12]
     lore_id: "necromancer_iron_key_sketch"
     room_id: "room_c_secret_study"
 spawns:

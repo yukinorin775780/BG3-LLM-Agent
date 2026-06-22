@@ -11,7 +11,9 @@ from unittest.mock import Mock
 from langgraph.graph import START
 
 from core.application.game_service import GameService, process_chat_turn
+from core.campaigns.necromancer_lab import detect_gribbo_boss_resolution_context
 from core.graph.nodes.mechanics import mechanics_node
+from core.systems import mechanics
 from core.systems.world_init import get_initial_world_state
 
 
@@ -197,6 +199,23 @@ def test_process_chat_turn_uses_existing_checkpoint_for_regular_dialogue():
     }
 
 
+def test_client_position_in_open_boss_lab_marks_act4_context():
+    state = get_initial_world_state(map_id="necromancer_lab")
+    state["flags"]["necromancer_lab_diary_decoded"] = True
+    for bucket_name in ("entities", "environment_objects"):
+        state[bucket_name]["door_b_to_d"]["is_open"] = True
+        state[bucket_name]["door_b_to_d"]["is_locked"] = False
+        state[bucket_name]["door_b_to_d"]["status"] = "open"
+
+    patch = GameService._build_client_player_position_patch(state=state, x=5, y=6)
+
+    assert patch["entities"]["player"]["x"] == 5
+    assert patch["entities"]["player"]["y"] == 6
+    assert patch["flags"]["act4_boss_room_entered"] is True
+    assert patch["flags"]["act4_diary_truth_available"] is True
+    assert "act4_gribbo_confrontation_started" not in patch["flags"]
+
+
 def test_process_chat_turn_passes_structured_target_source_into_graph_payload():
     existing_state = {
         "entities": {"player": {"hp": 20}, "gribbo": {"hp": 18}},
@@ -236,6 +255,48 @@ def test_process_chat_turn_passes_structured_target_source_into_graph_payload():
             "action_target": "gribbo",
             "source": "interaction",
         },
+    }
+
+
+def test_process_chat_turn_merges_request_intent_context_into_graph_payload():
+    existing_state = {
+        "entities": {"player": {"hp": 20}},
+        "journal_events": [],
+    }
+    final_state = {
+        "speaker_responses": [],
+        "journal_events": [],
+        "current_location": "necromancer_lab",
+        "environment_objects": {},
+        "entities": {"player": {"hp": 20}},
+    }
+    fake_graph = _FakeGraph(snapshots=[existing_state], invoke_result=final_state)
+
+    asyncio.run(
+        process_chat_turn(
+            user_input="尝试撬锁 door_b_to_d，演示失败。",
+            intent="UNLOCK",
+            session_id="session-structured-intent-context",
+            character="player",
+            map_id="necromancer_lab",
+            target="door_b_to_d",
+            source="lockpick",
+            intent_context={
+                "action": "lockpick_lab_door",
+                "force_lockpick_failure": True,
+            },
+            saver_factory=Mock(return_value=_AsyncContextManager(value=object())),
+            graph_builder=Mock(return_value=fake_graph),
+            initial_state_factory=Mock(),
+        )
+    )
+
+    assert fake_graph.ainvoke_calls[0]["payload"]["intent_context"] == {
+        "action_actor": "player",
+        "action_target": "door_b_to_d",
+        "source": "lockpick",
+        "action": "lockpick_lab_door",
+        "force_lockpick_failure": True,
     }
 
 
@@ -488,6 +549,208 @@ def test_game_service_necromancer_lab_snapshot_from_empty_session_has_no_goblin_
     assert "goblin_archer" not in snapshot["party_status"]
     assert "goblin_shaman" not in snapshot["party_status"]
     assert snapshot["game_state"]["map_data"]["id"] == "necromancer_lab"
+    assert snapshot["map_data"]["visible_rooms"] == ["room_a_spawn"]
+    assert snapshot["game_state"]["map_data"]["visible_rooms"] == ["room_a_spawn"]
+
+
+def _snapshot_necromancer_state(state):
+    fake_graph = _FakeGraph(
+        snapshots=[state],
+        invoke_result={},
+    )
+    service = GameService(
+        saver_factory=Mock(return_value=_AsyncContextManager(value=object())),
+        graph_builder=Mock(return_value=fake_graph),
+        initial_state_factory=Mock(),
+    )
+    snapshot = asyncio.run(
+        service.get_state_snapshot(
+            session_id="session-visible-rooms",
+            initialize_if_missing=False,
+            map_id="necromancer_lab",
+        )
+    )
+    return snapshot, fake_graph
+
+
+def test_api_state_drains_pending_gribbo_truth_key_transfer():
+    state = get_initial_world_state(map_id="necromancer_lab")
+    state["flags"]["act3_gribbo_potion_truth_known"] = True
+    state["flags"]["act3_party_knows_gribbo_truth"] = True
+    state["flags"]["act3_heavy_key_hint_known"] = True
+    state["flags"]["act4_gribbo_confrontation_started"] = True
+    state["flags"]["act4_boss_strategy_discussed"] = True
+    state["flags"]["necromancer_lab_force_truth_negotiation_success"] = True
+    state["pending_events"] = []
+    state["speaker_responses"] = []
+    state["messages"] = []
+    state["user_input"] = "我知道药剂对你做了什么。把钥匙给我，我们带你离开。"
+
+    context = detect_gribbo_boss_resolution_context(state, state["user_input"], {})
+    result = mechanics.execute_gribbo_boss_resolution_action(
+        {
+            **state,
+            "intent_context": {
+                "action_actor": "player",
+                "action_target": "gribbo",
+                "gribbo_boss_resolution_context": context,
+            },
+        }
+    )
+    state.update({key: copy.deepcopy(value) for key, value in result.items() if key != "raw_roll_data"})
+
+    fake_graph = _MutatingMechanicsGraph(state)
+    service = GameService(
+        saver_factory=Mock(return_value=_AsyncContextManager(value=object())),
+        graph_builder=Mock(return_value=fake_graph),
+        initial_state_factory=Mock(),
+    )
+
+    snapshot = asyncio.run(
+        service.get_state_snapshot(
+            session_id="session-act4-pending-key-drain",
+            initialize_if_missing=False,
+            map_id="necromancer_lab",
+        )
+    )
+
+    assert snapshot["player_inventory"]["heavy_iron_key"] == 1
+    assert snapshot["flags"]["act4_heavy_iron_key_obtained"] is True
+    assert snapshot["flags"]["act4_negotiation_success"] is True
+    assert snapshot["game_state"]["pending_events"] == []
+    assert snapshot["game_state"]["entities"]["gribbo"]["inventory"].get("heavy_iron_key", 0) == 0
+    assert "[物品转移] gribbo -> player heavy_iron_key" in snapshot["game_state"]["journal_events"]
+
+
+def test_api_state_initial_necromancer_lab_visible_rooms_persists_spawn_room():
+    state = {
+        "entities": {"player": {"hp": 20}},
+        "journal_events": [],
+        "map_data": {"id": "necromancer_lab"},
+        "environment_objects": {},
+    }
+
+    snapshot, fake_graph = _snapshot_necromancer_state(state)
+
+    assert snapshot["map_data"]["visible_rooms"] == ["room_a_spawn"]
+    assert snapshot["game_state"]["map_data"]["visible_rooms"] == ["room_a_spawn"]
+    assert fake_graph.aupdate_state_calls[-1]["payload"]["map_data"]["visible_rooms"] == ["room_a_spawn"]
+
+
+def test_api_state_opening_door_a_to_b_persists_corridor_visible_room():
+    state = {
+        "entities": {"player": {"hp": 20}, "door_a_to_b": {"entity_type": "door", "is_open": True, "status": "open"}},
+        "journal_events": [],
+        "map_data": {"id": "necromancer_lab", "visible_rooms": ["room_a_spawn"]},
+        "visible_rooms": ["room_a_spawn"],
+        "flags": {"act2_corridor_entered": True},
+        "environment_objects": {"door_a_to_b": {"type": "door", "is_open": True, "status": "open"}},
+    }
+
+    snapshot, fake_graph = _snapshot_necromancer_state(state)
+
+    assert snapshot["map_data"]["visible_rooms"] == ["room_a_spawn", "room_b_corridor"]
+    assert fake_graph.aupdate_state_calls[-1]["payload"]["visible_rooms"] == ["room_a_spawn", "room_b_corridor"]
+
+
+def test_api_state_secret_study_route_unlock_does_not_reveal_room_c():
+    state = {
+        "entities": {"player": {"hp": 20}},
+        "journal_events": [],
+        "map_data": {"id": "necromancer_lab", "visible_rooms": ["room_a_spawn", "room_b_corridor"]},
+        "visible_rooms": ["room_a_spawn", "room_b_corridor"],
+        "flags": {
+            "act2_corridor_exit_door_inspected": True,
+            "act2_corridor_exit_requires_key": True,
+            "act2_secret_study_hint_given": True,
+            "act2_secret_study_route_unlocked": True,
+        },
+        "environment_objects": {
+            "door_b_to_d": {"type": "door", "is_open": False, "is_locked": True, "status": "locked"},
+            "door_b_to_c": {"type": "door", "is_open": False, "is_hidden": True, "status": "hidden"},
+        },
+    }
+
+    snapshot, fake_graph = _snapshot_necromancer_state(state)
+
+    assert snapshot["map_data"]["visible_rooms"] == ["room_a_spawn", "room_b_corridor"]
+    assert "room_c_secret_study" not in snapshot["game_state"]["map_data"]["visible_rooms"]
+    if fake_graph.aupdate_state_calls:
+        assert "room_c_secret_study" not in fake_graph.aupdate_state_calls[-1]["payload"]["visible_rooms"]
+
+
+def test_api_state_discovered_secret_entry_without_open_does_not_reveal_room_c():
+    state = {
+        "entities": {"player": {"hp": 20}},
+        "journal_events": [],
+        "map_data": {"id": "necromancer_lab", "visible_rooms": ["room_a_spawn", "room_b_corridor"]},
+        "visible_rooms": ["room_a_spawn", "room_b_corridor"],
+        "flags": {
+            "act2_corridor_exit_door_inspected": True,
+            "act2_secret_study_route_unlocked": True,
+        },
+        "environment_objects": {
+            "door_b_to_c": {
+                "type": "door",
+                "is_open": False,
+                "is_hidden": False,
+                "status": "discovered",
+            },
+            "cracked_wall": {
+                "type": "object",
+                "is_hidden": False,
+                "status": "discovered",
+            },
+        },
+    }
+
+    snapshot, fake_graph = _snapshot_necromancer_state(state)
+
+    assert snapshot["map_data"]["visible_rooms"] == ["room_a_spawn", "room_b_corridor"]
+    assert "room_c_secret_study" not in snapshot["game_state"]["map_data"]["visible_rooms"]
+    if fake_graph.aupdate_state_calls:
+        assert "room_c_secret_study" not in fake_graph.aupdate_state_calls[-1]["payload"]["visible_rooms"]
+
+
+def test_api_state_secret_study_discovery_persists_room_c_visible_room():
+    state = {
+        "entities": {"player": {"hp": 20}},
+        "journal_events": [],
+        "map_data": {"id": "necromancer_lab", "visible_rooms": ["room_a_spawn", "room_b_corridor"]},
+        "visible_rooms": ["room_a_spawn", "room_b_corridor"],
+        "flags": {"room_c_secret_study_discovered": True},
+        "environment_objects": {"door_b_to_c": {"type": "door", "is_open": True, "status": "open"}},
+    }
+
+    snapshot, fake_graph = _snapshot_necromancer_state(state)
+
+    assert snapshot["map_data"]["visible_rooms"] == [
+        "room_a_spawn",
+        "room_b_corridor",
+        "room_c_secret_study",
+    ]
+    assert "room_c_secret_study" in fake_graph.aupdate_state_calls[-1]["payload"]["map_data"]["visible_rooms"]
+
+
+def test_api_state_act4_boss_intro_persists_room_d_visible_room():
+    state = {
+        "entities": {"player": {"hp": 20}},
+        "journal_events": [],
+        "map_data": {"id": "necromancer_lab", "visible_rooms": ["room_a_spawn", "room_b_corridor", "room_c_secret_study"]},
+        "visible_rooms": ["room_a_spawn", "room_b_corridor", "room_c_secret_study"],
+        "flags": {"act4_boss_room_entered": True, "act4_gribbo_confrontation_started": True},
+        "environment_objects": {"door_b_to_d": {"type": "door", "is_open": True, "status": "open"}},
+    }
+
+    snapshot, fake_graph = _snapshot_necromancer_state(state)
+
+    assert snapshot["map_data"]["visible_rooms"] == [
+        "room_a_spawn",
+        "room_b_corridor",
+        "room_c_secret_study",
+        "room_d_lab",
+    ]
+    assert "room_d_lab" in fake_graph.aupdate_state_calls[-1]["payload"]["visible_rooms"]
 
 
 def test_game_service_reinitializes_when_requested_map_id_differs_from_checkpoint():
@@ -594,10 +857,12 @@ def test_process_chat_turn_init_sync_applies_necromancer_lab_intro_awareness_onc
         )
     )
 
-    assert len(fake_graph.aupdate_state_calls) == 2
+    assert len(fake_graph.aupdate_state_calls) == 3
     assert fake_graph.aupdate_state_calls[0]["payload"] == initial_world_state
     intro_payload = fake_graph.aupdate_state_calls[1]["payload"]
+    visible_rooms_payload = fake_graph.aupdate_state_calls[2]["payload"]
     assert intro_payload["flags"]["necromancer_lab_intro_seen"] is True
+    assert visible_rooms_payload["map_data"]["visible_rooms"] == ["room_a_spawn"]
     assert "astarion_detected_gas_trap" not in intro_payload["flags"]
     assert not any("Astarion" in line and ("陷阱" in line or "机关" in line) for line in intro_payload["journal_events"])
     # P0-3: init_sync no longer leaks intro journal entries into the response.
@@ -667,7 +932,11 @@ def test_reset_session_preserves_existing_map_and_returns_quiet_delta():
 
     result = asyncio.run(service.reset_session(session_id="session-reset", map_id=None))
 
-    persisted_payload = fake_graph.aupdate_state_calls[0]["payload"]
+    persisted_payload = next(
+        call["payload"]
+        for call in fake_graph.aupdate_state_calls
+        if "player_inventory" in call["payload"]
+    )
     assert persisted_payload["map_data"]["id"] == "necromancer_lab"
     assert result["journal_events"] == []
     assert result["responses"] == []
@@ -938,7 +1207,11 @@ def test_process_chat_turn_ui_loot_transfers_dead_entity_items_to_player_invento
         )
     )
 
-    persisted_payload = fake_graph.aupdate_state_calls[0]["payload"]
+    persisted_payload = next(
+        call["payload"]
+        for call in fake_graph.aupdate_state_calls
+        if "player_inventory" in call["payload"]
+    )
     assert persisted_payload["player_inventory"] == {
         "healing_potion": 2,
         "gold_coin": 5,
@@ -1003,7 +1276,11 @@ def test_process_chat_turn_ui_loot_accepts_player_as_valid_character():
         )
     )
 
-    persisted_payload = fake_graph.aupdate_state_calls[0]["payload"]
+    persisted_payload = next(
+        call["payload"]
+        for call in fake_graph.aupdate_state_calls
+        if "player_inventory" in call["payload"]
+    )
     assert persisted_payload["player_inventory"] == {
         "healing_potion": 2,
         "gold_coin": 5,
@@ -1070,7 +1347,11 @@ def test_process_chat_turn_ui_loot_study_chest_grants_lab_key():
         )
     )
 
-    persisted_payload = fake_graph.aupdate_state_calls[0]["payload"]
+    persisted_payload = next(
+        call["payload"]
+        for call in fake_graph.aupdate_state_calls
+        if "player_inventory" in call["payload"]
+    )
     assert persisted_payload["player_inventory"].get("lab_key") == 1
     assert persisted_payload["environment_objects"]["chest_1"]["inventory"] == {}
     assert "heavy_iron_key" not in persisted_payload["player_inventory"]
@@ -1138,7 +1419,11 @@ def test_process_chat_turn_ui_loot_necromancer_gribbo_key_drains_event_before_pe
         )
     )
 
-    persisted_payload = fake_graph.aupdate_state_calls[0]["payload"]
+    persisted_payload = next(
+        call["payload"]
+        for call in fake_graph.aupdate_state_calls
+        if "player_inventory" in call["payload"]
+    )
     assert persisted_payload["player_inventory"].get("heavy_iron_key", 0) == 1
     assert persisted_payload["entities"]["gribbo"]["inventory"].get("heavy_iron_key", 0) == 0
     assert persisted_payload["pending_events"] == []

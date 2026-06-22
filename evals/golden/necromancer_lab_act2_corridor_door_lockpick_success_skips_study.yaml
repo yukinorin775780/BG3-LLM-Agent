@@ -11,15 +11,15 @@ determinism:
   random_values: [0.5]
 steps:
   - id: move_to_lab_door
-    user_input: 移动到 4,8
+    user_input: 移动到 door_b_to_d 附近
     intent: MOVE
     payload:
-      target: "4,8"
+      target: door_b_to_d
     expected:
       state:
         equals:
           game_state.entities.player.x: 4
-          game_state.entities.player.y: 8
+          game_state.entities.player.y: 6
   - id: force_lockpick_success
     user_input: /flag necromancer_lab_force_lockpick_success true
     expected:

@@ -15,6 +15,15 @@ steps:
   - id: force_success
     user_input: /flag necromancer_lab_force_steal_key_success true
     intent: chat
+  - id: setup_boss_strategy
+    user_input: /flag act4_boss_room_entered true
+    intent: command
+  - id: setup_boss_confrontation
+    user_input: /flag act4_gribbo_confrontation_started true
+    intent: command
+  - id: setup_strategy_discussed
+    user_input: /flag act4_boss_strategy_discussed true
+    intent: command
   - id: astarion_steals_key
     user_input: 阿斯代伦，偷钥匙。
     intent: chat

@@ -56,6 +56,7 @@ def test_chat_endpoint_delegates_to_service_and_preserves_response_schema():
         map_id="necromancer_lab",
         target=None,
         source=None,
+        intent_context=None,
         client_player_position=None,
         player_position=None,
     )
@@ -153,8 +154,65 @@ def test_chat_endpoint_forwards_target_and_source_to_game_service():
         map_id="necromancer_lab",
         target="heavy_oak_door_1",
         source="interaction",
+        intent_context=None,
         client_player_position={"x": 17, "y": 4},
         player_position=[17, 4],
+    )
+
+
+def test_chat_endpoint_forwards_intent_context_to_game_service():
+    expected_payload = {
+        "responses": [],
+        "journal_events": [],
+        "current_location": "camp_center",
+        "environment_objects": {},
+        "party_status": {},
+        "player_inventory": {},
+        "combat_state": {
+            "combat_active": False,
+            "initiative_order": [],
+            "current_turn_index": 0,
+            "turn_resources": {},
+        },
+    }
+    original_service = server.game_service
+    mock_service = AsyncMock()
+    mock_service.process_chat_turn.return_value = expected_payload
+    server.game_service = mock_service
+
+    intent_context = {
+        "action": "lockpick_lab_door",
+        "force_lockpick_failure": True,
+    }
+    try:
+        client = TestClient(server.app)
+        response = client.post(
+            "/api/chat",
+            json={
+                "user_input": "尝试撬锁 door_b_to_d，演示失败。",
+                "intent": "UNLOCK",
+                "session_id": "session-intent-context",
+                "map_id": "necromancer_lab",
+                "target": "door_b_to_d",
+                "source": "lockpick",
+                "intent_context": intent_context,
+            },
+        )
+    finally:
+        server.game_service = original_service
+
+    assert response.status_code == 200
+    mock_service.process_chat_turn.assert_awaited_once_with(
+        user_input="尝试撬锁 door_b_to_d，演示失败。",
+        intent="UNLOCK",
+        session_id="session-intent-context",
+        character=None,
+        map_id="necromancer_lab",
+        target="door_b_to_d",
+        source="lockpick",
+        intent_context=intent_context,
+        client_player_position=None,
+        player_position=None,
     )
 
 

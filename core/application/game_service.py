@@ -27,6 +27,14 @@ from core.systems.world_init import get_initial_world_state
 logger = logging.getLogger(__name__)
 StreamHandler = Callable[[str, Dict[str, Any]], Awaitable[None]]
 PARTY_MEMBER_IDS = frozenset({"astarion", "shadowheart", "laezel"})
+NECROMANCER_LAB_MAP_ID = "necromancer_lab"
+NECROMANCER_LAB_VISIBLE_ROOM_ORDER = (
+    "room_a_spawn",
+    "room_b_corridor",
+    "room_c_secret_study",
+    "room_d_lab",
+    "room_exit",
+)
 
 
 class ChatTurnResult(TypedDict):
@@ -103,6 +111,7 @@ class GameService:
         map_id: Optional[str] = None,
         target: Optional[str] = None,
         source: Optional[str] = None,
+        intent_context: Optional[Dict[str, Any]] = None,
         client_player_position: Optional[Dict[str, Any]] = None,
         player_position: Optional[List[Any]] = None,
         stream_handler: Optional[StreamHandler] = None,
@@ -163,6 +172,11 @@ class GameService:
                     player_position=player_position,
                     session_id=session_id,
                 )
+                previous_state = await self._sync_necromancer_lab_visible_rooms_to_checkpoint(
+                    graph=graph,
+                    config=config,
+                    state=previous_state,
+                )
 
                 if normalized_intent_key == "init_sync":
                     turn_ok = True
@@ -182,6 +196,11 @@ class GameService:
                         previous_state=previous_state,
                         intent_key=normalized_intent_key,
                     )
+                    result_state = await self._sync_necromancer_lab_visible_rooms_to_checkpoint(
+                        graph=graph,
+                        config=config,
+                        state=result_state,
+                    )
                     turn_ok = True
                     return self._build_chat_result(
                         result_state,
@@ -197,6 +216,11 @@ class GameService:
                         user_input=normalized_input,
                         character=character,
                         target=normalized_target,
+                    )
+                    result_state = await self._sync_necromancer_lab_visible_rooms_to_checkpoint(
+                        graph=graph,
+                        config=config,
+                        state=result_state,
                     )
                     chat_result = self._build_chat_result(
                         result_state,
@@ -216,12 +240,16 @@ class GameService:
                     payload["intent"] = normalized_intent
                 payload["target"] = normalized_target
                 payload["source"] = normalized_source
+                request_intent_context = intent_context if isinstance(intent_context, dict) else {}
                 if normalized_target or normalized_source:
                     payload["intent_context"] = {
                         "action_actor": "player",
                         "action_target": normalized_target.lower(),
                         "source": normalized_source,
+                        **request_intent_context,
                     }
+                elif request_intent_context:
+                    payload["intent_context"] = dict(request_intent_context)
 
                 logger.info(
                     "收到聊天请求: user_input=%r intent=%r session_id=%s",
@@ -282,6 +310,11 @@ class GameService:
                     config=config,
                     state=normalized_result_state,
                 )
+                normalized_result_state = await self._sync_necromancer_lab_visible_rooms_to_checkpoint(
+                    graph=graph,
+                    config=config,
+                    state=normalized_result_state,
+                )
                 chat_result = self._build_chat_result(
                     normalized_result_state,
                     previous_journal_len=previous_journal_len,
@@ -321,6 +354,16 @@ class GameService:
             state = await self._load_checkpoint_state(graph, config)
             if initialize_if_missing and self._requires_state_reinitialization(state, map_id=map_id):
                 state = await self._initialize_world_state(graph, config, map_id=map_id)
+            state = await self._drain_pending_events_if_needed(
+                graph=graph,
+                config=config,
+                state=state,
+            )
+            state = await self._sync_necromancer_lab_visible_rooms_to_checkpoint(
+                graph=graph,
+                config=config,
+                state=state,
+            )
             return state
 
     async def reset_session(
@@ -343,6 +386,11 @@ class GameService:
                 graph,
                 config,
                 map_id=resolved_map_id or None,
+            )
+            result_state = await self._sync_necromancer_lab_visible_rooms_to_checkpoint(
+                graph=graph,
+                config=config,
+                state=result_state,
             )
             chat_result = self._build_chat_result(
                 result_state,
@@ -490,6 +538,24 @@ class GameService:
             raise StateAccessError("Failed to persist pending event drain patch.") from exc
         return await self._load_checkpoint_state(graph, config)
 
+    async def _sync_necromancer_lab_visible_rooms_to_checkpoint(
+        self,
+        *,
+        graph: GraphProtocol,
+        config: Dict[str, Any],
+        state: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        patch = self._build_necromancer_lab_visible_rooms_patch(state)
+        if not patch:
+            return self._state_with_necromancer_lab_visible_rooms(state)
+        try:
+            await graph.aupdate_state(config, patch, as_node=START)
+        except Exception as exc:
+            raise StateAccessError("Failed to persist visible room state.") from exc
+        normalized = copy.deepcopy(state)
+        normalized.update(copy.deepcopy(patch))
+        return normalized
+
     async def _apply_campaign_intro_if_needed(
         self,
         *,
@@ -608,7 +674,9 @@ class GameService:
         player["x"] = x
         player["y"] = y
         entities["player"] = player
-        return {"entities": entities}
+        patch: Dict[str, Any] = {"entities": entities}
+        patch.update(cls._build_necromancer_lab_act4_entry_patch(state=state, x=x, y=y))
+        return patch
 
     @staticmethod
     def _is_client_player_grid_position_valid(
@@ -644,6 +712,102 @@ class GameService:
                 if tile_x == x and tile_y == y:
                     return False
         return True
+
+    @classmethod
+    def _build_necromancer_lab_act4_entry_patch(
+        cls,
+        *,
+        state: Dict[str, Any],
+        x: int,
+        y: int,
+    ) -> Dict[str, Any]:
+        map_data = state.get("map_data") if isinstance(state, dict) else {}
+        map_id = str((map_data or {}).get("id") or "").strip().lower() if isinstance(map_data, dict) else ""
+        if map_id != NECROMANCER_LAB_MAP_ID:
+            return {}
+
+        environment_objects = state.get("environment_objects") if isinstance(state.get("environment_objects"), dict) else {}
+        entities = state.get("entities") if isinstance(state.get("entities"), dict) else {}
+        door = {}
+        for bucket in (environment_objects, entities):
+            record = bucket.get("door_b_to_d") if isinstance(bucket, dict) else None
+            if isinstance(record, dict):
+                door = record
+                break
+        flags = copy.deepcopy(state.get("flags") or {}) if isinstance(state.get("flags"), dict) else {}
+        door_open = cls._record_is_open(door) or cls._truthy_flag(flags.get("act2_corridor_exit_opened_with_key"))
+        if not door_open:
+            return {}
+        if not cls._is_necromancer_lab_act4_position(state=state, x=x, y=y):
+            return {}
+
+        changed = False
+        if not cls._truthy_flag(flags.get("act4_boss_room_entered")):
+            flags["act4_boss_room_entered"] = True
+            changed = True
+        for key, value in (
+            ("act4_poison_valve_intact", True),
+            ("act4_poison_valve_triggered", False),
+            ("act4_lab_poison_leak", False),
+        ):
+            if key not in flags:
+                flags[key] = value
+                changed = True
+        if cls._act4_diary_truth_available(state) and not cls._truthy_flag(flags.get("act4_diary_truth_available")):
+            flags["act4_diary_truth_available"] = True
+            changed = True
+        return {"flags": flags} if changed else {}
+
+    @classmethod
+    def _is_necromancer_lab_act4_position(cls, *, state: Dict[str, Any], x: int, y: int) -> bool:
+        map_data = state.get("map_data") if isinstance(state.get("map_data"), dict) else {}
+        rooms = map_data.get("rooms") if isinstance(map_data, dict) else None
+        if isinstance(rooms, list) and rooms:
+            for room in rooms:
+                if not isinstance(room, dict):
+                    continue
+                if str(room.get("id") or "").strip().lower() != "room_d_lab":
+                    continue
+                rx = cls._coerce_int(room.get("x"), 0)
+                ry = cls._coerce_int(room.get("y"), 0)
+                rw = max(1, cls._coerce_int(room.get("w", room.get("width")), 1))
+                rh = max(1, cls._coerce_int(room.get("h", room.get("height")), 1))
+                return rx <= x < rx + rw and ry <= y < ry + rh
+        # Backend YAML map lacks room rectangles; this mirrors the shipped Tiled
+        # Boss Lab grid and also covers the doorway cell after the B-D door opens.
+        return 2 <= x <= 18 and 1 <= y <= 7
+
+    @classmethod
+    def _act4_diary_truth_available(cls, state: Dict[str, Any]) -> bool:
+        flags = state.get("flags") if isinstance(state.get("flags"), dict) else {}
+        if (
+            cls._truthy_flag(flags.get("necromancer_lab_diary_decoded"))
+            or cls._truthy_flag(flags.get("act3_gribbo_potion_truth_known"))
+            or cls._truthy_flag(flags.get("act3_party_knows_gribbo_truth"))
+        ):
+            return True
+        runtime_state = state.get("actor_runtime_state") if isinstance(state.get("actor_runtime_state"), dict) else {}
+        memory_texts: List[str] = []
+        for bucket_id in ("player", "__party_shared__"):
+            bucket = runtime_state.get(bucket_id)
+            if not isinstance(bucket, dict):
+                continue
+            notes = bucket.get("memory_notes")
+            if isinstance(notes, list):
+                memory_texts.extend(str(item) for item in notes)
+        joined = "\n".join(memory_texts)
+        return bool(
+            joined
+            and ("Gribbo" in joined or "gribbo" in joined.lower())
+            and ("heavy_iron_key" in joined or "药剂" in joined or "毒气陷阱" in joined)
+        )
+
+    @staticmethod
+    def _coerce_int(value: Any, default: int) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
 
     async def _process_background_step(
         self,
@@ -819,6 +983,7 @@ class GameService:
         *,
         previous_journal_len: int,
     ) -> ChatTurnResult:
+        state = self._state_with_necromancer_lab_visible_rooms(state)
         raw_responses = state.get("speaker_responses") or []
         formatted_responses = [
             {"speaker": speaker, "text": text}
@@ -830,13 +995,18 @@ class GameService:
             if len(current_journal) > previous_journal_len
             else []
         )
+        formatted_responses = self._act4_boss_responses_for_journal(
+            new_journal=new_journal,
+            fallback=formatted_responses,
+        )
         recent_barks = self._extract_recent_barks_for_turn(
             state=state,
             new_journal=new_journal,
         )
         environment_objects = self._build_environment_objects_payload(state)
+        map_data = self._build_map_data_payload(state)
         player_inventory = state.get("player_inventory")
-        return {
+        payload: Dict[str, Any] = {
             **(
                 {"latest_roll": copy.deepcopy(state.get("latest_roll"))}
                 if isinstance(state.get("latest_roll"), dict) and state.get("latest_roll")
@@ -855,10 +1025,186 @@ class GameService:
             "player_inventory": player_inventory if isinstance(player_inventory, dict) else {},
             "combat_state": self._build_combat_state_payload(state, recent_barks=recent_barks),
         }
+        if map_data:
+            payload["map_data"] = map_data
+            visible_rooms = self._normalize_room_ids(map_data.get("visible_rooms"))
+            if visible_rooms:
+                payload["visible_rooms"] = visible_rooms
+        flags = state.get("flags")
+        if isinstance(flags, dict) and flags:
+            payload["flags"] = copy.deepcopy(flags)
+        return payload
 
     @staticmethod
     def _normalize_state(state: Any) -> Dict[str, Any]:
         return state if isinstance(state, dict) else {}
+
+    @staticmethod
+    def _act4_boss_responses_for_journal(
+        *,
+        new_journal: List[str],
+        fallback: List[Dict[str, str]],
+    ) -> List[Dict[str, str]]:
+        journal_blob = "\n".join(str(line or "") for line in (new_journal or []))
+        if "[Boss解决] negotiation -> key_surrendered" in journal_blob:
+            return [
+                {
+                    "speaker": "gribbo",
+                    "text": "日记……主人骗了我。拿走 heavy_iron_key，关掉毒气，别把我再锁回药罐旁边。",
+                }
+            ]
+        if "[Boss Encounter] gribbo_confrontation_started" in journal_blob and not fallback:
+            return [
+                {
+                    "speaker": "gribbo",
+                    "text": "不许再靠近！钥匙是我的，门也是我的。主人说过，谁也不能出去。",
+                }
+            ]
+        return fallback
+
+    @classmethod
+    def _state_with_necromancer_lab_visible_rooms(cls, state: Dict[str, Any]) -> Dict[str, Any]:
+        patch = cls._build_necromancer_lab_visible_rooms_patch(state)
+        if not patch:
+            return state
+        normalized = copy.deepcopy(state)
+        normalized.update(copy.deepcopy(patch))
+        return normalized
+
+    @classmethod
+    def _build_necromancer_lab_visible_rooms_patch(cls, state: Dict[str, Any]) -> Dict[str, Any]:
+        rooms = cls._derive_necromancer_lab_visible_rooms(state)
+        if not rooms:
+            return {}
+        current_map_data = state.get("map_data") if isinstance(state, dict) else {}
+        map_data = copy.deepcopy(current_map_data) if isinstance(current_map_data, dict) else {}
+        current_map_rooms = cls._normalize_room_ids(map_data.get("visible_rooms"))
+        current_top_rooms = cls._normalize_room_ids(state.get("visible_rooms") if isinstance(state, dict) else [])
+        if current_map_rooms == rooms and current_top_rooms == rooms:
+            return {}
+        map_data["visible_rooms"] = rooms
+        return {"map_data": map_data, "visible_rooms": rooms}
+
+    @staticmethod
+    def _normalize_room_ids(value: Any) -> List[str]:
+        if not isinstance(value, list):
+            return []
+        normalized: List[str] = []
+        seen: set[str] = set()
+        for item in value:
+            room_id = str(item or "").strip()
+            if not room_id or room_id in seen:
+                continue
+            normalized.append(room_id)
+            seen.add(room_id)
+        return normalized
+
+    @classmethod
+    def _derive_necromancer_lab_visible_rooms(cls, state: Dict[str, Any]) -> List[str]:
+        if not isinstance(state, dict):
+            return []
+        map_data = state.get("map_data") if isinstance(state.get("map_data"), dict) else {}
+        map_id = str((map_data or {}).get("id") or "").strip().lower()
+        if map_id != NECROMANCER_LAB_MAP_ID:
+            return []
+
+        rooms = set(cls._normalize_room_ids(state.get("visible_rooms")))
+        rooms.update(cls._normalize_room_ids((map_data or {}).get("visible_rooms")))
+        rooms.add("room_a_spawn")
+
+        flags = state.get("flags") if isinstance(state.get("flags"), dict) else {}
+        entities = state.get("entities") if isinstance(state.get("entities"), dict) else {}
+        environment_objects = (
+            state.get("environment_objects")
+            if isinstance(state.get("environment_objects"), dict)
+            else {}
+        )
+
+        def flag_any(*keys: str) -> bool:
+            return any(cls._truthy_flag(flags.get(key)) for key in keys)
+
+        def object_record(object_id: str) -> Dict[str, Any]:
+            for bucket in (environment_objects, entities):
+                record = bucket.get(object_id) if isinstance(bucket, dict) else None
+                if isinstance(record, dict):
+                    return record
+            return {}
+
+        if (
+            "room_b_corridor" in rooms
+            or flag_any("act2_corridor_entered", "world_act2_corridor_entered")
+            or cls._record_is_open(object_record("door_a_to_b"))
+        ):
+            rooms.add("room_b_corridor")
+
+        if (
+            "room_c_secret_study" in rooms
+            or flag_any(
+                "act3_secret_study_entered",
+                "act3_secret_study_discovered",
+                "room_c_secret_study_discovered",
+                "room_c_secret_study_entered",
+                "world_room_c_secret_study_discovered",
+                "world_room_c_secret_study_entered",
+                "necromancer_lab_secret_study_discovered",
+                "necromancer_lab_secret_study_entered",
+            )
+            or cls._record_is_open(object_record("door_b_to_c"))
+            or cls._record_is_open(object_record("cracked_wall"))
+        ):
+            rooms.update({"room_b_corridor", "room_c_secret_study"})
+
+        if (
+            "room_d_lab" in rooms
+            or flag_any(
+                "act2_corridor_exit_opened_with_key",
+                "act4_boss_room_entered",
+                "act4_gribbo_confrontation_started",
+                "act4_diary_truth_available",
+                "act4_heavy_iron_key_obtained",
+                "act4_final_exit_opened",
+                "world_necromancer_lab_gribbo_defeated",
+            )
+            or cls._record_is_open(object_record("door_b_to_d"))
+        ):
+            rooms.update({"room_b_corridor", "room_d_lab"})
+
+        if (
+            "room_exit" in rooms
+            or flag_any("act4_final_exit_opened", "demo_cleared")
+            or cls._record_is_open(object_record("heavy_oak_door_1"))
+            or bool(state.get("demo_cleared", False))
+        ):
+            rooms.update({"room_d_lab", "room_exit"})
+
+        return [room for room in NECROMANCER_LAB_VISIBLE_ROOM_ORDER if room in rooms]
+
+    @staticmethod
+    def _truthy_flag(value: Any) -> bool:
+        if isinstance(value, dict):
+            return value.get("value") is True
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() in {"true", "1", "yes", "open", "opened"}
+        return value == 1
+
+    @staticmethod
+    def _record_is_open(record: Dict[str, Any]) -> bool:
+        if not isinstance(record, dict):
+            return False
+        status = str(record.get("status") or record.get("state") or "").strip().lower()
+        return bool(record.get("is_open", False)) or status in {"open", "opened"}
+
+    @classmethod
+    def _build_map_data_payload(cls, state: Dict[str, Any]) -> Dict[str, Any]:
+        map_data = copy.deepcopy(state.get("map_data") or {})
+        if not isinstance(map_data, dict):
+            return {}
+        patch = cls._build_necromancer_lab_visible_rooms_patch(state)
+        if patch:
+            map_data = copy.deepcopy(patch.get("map_data") or map_data)
+        return map_data
 
     @staticmethod
     def _extract_recent_barks_for_turn(
@@ -1055,6 +1401,7 @@ async def process_chat_turn(
     map_id: Optional[str] = None,
     target: Optional[str] = None,
     source: Optional[str] = None,
+    intent_context: Optional[Dict[str, Any]] = None,
     client_player_position: Optional[Dict[str, Any]] = None,
     player_position: Optional[List[Any]] = None,
     stream_handler: Optional[StreamHandler] = None,
@@ -1080,6 +1427,7 @@ async def process_chat_turn(
         map_id=map_id,
         target=target,
         source=source,
+        intent_context=intent_context,
         client_player_position=client_player_position,
         player_position=player_position,
         stream_handler=stream_handler,

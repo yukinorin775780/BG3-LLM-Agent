@@ -271,6 +271,11 @@ def _apply_gribbo_boss_strategy_override(*, state: GameState, analysis: dict) ->
     overridden["action_target"] = "gribbo"
     overridden["reason"] = "act4_gribbo_boss_strategy"
     overridden["responders"] = ["astarion", "shadowheart", "laezel"]
+    flags_changed = dict(overridden.get("flags_changed") or {})
+    flags_changed["act4_boss_room_entered"] = True
+    flags_changed["act4_gribbo_confrontation_started"] = True
+    flags_changed["act4_boss_strategy_discussed"] = True
+    overridden["flags_changed"] = flags_changed
     intent_context = dict(overridden.get("intent_context") or {})
     intent_context["gribbo_boss_strategy_context"] = context
     overridden["intent_context"] = intent_context
@@ -770,7 +775,7 @@ def _run_blocking_with_timeout(func, *args, timeout: float = LLM_TIMEOUT_SECONDS
 
 def _coerce_client_intent(state: GameState) -> str:
     raw_intent = str(state.get("intent") or "").strip().upper()
-    if raw_intent in {"READ", "INTERACT", "CHAT", "START_DIALOGUE", "DIALOGUE_REPLY", "DISARM", "MOVE", "APPROACH", "TRIGGER_TRAP"}:
+    if raw_intent in {"READ", "INTERACT", "CHAT", "START_DIALOGUE", "DIALOGUE_REPLY", "DISARM", "MOVE", "APPROACH", "TRIGGER_TRAP", "PERCEPTION"}:
         return raw_intent
     if raw_intent == "UI_ACTION_LOOT":
         return "LOOT"
@@ -897,6 +902,7 @@ def _build_structured_client_analysis(
             return None
 
     include_active_dialogue_target = client_intent not in {"READ", "INTERACT"}
+    raw_intent_context = state.get("intent_context") if isinstance(state.get("intent_context"), dict) else {}
     action_target = _extract_client_target(
         state,
         include_active_dialogue_target=include_active_dialogue_target,
@@ -964,7 +970,8 @@ def _build_structured_client_analysis(
         "action_actor": "player",
         "action_target": action_target,
         "intent_context": {
-            "source": source,
+            **copy.deepcopy(raw_intent_context),
+            "source": source or str(raw_intent_context.get("source") or "").strip().lower(),
         },
     }
 
@@ -1407,6 +1414,7 @@ async def dm_node(state: GameState) -> dict:
     analysis_intent_context = (
         analysis.get("intent_context") if isinstance(analysis.get("intent_context"), dict) else {}
     )
+    state_intent_context = state.get("intent_context") if isinstance(state.get("intent_context"), dict) else {}
     out = {
         "entities": entities,
         "speaker_queue": queue,
@@ -1449,6 +1457,18 @@ async def dm_node(state: GameState) -> dict:
             "gribbo_boss_resolution_context": dict(analysis_intent_context.get("gribbo_boss_resolution_context") or {}),
             "action": str(analysis_intent_context.get("action") or "").strip(),
             "source": str(analysis_intent_context.get("source") or state.get("source") or "").strip().lower(),
+            "force_lockpick_success": bool(
+                analysis_intent_context.get(
+                    "force_lockpick_success",
+                    state_intent_context.get("force_lockpick_success", False),
+                )
+            ),
+            "force_lockpick_failure": bool(
+                analysis_intent_context.get(
+                    "force_lockpick_failure",
+                    state_intent_context.get("force_lockpick_failure", False),
+                )
+            ),
         },
         "is_probing_secret": analysis.get("is_probing_secret", False),
         "active_dialogue_target": next_dialogue_target,

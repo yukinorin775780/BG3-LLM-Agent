@@ -226,7 +226,16 @@ _GRIBBO_BOSS_ROOM_INTRO_MARKERS = (
 )
 _GRIBBO_BOSS_STRATEGY_MARKERS = (
     "我们怎么处理他",
+    "我们怎么处理 gribbo",
+    "我们怎么处理格里布",
+    "我们怎么处理格里波",
     "怎么处理他",
+    "怎么处理 gribbo",
+    "怎么处理格里布",
+    "怎么处理格里波",
+    "处理 gribbo",
+    "处理格里布",
+    "处理格里波",
     "队友们有什么建议",
     "队友有什么建议",
     "队友怎么看",
@@ -541,6 +550,14 @@ def _act4_boss_context_active(
     return current_room in {"room_d_lab", "boss_room", "laboratory"}
 
 
+def _act4_boss_strategy_discussed(state: Mapping[str, Any]) -> bool:
+    flags = _safe_dict(state.get("flags"))
+    if _flag_bool(flags.get("act4_boss_strategy_discussed")):
+        return True
+    journal_blob = "\n".join(str(line or "") for line in _safe_list(state.get("journal_events")))
+    return "[Boss方案]" in journal_blob or "[Boss Strategy]" in journal_blob
+
+
 def _text_contains_any(user_input: str, markers: tuple[str, ...]) -> bool:
     text = str(user_input or "").strip()
     lowered = text.lower()
@@ -652,6 +669,8 @@ def detect_gribbo_boss_resolution_context(
     if not route:
         return None
     if route == "truth_negotiation" and not truth_available:
+        return None
+    if route in {"truth_negotiation", "astarion_steal", "assault", "disarm_poison_valve"} and not _act4_boss_strategy_discussed(normalized_state):
         return None
     if route in {"truth_negotiation", "over_threat"} and not _act4_boss_context_active(normalized_state, ctx):
         return None

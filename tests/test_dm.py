@@ -3,6 +3,7 @@ DM 模块保护性测试。
 锁定安全规则解析、叙事规则覆写和延迟初始化行为。
 """
 
+import asyncio
 import importlib
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -11,6 +12,7 @@ import openai
 import pytest
 
 import core.llm.dm as dm
+import core.graph.nodes.dm as dm_graph
 
 
 def test_evaluate_rule_condition_supports_numeric_boolean_and_membership():
@@ -322,6 +324,37 @@ def test_analyze_intent_prioritizes_unlock_over_move_keyword(monkeypatch):
     assert result["action_actor"] == "astarion"
     assert result["action_target"] == "iron_chest"
     assert result["responders"] == ["astarion"]
+
+
+def test_dm_node_preserves_forced_lockpick_failure_context():
+    result = asyncio.run(
+        dm_graph.dm_node(
+            {
+                "user_input": "尝试撬锁 door_b_to_d，演示失败。",
+                "intent": "UNLOCK",
+                "target": "door_b_to_d",
+                "source": "lockpick",
+                "map_data": {"id": "necromancer_lab"},
+                "entities": {
+                    "player": {"faction": "player", "hp": 20, "inventory": {}},
+                    "astarion": {"faction": "player", "hp": 15, "inventory": {}},
+                },
+                "environment_objects": {
+                    "door_b_to_d": {"id": "door_b_to_d", "type": "door", "x": 5, "y": 7},
+                },
+                "intent_context": {
+                    "action": "lockpick_lab_door",
+                    "action_target": "door_b_to_d",
+                    "source": "lockpick",
+                    "force_lockpick_failure": True,
+                },
+            }
+        )
+    )
+
+    assert result["intent"] == "UNLOCK"
+    assert result["intent_context"]["action"] == "lockpick_lab_door"
+    assert result["intent_context"]["force_lockpick_failure"] is True
 
 
 def test_analyze_intent_detects_disarm_command_without_calling_llm(monkeypatch):

@@ -195,11 +195,11 @@ def test_act2_corridor_move_near_lab_door_does_not_trigger_act4_poison_valve():
             **state,
             **disarmed,
             "intent": "MOVE",
-            "intent_context": {"action_actor": "player", "action_target": "4,8"},
+            "intent_context": {"action_actor": "player", "action_target": "5,8"},
         }
     )
 
-    assert move_result["entities"]["player"]["x"] == 4
+    assert move_result["entities"]["player"]["x"] == 5
     assert move_result["entities"]["player"]["y"] == 8
     poison_valve = move_result["environment_objects"]["poison_valve"]
     potion_tank = move_result["environment_objects"]["potion_tank"]

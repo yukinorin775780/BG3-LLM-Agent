@@ -158,8 +158,8 @@ steps:
     expected:
       state:
         equals:
-          game_state.entities.player.x: 6
-          game_state.entities.player.y: 6
+          game_state.entities.player.x: 4
+          game_state.entities.player.y: 8
   - id: open_bd_door_with_lab_key
     user_input: 用 lab_key 打开 door_b_to_d。
     intent: INTERACT
