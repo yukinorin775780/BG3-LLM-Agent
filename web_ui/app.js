@@ -11,6 +11,9 @@
   const QA_TEST = QA_PARAMS.get("qa_test") === "1" || window.__BG3_QA_TEST__ === true;
   const QA_MAP_DEBUG = QA_PARAMS.get("qa_map_debug") === "1" || window.__BG3_QA_MAP_DEBUG__ === true;
   const QA_SHOWCASE = QA_PARAMS.get("qa_showcase") === "1" || window.__BG3_QA_SHOWCASE__ === true;
+  const QA_PAYLOAD_INSPECTOR = QA_TEST
+    || QA_PARAMS.get("qa_payload_inspector") === "1"
+    || window.__BG3_QA_PAYLOAD_INSPECTOR__ === true;
   const SHOULD_SYNC_INITIAL_STATE = !IS_QA_MODE || (QA_NO_IDLE && !QA_TEST && !QA_SHOWCASE && !QA_MAP_DEBUG);
   const QA_REST_CONTROLS = QA_PARAMS.get("qa_rest_controls") === "1" || window.__BG3_QA_REST_CONTROLS__ === true;
   const IDLE_MS = 30000;
@@ -18,7 +21,7 @@
   const BACKEND_REQUEST_TIMEOUT_MS = Math.max(5000, Number(QA_PARAMS.get("qa_backend_timeout_ms")) || 12000);
   const SILENT_FALLBACK_TEXT = "📖 [环境] 一阵阴冷的穿堂风吹过，你暂时失去了对周围环境的感知。";
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-  const BARK_BUILD_ID = "20260522_act2_trap_semantics_v10";
+  const BARK_BUILD_ID = "20260522_act2_trap_semantics_v17";
 
   window.__BG3_BARK_BUILD_ID__ = BARK_BUILD_ID;
   if (typeof document !== "undefined" && document.documentElement) {
@@ -106,6 +109,43 @@
     room_d_lab: "实验室",
     room_exit: "出口区",
   });
+  const ROOM_ENTRY_ANCHORS = Object.freeze({
+    room_c_secret_study: {
+      door_b_to_c: { x: 4, y: 9 },
+      cracked_wall: { x: 4, y: 9 },
+      secret_entrance: { x: 4, y: 9 },
+    },
+    room_d_lab: {
+      door_b_to_d: { x: 6, y: 6 },
+      lab_door: { x: 6, y: 6 },
+    },
+    room_exit: {
+      heavy_oak_door_1: { x: 20, y: 3 },
+      exit_door: { x: 20, y: 3 },
+    },
+  });
+  const ROOM_C_READABLE_IDS = new Set(["chemical_notes", "iron_key_sketch", "necromancer_diary"]);
+  const ROOM_C_PROP_IDS = new Set(["chemical_notes", "iron_key_sketch", "necromancer_diary", "chest_1", "study_chest", "door_b_to_c", "cracked_wall"]);
+  const ROOM_D_PROP_IDS = new Set(["gribbo", "poison_valve", "potion_tank", "heavy_oak_door_1", "exit_door", "door_b_to_d"]);
+  const VISUAL_ENTITY_META = Object.freeze({
+    cracked_wall: { label: "空响墙面", name: "可疑石缝", type: "secret_wall", room_id: ROOM_B, marker: "?", x: 4, y: 8 },
+    door_b_to_c: { label: "暗门", name: "秘密书房入口", type: "secret_wall", room_id: ROOM_B, marker: ">", x: 4, y: 8 },
+    necromancer_diary: { label: "Necromancer Diary", name: "死灵法师日记", type: "readable", room_id: ROOM_C, marker: "D", x: 2, y: 10 },
+    chemical_notes: { label: "Chemical Notes", name: "药剂笔记", type: "readable", room_id: ROOM_C, marker: "N", x: 3, y: 10 },
+    iron_key_sketch: { label: "Iron Key Sketch", name: "铁钥匙草图", type: "readable", room_id: ROOM_C, marker: "K", x: 2, y: 12 },
+    chest_1: { label: "Study Chest", name: "书房箱子", type: "chest", room_id: ROOM_C, marker: "C", x: 3, y: 12 },
+    study_chest: { label: "Study Chest", name: "书房箱子", type: "chest", room_id: ROOM_C, marker: "C", x: 3, y: 12 },
+    gribbo: { label: "Gribbo — Key Holder", name: "Gribbo — Key Holder", type: "npc", room_id: ROOM_D, marker: "!", x: 10, y: 4 },
+    poison_valve: { label: "Poison Tank", name: "Poison Tank", type: "poison_valve", room_id: ROOM_D, marker: "P", x: 6, y: 4 },
+    potion_tank: { label: "Poison Tank", name: "Poison Tank", type: "poison_valve", room_id: ROOM_D, marker: "P", x: 7, y: 4 },
+    heavy_oak_door_1: { label: "Final Exit", name: "Final Exit", type: "door", room_id: ROOM_EXIT, marker: "X", x: 13, y: 3 },
+    exit_door: { label: "Final Exit", name: "Final Exit", type: "door", room_id: ROOM_EXIT, marker: "X" },
+    door_b_to_d: { label: "Boss Lab Entrance", name: "Boss Lab Entrance", type: "door", room_id: ROOM_D, marker: ">", x: 5, y: 7 },
+  });
+  const SYNTHETIC_ACT4_ANCHORS = Object.freeze({
+    poison_valve: { id: "poison_valve", x: 6, y: 4, w: 1, h: 1, type: "poison_valve", room_id: ROOM_D, status: "intact" },
+    potion_tank: { id: "potion_tank", x: 7, y: 4, w: 1, h: 1, type: "poison_valve", room_id: ROOM_D, status: "unstable" },
+  });
 
   const state = {
     partyStatus: {},
@@ -141,6 +181,7 @@
     trapSenseEnabled: false,
     roomVisibleIds: new Set(),
     discoveredSecretDoorIds: new Set(),
+    secretEntranceInspectedIds: new Set(),
     discoveredTrapIds: new Set(),
     backendRevealedTrapIds: new Set(),
     openedLocalDoorIds: new Set(),
@@ -226,14 +267,22 @@
   const GRIBBO_NEGOTIATION_MARKERS = ["日记", "药剂", "灵药", "死灵", "实验", "解药", "钥匙", "真相"];
   const EXPLICIT_ATTACK_MARKERS = ["攻击", "打", "砍", "射击", "attack", "strike", "shoot"];
   const EXPLICIT_LOOT_MARKERS = ["搜刮", "洗劫", "拿走", "拾取", "loot", "take"];
-  const EXPLICIT_MOVE_MARKERS = ["移动", "走到", "靠近", "前往", "move", "go to", "walk"];
+  const EXPLICIT_MOVE_MARKERS = ["移动", "走到", "走进", "靠近", "前往", "move", "go to", "walk", "enter"];
   const TRAP_DISARM_ACTION_MARKERS = ["解除", "拆除", "拆掉", "disarm", "disable"];
   const TRAP_DISARM_TARGET_MARKERS = ["陷阱", "机关", "毒气", "gas_trap_1", "poison_trap", "trap"];
   const TRAP_DISARM_ACTOR_MARKERS = ["阿斯代伦", "astarion"];
+  const LAB_LOCKPICK_ACTION_MARKERS = ["撬锁", "开锁", "撬开", "解锁", "lockpick", "pick the lock"];
+  const LAB_LOCKPICK_FAIL_MARKERS = ["失败", "失手", "fail", "failure", "force fail", "deterministic fail", "演示失败"];
+  const SECRET_WALL_TEXT_MARKERS = ["cracked_wall", "空响墙面", "可疑石缝", "开裂的墙壁", "墙后", "冷风", "hollow wall", "cracked wall"];
   const BOSS_STRATEGY_MARKERS = ["怎么处理他", "怎么处理", "怎么办", "方案", "策略", "处理 gribbo", "deal with him", "strategy"];
   const BOSS_STEAL_KEY_MARKERS = ["偷钥匙", "偷 heavy_iron_key", "偷铁钥匙", "steal key", "steal heavy_iron_key"];
   const BOSS_DIARY_TRUTH_MARKERS = ["日记真相", "用日记", "真相说服", "说服他", "truth negotiation", "diary truth"];
   const BOSS_ASSAULT_MARKERS = ["动手", "杀了他", "解决他", "攻击 gribbo", "lae’zel 解决他", "lae'zel 解决他", "laezel 解决他", "莱埃泽尔解决他", "assault", "attack gribbo"];
+  const DIARY_INTERPRETATION_LINES = Object.freeze([
+    "[日记解读] astarion -> key_leverage",
+    "[日记解读] shadowheart -> gribbo_victim",
+    "[日记解读] laezel -> tactical_objective",
+  ]);
 
   function readQaNumber(name, fallback) {
     const value = Number(QA_PARAMS.get(name));
@@ -320,6 +369,7 @@
     fearLabel: document.getElementById("fear-label"),
     fearValue: document.getElementById("fear-value"),
     payloadSummary: document.getElementById("payload-summary"),
+    payloadInspectorSection: document.querySelector(".xray-section--inspector"),
     jsonInspector: document.getElementById("json-inspector"),
     partyViewModal: document.getElementById("party-view-modal"),
     closePartyViewBtn: document.getElementById("close-party-view-btn"),
@@ -354,6 +404,13 @@
   function setNetworkState(text, mode) {
     els.networkState.textContent = text;
     els.networkState.dataset.state = mode;
+  }
+
+  function syncPayloadInspectorVisibility() {
+    if (!els.payloadInspectorSection) return;
+    els.payloadInspectorSection.hidden = !QA_PAYLOAD_INSPECTOR;
+    els.payloadInspectorSection.classList.toggle("is-hidden", !QA_PAYLOAD_INSPECTOR);
+    els.payloadInspectorSection.setAttribute("aria-hidden", String(!QA_PAYLOAD_INSPECTOR));
   }
 
   function setTacticalOverlay(open) {
@@ -529,6 +586,68 @@
     return Math.max(min, Math.min(max, value));
   }
 
+  function canonicalVisualEntityId(id) {
+    const key = normalizeId(id);
+    if (key === "study_chest") return "chest_1";
+    if (key === "exit_door") return "heavy_oak_door_1";
+    return key;
+  }
+
+  function visualEntityMeta(id) {
+    const key = normalizeId(id);
+    return VISUAL_ENTITY_META[key] || VISUAL_ENTITY_META[canonicalVisualEntityId(key)] || {};
+  }
+
+  function isSecretStudyOpen() {
+    return state.roomVisibleIds.has(ROOM_C) || state.openedLocalDoorIds.has("door_b_to_c");
+  }
+
+  function isSecretEntranceInspected() {
+    return isSecretStudyOpen() || state.secretEntranceInspectedIds.has("door_b_to_c");
+  }
+
+  function buildCrackedWallInteractable() {
+    const meta = visualEntityMeta("cracked_wall");
+    const interactionCells = [
+      { x: 5, y: 8 },
+      { x: 5, y: 7 },
+      { x: 4, y: 8 },
+      { x: 4, y: 9 },
+      { x: 5, y: 9 },
+      { x: 3, y: 8 },
+    ];
+    return {
+      id: "cracked_wall",
+      source_id: "cracked_wall",
+      type: "secret_wall",
+      kind: "secret_wall",
+      name: meta.name || "空响墙面",
+      label: meta.label || "空响墙面",
+      marker: meta.marker || "?",
+      x: Number(meta.x) || 4,
+      y: Number(meta.y) || 8,
+      w: 1,
+      h: 1,
+      interaction_cells: interactionCells,
+      room_id: ROOM_B,
+      is_hidden: false,
+      is_revealed: true,
+      discovered: true,
+      status: "discovered",
+      data: {
+        id: "cracked_wall",
+        room_id: ROOM_B,
+        type: "secret_wall",
+        label: meta.label || "空响墙面",
+        marker: meta.marker || "?",
+        interaction_cells: interactionCells,
+        secret_entry_for: "door_b_to_c",
+        connects_from: ROOM_B,
+        connects_to: ROOM_C,
+      },
+    };
+  }
+
   function objectEntries(obj) {
     return Object.entries(safeObject(obj)).filter(([, value]) => value && typeof value === "object");
   }
@@ -665,14 +784,32 @@
     if (coordinateMatch) {
       return coordinateMatch[1] + "," + coordinateMatch[2];
     }
+    if (/cracked_wall|空响墙面|可疑石缝|开裂的墙壁|墙后|冷风|hollow\s+wall|cracked\s+wall/i.test(raw)) {
+      return "5,8";
+    }
+    if (/door_b_to_c|隐藏书房侧门|书房侧门|暗门|密门|secret\s*study\s*door|secret\s*door/i.test(raw)) {
+      return "5,8";
+    }
+    if (/进入.*实验室|进.*实验室|走进.*实验室|enter\s+(?:the\s+)?(?:lab|laboratory)/i.test(raw)) {
+      return "5,7";
+    }
     if (/b\s*-\s*d|b-d|door_b_to_d|实验室重门|实验室门|lab\s*door|laboratory\s*door/i.test(raw)) {
-      return "4,8";
+      return "5,8";
     }
     if (/heavy_oak_door_1|exit_door|出口门|最终门|final\s*exit|final\s*door/i.test(raw)) {
       return "17,4";
     }
-    if (/a\s*-\s*b|a-b|door_a_to_b|走廊入口|corridor/i.test(raw) && /门|door|走廊|corridor/i.test(raw)) {
+    if (/a\s*-\s*b|a-b|door_a_to_b|走廊入口|毒气走廊|corridor/i.test(raw) && /门|door|走廊|corridor/i.test(raw)) {
       return "3,5";
+    }
+    return "";
+  }
+
+  function resolveLootTargetFromText(text) {
+    const raw = String(text || "").trim();
+    if (!raw) return "";
+    if (/study_chest|chest_1|书房箱子|书房的箱子|书房宝箱|战利品箱|旧木箱|宝箱|箱子|lab_key|实验室钥匙/i.test(raw)) {
+      return "study_chest";
     }
     return "";
   }
@@ -684,7 +821,7 @@
     if (normalized.includes("door_a_to_b")) return "door_a_to_b";
     if (normalized.includes("door_b_to_c")) return "door_b_to_c";
     if (normalized.includes("door_b_to_d")) return "door_b_to_d";
-    if (/a\s*-\s*b|a-b|走廊入口|corridor\s*entrance/i.test(raw)) {
+    if (/a\s*-\s*b|a-b|走廊入口|通往毒气走廊|毒气走廊|corridor\s*entrance/i.test(raw)) {
       return "door_a_to_b";
     }
     if (/b\s*-\s*d|b-d|实验室重门|实验室门|lab\s*door|laboratory\s*door/i.test(raw)) {
@@ -697,19 +834,15 @@
     if (/出口门|最终门|final\s*exit|final\s*door/i.test(raw)) {
       return "heavy_oak_door_1";
     }
-    if (
-      /暗门|密门|secret\s*door|secret\s*study|书房|study/i.test(raw)
-      && (state.discoveredSecretDoorIds.has("door_b_to_c") || state.roomVisibleIds.has(ROOM_B))
-    ) {
-      return "door_b_to_c";
-    }
-
     const fromCurrent = normalizeId(state.currentInteractable);
     if (["door_a_to_b", "door_b_to_c", "door_b_to_d", "heavy_oak_door_1"].includes(fromCurrent)) {
       return fromCurrent;
     }
     if (fromCurrent === "heavy_oak_door_1") {
       return "heavy_oak_door_1";
+    }
+    if (/暗门|密门|secret\s*door|secret\s*study|书房|study/i.test(raw) && state.discoveredSecretDoorIds.has("door_b_to_c")) {
+      return isSecretEntranceInspected() ? "door_b_to_c" : "cracked_wall";
     }
 
     const inputController = window.BG3InputController;
@@ -817,6 +950,13 @@
       return key && (userLine.includes(key) || userLineLower.includes(key.toLowerCase()));
     });
     const hasDoorOpenSemantics = shouldRouteDoorInteractText(userLine);
+    const hasLabDoorLockpickText = isNecromancerLab
+      && LAB_LOCKPICK_ACTION_MARKERS.some((marker) => userLine.includes(marker) || userLineLower.includes(String(marker).toLowerCase()))
+      && (/door_b_to_d|b\s*-\s*d|b-d|实验室重门|实验室门|lab\s*door|laboratory\s*door/i.test(userLine));
+    const hasSecretWallText = isNecromancerLab
+      && SECRET_WALL_TEXT_MARKERS.some((marker) => userLine.includes(marker) || userLineLower.includes(String(marker).toLowerCase()));
+    const forceLabLockpickFailure = hasLabDoorLockpickText
+      && LAB_LOCKPICK_FAIL_MARKERS.some((marker) => userLine.includes(marker) || userLineLower.includes(String(marker).toLowerCase()));
     const hasTrapDisarmText = isNecromancerLab
       && TRAP_DISARM_ACTION_MARKERS.some((marker) => userLine.includes(marker) || userLineLower.includes(String(marker).toLowerCase()))
       && TRAP_DISARM_TARGET_MARKERS.some((marker) => userLine.includes(marker) || userLineLower.includes(String(marker).toLowerCase()))
@@ -846,6 +986,42 @@
       ? resolveDoorTargetFromWorldContext(userLine)
       : "";
     const resolvedMoveTarget = isNecromancerLab ? resolveMoveTargetFromText(userLine) : "";
+    const resolvedLootTarget = isNecromancerLab ? resolveLootTargetFromText(userLine) : "";
+
+    if (hasLabDoorLockpickText && !explicitIntent) {
+      resolvedIntent = "UNLOCK";
+      resolvedTarget = "door_b_to_d";
+      resolvedSource = "lockpick";
+      return {
+        userLine,
+        intentValue: resolvedIntent,
+        target: resolvedTarget,
+        source: resolvedSource,
+        actor: /阿斯代伦|astarion/i.test(userLine) ? "astarion" : "",
+        intentContext: {
+          action: "lockpick_lab_door",
+          action_target: "door_b_to_d",
+          source: resolvedSource,
+          force_lockpick_failure: forceLabLockpickFailure,
+        },
+      };
+    }
+
+    if (hasSecretWallText && !explicitIntent) {
+      resolvedIntent = "INTERACT";
+      resolvedTarget = "cracked_wall";
+      resolvedSource = "text_input";
+      return {
+        userLine,
+        intentValue: resolvedIntent,
+        target: resolvedTarget,
+        source: resolvedSource,
+        intentContext: {
+          action_target: "cracked_wall",
+          source: resolvedSource,
+        },
+      };
+    }
 
     if (hasStudyContextReadVerb && (hasChemicalNotesText || hasIronKeySketchText)) {
       resolvedIntent = "READ";
@@ -879,6 +1055,28 @@
         intentValue: resolvedIntent,
         target: resolvedTarget,
         source: resolvedSource,
+        intentContext: {
+          action_target: resolvedTarget,
+          source: resolvedSource,
+        },
+      };
+    }
+
+    if (
+      isExplicitLoot
+      && resolvedLootTarget
+      && !explicitIntent
+      && !isExplicitAttack
+    ) {
+      resolvedIntent = "ui_action_loot";
+      resolvedTarget = resolvedLootTarget;
+      resolvedSource = "ui_text_loot";
+      return {
+        userLine,
+        intentValue: resolvedIntent,
+        target: resolvedTarget,
+        source: resolvedSource,
+        actor: "player",
         intentContext: {
           action_target: resolvedTarget,
           source: resolvedSource,
@@ -1754,6 +1952,12 @@
     ) {
       window.BG3InputController.setPlayerPosition(normalized.x, normalized.y);
     }
+    if (
+      window.BG3TacticalMap
+      && typeof window.BG3TacticalMap.movePlayerLocal === "function"
+    ) {
+      window.BG3TacticalMap.movePlayerLocal(normalized.x, normalized.y);
+    }
     state.partyStatus = {
       ...safeObject(state.partyStatus),
       player: {
@@ -1766,8 +1970,135 @@
     return true;
   }
 
+  function transitionCopyWithoutCoordinates(record) {
+    const source = safeObject(record);
+    const copy = { ...source };
+    delete copy.x;
+    delete copy.y;
+    copy._projection_source = "room_transition_seed";
+    return copy;
+  }
+
+  function buildRoomEntryPartyStatus(entry, source = "client_room_transition") {
+    const playerEntry = normalizeGridPositionCandidate(entry);
+    if (!playerEntry) return state.partyStatus;
+    const previousParty = safeObject(state.partyStatus);
+    const seedParty = {
+      ...previousParty,
+      player: {
+        ...safeObject(previousParty.player),
+        x: playerEntry.x,
+        y: playerEntry.y,
+        name: safeObject(previousParty.player).name || "玩家",
+        faction: safeObject(previousParty.player).faction || "player",
+        _projection_source: source,
+      },
+    };
+    FORMATION_COMPANIONS.forEach((companionId) => {
+      if (!Object.prototype.hasOwnProperty.call(seedParty, companionId)) return;
+      seedParty[companionId] = transitionCopyWithoutCoordinates(seedParty[companionId]);
+    });
+    const projected = projectCompanionFormationForTactical(seedParty, state.mapData, seedParty.player);
+    FORMATION_COMPANIONS.forEach((companionId) => {
+      const record = safeObject(projected[companionId]);
+      if (!Object.keys(record).length) return;
+      if (!Number.isFinite(Number(record.x)) || !Number.isFinite(Number(record.y))) return;
+      projected[companionId] = {
+        ...record,
+        _projection_source: "room_transition_formation",
+      };
+    });
+    return projected;
+  }
+
+  function showRoomTransitionCue(roomId) {
+    const room = normalizeId(roomId);
+    let title = "";
+    let subtitle = "";
+    let toast = "";
+    let objective = "";
+    let dedupe = room;
+    if (room === ROOM_C) {
+      title = "Act 3 — Secret Study";
+      subtitle = "A hidden study opens behind the wall.";
+      toast = "Act 3 — Secret Study";
+      objective = "Objective Updated: Decode the diary";
+      dedupe = "act3_secret_study";
+    } else if (room === ROOM_D) {
+      title = "Act 4 — Gribbo Lab";
+      subtitle = "Gribbo clutches the heavy iron key near the poison tank.";
+      toast = "Act 4 — Gribbo Lab";
+      objective = "Objective Updated: Get the heavy iron key";
+      dedupe = "act4_gribbo_lab";
+    }
+    if (
+      title
+      && window.BG3TacticalMap
+      && typeof window.BG3TacticalMap.playRoomTransition === "function"
+    ) {
+      window.BG3TacticalMap.playRoomTransition(title, subtitle);
+    } else if (
+      window.BG3TacticalMap
+      && typeof window.BG3TacticalMap.playMapTransition === "function"
+    ) {
+      window.BG3TacticalMap.playMapTransition();
+    }
+    if (window.BG3HudRenderers && typeof window.BG3HudRenderers.showToast === "function") {
+      if (toast) window.BG3HudRenderers.showToast("narration", toast, 2600, "room_transition:" + dedupe);
+      if (objective) window.BG3HudRenderers.showToast("info", objective, 3000, "objective:" + dedupe);
+      if (subtitle) window.BG3HudRenderers.showToast("narration", subtitle, 2600, "room_bark:" + dedupe);
+    }
+  }
+
+  function clearRecordingNoiseForRoom(roomId) {
+    if (!window.BG3HudRenderers) return;
+    const room = normalizeId(roomId);
+    if (room === ROOM_C) {
+      hardClearAct3TrapBarks("room_c_transition");
+      if (typeof window.BG3HudRenderers.clearMemoryCards === "function") {
+        window.BG3HudRenderers.clearMemoryCards();
+      }
+      return;
+    }
+    if (room === ROOM_D) {
+      if (typeof window.BG3HudRenderers.clearMemoryCards === "function") {
+        window.BG3HudRenderers.clearMemoryCards();
+      }
+      if (typeof window.BG3HudRenderers.clearCompanionBarks === "function") {
+        window.BG3HudRenderers.clearCompanionBarks({
+          groups: ["study", "trap", "generic_response"],
+          force: true,
+          resetCompleted: true,
+          suppress: true,
+          reason: "act4_transition",
+        });
+      }
+      if (typeof window.BG3HudRenderers.clearAgentSignalCards === "function") {
+        window.BG3HudRenderers.clearAgentSignalCards({
+          kinds: ["memory-echo", "trap-insight", "trap-disarmed"],
+        }, { clearDedupe: false });
+      }
+    }
+  }
+
+  function projectPartyToRoomEntry(roomId, targetId = "", source = "client_room_transition") {
+    const entry = resolveRoomEntryGridPosition(roomId, targetId);
+    if (!entry) return false;
+    showRoomTransitionCue(roomId);
+    if (window.BG3TacticalMap && typeof window.BG3TacticalMap.resetLocalPartyTrail === "function") {
+      window.BG3TacticalMap.resetLocalPartyTrail();
+    }
+    setClientPlayerGridPositionFromBackend(entry, source);
+    if (window.BG3TacticalMap && typeof window.BG3TacticalMap.resetLocalPartyTrail === "function") {
+      window.BG3TacticalMap.resetLocalPartyTrail();
+    }
+    state.partyStatus = buildRoomEntryPartyStatus(entry, source);
+    clearRecordingNoiseForRoom(roomId);
+    return true;
+  }
+
   function syncLocalPlayerProjectionState(source = "client_local") {
-    const coord = getClientPlayerGridPosition();
+    const coord = getLocalMovementPlayerGridPosition();
     if (!coord) return null;
     const previous = safeObject(state.partyStatus.player);
     state.partyStatus = {
@@ -1818,7 +2149,7 @@
   }
 
   function ensureMapSourceBadge() {
-    if (!IS_QA_MODE) return null;
+    if (!QA_MAP_DEBUG) return null;
     if (state.mapSourceBadge && document.body.contains(state.mapSourceBadge)) return state.mapSourceBadge;
     const badge = document.createElement("div");
     badge.id = "qa-map-source-badge";
@@ -2026,6 +2357,19 @@
       item.interaction_cells = cells;
       item.data.interaction_cells = cells;
     }
+    if (id === "door_b_to_c") {
+      const ix = Math.round(Number(item.x) || 0);
+      const iy = Math.round(Number(item.y) || 0);
+      const cells = [
+        { x: ix + 1, y: iy + 1 },
+        { x: ix + 1, y: iy },
+        { x: ix, y: iy },
+        { x: ix, y: iy + 1 },
+        { x: ix + 1, y: iy - 1 },
+      ];
+      item.interaction_cells = cells;
+      item.data.interaction_cells = cells;
+    }
     return item;
   }
 
@@ -2054,13 +2398,16 @@
     const detectDc = Number(data.detect_dc) || 0;
     const keyRequired = String(data.key_required || "").trim();
     const lockpickDc = Number(data.lockpick_dc) || 0;
+    if (id === "door_b_to_c" && !isDoorOpened(id, target) && !isDoorOpened(id, record)) {
+      return "E 进入秘密书房";
+    }
     if (isDoorOpened(id, target) || isDoorOpened(id, record)) {
       if (fromLabel && toLabel) return "通道已开启：" + fromLabel + " ↔ " + toLabel;
       return "门已开启";
     }
 
     if (id === "door_b_to_c" && detectDc > 0) {
-      return "E 检查暗门：DC " + detectDc;
+      return "E 进入秘密书房";
     }
     if (id === "door_b_to_d" && keyRequired && lockpickDc > 0) {
       return "E 打开实验室门：需要 " + keyRequired + " 或 DC " + lockpickDc + " 撬锁";
@@ -2086,7 +2433,21 @@
     const targetName = String(target.label || target.name || data.name || idRaw || "未知目标");
     let coreText = "E 交互：" + targetName;
 
-    if (type === "door" || id.includes("door")) {
+    if (id === "cracked_wall") {
+      coreText = "E 检查空响墙面";
+    } else if (id === "chemical_notes") {
+      coreText = "E 阅读药剂笔记";
+    } else if (id === "iron_key_sketch") {
+      coreText = "E 查看铁钥匙草图";
+    } else if (id === "necromancer_diary") {
+      coreText = "E 阅读死灵法师日记";
+    } else if (id === "study_chest" || id === "chest_1") {
+      coreText = "E 搜刮书房箱子";
+    } else if (id === "gribbo") {
+      coreText = "E 对话：Gribbo — Key Holder";
+    } else if (id === "poison_valve" || id === "potion_tank") {
+      coreText = "E 检查毒气罐";
+    } else if (type === "door" || id.includes("door")) {
       coreText = describeDoorHint(target, mapRecord);
     } else if (id === "necromancer_diary" || type === "readable") {
       coreText = "E 阅读：" + targetName;
@@ -2128,6 +2489,13 @@
   function updateExplorationActProgress() {
     if (!window.BG3HudRenderers || typeof window.BG3HudRenderers.updateActProgress !== "function") return;
     const flags = safeObject(state.worldFlags);
+    const setBarkSceneAct = (act) => {
+      if (typeof window.BG3HudRenderers.setBarkSceneContext !== "function") return;
+      window.BG3HudRenderers.setBarkSceneContext({
+        act: "act" + String(act),
+        visibleRooms: Array.from(state.roomVisibleIds || []),
+      });
+    };
     if (
       state.roomVisibleIds.has(ROOM_D)
       || flags.act4_boss_room_entered === true
@@ -2135,6 +2503,7 @@
       || flags.act4_heavy_iron_key_obtained === true
       || flags.act4_final_exit_opened === true
     ) {
+      setBarkSceneAct(4);
       window.BG3HudRenderers.updateActProgress(
         4,
         "Gribbo 攥着沉重铁钥匙，身后的毒气罐低声翻滚。"
@@ -2147,6 +2516,7 @@
       || flags.act3_secret_study_discovered === true
       || flags.act3_diary_read === true
     ) {
+      setBarkSceneAct(3);
       window.BG3HudRenderers.updateActProgress(
         3,
         "墙后露出一间狭窄书房，日记与残页把 Gribbo、钥匙和毒气真相串在一起。"
@@ -2261,6 +2631,17 @@
       ...safeArray(gameState.journal_events),
       ...safeArray(nestedState.journal_events),
     ].join("\n");
+    const latestRoll = safeObject(payload.latest_roll || gameState.latest_roll || nestedState.latest_roll);
+    const latestRollResult = safeObject(latestRoll.result);
+    const latestRollIntent = normalizeId(latestRoll.intent);
+    const latestRollTarget = normalizeId(latestRoll.target);
+    const latestRollFailed = latestRollResult.is_success === false
+      || normalizeId(latestRollResult.result_type).includes("fail");
+    const hasSecretRouteFailureBeat = Boolean(
+      (flags.act2_corridor_exit_lockpick_attempted === true && flags.act2_corridor_exit_lockpick_success !== true)
+      || (latestRollIntent === "unlock" && latestRollTarget === "door_b_to_d" && latestRollFailed)
+      || /撬锁失败|没能撬开|墙后有空响|密道/i.test(journalBlob)
+    );
     const visibleRooms = [
       ...safeArray(payload.visibleRooms),
       ...safeArray(payload.visible_rooms),
@@ -2271,22 +2652,52 @@
       ...safeArray(safeObject(nestedState.map_data).visibleRooms),
       ...safeArray(safeObject(nestedState.map_data).visible_rooms),
     ].map((roomId) => normalizeId(roomId));
+    const hasSecretStudyRouteSignal = Boolean(
+      hasSecretRouteFailureBeat
+      && (
+        flags.act2_secret_study_hint_given === true
+        || flags.act2_secret_study_route_unlocked === true
+        || /通往书房的入口|附近可能还有通往书房的入口|空响/i.test(journalBlob)
+      )
+    );
     const hasSecretStudyRevealSignal = Boolean(
       visibleRooms.includes(ROOM_C)
       || flags.act3_secret_study_entered === true
       || flags.act3_secret_study_discovered === true
-      || flags.act2_secret_study_route_unlocked === true
+      || flags.room_c_secret_study_discovered === true
+      || flags.room_c_secret_study_entered === true
       || flags.necromancer_lab_secret_study_discovered === true
       || flags.necromancer_lab_secret_study_entered === true
       || /\[秘密书房\]\s*cracked_wall\s*->\s*room_c_secret_study/i.test(journalBlob)
     );
+    const wasSecretStudyVisible = state.roomVisibleIds.has(ROOM_C);
+    if (hasSecretStudyRouteSignal || hasSecretStudyRevealSignal) {
+      const changed = discoverSecretDoor("door_b_to_c");
+      if (changed && !hasSecretStudyRevealSignal) {
+        refreshVisibilityProjection();
+      }
+    }
     if (hasSecretStudyRevealSignal) {
-      discoverSecretDoor("door_b_to_c");
+      state.secretEntranceInspectedIds.add("door_b_to_c");
+      markDoorOpenedLocally("door_b_to_c");
       revealRoomByDoorTarget("door_b_to_c");
       refreshVisibilityProjection();
+      if (!wasSecretStudyVisible) {
+        const localPosition = getLocalMovementPlayerGridPosition();
+        const localRoom = localPosition
+          ? roomAtPosition(safeArray(safeObject(state.fullNormalizedMap).rooms), localPosition.x, localPosition.y)
+          : null;
+        if (normalizeId(safeObject(localRoom).id) !== ROOM_C) {
+          projectPartyToRoomEntry(ROOM_C, "door_b_to_c", "client_secret_study_reveal");
+        }
+      }
     }
+    const wasLabVisible = state.roomVisibleIds.has(ROOM_D);
     if (flags.act4_boss_room_entered === true || flags.act4_gribbo_confrontation_started === true) {
       revealRoom(ROOM_D);
+      if (!wasLabVisible) {
+        projectPartyToRoomEntry(ROOM_D, "door_b_to_d", "client_lab_reveal");
+      }
     }
     if (flags.act4_poison_valve_triggered === true || flags.act4_lab_poison_leak === true) {
       markPoisonValveSignal("poison_valve", "triggered");
@@ -2587,7 +2998,7 @@
       return visibleRoomIds.has(key);
     };
 
-    const visibleInteractables = safeArray(map.interactables)
+    let visibleInteractables = safeArray(map.interactables)
       .map((item) => normalizeDoorProjectionRecord(item))
       .filter((item) => {
         const type = normalizeId(item.type || safeObject(item.data).type);
@@ -2595,7 +3006,14 @@
         const roomId = resolveRecordRoomId(item, rooms);
         const fromRoom = String(item.connects_from || safeObject(item.data).connects_from || "").trim();
         const toRoom = String(item.connects_to || safeObject(item.data).connects_to || "").trim();
-        const isSecretDoor = type === "door" && boolish(safeObject(item.data).is_secret);
+        const status = normalizeId(item.status || safeObject(item.data).status || "");
+        const isSecretDoor = type === "door" && (
+          id === SECRET_DOOR_ID
+          || boolish(safeObject(item.data).is_secret)
+          || boolish(item.is_hidden)
+          || boolish(safeObject(item.data).is_hidden)
+          || status === "hidden"
+        );
         if (isSecretDoor && !state.discoveredSecretDoorIds.has(id)) {
           return false;
         }
@@ -2626,6 +3044,46 @@
         }
         return item;
       });
+    const secretRouteDiscovered = state.discoveredSecretDoorIds.has("door_b_to_c");
+    const secretReadyForDoor = isSecretEntranceInspected();
+    if (secretRouteDiscovered && !secretReadyForDoor && isRoomVisible(ROOM_B)) {
+      visibleInteractables = visibleInteractables
+        .filter((item) => normalizeId(item.id) !== "door_b_to_c")
+        .concat([buildCrackedWallInteractable()]);
+    } else if (!secretReadyForDoor) {
+      visibleInteractables = visibleInteractables.filter((item) => normalizeId(item.id) !== "door_b_to_c");
+    } else {
+      visibleInteractables = visibleInteractables.map((item) => {
+        if (normalizeId(item.id) !== "door_b_to_c") return item;
+        const meta = visualEntityMeta("door_b_to_c");
+        const copy = {
+          ...item,
+          label: meta.label || item.label,
+          name: meta.name || item.name,
+          marker: meta.marker || item.marker,
+          type: meta.type || "secret_wall",
+          kind: meta.type || "secret_wall",
+          is_hidden: false,
+          is_revealed: true,
+          discovered: true,
+          status: state.openedLocalDoorIds.has("door_b_to_c") || state.roomVisibleIds.has(ROOM_C) ? "open" : "discovered",
+          data: {
+            ...safeObject(item.data),
+            label: meta.label || safeObject(item.data).label,
+            marker: meta.marker || safeObject(item.data).marker,
+            type: meta.type || safeObject(item.data).type,
+            is_hidden: false,
+            is_revealed: true,
+            discovered: true,
+          },
+        };
+        if (Number.isFinite(Number(meta.x)) && Number.isFinite(Number(meta.y))) {
+          copy.x = Number(meta.x);
+          copy.y = Number(meta.y);
+        }
+        return copy;
+      });
+    }
 
     const visibleTriggers = safeArray(map.triggers)
       .map((item) => ({ ...safeObject(item), data: { ...safeObject(safeObject(item).data) } }))
@@ -2719,6 +3177,7 @@
     state.discoveredTrapIds = new Set();
     state.backendRevealedTrapIds = new Set();
     state.discoveredSecretDoorIds = new Set();
+    state.secretEntranceInspectedIds = new Set();
     state.openedLocalDoorIds = new Set();
     state.worldFlags = {};
     resetRoomVisibility(map);
@@ -2777,6 +3236,48 @@
     return false;
   }
 
+  function resolveRoomEntryGridPosition(roomId, targetId = "") {
+    const rooms = safeArray(safeObject(state.fullNormalizedMap).rooms).length
+      ? safeArray(safeObject(state.fullNormalizedMap).rooms)
+      : safeArray(safeObject(state.normalizedMap).rooms);
+    const room = rooms.find((candidate) => normalizeId(safeObject(candidate).id) === normalizeId(roomId));
+    if (!room) return null;
+    const rx = Math.round(Number(safeObject(room).x) || 0);
+    const ry = Math.round(Number(safeObject(room).y) || 0);
+    const rw = Math.max(1, Math.round(Number(safeObject(room).w || safeObject(room).width) || 1));
+    const rh = Math.max(1, Math.round(Number(safeObject(room).h || safeObject(room).height) || 1));
+    const target = resolveTargetGridPosition(targetId);
+    const fallback = { x: Math.round(rx + (rw - 1) / 2), y: Math.round(ry + (rh - 1) / 2) };
+    const anchors = safeObject(ROOM_ENTRY_ANCHORS[normalizeId(roomId)]);
+    const anchor = normalizeGridPositionCandidate(anchors[normalizeId(targetId)] || anchors.default);
+    if (anchor) {
+      return {
+        x: clamp(anchor.x, rx, rx + rw - 1),
+        y: clamp(anchor.y, ry, ry + rh - 1),
+      };
+    }
+    if (normalizeId(roomId) === ROOM_C && normalizeId(targetId) === "door_b_to_c" && target) {
+      let x = clamp(Math.round(Number(target.x) || fallback.x), rx, rx + rw - 1);
+      let y = clamp(Math.round(Number(target.y) || fallback.y), ry, ry + rh - 1);
+      if (Number(target.x) < rx) {
+        x = clamp(rx + Math.min(2, rw - 1), rx, rx + rw - 1);
+      } else if (Number(target.x) >= rx + rw) {
+        x = clamp(rx + rw - 1 - Math.min(2, rw - 1), rx, rx + rw - 1);
+      }
+      if (Number(target.y) < ry) {
+        y = clamp(ry + Math.min(2, rh - 1), ry, ry + rh - 1);
+      } else if (Number(target.y) >= ry + rh) {
+        y = clamp(ry + rh - 1 - Math.min(2, rh - 1), ry, ry + rh - 1);
+      }
+      return { x, y };
+    }
+    const candidate = target || fallback;
+    return {
+      x: clamp(Math.round(Number(candidate.x) || fallback.x), rx, rx + rw - 1),
+      y: clamp(Math.round(Number(candidate.y) || fallback.y), ry, ry + rh - 1),
+    };
+  }
+
   function mergePartyStatusResponse(previous, incoming) {
     const prev = safeObject(previous);
     const next = safeObject(incoming);
@@ -2797,7 +3298,7 @@
       ) {
         const local = normalizeId(previousRecord._projection_source) === "client_backend_move"
           ? normalizeGridPositionCandidate(previousRecord)
-          : getClientPlayerGridPosition();
+          : getLocalMovementPlayerGridPosition();
         if (local) {
           mergedRecord.x = local.x;
           mergedRecord.y = local.y;
@@ -2817,10 +3318,55 @@
     return merged;
   }
 
+  function hasLocalLabDoorAccess() {
+    const flags = safeObject(state.worldFlags);
+    const door = safeObject(state.environmentObjects.door_b_to_d);
+    return Boolean(
+      Number(safeObject(state.playerInventory).lab_key) > 0
+      || flags.act3_lab_key_obtained === true
+      || flags.act3_study_chest_looted === true
+      || flags.act2_corridor_exit_opened_with_key === true
+      || flags.act4_boss_room_entered === true
+      || state.openedLocalDoorIds.has("door_b_to_d")
+      || isDoorOpened("door_b_to_d", door)
+    );
+  }
+
   function handleLocalExplorationDoor(targetId) {
     const key = normalizeId(targetId);
+    if (key === "cracked_wall" && state.discoveredSecretDoorIds.has("door_b_to_c") && !isSecretEntranceInspected()) {
+      const before = buildShowcaseSnapshot();
+      state.secretEntranceInspectedIds.add("door_b_to_c");
+      refreshVisibilityProjection();
+      const visibleEnvironment = filterEnvironmentObjectsForTactical(state.environmentObjects);
+      if (window.BG3TacticalMap && typeof window.BG3TacticalMap.refreshMapOnly === "function") {
+        window.BG3TacticalMap.refreshMapOnly(state.mapData, visibleEnvironment);
+      } else {
+        renderTacticalGrid(state.partyStatus, state.environmentObjects, state.mapData);
+      }
+      if (window.BG3InputController && typeof window.BG3InputController.updateHint === "function") {
+        window.BG3InputController.updateHint();
+      }
+      if (
+        window.BG3InputController
+        && typeof window.BG3InputController.getCurrentHighlightedInteractable === "function"
+        && window.BG3TacticalMap
+        && typeof window.BG3TacticalMap.setInteractionFocus === "function"
+      ) {
+        window.BG3TacticalMap.setInteractionFocus(window.BG3InputController.getCurrentHighlightedInteractable());
+      }
+      updateExplorationActProgress();
+      if (window.BG3HudRenderers && typeof window.BG3HudRenderers.showToast === "function") {
+        window.BG3HudRenderers.showToast("narration", "墙缝后露出一道狭窄暗门。", 1800, "secret_wall:inspected");
+      }
+      updateWorldStateDiff(before, buildShowcaseSnapshot({
+        journal_events: ["[秘密入口] cracked_wall inspected -> door_b_to_c"],
+      }), { autoExpand: true });
+      return true;
+    }
     const isLocalDoor = key === "door_a_to_b"
-      || (key === "door_b_to_c" && state.discoveredSecretDoorIds.has("door_b_to_c"));
+      || (key === "door_b_to_c" && state.discoveredSecretDoorIds.has("door_b_to_c") && isSecretEntranceInspected())
+      || (key === "door_b_to_d" && hasLocalLabDoorAccess());
     if (!isLocalDoor) return false;
     if (state.openedLocalDoorIds.has(key)) {
       if (window.BG3HudRenderers && typeof window.BG3HudRenderers.showToast === "function") {
@@ -2833,17 +3379,27 @@
     state.openedLocalDoorIds.add(key);
     const revealed = revealRoomByDoorTarget(key);
     refreshVisibilityProjection();
+    if (key === "door_b_to_c") {
+      projectPartyToRoomEntry(ROOM_C, key, "client_local_secret_study");
+    } else if (key === "door_b_to_d") {
+      projectPartyToRoomEntry(ROOM_D, key, "client_local_boss_lab");
+    }
     const visibleEnvironment = filterEnvironmentObjectsForTactical(state.environmentObjects);
     if (window.BG3TacticalMap && typeof window.BG3TacticalMap.refreshMapOnly === "function") {
       window.BG3TacticalMap.refreshMapOnly(state.mapData, visibleEnvironment);
       updateMapDebug("localDoorReveal:mapOnly");
+      if (key === "door_b_to_c" || key === "door_b_to_d") {
+        renderTacticalGrid(state.partyStatus, state.environmentObjects, state.mapData);
+      }
     } else {
       renderTacticalGrid(state.partyStatus, state.environmentObjects, state.mapData);
     }
     if (window.BG3HudRenderers && typeof window.BG3HudRenderers.showToast === "function") {
       window.BG3HudRenderers.showToast(
         "narration",
-        key === "door_b_to_c" ? "墙后露出一间秘密书房。" : "铁门打开，前方区域进入视野。",
+        key === "door_b_to_c"
+          ? "A hidden study opens behind the wall."
+          : (key === "door_b_to_d" ? "Gribbo clutches the heavy iron key near the poison tank." : "铁门打开，前方区域进入视野。"),
         1800
       );
     }
@@ -2858,6 +3414,18 @@
         source: "interaction",
         incrementTurn: false,
         skipLogUpdate: true,
+      });
+    } else if (key === "door_b_to_c") {
+      void sendMessage("打开通往书房的暗门。", "INTERACT", null, {
+        target: key,
+        source: "interaction",
+        incrementTurn: false,
+      });
+    } else if (key === "door_b_to_d") {
+      void sendMessage("用实验室钥匙打开实验室重门。", "INTERACT", null, {
+        target: key,
+        source: "interaction",
+        incrementTurn: false,
       });
     }
     return true;
@@ -2885,7 +3453,19 @@
     const rooms = safeArray(fullMap.rooms);
     const out = {};
     const copyVisibleEntity = (id, raw, mapInteractable = null) => {
-      const entity = safeObject(raw);
+      const key = normalizeId(id);
+      if (key === "cracked_wall") return;
+      if (key === "door_b_to_c" && !isSecretEntranceInspected()) return;
+      const meta = visualEntityMeta(id);
+      const entity = { ...safeObject(raw) };
+      const anchorX = Number(meta.x);
+      const anchorY = Number(meta.y);
+      if (Number.isFinite(anchorX) && Number.isFinite(anchorY)) {
+        entity.x = anchorX;
+        entity.y = anchorY;
+        if (Number.isFinite(Number(meta.w))) entity.w = Number(meta.w);
+        if (Number.isFinite(Number(meta.h))) entity.h = Number(meta.h);
+      }
       if (isAct4LabObject(id, entity) && !shouldRevealAct4LabObjects()) return;
       const x = Number(entity.x);
       const y = Number(entity.y);
@@ -2897,13 +3477,26 @@
       const fromRoom = String(safeObject(mapInteractable).connects_from || mapData.connects_from || "").trim();
       const toRoom = String(safeObject(mapInteractable).connects_to || mapData.connects_to || "").trim();
       const type = normalizeId(entity.type || entity.kind || safeObject(mapInteractable).type || mapData.type);
-      const isDoorEntity = type === "door" || normalizeId(id).includes("door");
+      const isSecretEntranceEntity = key === "door_b_to_c" && normalizeId(meta.type) === "secret_wall";
+      const isDoorEntity = !isSecretEntranceEntity && (type === "door" || key.includes("door"));
       const isVisibleDoorBoundary = isDoorEntity && (
         (fromRoom && state.roomVisibleIds.has(fromRoom))
         || (toRoom && state.roomVisibleIds.has(toRoom))
       );
       if (!rooms.length || isVisibleDoorBoundary || !roomIdFromMap || state.roomVisibleIds.has(String(roomIdFromMap))) {
         const copy = isDoorEntity ? normalizeDoorProjectionRecord(entity) : { ...entity };
+        if (meta.label) copy.label = meta.label;
+        if (meta.name) copy.name = meta.name;
+        if (meta.marker) copy.marker = meta.marker;
+        if (meta.type) {
+          copy.type = meta.type;
+          copy.kind = meta.type;
+        }
+        if (meta.room_id && !copy.room_id) copy.room_id = meta.room_id;
+        if (Number.isFinite(anchorX) && Number.isFinite(anchorY)) {
+          copy.x = anchorX;
+          copy.y = anchorY;
+        }
         if (isVisibleDoorBoundary && state.openedLocalDoorIds.has(normalizeId(id))) {
           copy.is_open = true;
           copy.status = "open";
@@ -2937,13 +3530,14 @@
       const id = normalizeId(record.alias_id || safeObject(record.data).alias_id || record.id);
       if (!id || out[id]) return;
       const type = normalizeId(record.type || safeObject(record.data).type);
-      if (type !== "door" && !id.includes("door")) return;
+      if (type !== "door" && !id.includes("door") && type !== "secret_wall" && id !== "cracked_wall") return;
+      const projectedType = type === "secret_wall" || id === "cracked_wall" ? "secret_wall" : "door";
       copyVisibleEntity(id, {
         ...safeObject(record.data),
         ...normalizeDoorProjectionRecord(record),
         id,
-        type: "door",
-        kind: "door",
+        type: projectedType,
+        kind: projectedType,
         name: record.name || safeObject(record.data).name || id,
         x: Number(record.x),
         y: Number(record.y),
@@ -2951,6 +3545,110 @@
         h: Number(record.h ?? record.height) || 1,
       }, record);
     });
+
+    safeArray(state.normalizedMap.interactables).forEach((item) => {
+      const record = safeObject(item);
+      const data = safeObject(record.data);
+      const id = canonicalVisualEntityId(record.alias_id || data.alias_id || record.id);
+      if (!id || out[id]) return;
+      const roomId = normalizeId(resolveRecordRoomId(record, rooms));
+      const shouldProjectRoomC = state.roomVisibleIds.has(ROOM_C)
+        && roomId === ROOM_C
+        && ROOM_C_PROP_IDS.has(id);
+      const shouldProjectRoomD = shouldRevealAct4LabObjects()
+        && (roomId === ROOM_D || roomId === ROOM_EXIT)
+        && ROOM_D_PROP_IDS.has(id);
+      if (!shouldProjectRoomC && !shouldProjectRoomD) return;
+      const meta = visualEntityMeta(id);
+      copyVisibleEntity(id, {
+        ...data,
+        id,
+        type: meta.type || record.type || data.type || "object",
+        kind: meta.type || record.type || data.type || "object",
+        name: meta.name || record.name || data.name || id,
+        label: meta.label || record.label || data.label || record.name || id,
+        marker: meta.marker || data.marker || "",
+        is_hidden: false,
+        hidden: false,
+        is_revealed: true,
+        discovered: true,
+        x: Number(record.x),
+        y: Number(record.y),
+        w: Number(record.w ?? record.width) || 1,
+        h: Number(record.h ?? record.height) || 1,
+        room_id: meta.room_id || roomId || data.room_id || "",
+      }, record);
+    });
+
+    safeArray(state.normalizedMap.spawns).forEach((spawn) => {
+      const record = safeObject(spawn);
+      const id = canonicalVisualEntityId(record.id || record.instance_id || safeObject(record.data).instance_id);
+      if (!id || out[id] || !ROOM_D_PROP_IDS.has(id) || !shouldRevealAct4LabObjects()) return;
+      const meta = visualEntityMeta(id);
+      copyVisibleEntity(id, {
+        ...safeObject(record.data),
+        id,
+        type: meta.type || record.type || "npc",
+        kind: meta.type || "npc",
+        faction: record.faction || "neutral",
+        name: meta.name || record.name || id,
+        label: meta.label || id,
+        marker: meta.marker || "!",
+        is_hidden: false,
+        is_revealed: true,
+        discovered: true,
+        x: Number(record.x),
+        y: Number(record.y),
+        w: Number(record.w ?? record.width) || 1,
+        h: Number(record.h ?? record.height) || 1,
+        room_id: meta.room_id || record.room_id || safeObject(record.data).room_id || ROOM_D,
+      }, record);
+    });
+
+    if (shouldRevealAct4LabObjects()) {
+      Object.entries(SYNTHETIC_ACT4_ANCHORS).forEach(([id, anchor]) => {
+        const key = canonicalVisualEntityId(id);
+        if (!key || out[key]) return;
+        const meta = visualEntityMeta(key);
+        copyVisibleEntity(key, {
+          ...safeObject(anchor),
+          id: key,
+          type: meta.type || safeObject(anchor).type || "object",
+          kind: meta.type || safeObject(anchor).type || "object",
+          name: meta.name || safeObject(anchor).name || key,
+          label: meta.label || safeObject(anchor).label || key,
+          marker: meta.marker || safeObject(anchor).marker || "",
+          is_hidden: false,
+          is_revealed: true,
+          discovered: true,
+        }, {
+          ...safeObject(anchor),
+          data: { ...safeObject(anchor), room_id: safeObject(anchor).room_id || ROOM_D },
+        });
+      });
+    }
+    if (isSecretEntranceInspected() && !out.door_b_to_c) {
+      const meta = visualEntityMeta("door_b_to_c");
+      copyVisibleEntity("door_b_to_c", {
+        id: "door_b_to_c",
+        type: meta.type || "secret_wall",
+        kind: meta.type || "secret_wall",
+        name: meta.name || "秘密书房入口",
+        label: meta.label || "暗门",
+        marker: meta.marker || ">",
+        is_hidden: false,
+        is_revealed: true,
+        discovered: true,
+        status: state.openedLocalDoorIds.has("door_b_to_c") || state.roomVisibleIds.has(ROOM_C) ? "open" : "discovered",
+        x: Number(meta.x) || 4,
+        y: Number(meta.y) || 8,
+        w: 1,
+        h: 1,
+        room_id: ROOM_B,
+      }, {
+        data: { room_id: ROOM_B },
+      });
+    }
     return out;
   }
 
@@ -3477,6 +4175,21 @@
     return "";
   }
 
+  function diaryInterpretationText(actor, focus) {
+    const speaker = normalizeBarkSpeakerId(actor);
+    const key = normalizeId(focus);
+    if (speaker === "astarion" || key === "key_leverage") {
+      return "钥匙、守卫、筹码。日记给了我们谈判用的刀柄。";
+    }
+    if (speaker === "shadowheart" || key === "gribbo_victim") {
+      return "Gribbo 不只是守卫。他也许是这场死灵实验的受害者。";
+    }
+    if (speaker === "laezel" || key === "tactical_objective") {
+      return "目标明确：夺钥匙，开门，离开。";
+    }
+    return "";
+  }
+
   function partyStanceText(actor, stance) {
     const speaker = normalizeBarkSpeakerId(actor);
     const key = normalizeId(stance);
@@ -3514,6 +4227,14 @@
       const barkText = studyObservationText(speaker);
       if (barkText) {
         result.push({ speaker, text: barkText, source: "study_observation", priority: 6 });
+      }
+    }
+    match = text.match(/\[日记解读\]\s*([a-z0-9_'’\-]+)\s*->\s*(key_leverage|gribbo_victim|tactical_objective)/i);
+    if (match) {
+      const speaker = normalizeBarkSpeakerId(match[1]);
+      const barkText = diaryInterpretationText(speaker, match[2]);
+      if (barkText) {
+        result.push({ speaker, text: barkText, source: "diary_interpretation", priority: 7 });
       }
     }
     match = text.match(/\[Boss方案\]\s*([a-z0-9_'’\-]+)\s*->\s*(steal_key|contain_corruption|execute)/i);
@@ -3599,6 +4320,206 @@
     });
   }
 
+  function extractResponseFlags(data = {}) {
+    const payload = safeObject(data);
+    const gameState = safeObject(payload.game_state || payload.gameState || payload.state);
+    const nestedState = safeObject(payload.state);
+    return {
+      ...safeObject(gameState.flags),
+      ...safeObject(nestedState.flags),
+      ...safeObject(payload.flags),
+    };
+  }
+
+  function extractResponseVisibleRooms(data = {}) {
+    const payload = safeObject(data);
+    const gameState = safeObject(payload.game_state || payload.gameState || payload.state);
+    const nestedState = safeObject(payload.state);
+    return [
+      ...safeArray(payload.visibleRooms),
+      ...safeArray(payload.visible_rooms),
+      ...safeArray(safeObject(payload.map_data).visibleRooms),
+      ...safeArray(safeObject(payload.map_data).visible_rooms),
+      ...safeArray(safeObject(gameState.map_data).visibleRooms),
+      ...safeArray(safeObject(gameState.map_data).visible_rooms),
+      ...safeArray(safeObject(nestedState.map_data).visibleRooms),
+      ...safeArray(safeObject(nestedState.map_data).visible_rooms),
+    ].map((roomId) => normalizeId(roomId)).filter(Boolean);
+  }
+
+  function extractResponseObjectRecord(targetId, data = {}) {
+    const key = normalizeId(targetId);
+    if (!key) return {};
+    const payload = safeObject(data);
+    const gameState = safeObject(payload.game_state || payload.gameState || payload.state);
+    const nestedState = safeObject(payload.state);
+    const buckets = [
+      safeObject(payload.environment_objects),
+      safeObject(payload.entities),
+      safeObject(gameState.environment_objects),
+      safeObject(gameState.entities),
+      safeObject(nestedState.environment_objects),
+      safeObject(nestedState.entities),
+    ];
+    for (const bucket of buckets) {
+      const direct = safeObject(bucket[key]);
+      if (Object.keys(direct).length) return direct;
+      const aliasMatch = objectEntries(bucket).find(([id, record]) => {
+        const rec = safeObject(record);
+        const aliases = safeArray(rec.alias_ids).map((alias) => normalizeId(alias));
+        return normalizeId(id) === key || normalizeId(rec.id) === key || aliases.includes(key);
+      });
+      if (aliasMatch) return safeObject(aliasMatch[1]);
+    }
+    return {};
+  }
+
+  function responseIndicatesDiaryReadDecoded(data = {}) {
+    const flags = extractResponseFlags(data);
+    const lines = extractEventLines(data).join("\n");
+    const payload = safeObject(data);
+    const gameState = safeObject(payload.game_state || payload.gameState || payload.state);
+    const latest = safeObject(payload.latest_roll || payload.raw_roll_data || gameState.latest_roll || gameState.raw_roll_data);
+    const result = safeObject(latest.result);
+    return Boolean(
+      flags.act3_diary_decoded === true
+      || flags.act3_diary_read === true
+      || flags.necromancer_lab_diary_decoded === true
+      || flags.necromancer_lab_diary_read === true
+      || /\[交涉筹码\]|diary_evidence|gribbo_elixir_truth|日记.*真相/i.test(lines)
+      || result.is_success === true
+      || latest.is_success === true
+    );
+  }
+
+  function appendDiaryInterpretationJournal(data = {}, actionIntent = "", actionTarget = "") {
+    if (normalizeId(actionIntent) !== "read" || normalizeId(actionTarget) !== "necromancer_diary") return false;
+    if (!responseIndicatesDiaryReadDecoded(data)) return false;
+    const target = safeObject(data);
+    const existing = new Set(extractEventLines(target));
+    const linesToAdd = DIARY_INTERPRETATION_LINES.filter((line) => !existing.has(line));
+    if (!linesToAdd.length) return false;
+    target.journal_events = [
+      ...safeArray(target.journal_events),
+      ...linesToAdd,
+    ];
+    const gameState = safeObject(target.game_state || target.gameState || target.state);
+    if (Object.keys(gameState).length) {
+      gameState.journal_events = [
+        ...safeArray(gameState.journal_events),
+        ...linesToAdd.filter((line) => !safeArray(gameState.journal_events).includes(line)),
+      ];
+    }
+    return true;
+  }
+
+  function maybeShowLabKeyReturnObjective(actionIntent = "", actionTarget = "", data = {}) {
+    const target = normalizeId(actionTarget);
+    const intentKey = normalizeId(actionIntent);
+    const hasLabKey = Number(safeObject(state.playerInventory).lab_key) > 0
+      || Number(safeObject(safeObject(data).player_inventory).lab_key) > 0
+      || extractResponseFlags(data).act3_lab_key_obtained === true
+      || extractResponseFlags(data).act3_study_chest_looted === true;
+    if (!hasLabKey) return false;
+    if (!["ui_action_loot", "loot", "interact"].includes(intentKey) && target !== "study_chest" && target !== "chest_1") return false;
+    if (window.BG3HudRenderers && typeof window.BG3HudRenderers.showToast === "function") {
+      window.BG3HudRenderers.showToast("info", "Objective Updated: Return to the locked lab door.", 3200, "objective:return_lab_door");
+      window.BG3HudRenderers.showToast("info", "Use lab_key to enter Gribbo Lab.", 3200, "objective:use_lab_key");
+    }
+    return true;
+  }
+
+  function responseIndicatesDoorOpened(targetId, data = {}) {
+    const key = normalizeId(targetId);
+    const record = extractResponseObjectRecord(key, data);
+    if (isDoorOpened(key, record)) return true;
+    const payload = safeObject(data);
+    const gameState = safeObject(payload.game_state || payload.gameState || payload.state);
+    const roll = safeObject(payload.latest_roll || payload.raw_roll_data || gameState.latest_roll || gameState.raw_roll_data);
+    const result = safeObject(roll.result);
+    const rollTarget = normalizeId(roll.target || result.target);
+    return rollTarget === key && (result.is_success === true || roll.is_success === true);
+  }
+
+  function markDoorOpenedLocally(targetId) {
+    const key = normalizeId(targetId);
+    if (!key) return false;
+    const canonical = key === "exit_door" ? "heavy_oak_door_1" : key;
+    if (!["door_a_to_b", "door_b_to_c", "door_b_to_d", "heavy_oak_door_1"].includes(canonical)) {
+      return false;
+    }
+    state.openedLocalDoorIds.add(canonical);
+    if (canonical === "heavy_oak_door_1") state.openedLocalDoorIds.add("exit_door");
+    const existing = safeObject(state.environmentObjects[canonical]);
+    state.environmentObjects = {
+      ...safeObject(state.environmentObjects),
+      [canonical]: {
+        ...existing,
+        id: existing.id || canonical,
+        is_open: true,
+        is_locked: false,
+        status: "open",
+      },
+    };
+    return true;
+  }
+
+  function markOpenedDoorsFromResponse(data = {}) {
+    let changed = false;
+    ["door_a_to_b", "door_b_to_c", "door_b_to_d", "heavy_oak_door_1"].forEach((doorId) => {
+      if (responseIndicatesDoorOpened(doorId, data)) {
+        changed = markDoorOpenedLocally(doorId) || changed;
+      }
+    });
+    return changed;
+  }
+
+  function responseIndicatesSecretStudyEntered(data = {}) {
+    const flags = extractResponseFlags(data);
+    const visibleRooms = extractResponseVisibleRooms(data);
+    const journalBlob = extractEventLines(data).join("\n");
+    return Boolean(
+      visibleRooms.includes(ROOM_C)
+      || flags.act3_secret_study_entered === true
+      || flags.act3_secret_study_discovered === true
+      || flags.room_c_secret_study_discovered === true
+      || flags.room_c_secret_study_entered === true
+      || flags.necromancer_lab_secret_study_discovered === true
+      || flags.necromancer_lab_secret_study_entered === true
+      || /\[秘密书房\]\s*cracked_wall\s*->\s*room_c_secret_study/i.test(journalBlob)
+    );
+  }
+
+  function shouldRevealDoorTargetFromResponse(targetId, data = {}) {
+    const key = normalizeId(targetId);
+    if (!key || responseIndicatesInteractionBlocked(data)) return false;
+    const flags = extractResponseFlags(data);
+    const visibleRooms = extractResponseVisibleRooms(data);
+
+    if (key === "door_b_to_c" || key === "cracked_wall") {
+      return responseIndicatesSecretStudyEntered(data) || responseIndicatesDoorOpened("door_b_to_c", data);
+    }
+    if (key === "door_b_to_d") {
+      return visibleRooms.includes(ROOM_D)
+        || flags.act2_corridor_exit_opened_with_key === true
+        || flags.act4_boss_room_entered === true
+        || flags.act4_gribbo_confrontation_started === true
+        || responseIndicatesDoorOpened("door_b_to_d", data);
+    }
+    if (key === "door_a_to_b") {
+      return visibleRooms.includes(ROOM_B)
+        || flags.act2_corridor_entered === true
+        || responseIndicatesDoorOpened("door_a_to_b", data);
+    }
+    if (key === "heavy_oak_door_1" || key === "exit_door") {
+      return visibleRooms.includes(ROOM_EXIT)
+        || flags.act4_final_exit_opened === true
+        || flags.demo_cleared === true
+        || responseIndicatesDoorOpened("heavy_oak_door_1", data);
+    }
+    return false;
+  }
+
   function barksFromUIEvents(events) {
     if (!window.BG3HudRenderers || typeof window.BG3HudRenderers.barksFromUIEvent !== "function") return [];
     return safeArray(events).flatMap((event) => window.BG3HudRenderers.barksFromUIEvent(event) || []);
@@ -3611,6 +4532,57 @@
       const bi = BARK_ACTOR_ORDER.indexOf(normalizeBarkSpeakerId(b.speaker));
       return (ai < 0 ? 99 : ai) - (bi < 0 ? 99 : bi);
     });
+  }
+
+  function isAct4BossContext(data = {}) {
+    const payload = safeObject(data);
+    const gameState = safeObject(payload.game_state || payload.gameState || payload.state);
+    const flags = {
+      ...safeObject(gameState.flags),
+      ...safeObject(payload.flags),
+      ...safeObject(state.worldFlags),
+    };
+    const visibleRooms = [
+      ...safeArray(payload.visibleRooms),
+      ...safeArray(payload.visible_rooms),
+      ...safeArray(safeObject(payload.map_data).visibleRooms),
+      ...safeArray(safeObject(payload.map_data).visible_rooms),
+      ...safeArray(safeObject(gameState.map_data).visibleRooms),
+      ...safeArray(safeObject(gameState.map_data).visible_rooms),
+      ...Array.from(state.roomVisibleIds || []),
+    ].map((roomId) => normalizeId(roomId));
+    return visibleRooms.includes(ROOM_D)
+      || flags.act4_boss_room_entered === true
+      || flags.act4_gribbo_confrontation_started === true
+      || flags.act4_heavy_iron_key_obtained === true
+      || flags.act4_final_exit_opened === true;
+  }
+
+  function shouldKeepBarkForCurrentScene(bark, data = {}) {
+    const source = normalizeId(safeObject(bark).source);
+    const speaker = normalizeBarkSpeakerId(safeObject(bark).speaker);
+    const text = String(safeObject(bark).text || "").trim();
+    const act4 = isAct4BossContext(data);
+    if (source === "trap_triggered") return true;
+    if (["trap_insight", "trap_disarmed"].includes(source) && act4) return false;
+    if (act4 && speaker === "gribbo" && !isAct4BossBarkText(text, source)) return false;
+    if (!act4) {
+      if (["boss_strategy", "boss_intro", "boss_route", "poison_valve", "mercy_resolution"].includes(source)) return false;
+      if (speaker === "gribbo") return false;
+    }
+    if (hasAct3BarkResetSignal(data) && ["trap_insight", "trap_disarmed"].includes(source)) return false;
+    return true;
+  }
+
+  function isAct4BossBarkText(text, source = "") {
+    const raw = String(text || "").trim();
+    if (!raw) return false;
+    const normalizedSource = normalizeId(source);
+    if (["boss_intro", "boss_strategy", "boss_route", "poison_valve"].includes(normalizedSource)) return true;
+    if (/cracked\s+wall|secret\s+study|dead.*moving|trap[_\s-]?disarmed|pressure\s+plate|reknit|\*again\*|\*blink\*|\*breathe\*|\*supposed\*/i.test(raw)) {
+      return false;
+    }
+    return /(钥匙|key|门|door|主人|master|药剂|potion|毒气|poison|守门|guard|实验|experiment|真相|truth|日记|diary|离开|leave|出去|escape|药罐)/i.test(raw);
   }
 
   function extractSpeechBarks(data, options = {}) {
@@ -3663,13 +4635,14 @@
       journalLineToBarks(line).forEach((bark) => pushBark(bark.speaker, bark.text, bark));
     });
 
-    if (options.skipUIEvents !== true) {
-      barksFromUIEvents([
+    const uiEventBarkSources = options.skipUIEvents === true
+      ? dispatchedEvents
+      : [
         ...safeArray(payload.ui_events),
         ...safeArray(gameState.ui_events),
         ...dispatchedEvents,
-      ]).forEach((bark) => pushBark(bark.speaker, bark.text, bark));
-    }
+      ];
+    barksFromUIEvents(uiEventBarkSources).forEach((bark) => pushBark(bark.speaker, bark.text, bark));
 
     const dedupe = new Set();
     const speakerTextDedupe = new Set();
@@ -3678,16 +4651,28 @@
       "trap_disarmed",
       "trap_triggered",
       "study_observation",
+      "diary_interpretation",
       "boss_strategy",
       "memory_echo",
       "party_stance",
       "mercy_resolution",
     ]);
-    const deduped = barks.filter((bark) => {
-      const speakerTextKey = normalizeBarkSpeakerId(bark.speaker) + "::" + normalizeId(bark.text);
-      if (speakerTextDedupe.has(speakerTextKey)) return false;
-      speakerTextDedupe.add(speakerTextKey);
+    const signalSpeakerTextKeys = new Set();
+    barks.forEach((bark) => {
       const source = normalizeId(bark.source);
+      if (!signalSources.has(source)) return;
+      signalSpeakerTextKeys.add(normalizeBarkSpeakerId(bark.speaker) + "::" + normalizeId(bark.text));
+    });
+    const sceneFiltered = barks.filter((bark) => shouldKeepBarkForCurrentScene(bark, payload));
+    const deduped = sceneFiltered.filter((bark) => {
+      const speakerTextKey = normalizeBarkSpeakerId(bark.speaker) + "::" + normalizeId(bark.text);
+      const source = normalizeId(bark.source);
+      const isSignalSource = signalSources.has(source);
+      if (!isSignalSource) {
+        if (signalSpeakerTextKeys.has(speakerTextKey)) return false;
+        if (speakerTextDedupe.has(speakerTextKey)) return false;
+        speakerTextDedupe.add(speakerTextKey);
+      }
       const key = signalSources.has(source)
         ? normalizeBarkSpeakerId(bark.speaker) + "::" + source
         : normalizeBarkSpeakerId(bark.speaker) + "::" + source + "::" + normalizeId(bark.text);
@@ -3711,8 +4696,13 @@
   function triggerSpeechBubbles(data, options = {}) {
     if (!window.BG3HudRenderers || typeof window.BG3HudRenderers.dispatchCompanionBarks !== "function") return;
     hardClearAct3TrapBarksIfNeeded(data, "speech_dispatch");
-    const barks = extractSpeechBarks(data, options)
-      .filter((bark) => normalizeId(bark.speaker) !== "player")
+    const extractedBarks = extractSpeechBarks(data, options)
+      .filter((bark) => normalizeId(bark.speaker) !== "player");
+    const bossStrategyBarks = extractedBarks.filter((bark) => normalizeId(bark.source) === "boss_strategy");
+    const orderedBarks = bossStrategyBarks.length
+      ? [...bossStrategyBarks, ...extractedBarks.filter((bark) => normalizeId(bark.source) !== "boss_strategy")]
+      : extractedBarks;
+    const barks = orderedBarks
       .slice(0, 4)
       .map((bark) => ({
         ...bark,
@@ -3740,6 +4730,72 @@
     }
   }
 
+  function bossStrategyCoverageFromDebug(debug = {}) {
+    const speakers = new Set();
+    const addIfBossStrategy = (speaker, sourceGroup, source) => {
+      if (!speaker) return;
+      if (normalizeId(sourceGroup) !== "boss_strategy" && normalizeId(source) !== "boss_strategy") return;
+      speakers.add(normalizeBarkSpeakerId(speaker));
+    };
+    addIfBossStrategy(debug.activeSpeaker, debug.activeSourceGroup, debug.activeSource);
+    safeArray(debug.pendingSpeakers).forEach((speaker, index) => {
+      addIfBossStrategy(speaker, safeArray(debug.pendingSourceGroups)[index], safeArray(debug.pendingSources)[index]);
+    });
+    safeArray(debug.completedSpeakers).forEach((speaker, index) => {
+      addIfBossStrategy(speaker, safeArray(debug.completedSourceGroups)[index], safeArray(debug.completedSources)[index]);
+    });
+    return speakers;
+  }
+
+  function ensureAct4BossStrategyBarksFromJournal(data, options = {}) {
+    if (!window.BG3HudRenderers || typeof window.BG3HudRenderers.dispatchCompanionBarks !== "function") return [];
+    if (hasFinalBarkClearSignal(data)) return [];
+    const payload = safeObject(data);
+    const gameState = safeObject(payload.game_state || payload.gameState || payload.state);
+    const flags = {
+      ...safeObject(gameState.flags),
+      ...safeObject(payload.flags),
+    };
+    const visibleRooms = [
+      ...safeArray(payload.visibleRooms),
+      ...safeArray(payload.visible_rooms),
+      ...safeArray(safeObject(payload.map_data).visibleRooms),
+      ...safeArray(safeObject(payload.map_data).visible_rooms),
+      ...safeArray(safeObject(gameState.map_data).visibleRooms),
+      ...safeArray(safeObject(gameState.map_data).visible_rooms),
+      ...Array.from(state.roomVisibleIds || []),
+    ].map((roomId) => normalizeId(roomId));
+    const isAct4 = visibleRooms.includes(ROOM_D)
+      || flags.act4_boss_room_entered === true
+      || flags.act4_gribbo_confrontation_started === true
+      || flags.act4_diary_truth_available === true;
+    if (!isAct4) return [];
+    const bossBarks = extractSpeechBarks(payload, { skipUIEvents: true })
+      .filter((bark) => normalizeId(bark.source) === "boss_strategy");
+    const bySpeaker = new Map();
+    bossBarks.forEach((bark) => {
+      const speaker = normalizeBarkSpeakerId(bark.speaker);
+      if (!BARK_ACTOR_ORDER.includes(speaker) || bySpeaker.has(speaker)) return;
+      bySpeaker.set(speaker, { ...bark, speaker, source: "boss_strategy", priority: Math.max(Number(bark.priority) || 0, 8) });
+    });
+    if (!BARK_ACTOR_ORDER.every((speaker) => bySpeaker.has(speaker))) return [];
+    const debug = typeof window.BG3HudRenderers.getCompanionBarkDebugState === "function"
+      ? window.BG3HudRenderers.getCompanionBarkDebugState()
+      : {};
+    const coveredSpeakers = bossStrategyCoverageFromDebug(debug);
+    if (BARK_ACTOR_ORDER.every((speaker) => coveredSpeakers.has(speaker))) return [];
+    if (typeof window.BG3HudRenderers.setBarkSceneContext === "function") {
+      window.BG3HudRenderers.setBarkSceneContext({
+        act: "act4",
+        visibleRooms: Array.from(new Set(visibleRooms.filter(Boolean))),
+      });
+    }
+    return window.BG3HudRenderers.dispatchCompanionBarks(
+      BARK_ACTOR_ORDER.map((speaker) => bySpeaker.get(speaker)),
+      { reason: options.reason || "boss_strategy_journal" },
+    );
+  }
+
   function hasAct3BarkResetSignal(data) {
     const payload = safeObject(data);
     const gameState = safeObject(payload.game_state || payload.gameState || payload.state);
@@ -3756,6 +4812,13 @@
       ...safeArray(safeObject(gameState.map_data).visibleRooms),
       ...safeArray(safeObject(gameState.map_data).visible_rooms),
     ].map((roomId) => normalizeId(roomId));
+    const hasAct4Signal = visibleRooms.includes(ROOM_D)
+      || state.roomVisibleIds.has(ROOM_D)
+      || flags.act4_boss_room_entered === true
+      || flags.act4_gribbo_confrontation_started === true
+      || flags.act4_heavy_iron_key_obtained === true
+      || flags.act4_final_exit_opened === true;
+    if (hasAct4Signal) return false;
     return visibleRooms.includes(ROOM_C)
       || state.roomVisibleIds.has(ROOM_C)
       || /\[秘密书房\]|\[书房观察\]|\[线索整合\]/i.test(lines)
@@ -3784,13 +4847,24 @@
     if (!window.BG3HudRenderers || typeof window.BG3HudRenderers.clearCompanionBarks !== "function") return false;
     state.act3BarkEpoch = Math.max(Number(state.act3BarkEpoch) || 0, Number(state.barkEpoch) || 0);
     if (typeof window.BG3HudRenderers.setBarkSceneContext === "function") {
+      const flags = safeObject(state.worldFlags);
+      const act = state.roomVisibleIds.has(ROOM_D)
+        || flags.act4_boss_room_entered === true
+        || flags.act4_gribbo_confrontation_started === true
+        ? "act4"
+        : "act3";
       window.BG3HudRenderers.setBarkSceneContext({
-        act: "act3",
+        act,
         visibleRooms: Array.from(state.roomVisibleIds || []),
       });
     }
     if (typeof window.BG3HudRenderers.clearBarksByScope === "function") {
       window.BG3HudRenderers.clearBarksByScope("act2_corridor", { suppressGroups: ["trap"], reason });
+    }
+    if (typeof window.BG3HudRenderers.clearAgentSignalCards === "function") {
+      window.BG3HudRenderers.clearAgentSignalCards({
+        sources: ["trap_insight", "trap_disarmed"],
+      }, { clearDedupe: false });
     }
     window.BG3HudRenderers.clearCompanionBarks({
       groups: ["trap", "generic_response"],
@@ -3843,6 +4917,13 @@
     state.worldFlags = flags;
     revealRoom(ROOM_C);
     refreshVisibilityProjection();
+    const localPosition = getLocalMovementPlayerGridPosition();
+    const localRoom = localPosition
+      ? roomAtPosition(safeArray(safeObject(state.fullNormalizedMap).rooms), localPosition.x, localPosition.y)
+      : null;
+    if (normalizeId(safeObject(localRoom).id) !== ROOM_C) {
+      projectPartyToRoomEntry(ROOM_C, "door_b_to_c", "client_act3_read_projection");
+    }
     hardClearAct3TrapBarks("act3_read_projection");
     updateExplorationActProgress();
     return true;
@@ -5137,7 +6218,12 @@
     if (isAct3BarkRequest(routed, payload)) {
       hardClearAct3TrapBarks("act3_request");
     }
-    syncLocalPlayerProjectionState("client_before_narrative");
+    const previousPlayerSource = normalizeId(safeObject(safeObject(state.partyStatus).player)._projection_source);
+    const shouldPreserveClientProjection = previousPlayerSource.startsWith("client_")
+      || ["interaction", "trap_awareness", "trap_trigger", "trigger_zone"].includes(normalizeId(routed.source));
+    if (shouldPreserveClientProjection) {
+      syncLocalPlayerProjectionState("client_before_narrative");
+    }
     setLoading(true);
     state.xrayNodeTimings = {};
     updateXrayNodeTimings(state.xrayNodeTimings);
@@ -5162,13 +6248,15 @@
         return applySilentNetworkFallback(userLine, intentValue, opts);
       }
 
+      const actionIntent = normalizeId(payload.intent);
+      const actionTarget = normalizeId(payload.target || routed.target);
       const data = await response.json();
+      appendDiaryInterpretationJournal(data, actionIntent, actionTarget);
       state.lastProjectionJournalEvents = extractEventLines(data);
+      ensureAct4BossStrategyBarksFromJournal(data, { reason: "chat_response" });
       if (opts.incrementTurn !== false) {
         state.turnCount += 1;
       }
-      const actionIntent = normalizeId(payload.intent);
-      const actionTarget = normalizeId(payload.target || routed.target);
       if (["move", "approach"].includes(actionIntent)) {
         setClientPlayerGridPositionFromBackend(safeObject(safeObject(data.party_status).player));
       }
@@ -5189,6 +6277,8 @@
       state.environmentObjects = safeObject(data.environment_objects);
       state.playerInventory = safeObject(data.player_inventory);
       state.combatState = safeObject(data.combat_state);
+      maybeShowLabKeyReturnObjective(actionIntent, actionTarget, data);
+      const openedDoorProjectionChanged = markOpenedDoorsFromResponse(data);
       const responseMapData = safeObject(data.map_data);
       state.mapData = Object.keys(responseMapData).length
         ? responseMapData
@@ -5196,17 +6286,30 @@
       if (state.normalizedMap) {
         state.mapData = mergeVisualMapData(state.mapData, state.normalizedMap);
       }
+      if (openedDoorProjectionChanged) {
+        refreshVisibilityProjection();
+      }
       updateMapDebug("sendStructuredAction:response");
       if (actionIntent === "init_sync") {
         state.hasStateProjectionBaseline = true;
       }
       applyLocalAct3ReadProjection(actionIntent, actionTarget, data);
-      if (actionIntent === "interact" && !responseIndicatesInteractionBlocked(data)) {
-        if (actionTarget === "door_b_to_c" && !state.discoveredSecretDoorIds.has("door_b_to_c")) {
+      if (actionIntent === "interact" && shouldRevealDoorTargetFromResponse(actionTarget, data)) {
+        const revealTarget = actionTarget === "cracked_wall" ? "door_b_to_c" : actionTarget;
+        if (revealTarget === "door_b_to_c" && !state.discoveredSecretDoorIds.has("door_b_to_c")) {
           discoverSecretDoor("door_b_to_c");
         }
-        if (revealRoomByDoorTarget(actionTarget)) {
+        if (revealTarget === "door_b_to_c") {
+          state.secretEntranceInspectedIds.add("door_b_to_c");
+          markDoorOpenedLocally("door_b_to_c");
+        }
+        if (revealRoomByDoorTarget(revealTarget)) {
           refreshVisibilityProjection();
+          if (revealTarget === "door_b_to_c") {
+            projectPartyToRoomEntry(ROOM_C, revealTarget, "client_secret_study_response");
+          } else if (revealTarget === "door_b_to_d") {
+            projectPartyToRoomEntry(ROOM_D, revealTarget, "client_lab_response");
+          }
         }
       }
       updateDialogueOverlay(data);
@@ -5364,7 +6467,7 @@
     const defaultRoomSpawn = {
       room_a_spawn: { x: 4, y: 18 },
       room_b_corridor: { x: 8, y: 18 },
-      room_c_secret_study: { x: 12, y: 16 },
+      room_c_secret_study: { x: 4, y: 9 },
       room_d_lab: { x: 17, y: 14 },
       room_exit: { x: 21, y: 12 },
     };
@@ -5959,7 +7062,9 @@
     if (state.isLoading) return;
     try {
       const response = await fetchWithTimeout(
-        STATE_URL + "?session_id=" + encodeURIComponent(getSessionId()),
+        STATE_URL
+          + "?session_id=" + encodeURIComponent(getSessionId())
+          + "&map_id=" + encodeURIComponent(MAP_ID),
         {},
         BACKEND_REQUEST_TIMEOUT_MS,
       );
@@ -6012,6 +7117,7 @@
           renderTacticalGrid(state.partyStatus, state.environmentObjects, state.mapData);
         }
       }
+      ensureAct4BossStrategyBarksFromJournal(data, { reason: "state_poll" });
       state.lastProjectionJournalEvents = extractEventLines(data);
     } catch (error) {
       if (error && error.name === "AbortError") {
@@ -6180,9 +7286,6 @@
             target: mapped.target || "",
             source: mapped.source || "interaction",
           });
-          if (revealRoomByDoorTarget(interactionTarget)) {
-            refreshVisibilityProjection();
-          }
         },
         onHighlightChanged: (interactable) => {
           if (window.BG3TacticalMap && typeof window.BG3TacticalMap.setInteractionFocus === "function") {
@@ -6310,12 +7413,30 @@
     return false;
   }
 
+  function shouldDispatchUIEventForCurrentScene(event, data = {}) {
+    const ev = safeObject(event);
+    const type = normalizeId(ev.type);
+    if (type === "trap_triggered") return true;
+    if (type === "memory_added" && isAct4BossContext(data)) return false;
+    if (["trap_insight", "trap_disarmed", "trap_discovered"].includes(type) && isAct4BossContext(data)) return false;
+    if (hasAct3BarkResetSignal(data) && ["trap_insight", "trap_disarmed", "trap_discovered"].includes(type)) return false;
+    if (!isAct4BossContext(data) && ["boss_intro", "boss_strategy", "boss_route", "poison_valve", "mercy_resolution"].includes(type)) return false;
+    return true;
+  }
+
   function dispatchUIEventsFromResponse(data, previousState, providedEvents, options) {
     if (!window.BG3UIEventAdapter || !window.BG3HudRenderers) return;
-    const events = Array.isArray(providedEvents)
+    let events = Array.isArray(providedEvents)
       ? providedEvents
       : window.BG3UIEventAdapter.extractUIEvents(data, previousState, options);
+    events = safeArray(events).filter((event) => shouldDispatchUIEventForCurrentScene(event, data));
     window.BG3HudRenderers.dispatchUIEvents(events);
+    if (events.some((event) => safeObject(event).type === "boss_strategy")
+      && typeof window.BG3HudRenderers.dispatchCompanionBarks === "function") {
+      const bossBarks = extractSpeechBarks(data, { dispatchedEvents: events, skipUIEvents: true })
+        .filter((bark) => normalizeId(bark.source) === "boss_strategy");
+      if (bossBarks.length) window.BG3HudRenderers.dispatchCompanionBarks(bossBarks);
+    }
     events.forEach((event) => {
       const ev = safeObject(event);
       if (ev.type === "trap_insight") {
@@ -6383,6 +7504,7 @@
     bindDockEvents();
     initNewModules();
     initShowcaseMode();
+    syncPayloadInspectorVisibility();
     setTacticalOverlay(false);
     renderChrome(LOCATION_LABELS[MAP_ID] || "废弃死灵实验室");
     renderPartyRoster();
@@ -6454,6 +7576,7 @@
       dispatchUIEventsFromResponse,
       extractSpeechBarks,
       triggerSpeechBubbles,
+      ensureAct4BossStrategyBarksFromJournal,
       hardClearAct3TrapBarks,
       hardClearAct3TrapBarksIfNeeded,
       hasAct3BarkResetSignal,
@@ -6467,6 +7590,8 @@
       revealRoom,
       revealRoomByDoorTarget,
       handleLocalExplorationDoor,
+      resolveRoomEntryGridPosition,
+      formatInteractionHint,
       resolveAct1Perception,
       discoverSecretDoor,
       projectPartyStatusForTactical,

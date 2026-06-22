@@ -144,6 +144,22 @@
     gribbo: 0xa7d8bf,
   });
 
+  const KEY_TOKEN_LABELS = Object.freeze({
+    cracked_wall: { label: "空响墙面", marker: "?", labelDx: -18, labelDy: -27 },
+    door_b_to_c: { label: "暗门", marker: ">", labelDx: -8, labelDy: -27 },
+    necromancer_diary: { label: "Necromancer Diary", tokenLabel: "Necromancer\nDiary", marker: "D", labelDx: -22, labelDy: -30 },
+    chemical_notes: { label: "Chemical Notes", tokenLabel: "Chemical\nNotes", marker: "N", labelDx: 22, labelDy: -30 },
+    iron_key_sketch: { label: "Iron Key Sketch", tokenLabel: "Iron Key\nSketch", marker: "K", labelDx: -18, labelDy: 8 },
+    chest_1: { label: "Study Chest", marker: "C", labelDx: 18, labelDy: 7 },
+    study_chest: { label: "Study Chest", marker: "C", labelDx: 18, labelDy: 7 },
+    gribbo: { label: "Gribbo — Key Holder", marker: "!" },
+    poison_valve: { label: "Poison Tank", marker: "P" },
+    potion_tank: { label: "Poison Tank", marker: "P" },
+    heavy_oak_door_1: { label: "Final Exit", marker: "X", labelDx: -52, labelDy: -27 },
+    exit_door: { label: "Final Exit", marker: "X", labelDx: -52, labelDy: -27 },
+    door_b_to_d: { label: "Boss Lab Entrance", marker: ">" },
+  });
+
   const GROUND_TYPE_TINTS = Object.freeze({
     default: 0xffffff,
     toxic: 0x79d89f,
@@ -228,6 +244,13 @@
     playMapTransition() {
       if (!this.scene) return;
       this.scene.playMapTransition();
+    },
+    playRoomTransition(title, subtitle) {
+      if (!this.scene || typeof this.scene.playRoomTransition !== "function") {
+        this.playMapTransition();
+        return;
+      }
+      this.scene.playRoomTransition(title, subtitle);
     },
     playShortRest() {
       if (!this.scene) return;
@@ -874,11 +897,17 @@
 
   function tokenKind(id, data, source) {
     const entity = safeObject(data);
+    const key = normalizeId(id);
+    const type = normalizeId(entity.type || entity.kind || entity.object_type || entity.category);
     if (isTrap(id, entity)) return "trap";
     if (isLootDrop(id, entity)) return "loot";
+    if (key === "door_b_to_c" && type === "secret_wall") return "object";
     if (isDoor(id, entity)) return "door";
     if (isChest(id, entity)) return "chest";
-    if (normalizeId(id) === "player") return "player";
+    if (key === "player") return "player";
+    if (key === "gribbo" || type === "npc" || type === "character") {
+      return normalizeId(entity.faction) === "hostile" ? "hostile" : "neutral";
+    }
     if (normalizeId(entity.faction) === "hostile") return "hostile";
     if (source === "environment") return "object";
     return "neutral";
@@ -2044,6 +2073,58 @@
       });
     }
 
+    playRoomTransition(titleText, subtitleText) {
+      if (!this.transitionOverlay) return;
+      const now = this.time ? this.time.now : Date.now();
+      if (now - this.lastTransitionAt < 260) return;
+      this.lastTransitionAt = now;
+
+      this.tweens.killTweensOf(this.transitionOverlay);
+      this.transitionOverlay
+        .setVisible(true)
+        .setAlpha(0.98)
+        .setPosition(0, 0)
+        .setSize(this.scale.width, this.scale.height)
+        .setDisplaySize(this.scale.width, this.scale.height);
+
+      const cx = this.scale.width / 2;
+      const cy = this.scale.height * 0.34;
+      const title = this.add.text(cx, cy, String(titleText || ""), {
+        fontFamily: "Georgia, serif",
+        fontSize: Math.max(22, Math.min(42, this.scale.width * 0.042)) + "px",
+        fontStyle: "bold",
+        color: "#f6d39a",
+        stroke: "#080604",
+        strokeThickness: 6,
+      }).setOrigin(0.5).setDepth(501).setAlpha(0);
+      const subtitle = this.add.text(cx, cy + 42, String(subtitleText || ""), {
+        fontFamily: "Georgia, serif",
+        fontSize: Math.max(13, Math.min(19, this.scale.width * 0.018)) + "px",
+        color: "#d9c7a3",
+        stroke: "#080604",
+        strokeThickness: 4,
+      }).setOrigin(0.5).setDepth(501).setAlpha(0);
+
+      this.tweens.add({
+        targets: [title, subtitle],
+        alpha: 1,
+        duration: 120,
+        ease: "Quad.easeOut",
+      });
+      this.tweens.add({
+        targets: [this.transitionOverlay, title, subtitle],
+        alpha: 0,
+        delay: 520,
+        duration: 360,
+        ease: "Quad.easeOut",
+        onComplete: () => {
+          this.transitionOverlay.setVisible(false);
+          title.destroy();
+          subtitle.destroy();
+        },
+      });
+    }
+
     playShortRestTransition() {
       const width = this.scale.width;
       const height = this.scale.height;
@@ -2304,13 +2385,38 @@
         .setOrigin(0.5)
         .setScale(0.52);
       lockBadge.setVisible(false);
+      const markerBg = this.add.graphics();
+      markerBg.setVisible(false);
+      const markerText = this.add.text(0, -13, "", {
+        fontFamily: "SFMono-Regular, Menlo, monospace",
+        fontSize: "8px",
+        fontStyle: "bold",
+        color: "#171008",
+        stroke: "#fff4cf",
+        strokeThickness: 1.5,
+      }).setOrigin(0.5);
+      markerText.setVisible(false);
+      const nameLabel = this.add.text(0, -24, "", {
+        fontFamily: "-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",
+        fontSize: "5px",
+        fontStyle: "bold",
+        color: "#ffe6a6",
+        stroke: "#100804",
+        strokeThickness: 1.5,
+        align: "center",
+        lineSpacing: -1,
+      }).setOrigin(0.5);
+      nameLabel.setVisible(false);
 
-      container.add([doorFrame, actorPixel, sprite, poisonIcon, lockBadge]);
+      container.add([doorFrame, actorPixel, sprite, poisonIcon, lockBadge, markerBg, markerText, nameLabel]);
       container.setDepth(this.kindDepth(entity.kind));
       return {
         container,
         sprite,
         poisonIcon,
+        markerBg,
+        markerText,
+        nameLabel,
         entity,
         pulseTween: null,
         moveTween: null,
@@ -2407,6 +2513,66 @@
       token.sprite.setAngle(0);
       token.sprite.setAlpha(1);
       if (typeof token.sprite.clearTint === "function") token.sprite.clearTint();
+      if (token.markerBg) {
+        token.markerBg.clear();
+        token.markerBg.setVisible(false);
+      }
+      if (token.markerText) {
+        token.markerText.setText("");
+        token.markerText.setPosition(0, -13);
+        token.markerText.setVisible(false);
+      }
+      if (token.nameLabel) {
+        token.nameLabel.setText("");
+        token.nameLabel.setPosition(0, -24);
+        token.nameLabel.setVisible(false);
+      }
+    }
+
+    tokenLabelMeta(entity) {
+      const id = normalizeId(entity.id);
+      const data = safeObject(entity.data);
+      const keyMeta = KEY_TOKEN_LABELS[id] || KEY_TOKEN_LABELS[normalizeId(data.id)];
+      if (!keyMeta && !data.label && !data.marker) return null;
+      const readMetaValue = (snakeKey, camelKey, metaKey) => (
+        data[snakeKey] ?? data[camelKey] ?? (keyMeta ? keyMeta[metaKey] : undefined)
+      );
+      const numberMeta = (snakeKey, camelKey, metaKey, fallback = 0) => {
+        const value = readMetaValue(snakeKey, camelKey, metaKey);
+        const num = Number(value);
+        return Number.isFinite(num) ? num : fallback;
+      };
+      return {
+        label: String(data.display_label || (keyMeta && keyMeta.tokenLabel) || data.label || (keyMeta && keyMeta.label) || "").trim(),
+        marker: String(data.marker || (keyMeta && keyMeta.marker) || "").trim(),
+        labelDx: numberMeta("label_dx", "labelDx", "labelDx"),
+        labelDy: numberMeta("label_dy", "labelDy", "labelDy", -24),
+        markerDx: numberMeta("marker_dx", "markerDx", "markerDx"),
+        markerDy: numberMeta("marker_dy", "markerDy", "markerDy", -13),
+      };
+    }
+
+    applyTokenLabel(token, entity) {
+      const meta = this.tokenLabelMeta(entity);
+      if (!meta || (!meta.label && !meta.marker)) return;
+      if (token.markerBg && meta.marker) {
+        token.markerBg.clear();
+        token.markerBg.fillStyle(0xffd37a, 0.96);
+        token.markerBg.fillCircle(meta.markerDx, meta.markerDy, 5.2);
+        token.markerBg.lineStyle(1.2, 0x221408, 0.92);
+        token.markerBg.strokeCircle(meta.markerDx, meta.markerDy, 5.2);
+        token.markerBg.setVisible(true);
+      }
+      if (token.markerText && meta.marker) {
+        token.markerText.setText(meta.marker.slice(0, 2));
+        token.markerText.setPosition(meta.markerDx, meta.markerDy);
+        token.markerText.setVisible(true);
+      }
+      if (token.nameLabel && meta.label) {
+        token.nameLabel.setText(meta.label);
+        token.nameLabel.setPosition(meta.labelDx, meta.labelDy);
+        token.nameLabel.setVisible(true);
+      }
     }
 
     resolveActorFrame(entity) {
@@ -2449,22 +2615,27 @@
 
       if (entity.kind === "door") {
         this.applyDoorVisual(token, entity.data);
+        this.applyTokenLabel(token, entity);
         return;
       }
       if (entity.kind === "trap") {
         this.applyTrapVisual(token, entity);
+        this.applyTokenLabel(token, entity);
         return;
       }
       if (entity.kind === "chest") {
         this.applyChestVisual(token, entity.data);
+        this.applyTokenLabel(token, entity);
         return;
       }
       if (entity.kind === "loot") {
         token.sprite.setTexture(SPRITE_KEYS.tiles, pickFrame(TILE_FRAMES.loot, normalizeId(entity.id)));
+        this.applyTokenLabel(token, entity);
         return;
       }
       if (entity.kind === "object") {
         token.sprite.setTexture(SPRITE_KEYS.tiles, pickFrame(TILE_FRAMES.prop, normalizeId(entity.id)));
+        this.applyTokenLabel(token, entity);
         return;
       }
 
@@ -2476,6 +2647,7 @@
       }
       this.applyStatusEffects(token, entity.data);
       this.applyPartyTextureScale(token, entity);
+      this.applyTokenLabel(token, entity);
     }
 
     applyPartyTextureScale(token, entity) {

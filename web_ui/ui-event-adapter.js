@@ -40,6 +40,7 @@
   const RE_TRAP_TRIGGERED =
     /踩中.*陷阱|毒雾.*喷发|毒气.*喷发|poison.*damage|trap[_\s-]*triggered|trap\s+(?:was\s+)?triggered/i;
   const RE_COMPANION_GUIDANCE = /\[队友建议\]/i;
+  const RE_DIARY_INTERPRETATION = /\[日记解读\]\s*([a-z0-9_'’\-]+)\s*->\s*(key_leverage|gribbo_victim|tactical_objective)/i;
   const RE_NEGOTIATION_LEVERAGE = /\[交涉筹码\]/i;
   const RE_TRAP_INSIGHT_SIGNAL = /\[陷阱感知\]\s*([a-z0-9_\-]+)\s*->\s*([a-z0-9_\-]+)/i;
   const RE_TRAP_DISARMED_SIGNAL = /\[陷阱解除\]\s*([a-z0-9_\-]+)\s*->\s*([a-z0-9_\-]+)/i;
@@ -165,7 +166,10 @@
     ].map((line) => String(line || "")));
 
     const journalForInference = stateProjectionOnly
-      ? journal.filter((line) => prevJournal.has(String(line || "")) === false && prevJournal.size > 0)
+      ? journal.filter((line) => (
+        shouldInferBaselineStatePollLine(line)
+        && (prevJournal.size === 0 || prevJournal.has(String(line || "")) === false)
+      ))
       : journal;
 
     journalForInference.forEach((line) => {
@@ -258,7 +262,7 @@
         reason: e.reason || "",
       };
     }
-    if (type === "companion_guidance" || type === "negotiation_leverage" || type === "memory_echo"
+    if (type === "companion_guidance" || type === "diary_interpretation" || type === "negotiation_leverage" || type === "memory_echo"
       || type === "party_stance" || type === "mercy_resolution"
       || type === "trap_insight" || type === "trap_disarmed" || type === "trap_triggered"
       || type === "boss_intro" || type === "boss_strategy" || type === "boss_route" || type === "poison_valve") {
@@ -267,10 +271,20 @@
     return e;
   }
 
+  function shouldInferBaselineStatePollLine(line) {
+    const text = String(line || "");
+    return RE_BOSS_STRATEGY_SIGNAL.test(text);
+  }
+
   function inferFromLine(text, events) {
     const guidance = parseCompanionGuidance(text);
     if (guidance) {
       events.push(guidance);
+    }
+
+    const diaryInterpretation = parseDiaryInterpretation(text);
+    if (diaryInterpretation) {
+      events.push(diaryInterpretation);
     }
 
     const leverage = parseNegotiationLeverage(text);
@@ -315,7 +329,7 @@
     }
 
     /* Roll result */
-    const rollMatch = text.match(RE_ROLL_DETAIL);
+    const rollMatch = /^Skill Check\s*\|/i.test(text) ? null : text.match(RE_ROLL_DETAIL);
     if (rollMatch && (rollMatch[2] || rollMatch[3] || rollMatch[4])) {
       const dc = Number(rollMatch[2] || rollMatch[3]) || 0;
       const result = Number(rollMatch[4]) || 0;
@@ -1165,6 +1179,36 @@
       topic,
       state: parseGuidanceState(raw),
       advice: advice || raw,
+      raw,
+    };
+  }
+
+  function diaryInterpretationText(actorId, focus) {
+    const actor = normalizeId(actorId);
+    const key = normalizeId(focus);
+    if (actor === "astarion" || key === "key_leverage") {
+      return "Astarion sees the key holder, the guard, and the leverage.";
+    }
+    if (actor === "shadowheart" || key === "gribbo_victim") {
+      return "Shadowheart reads Gribbo as another victim of necromancy.";
+    }
+    if (actor === "laezel" || key === "tactical_objective") {
+      return "Lae'zel reduces the clue to the objective: take the key and leave.";
+    }
+    return "The party reads the same clue differently.";
+  }
+
+  function parseDiaryInterpretation(text) {
+    const raw = String(text || "");
+    const match = raw.match(RE_DIARY_INTERPRETATION);
+    if (!match) return null;
+    const actorId = parseActorId(match[1]);
+    const focus = normalizeId(match[2]);
+    return {
+      type: "diary_interpretation",
+      actorId,
+      focus,
+      text: diaryInterpretationText(actorId, focus),
       raw,
     };
   }

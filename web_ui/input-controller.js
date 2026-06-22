@@ -114,7 +114,7 @@
       window.BG3TacticalMap.movePlayerLocal(nx, ny);
     }
     if (window.BG3DirectorTrace && typeof window.BG3DirectorTrace.setIdle === "function") {
-      window.BG3DirectorTrace.setIdle();
+      window.BG3DirectorTrace.setIdle({ force: true });
     }
     checkTriggers(nx, ny, previousPos);
     updateHint();
@@ -208,23 +208,74 @@
     return id === "heavy_oak_door_1" || id === "exit_door";
   }
 
+  function connectedRoomIds(interactable) {
+    const it = safeObj(interactable);
+    const data = safeObj(it.data);
+    return [
+      it.room_id,
+      data.room_id,
+      data.roomId,
+      it.connects_from,
+      data.connects_from,
+      it.connects_to,
+      data.connects_to,
+    ].map((roomId) => normalizeId(roomId)).filter(Boolean);
+  }
+
+  function roomCZonePriority(id) {
+    const px = Math.round(Number(playerPos.x) || 0);
+    const py = Math.round(Number(playerPos.y) || 0);
+    if (id === "necromancer_diary" && px <= 2 && py <= 11) return -6;
+    if (id === "chemical_notes" && px >= 3 && py <= 11) return -6;
+    if (id === "iron_key_sketch" && px <= 2 && py >= 12) return -6;
+    if ((id === "study_chest" || id === "chest_1") && px >= 3 && py >= 12) return -6;
+    return 0;
+  }
+
+  function isRoomCStudyProp(interactable) {
+    const it = safeObj(interactable);
+    const id = normalizeId(it.id);
+    return id === "necromancer_diary"
+      || id === "chemical_notes"
+      || id === "iron_key_sketch"
+      || id === "study_chest"
+      || id === "chest_1";
+  }
+
+  function maxInteractionDistance(interactable) {
+    const playerRoomId = normalizeId(resolvePlayerRoomId());
+    if (playerRoomId === "room_c_secret_study" && isRoomCStudyProp(interactable)) return 2;
+    return 1;
+  }
+
   function getInteractablePriority(interactable) {
     const it = safeObj(interactable);
     const type = normalizeId(it.type || safeObj(it.data).type);
     const id = normalizeId(it.id);
     const playerRoomId = normalizeId(resolvePlayerRoomId());
     const targetRoomId = normalizeId(resolveInteractableRoomId(it));
+    const connectedRooms = connectedRoomIds(it);
 
     if (isTrapInteractable(it)) return 20;
 
-    if (playerRoomId === "room_c_secret_study" || targetRoomId === "room_c_secret_study") {
-      if (id === "necromancer_diary" || type === "readable") return 0;
-      if (id === "study_chest" || id === "chest_1" || type === "chest" || type === "container") return 1;
+    if (id === "cracked_wall") return -1;
+
+    if (playerRoomId === "room_c_secret_study") {
+      if (id === "necromancer_diary") return roomCZonePriority(id);
+      if (id === "chemical_notes") return roomCZonePriority(id) + 1;
+      if (id === "iron_key_sketch") return roomCZonePriority(id) + 1;
+      if (id === "study_chest" || id === "chest_1") return roomCZonePriority(id) + 2;
+      if (id === "door_b_to_c" || connectedRooms.includes("room_b_corridor")) return 8;
+      if (targetRoomId && targetRoomId !== "room_c_secret_study") return 12;
+      if (type === "readable") return 3;
+      if (type === "chest" || type === "container") return 4;
     }
 
-    if (playerRoomId === "room_d_lab" || targetRoomId === "room_d_lab") {
+    if (playerRoomId === "room_d_lab" || targetRoomId === "room_d_lab" || connectedRooms.includes("room_d_lab")) {
       if (id === "gribbo" || type === "npc" || type === "character") return 0;
-      if (isExitDoor(it)) return 1;
+      if (id === "poison_valve" || id === "potion_tank" || type === "poison_valve") return 1;
+      if (isExitDoor(it)) return 2;
+      if (id === "door_b_to_d" || id === "door_b_to_c") return 9;
     }
 
     if (type === "door" || id.includes("door")) return 0;
@@ -257,7 +308,7 @@
         const distance = distanceToInteractable(it);
         return { it, index, distance };
       })
-      .filter(({ distance }) => distance <= 1)
+      .filter(({ it, distance }) => distance <= maxInteractionDistance(it))
       .filter(({ it }) => {
         if (!isTrapInteractable(it)) return true;
         return isTrapVisible(it);
@@ -321,9 +372,30 @@
     return tag === "input" || tag === "textarea" || tag === "select" || a.isContentEditable;
   }
 
+  function isMapControlKey(k) {
+    return k === "w"
+      || k === "a"
+      || k === "s"
+      || k === "d"
+      || k === "e"
+      || k === "arrowup"
+      || k === "arrowdown"
+      || k === "arrowleft"
+      || k === "arrowright";
+  }
+
+  function shouldUseMapControlFromTextFocus(event, k) {
+    const a = document.activeElement;
+    if (!a || !isMapControlKey(k)) return false;
+    if (event.metaKey || event.ctrlKey || event.altKey) return false;
+    if (!["dock-input", "user-input"].includes(String(a.id || ""))) return false;
+    const value = typeof a.value === "string" ? a.value : "";
+    return value.trim().length === 0;
+  }
+
   function isOverlayActive() {
     const d = document.getElementById("dialogue-overlay");
-    if (d && !d.classList.contains("hidden")) return true;
+    if (d && !d.classList.contains("hidden") && d.classList.contains("dialogue-overlay--blocking")) return true;
     const l = document.getElementById("loot-modal");
     if (l && !l.classList.contains("hidden")) return true;
     const t = document.getElementById("tactical-pause-overlay");
@@ -334,8 +406,13 @@
   }
 
   function handleKeyDown(e) {
-    if (!enabled || isTextFocused() || isOverlayActive()) return;
+    if (!enabled || isOverlayActive()) return;
     const k = e.key.toLowerCase();
+    if (isTextFocused()) {
+      if (!shouldUseMapControlFromTextFocus(e, k)) return;
+      const active = document.activeElement;
+      if (active && typeof active.blur === "function") active.blur();
+    }
     if (k === "w" || k === "arrowup") { e.preventDefault(); movePlayer(0, -1); }
     else if (k === "s" || k === "arrowdown") { e.preventDefault(); movePlayer(0, 1); }
     else if (k === "a" || k === "arrowleft") { e.preventDefault(); movePlayer(-1, 0); }

@@ -12,7 +12,9 @@
   let transitionToken = 0;
   let pendingStartedAt = 0;
   let lastNodes = [];
+  let traceHoldUntil = 0;
   const TRACE_STEP_MS = 240;
+  const MEMORY_TRACE_HOLD_MS = 8000;
   const INSTANCE_ID = String(Date.now()) + ":" + Math.random().toString(36).slice(2);
 
   const CHAIN = Object.freeze([
@@ -226,7 +228,12 @@
     idleTimer = window.setTimeout(() => {
       if (!isCurrentInstance()) return;
       if (token !== transitionToken) return;
-      setIdle();
+      const holdRemaining = Math.max(0, Number(traceHoldUntil) - nowMs());
+      if (holdRemaining > 0) {
+        scheduleAutoIdle(token, holdRemaining + 40);
+        return;
+      }
+      setIdle({ fromAuto: true });
     }, Math.max(360, Number(delayMs) || 1500));
   }
 
@@ -369,6 +376,14 @@
       return { mode: "PHYSICS / EVENTDRAIN", summary: "EventDrain applied an item transfer." };
     }
     return { mode: "NARRATIVE TURN", summary: "Director routed the player intent into world feedback." };
+  }
+
+  function shouldHoldTraceBrief(data, options = {}) {
+    const payload = safeObj(data);
+    const events = safeArr(safeObj(options).uiEvents || safeObj(options).events);
+    const blob = textBlob(payload, safeObj(options).userLine, safeObj(options).intent);
+    return hasEventType(payload, events, ["memory_added", "negotiation_leverage"])
+      || /necromancer_diary|diary_context|\[线索整合\]|\[交涉筹码\]|\[记忆\]/i.test(blob);
   }
 
   function estimateTimings(nodes, timings) {
@@ -532,7 +547,12 @@
     return details;
   }
 
-  function setIdle() {
+  function setIdle(options = {}) {
+    const opts = safeObj(options);
+    if (opts.force !== true && currentState === "active" && Number(traceHoldUntil) > nowMs()) {
+      return;
+    }
+    traceHoldUntil = 0;
     transitionToken += 1;
     clearIdleTimer();
     clearTraceAnimation();
@@ -581,6 +601,9 @@
     lastNodes = traceNodes.slice();
     setPanelMode("active");
     const brief = resolveTraceBrief(opts.data || {}, opts);
+    traceHoldUntil = shouldHoldTraceBrief(opts.data || {}, opts)
+      ? nowMs() + (Number(opts.holdMs) || MEMORY_TRACE_HOLD_MS)
+      : 0;
     updateTraceBrief(brief.mode, brief.summary);
     updateStateIndicator("Director Active · " + brief.mode, "active");
     clearIdleTimer();

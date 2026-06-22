@@ -42,6 +42,7 @@
     trap_disarmed: "trap",
     trap_triggered: "trap",
     study_observation: "study",
+    diary_interpretation: "study",
     boss_strategy: "boss_strategy",
     boss_intro: "boss_intro",
     boss_route: "boss_route",
@@ -88,6 +89,13 @@
       minVisibleMs: 1200,
       baseDelayMs: 10,
       nextDelayMs: 20,
+    },
+    boss_strategy: {
+      thinkingMs: 120,
+      holdMs: 1900,
+      minVisibleMs: 1700,
+      baseDelayMs: 16,
+      nextDelayMs: 80,
     },
   });
   let barkSceneContext = {
@@ -821,12 +829,15 @@
     const visibleRooms = Array.isArray(record.visibleRooms) ? record.visibleRooms
       : Array.isArray(record.visible_rooms) ? record.visible_rooms
         : [];
-    if (act) barkSceneContext.act = act;
     if (visibleRooms.length) {
       barkSceneContext.visibleRooms = new Set(visibleRooms.map((roomId) => String(roomId || "").trim().toLowerCase()).filter(Boolean));
-      if (barkSceneContext.visibleRooms.has("room_c_secret_study") && !barkSceneContext.act) {
-        barkSceneContext.act = "act3";
-      }
+    }
+    if (barkSceneContext.visibleRooms.has("room_d_lab")) {
+      barkSceneContext.act = "act4";
+    } else if (act) {
+      barkSceneContext.act = act;
+    } else if (barkSceneContext.visibleRooms.has("room_c_secret_study") && !barkSceneContext.act) {
+      barkSceneContext.act = "act3";
     }
     if (barkSceneContext.act === "act3" || barkSceneContext.visibleRooms.has("room_c_secret_study")) {
       clearBarksByScope(ACT2_CORRIDOR_SCOPE, { suppressGroups: ["trap"] });
@@ -855,9 +866,9 @@
 
   function bossStrategyBarkText(actor, plan) {
     const key = String(plan || "").toLowerCase();
-    if (key === "steal_key") return "Let me take the key. Quietly, for once.";
-    if (key === "contain_corruption") return "Keep the poison contained before it owns the room.";
-    if (key === "execute") return "Strike first. Let Gribbo keep nothing.";
+    if (key === "steal_key") return "I can take the key.";
+    if (key === "contain_corruption") return "Contain the poison first.";
+    if (key === "execute") return "Strike first. Take the key.";
     return "We need a cleaner plan.";
   }
 
@@ -869,6 +880,21 @@
       if (state === "missing_key") return "No key yet. Search the study, or find another way through.";
     }
     return advice || "We should adjust our route.";
+  }
+
+  function diaryInterpretationBarkText(event) {
+    const actor = normalizeSpeaker(event && event.actorId);
+    const focus = String(event && event.focus || "").toLowerCase();
+    if (actor === "astarion" || focus === "key_leverage") {
+      return "Key holder, guard, leverage. The diary gives us a handle.";
+    }
+    if (actor === "shadowheart" || focus === "gribbo_victim") {
+      return "Gribbo may be another victim of this necromancy.";
+    }
+    if (actor === "laezel" || focus === "tactical_objective") {
+      return "Take the key. Open the door. Leave.";
+    }
+    return event && event.text || "Same clue. Different priorities.";
   }
 
   function barksFromUIEvent(event) {
@@ -935,6 +961,14 @@
           tone: ev.state || "guidance",
           source: "companion_guidance",
           priority: 4,
+        }];
+      case "diary_interpretation":
+        return [{
+          speaker: ev.actorId,
+          text: diaryInterpretationBarkText(ev),
+          tone: ev.focus || "diary",
+          source: "diary_interpretation",
+          priority: 7,
         }];
       case "actor_spoke":
       case "companion_bark":
@@ -1037,6 +1071,47 @@
     }, Number(durationMs) || 5200);
   }
 
+  function removeAgentSignalCard(card) {
+    if (!card) return false;
+    if (card.parentNode) card.parentNode.removeChild(card);
+    const index = agentSignalQueue.indexOf(card);
+    if (index >= 0) agentSignalQueue.splice(index, 1);
+    return true;
+  }
+
+  function clearAgentSignalCards(filter = {}, options = {}) {
+    const criteria = filter && typeof filter === "object" ? filter : {};
+    const kinds = new Set(
+      (Array.isArray(criteria.kinds) ? criteria.kinds : Array.isArray(criteria.kind) ? criteria.kind : [criteria.kind])
+        .map((kind) => String(kind || "").trim().toLowerCase())
+        .filter(Boolean)
+    );
+    const sources = new Set(
+      (Array.isArray(criteria.sources) ? criteria.sources : Array.isArray(criteria.source) ? criteria.source : [criteria.source])
+        .map((source) => String(source || "").trim().toLowerCase())
+        .filter(Boolean)
+    );
+    const host = getAgentSignalContainer();
+    if (!host) return 0;
+    let removed = 0;
+    Array.from(host.querySelectorAll(".agent-signal-card")).forEach((card) => {
+      const classes = Array.from(card.classList || []);
+      const matchesKind = !kinds.size || classes.some((className) => {
+        const kind = String(className || "").replace(/^agent-signal-card--/, "").trim().toLowerCase();
+        return kinds.has(kind);
+      });
+      const source = String(card.dataset.source || "").trim().toLowerCase();
+      const matchesSource = !sources.size || sources.has(source);
+      if (!matchesKind || !matchesSource) return;
+      if (removeAgentSignalCard(card)) removed += 1;
+    });
+    if (options.clearDedupe === true) {
+      if (kinds.has("trap-insight") || sources.has("trap_insight")) seenAgentSignalKeys.delete("trap_insight:gas_trap_1");
+      if (kinds.has("trap-disarmed") || sources.has("trap_disarmed")) seenAgentSignalKeys.delete("trap_disarmed:gas_trap_1");
+    }
+    return removed;
+  }
+
   function buildAgentSignalCard(kind, titleText, iconText, rows) {
     const card = document.createElement("article");
     card.className = "agent-signal-card agent-signal-card--" + kind;
@@ -1082,6 +1157,16 @@
     appendAgentSignalCard(card, 5400);
   }
 
+  function renderDiaryInterpretationCard(event) {
+    const e = event && typeof event === "object" ? event : {};
+    const card = buildAgentSignalCard("diary-interpretation", "Diary Interpretation", "D", [
+      { label: "Actor", value: actorLabel(e.actorId) },
+      { label: "Focus", value: titleLabel(e.focus) },
+      { label: "Read", value: e.text || e.raw || "Same clue, different priority." },
+    ]);
+    appendAgentSignalCard(card, 5600, "diary_interpretation:" + String(e.actorId || "party").toLowerCase());
+  }
+
   function renderNegotiationLeverageCard(event) {
     const e = event && typeof event === "object" ? event : {};
     const effect = effectLabel(e.effects);
@@ -1102,6 +1187,7 @@
       { label: "Trap", value: e.trapId || "gas_trap_1" },
       { label: "Suggested Action", value: "Ask Astarion to disarm it" },
     ]);
+    card.dataset.source = "trap_insight";
     appendAgentSignalCard(card, 5600, "trap_insight:" + String(e.trapId || "gas_trap_1").toLowerCase());
   }
 
@@ -1113,7 +1199,8 @@
       { label: "Trap", value: (e.trapId || "gas_trap_1") + " disabled" },
       { label: "State", value: "Safe passage" },
     ]);
-    appendAgentSignalCard(card, 5000);
+    card.dataset.source = "trap_disarmed";
+    appendAgentSignalCard(card, 5000, "trap_disarmed:" + String(e.trapId || "gas_trap_1").toLowerCase());
   }
 
   function renderTrapTriggeredCard(event) {
@@ -1206,6 +1293,10 @@
       { label: "Party", value: "Debating routes" },
     ]);
     appendAgentSignalCard(card, 6400);
+    const barks = barksFromUIEvent({ type: "boss_strategy", strategies: e.strategies });
+    if (barks.length) {
+      window.setTimeout(() => dispatchCompanionBarks(barks, { reason: "boss_strategy_card", replaceCurrent: true }), 0);
+    }
   }
 
   function bossRouteTitle(event) {
@@ -1392,6 +1483,14 @@
     }, 3500);
   }
 
+  function clearMemoryCards() {
+    const host = document.getElementById("dice-card-container");
+    if (!host) return;
+    Array.from(host.querySelectorAll(".memory-card")).forEach((card) => {
+      if (card && card.parentNode) card.parentNode.removeChild(card);
+    });
+  }
+
   /* ── Item Gained Toast ── */
   function showItemGainedToast(event) {
     const e = event && typeof event === "object" ? event : {};
@@ -1503,6 +1602,7 @@
         case "boss_route": renderBossRouteCard(ev); break;
         case "poison_valve": renderPoisonValveCard(ev); break;
         case "companion_guidance": renderCompanionGuidanceCard(ev); break;
+        case "diary_interpretation": renderDiaryInterpretationCard(ev); break;
         case "negotiation_leverage": renderNegotiationLeverageCard(ev); break;
         case "secret_study_discovered": showToast("narration", ev.text || "墙后露出一间秘密书房。", 2600); break;
         case "demo_cleared":
@@ -1518,16 +1618,16 @@
 
   window.BG3HudRenderers = Object.freeze({
     showToast, showDiceCard, showAffectionDelta, showStatusBadge,
-    showMemoryCard, showItemGainedToast, showLoSBlockedOverlay,
+    showMemoryCard, clearMemoryCards, showItemGainedToast, showLoSBlockedOverlay,
     updateActProgress, showDemoClearedBanner, showTrapDiscovered,
-    showTrapTriggered, renderCompanionGuidanceCard,
+    showTrapTriggered, renderCompanionGuidanceCard, renderDiaryInterpretationCard,
     renderNegotiationLeverageCard, renderTrapInsightCard,
     renderTrapDisarmedCard, renderTrapTriggeredCard, renderMemoryEchoCard,
     renderPartyStanceCard, renderMercyResolutionCard,
     renderBossIntroCard, renderBossStrategyCard, renderBossRouteCard, renderPoisonValveCard,
     renderCompanionBark, dispatchCompanionBarks, normalizeCompanionBark, barksFromUIEvent,
     enqueueCompanionBark, skipCurrentCompanionBark, clearCompanionBarks, clearCompanionBarkGroups,
-    clearBarksByScope, setBarkSceneContext, expireStaleBarks, getCompanionBarkDebugState,
+    clearBarksByScope, clearAgentSignalCards, setBarkSceneContext, expireStaleBarks, getCompanionBarkDebugState,
     dispatchUIEvents,
   });
 })();
