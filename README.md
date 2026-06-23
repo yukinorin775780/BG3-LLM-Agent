@@ -2,34 +2,46 @@
 
 **LLM-driven NPC behavior and dialogue agents for RPG games.**
 
-This project is a playable RPG vertical slice where companion NPCs perceive hidden
-world state, remember player choices, react through scoped memory, disagree with
-each other, and commit gameplay consequences through deterministic game systems
-instead of raw LLM text.
+[![Python](https://img.shields.io/badge/Python-3.10%2B-blue)](https://www.python.org/)
+[![LangGraph](https://img.shields.io/badge/LangGraph-State_Machine-orange)](https://github.com/langchain-ai/langgraph)
+[![FastAPI](https://img.shields.io/badge/API-FastAPI-green)](https://fastapi.tiangolo.com/)
+[![Golden Eval](https://img.shields.io/badge/Eval-Golden_Replay-purple)](#golden-eval)
+[![Benchmark](https://img.shields.io/badge/Benchmark-Real_LLM-violet)](BENCHMARK.md)
+[![Unity](https://img.shields.io/badge/Client-Unity_3D-grey)](unity_client/)
 
-![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
-![LangGraph](https://img.shields.io/badge/LangGraph-State_Machine-orange)
-![FastAPI](https://img.shields.io/badge/API-FastAPI-green)
-![Golden Eval](https://img.shields.io/badge/Eval-Golden_Replay-purple)
-![Benchmark](https://img.shields.io/badge/Benchmark-Real_LLM-violet)
+<br>
 
-## Latest Demo
+> **Author:** [Your Name] — CS MSc @ Queen Mary University of London
+> **Focus:** AI Agent Systems · Game AI · LLM Application Engineering
+> **Open to:** 2026/2027 Game AI / LLM Agent engineering roles
+>
+> 📧 zx296752395@gmail.com &nbsp;|&nbsp; 🐙 [github.com/yukinorin775780](https://github.com/yukinorin775780)
 
-The current verified portfolio cut is a 1920x1080 Web demo recorded from a fresh
-session with real UI input only: WASD, `E`, the page input box, and the send button.
+---
 
-- **Local final cut**: `artifacts/demo_recording/full_web_demo_20260622T220713/final_demo.mp4`
-- **Public demo video**: [final_demo.mp4](https://github.com/yukinorin775780/BG3-LLM-Agent/releases/download/demo-v2-20260622/final_demo.mp4)
-- **GitHub Release**: [Necromancer Lab V2 Web Demo](https://github.com/yukinorin775780/BG3-LLM-Agent/releases/tag/demo-v2-20260622)
-- **Duration**: 183 seconds
-- **Format**: 1920x1080 H.264 MP4, English subtitles burned in
-- **Acceptance**: `demo_cleared=true`, `act4_final_exit_opened=true`,
-  `player_inventory.heavy_iron_key=1`
-- **Release notes**: [Demo Release 2026-06-22](docs/demo_release_2026-06-22.md)
+## 🎬 [▶ Watch the 3-Minute Demo](https://github.com/yukinorin775780/BG3-LLM-Agent/releases/tag/demo-v2-20260622)
 
-The video file is intentionally not committed to the repository. The public MP4
-is hosted as a GitHub Release asset; local recording sources remain under
-`artifacts/demo_recording/` for future subtitle or voiceover edits.
+> 183 seconds · 1920×1080 H.264 · English subtitles · Full Act 1 → Act 4 playthrough
+>
+> Acceptance: `demo_cleared=true` · `act4_final_exit_opened=true` · `player_inventory.heavy_iron_key=1`
+>
+> 📋 [Release notes & recording methodology →](docs/demo_release_2026-06-22.md)
+
+---
+
+## TL;DR
+
+- **What:** A playable dungeon encounter where AI companions perceive hidden traps,
+  remember your choices, argue about strategy, and change game outcomes.
+- **How:** [LangGraph](https://github.com/langchain-ai/langgraph) state machine routes player input through
+  deterministic game systems; LLMs handle only expression and intent interpretation.
+- **Why it matters:** LLM output never directly mutates world state — all consequences
+  pass through `DomainEvent` → `EventDrain` → deterministic `physics.py` pipelines.
+- **Stack:** Python · LangGraph · FastAPI · ChromaDB · Phaser 3 (Web) · Unity C# (3D)
+- **Evidence:** 50+ pytest cases · Golden Eval regression suite · Jest frontend tests ·
+  real LLM benchmark reports · fresh-session browser acceptance recording
+
+---
 
 ## Portfolio Pitch
 
@@ -57,6 +69,8 @@ status effects, and final objective completion all pass through explicit runtime
 systems. The demo is intentionally small so that every AI-visible moment is also
 player-visible and testable.
 
+---
+
 ## What This Demonstrates
 
 - **NPC personality and agenda modeling**: Astarion, Shadowheart, and Lae'zel propose
@@ -73,6 +87,8 @@ player-visible and testable.
   changes are committed through `DomainEvent` and `EventDrain`.
 - **Regression and performance discipline**: deterministic golden evals protect
   narrative behavior, while real benchmark runs measure LLM latency and prompt budget.
+
+---
 
 ## Playable Vertical Slice: Necromancer Lab V2
 
@@ -105,6 +121,8 @@ The demo path is intentionally small, but it exercises the full agent stack:
 
 5. **Final Exit**
    The heavy iron key opens the final door and clears the demo.
+
+---
 
 ## Example Player-Visible Agent Moments
 
@@ -153,6 +171,8 @@ Lae'zel: Kill the gatekeeper. Take the key. Open the door.
 Why it matters: the party behaves like agents with competing priorities, not a
 single narrator voice.
 
+---
+
 ## Architecture
 
 ```mermaid
@@ -195,6 +215,12 @@ filtered environment objects, peer state, visible history, and memory snippets.
 memory writes, world flags, affection changes, damage/status effects, and journal
 events are committed through deterministic code paths.
 
+> 📋 **[Technical Decision Records →](docs/)**
+> See `backend_infra_freeze.md`, `v1_contract_freeze.md` for why LangGraph
+> over ad-hoc chains, why DomainEvent over direct state mutation.
+
+---
+
 ## Why This Is Not Just an NPC Chatbot
 
 - **Spatial continuity**: Act 2, Act 3, and Act 4 are connected by doors, hidden
@@ -207,6 +233,8 @@ events are committed through deterministic code paths.
   poison-valve pressure, dice checks, and deterministic item transfer.
 - **Replayable correctness**: the same beats are covered by Jest, pytest, golden evals,
   and a fresh-session browser acceptance recording.
+
+---
 
 ## Backend Highlights
 
@@ -251,6 +279,8 @@ python -m core.eval.runner --suite golden
 - The report compares graph-routed behavior against a naive monolithic prompt budget.
 - See [BENCHMARK.md](BENCHMARK.md).
 
+---
+
 ## Runtime Modes
 
 | Mode | Purpose | Uses Real LLM | Deterministic | Entry |
@@ -259,6 +289,8 @@ python -m core.eval.runner --suite golden
 | Showcase | Technical overlays and guided presentation | optional | no | `qa_showcase=1` |
 | Golden Eval | Regression replay baseline | no | yes | `python -m core.eval.runner --suite golden` |
 | Benchmark | Real LLM performance report | yes | no | `python scripts/generate_benchmark.py` |
+
+---
 
 ## Quick Start
 
@@ -304,6 +336,8 @@ For the current portfolio recording plan and accepted cut, see
 [Demo Release 2026-06-22](docs/demo_release_2026-06-22.md) and
 [Portfolio Demo Script](docs/portfolio_demo_script.md).
 
+---
+
 ## Testing / Eval / Benchmark
 
 Frontend tests:
@@ -342,6 +376,8 @@ Real benchmark run:
 python scripts/generate_benchmark.py --max-cases 4
 ```
 
+---
+
 ## Repository Map
 
 ```text
@@ -362,12 +398,14 @@ docs/                  governance, freeze contracts, and design records
 archive/v1_legacy/     archived prototype code, not the current runtime
 ```
 
+---
+
 ## Portfolio Roadmap
 
 The core vertical slice is now designed to show one dungeon-quality AI encounter.
 The next useful extensions are portfolio-facing rather than infrastructure-heavy:
 
-- upload the accepted `final_demo.mp4` to a GitHub Release or portfolio host
+- upload the accepted `final_demo.mp4` to a GitHub Release or portfolio host ✅
 - add a static architecture image derived from the Mermaid graph above
 - add a short voiceover pass using the existing English/Chinese narration scripts
 - add a short dialogue comparison page for memory/no-memory boss outcomes
@@ -375,6 +413,8 @@ The next useful extensions are portfolio-facing rather than infrastructure-heavy
 - add one more NPC using the existing ActorRuntime and ActorView contracts
 - add token-level generation streaming when the provider path supports it cleanly
 - expand combat presentation without replacing the event pipeline
+
+---
 
 ## Governance / Freeze Docs
 
@@ -385,6 +425,8 @@ The next useful extensions are portfolio-facing rather than infrastructure-heavy
 - [Content Sprint 1 Playable Demo Freeze](docs/content_sprint_1_playable_demo_freeze.md)
 
 More governance docs are under [`docs/`](docs/).
+
+---
 
 ## Scope
 
