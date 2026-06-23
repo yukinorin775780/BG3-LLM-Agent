@@ -19,15 +19,17 @@ The current verified portfolio cut is a 1920x1080 Web demo recorded from a fresh
 session with real UI input only: WASD, `E`, the page input box, and the send button.
 
 - **Local final cut**: `artifacts/demo_recording/full_web_demo_20260622T220713/final_demo.mp4`
+- **Public demo video**: [final_demo.mp4](https://github.com/yukinorin775780/BG3-LLM-Agent/releases/download/demo-v2-20260622/final_demo.mp4)
+- **GitHub Release**: [Necromancer Lab V2 Web Demo](https://github.com/yukinorin775780/BG3-LLM-Agent/releases/tag/demo-v2-20260622)
 - **Duration**: 183 seconds
 - **Format**: 1920x1080 H.264 MP4, English subtitles burned in
 - **Acceptance**: `demo_cleared=true`, `act4_final_exit_opened=true`,
   `player_inventory.heavy_iron_key=1`
 - **Release notes**: [Demo Release 2026-06-22](docs/demo_release_2026-06-22.md)
 
-The video file is intentionally not committed to the repository. For GitHub or
-portfolio publishing, upload `final_demo.mp4` to a GitHub Release or external
-portfolio host, then replace this local path with the public URL.
+The video file is intentionally not committed to the repository. The public MP4
+is hosted as a GitHub Release asset; local recording sources remain under
+`artifacts/demo_recording/` for future subtitle or voiceover edits.
 
 ## Portfolio Pitch
 

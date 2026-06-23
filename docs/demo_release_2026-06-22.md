@@ -10,6 +10,18 @@ PASS.
 The recording is suitable for README, GitHub, and portfolio use after uploading
 the MP4 to a public host such as GitHub Releases.
 
+Public release:
+
+```text
+https://github.com/yukinorin775780/BG3-LLM-Agent/releases/tag/demo-v2-20260622
+```
+
+Public MP4:
+
+```text
+https://github.com/yukinorin775780/BG3-LLM-Agent/releases/download/demo-v2-20260622/final_demo.mp4
+```
+
 ## Video Assets
 
 Local final cut:
@@ -35,7 +47,7 @@ artifacts/demo_recording/full_web_demo_20260622T220713/acceptance_report.md
 ```
 
 The `artifacts/` directory is intentionally ignored by Git, so the video is not
-stored in the repository.
+stored in the repository. The public copy is hosted as a GitHub Release asset.
 
 ## Recording Method
 
@@ -117,10 +129,10 @@ Scene expression score from the acceptance report: `9.3 / 10`.
 
 ## Publishing Checklist
 
-1. Upload `final_demo.mp4` to GitHub Releases or another public video host.
-2. Replace the local path in `README.md` with the public URL.
-3. Optionally add a thumbnail or animated GIF derived from the first 20-30 seconds.
-4. Keep `raw_recording.mp4`, `subtitles.srt`, and narration scripts locally for
+1. Keep the GitHub Release asset available:
+   `https://github.com/yukinorin775780/BG3-LLM-Agent/releases/tag/demo-v2-20260622`
+2. Optionally add a thumbnail or animated GIF derived from the first 20-30 seconds.
+3. Keep `raw_recording.mp4`, `subtitles.srt`, and narration scripts locally for
    future voiceover or subtitle edits.
-5. If voiceover is added, generate a new public cut but keep this document as the
+4. If voiceover is added, generate a new public cut but keep this document as the
    baseline accepted silent-subtitle version.
