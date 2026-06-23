@@ -11,7 +11,7 @@
 
 <br>
 
-> **Author:** [Your Name] — CS MSc @ Queen Mary University of London
+> **Author:** Xiao Zhang — CS MSc @ Queen Mary University of London
 > **Focus:** AI Agent Systems · Game AI · LLM Application Engineering
 > **Open to:** 2026/2027 Game AI / LLM Agent engineering roles
 >
