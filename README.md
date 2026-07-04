@@ -19,13 +19,13 @@
 
 ---
 
-## 🎬 [▶ Watch the 3-Minute Demo](https://github.com/yukinorin775780/BG3-LLM-Agent/releases/tag/demo-v2-20260622)
+## 🎬 [▶ Watch the 4-Minute Demo](https://github.com/yukinorin775780/BG3-LLM-Agent/releases/tag/demo-v3-20260704)
 
-> 183 seconds · 1920×1080 H.264 · English subtitles · Full Act 1 → Act 4 playthrough
+> 243 seconds · 1920×1080 H.264 · English subtitles (burnt-in) · Full Act 1 → Act 4 playthrough
 >
 > Acceptance: `demo_cleared=true` · `act4_final_exit_opened=true` · `player_inventory.heavy_iron_key=1`
 >
-> 📋 [Release notes & recording methodology →](docs/demo_release_2026-06-22.md)
+> 📋 [Release notes & recording methodology →](https://github.com/yukinorin775780/BG3-LLM-Agent/releases/tag/demo-v3-20260704)
 
 ---
 
@@ -405,7 +405,7 @@ archive/v1_legacy/     archived prototype code, not the current runtime
 The core vertical slice is now designed to show one dungeon-quality AI encounter.
 The next useful extensions are portfolio-facing rather than infrastructure-heavy:
 
-- upload the accepted `final_demo.mp4` to a GitHub Release or portfolio host ✅
+- upload the accepted `final_demo.mp4` to a GitHub Release or portfolio host ✅ (v2 + v3)
 - add a static architecture image derived from the Mermaid graph above
 - add a short voiceover pass using the existing English/Chinese narration scripts
 - add a short dialogue comparison page for memory/no-memory boss outcomes
@@ -413,6 +413,8 @@ The next useful extensions are portfolio-facing rather than infrastructure-heavy
 - add one more NPC using the existing ActorRuntime and ActorView contracts
 - add token-level generation streaming when the provider path supports it cleanly
 - expand combat presentation without replacing the event pipeline
+- Web UI loading indicator for LLM API calls ✅ (v3)
+- batch DOM updates for smoother UI rendering during responses ✅ (v3)
 
 ---
 
