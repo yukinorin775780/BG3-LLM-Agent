@@ -6095,6 +6095,8 @@
     els.userInput.disabled = loading;
     els.sendBtn.disabled = loading;
     els.sendBtn.textContent = loading ? "命运演算中…" : "执行指令";
+    if (els.dockInput) els.dockInput.disabled = loading;
+    if (els.dockSendBtn) els.dockSendBtn.disabled = loading;
     if (els.shortRestBtn) els.shortRestBtn.disabled = loading;
     if (els.longRestBtn) els.longRestBtn.disabled = loading;
     if (els.dialogueInput) els.dialogueInput.disabled = loading;
@@ -7193,6 +7195,7 @@
   }
 
   function submitDockInput() {
+    if (state.isLoading) return;
     if (!els.dockInput) return;
     const text = els.dockInput.value.trim();
     if (!text) return;
