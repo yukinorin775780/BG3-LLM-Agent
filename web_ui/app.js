@@ -399,6 +399,7 @@
     actProgress: document.getElementById("act-progress"),
     actTitle: document.getElementById("act-title"),
     actSummary: document.getElementById("act-summary"),
+    loadingIndicator: document.getElementById("loading-indicator"),
   };
 
   function setNetworkState(text, mode) {
@@ -1337,6 +1338,55 @@
     entry.appendChild(meta);
     entry.appendChild(body);
     els.worldLog.appendChild(entry);
+    applyLogFilters();
+    els.worldLog.scrollTop = els.worldLog.scrollHeight;
+  }
+
+  /** Batch-append log entries using DocumentFragment to reduce reflows. */
+  function appendLogEntriesBatch(entries) {
+    if (!entries || !entries.length) return;
+    var fragment = document.createDocumentFragment();
+    entries.forEach(function (item) {
+      var logType = item.options && item.options.logType ? item.options.logType : "system";
+      var entry = document.createElement("article");
+      entry.className = "log-entry log-entry--" + item.kind + " type-" + logType;
+      entry.dataset.logType = logType;
+
+      var meta = document.createElement("div");
+      meta.className = "log-meta";
+
+      var badge = document.createElement("div");
+      badge.className = "log-badge";
+
+      var sigil = document.createElement("span");
+      sigil.className = "log-sigil";
+      sigil.textContent = (item.options && item.options.sigil) || "◈";
+
+      var badgeLabel = document.createElement("span");
+      badgeLabel.className = "log-label";
+      badgeLabel.textContent = item.label;
+      if (item.options && item.options.color) {
+        badgeLabel.style.color = item.options.color;
+      }
+
+      badge.appendChild(sigil);
+      badge.appendChild(badgeLabel);
+
+      var stamp = document.createElement("span");
+      stamp.textContent = "T" + padTurn(state.turnCount) + " · " + nowStamp();
+
+      meta.appendChild(badge);
+      meta.appendChild(stamp);
+
+      var body = document.createElement("div");
+      body.className = "log-body";
+      body.textContent = item.text;
+
+      entry.appendChild(meta);
+      entry.appendChild(body);
+      fragment.appendChild(entry);
+    });
+    els.worldLog.appendChild(fragment);
     applyLogFilters();
     els.worldLog.scrollTop = els.worldLog.scrollHeight;
   }
@@ -6007,33 +6057,34 @@
   }
 
   function updateWorldLog(data, userLine) {
+    var entries = [];
+
     if (userLine) {
-      const playerMeta = getSpeakerMeta("player");
-      appendLogEntry("player", "你", userLine, {
-        color: playerMeta.color,
-        sigil: playerMeta.sigil,
-        logType: "dialogue",
+      var playerMeta = getSpeakerMeta("player");
+      entries.push({
+        kind: "player", label: "你", text: userLine,
+        options: { color: playerMeta.color, sigil: playerMeta.sigil, logType: "dialogue" },
       });
     }
 
-    (data.responses || []).forEach((response) => {
-      const speaker = normalizeId(response.speaker || "npc");
-      const meta = getSpeakerMeta(speaker);
-      appendLogEntry("npc", getDisplayName(speaker) + " · " + speaker, response.text || "", {
-        color: meta.color,
-        sigil: meta.sigil,
-        logType: "dialogue",
+    (data.responses || []).forEach(function (response) {
+      var speaker = normalizeId(response.speaker || "npc");
+      var meta = getSpeakerMeta(speaker);
+      entries.push({
+        kind: "npc", label: getDisplayName(speaker) + " · " + speaker, text: response.text || "",
+        options: { color: meta.color, sigil: meta.sigil, logType: "dialogue" },
       });
     });
 
-    (data.journal_events || []).forEach((line) => {
-      const kind = describeLogKind(line);
-      appendLogEntry(kind, kind === "roll" ? "命运检定" : "系统裁定", line, {
-        color: kind === "roll" ? "#73c6c3" : "#d0ab67",
-        sigil: kind === "roll" ? "🎲" : "◎",
-        logType: kind === "roll" ? "narration" : "system",
+    (data.journal_events || []).forEach(function (line) {
+      var kind = describeLogKind(line);
+      entries.push({
+        kind: kind, label: kind === "roll" ? "命运检定" : "系统裁定", text: line,
+        options: { color: kind === "roll" ? "#73c6c3" : "#d0ab67", sigil: kind === "roll" ? "🎲" : "◎", logType: kind === "roll" ? "narration" : "system" },
       });
     });
+
+    appendLogEntriesBatch(entries);
   }
 
   function setLoading(loading) {
@@ -6060,6 +6111,9 @@
       button.disabled = loading;
     });
     els.lootAllBtn.disabled = loading;
+    if (els.loadingIndicator) {
+      els.loadingIndicator.classList.toggle("is-loading", loading);
+    }
     if (loading) {
       setNetworkState("命运演算中", "loading");
     }
@@ -6320,15 +6374,18 @@
         renderChrome(els.currentLocation.textContent);
       }
 
-      renderPartyRoster();
-      renderEnvironmentObjects();
-      if (state.partyViewOpen) {
-        renderPartyView();
-      }
-      renderTacticalGrid(state.partyStatus, state.environmentObjects, state.mapData);
-      renderInitiativeTracker(state.combatState, wasCombatActive);
-      updateRestControls(state.combatState);
-      updateExplorationActProgress();
+      /* Batch visual renders in a single animation frame to reduce layout thrashing. */
+      window.requestAnimationFrame(function () {
+        renderPartyRoster();
+        renderEnvironmentObjects();
+        if (state.partyViewOpen) {
+          renderPartyView();
+        }
+        renderTacticalGrid(state.partyStatus, state.environmentObjects, state.mapData);
+        renderInitiativeTracker(state.combatState, wasCombatActive);
+        updateRestControls(state.combatState);
+        updateExplorationActProgress();
+      });
       let uiEvents = window.BG3UIEventAdapter
         ? window.BG3UIEventAdapter.extractUIEvents(data, previousUIEventState, {
           suppressInventoryDeltas: actionIntent === "init_sync",
@@ -7148,7 +7205,22 @@
 
   async function startNewTimeline() {
     if (state.isLoading) return;
+    /* Clean up lingering timers from previous session */
     window.clearTimeout(state.idleTimer);
+    window.clearInterval(state.dialoguePollTimer);
+    state.dialoguePollTimer = null;
+    state.idleTimer = null;
+    /* Clear any pending Director Trace timers */
+    if (state.xrayTraceTimers && state.xrayTraceTimers.length) {
+      state.xrayTraceTimers.forEach(function (tid) {
+        window.clearTimeout(tid);
+      });
+      state.xrayTraceTimers = [];
+    }
+    state.xrayTraceAnimatingUntil = 0;
+    if (window.BG3HudRenderers && typeof window.BG3HudRenderers.clearCompanionBarks === "function") {
+      window.BG3HudRenderers.clearCompanionBarks(-Infinity);
+    }
     const newSessionId = setSessionId(buildTimelineSessionId());
     clearTransientInteractionContext();
     state.hasSyncedInitialState = false;
