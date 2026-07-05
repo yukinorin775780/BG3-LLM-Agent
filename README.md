@@ -332,6 +332,15 @@ Open Showcase Mode:
 http://127.0.0.1:8000/web_ui/?map_id=necromancer_lab&qa_showcase=1&qa_no_idle=1
 ```
 
+Open Cross-Session Memory Demo:
+
+```text
+http://127.0.0.1:8000/web_ui/?map_id=necromancer_lab&memory_demo=1
+```
+
+> The Memory Demo runs two sequential sessions to demonstrate that NPC companions
+> remember information across browser sessions via ChromaDB-backed MemoryService.
+
 For the current portfolio recording plan and accepted cut, see
 [Demo Release 2026-06-22](docs/demo_release_2026-06-22.md) and
 [Portfolio Demo Script](docs/portfolio_demo_script.md).
