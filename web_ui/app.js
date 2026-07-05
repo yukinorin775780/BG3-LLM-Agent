@@ -5441,6 +5441,10 @@
 
     const text = [userLine, intent, extractEventLines(data).join(" ")].join(" ");
     const trace = ["player_input", "dm_router", "actor_view_filter"];
+    // Detect tool calling patterns
+    if (/tool_call|check_target_inventory|ReAct|工具调用|🔧/.test(text)) {
+      trace.push("tool_call");
+    }
     if (/检定|掷骰|潜行|攻击|推击|法术|装备|卸下|搜刮|开锁|解除陷阱|短休|长休|移动|交互/.test(text)) {
       trace.push("domain_event", "event_drain");
     }

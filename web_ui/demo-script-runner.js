@@ -110,6 +110,24 @@
         },
       },
       {
+        id: "tool_call_chest",
+        title: "Act 3 — Tool Calling: check_target_inventory",
+        summary: "Astarion uses check_target_inventory to scout Gribbo before the encounter.",
+        run: async () => {
+          if (typeof app.sendMessage === "function") {
+            await app.sendMessage(
+              "阿斯代伦，在去见那个地精之前，帮我查一下 gribbo 身上带了什么物品？",
+              null, null,
+              {
+                target: "gribbo",
+                source: "interaction",
+                skipIdleReset: true,
+              }
+            );
+          }
+        },
+      },
+      {
         id: "gribbo_start",
         title: "Act 3 — Party Turn Coordinator",
         summary: "Start Gribbo dialogue.",
