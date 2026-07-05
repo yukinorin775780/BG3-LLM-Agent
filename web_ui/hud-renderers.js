@@ -1376,7 +1376,17 @@
     }, dur);
   }
 
-  /* ── Dice Card ── */
+  /* ── Dice Card (Enhanced) ── */
+  var DICE_SKILL_LABELS = {
+    perception: "感知检定 Perception",
+    investigation: "调查检定 Investigation",
+    sleight_of_hand: "巧手检定 Sleight of Hand",
+    lockpick: "开锁检定 Lockpick",
+    arcana: "奥术检定 Arcana",
+    disarm: "解除陷阱 Disarm Trap",
+    persuasion: "说服检定 Persuasion",
+  };
+
   function showDiceCard(rollEvent) {
     const e = rollEvent && typeof rollEvent === "object" ? rollEvent : {};
     const host = document.getElementById("dice-card-container");
@@ -1384,24 +1394,44 @@
     const card = document.createElement("div");
     card.className = "dice-card" + (e.success ? " dice-card--success" : " dice-card--fail");
 
+    // D20 icon with rotating number
     const d20 = document.createElement("div");
     d20.className = "dice-card-d20";
-    d20.textContent = "🎲 " + (e.roll || "?");
+    d20.textContent = String(e.roll || "?");
 
     const info = document.createElement("div");
     info.className = "dice-card-info";
+
+    // Actor name
     const actor = document.createElement("span");
     actor.className = "dice-card-actor";
-    actor.textContent = e.actor || "player";
+    var actorName = String(e.actor || "player");
+    var ACTOR_DISPLAY = { astarion: "阿斯代伦 Astarion", shadowheart: "影心 Shadowheart", laezel: "莱埃泽尔 Lae'zel", player: "玩家 Player" };
+    actor.textContent = ACTOR_DISPLAY[actorName] || actorName;
+
+    // Skill name (use label map for Chinese)
     const skill = document.createElement("span");
     skill.className = "dice-card-skill";
-    skill.textContent = e.skill || e.text || "检定";
+    var skillKey = String(e.skill || "").toLowerCase().replace(/[^a-z_]/g, "_");
+    skill.textContent = DICE_SKILL_LABELS[skillKey] || e.skill || e.text || "检定 Check";
+
+    // DC value with modifier
     const dc = document.createElement("span");
     dc.className = "dice-card-dc";
-    dc.textContent = e.dc ? "DC " + e.dc : "";
+    var dcText = "DC " + (e.dc || "?");
+    if (e.modifier && Number(e.modifier) !== 0) {
+      dcText += " · 调整值 " + (Number(e.modifier) > 0 ? "+" : "") + e.modifier;
+    }
+    dc.textContent = dcText;
+
+    // Result line
     const result = document.createElement("span");
     result.className = "dice-card-result";
-    result.textContent = e.success ? "✓ 成功" : "✗ 失败";
+    if (e.success) {
+      result.textContent = e.roll >= 20 ? "🎉 大成功 Critical Success!" : "✓ 成功 Success";
+    } else {
+      result.textContent = e.roll <= 1 ? "💀 大失败 Critical Failure!" : "✗ 失败 Failure";
+    }
 
     info.appendChild(actor);
     info.appendChild(skill);
@@ -1413,37 +1443,51 @@
     void card.offsetWidth;
     card.classList.add("dice-card--visible");
 
-    window.setTimeout(() => {
+    // Extended display: 4.5s visible + exit transition
+    window.setTimeout(function () {
       card.classList.remove("dice-card--visible");
       card.classList.add("dice-card--exit");
-      window.setTimeout(() => { if (card.parentNode) card.parentNode.removeChild(card); }, 400);
-    }, 3500);
+      window.setTimeout(function () { if (card.parentNode) card.parentNode.removeChild(card); }, 400);
+    }, 4500);
   }
 
-  /* ── Affection Delta ── */
+  /* ── Affection Delta (Enhanced) ── */
+  var AFFECTION_LABELS = {
+    astarion: "阿斯代伦 Astarion",
+    shadowheart: "影心 Shadowheart",
+    laezel: "莱埃泽尔 Lae'zel",
+  };
+
   function showAffectionDelta(event) {
     const e = event && typeof event === "object" ? event : {};
     const delta = Number(e.delta) || 0;
     if (delta === 0) return;
     const sign = delta > 0 ? "+" : "";
-    const actor = String(e.character || "Companion")
-      .replace(/_/g, " ")
-      .replace(/\b\w/g, (c) => c.toUpperCase());
+    const actorId = String(e.character || "Companion").toLowerCase();
+    const actorName = AFFECTION_LABELS[actorId] || String(e.character || "Companion");
     const host = getChipContainer();
     if (!host) return;
     const chip = document.createElement("div");
-    chip.className = "companion-chip " + (delta > 0 ? "companion-chip--up" : "companion-chip--down");
-    chip.textContent = actor + " " + sign + delta;
+    var direction = delta > 0 ? "companion-chip--up" : "companion-chip--down";
+    chip.className = "companion-chip " + direction;
+    // Heart icon + actor name + delta value + label
+    var heart = delta > 0 ? "❤️" : "💔";
+    var approvalLabel = delta > 0 ? "好感上升" : "好感下降";
+    if (Math.abs(delta) >= 15) approvalLabel = delta > 0 ? "极大好感提升" : "极大好感下降";
+    chip.innerHTML = '<span class="companion-chip-icon">' + heart + '</span>' +
+      '<span class="companion-chip-name">' + actorName + '</span>' +
+      '<span class="companion-chip-delta">' + sign + delta + '</span>' +
+      '<span class="companion-chip-label">' + approvalLabel + '</span>';
     host.appendChild(chip);
     void chip.offsetWidth;
     chip.classList.add("companion-chip--visible");
-    window.setTimeout(() => {
+    window.setTimeout(function () {
       chip.classList.remove("companion-chip--visible");
       chip.classList.add("companion-chip--exit");
-      window.setTimeout(() => {
+      window.setTimeout(function () {
         if (chip.parentNode) chip.parentNode.removeChild(chip);
-      }, 220);
-    }, 1800);
+      }, 280);
+    }, 3000);
   }
 
   /* ── Status Badge ── */
