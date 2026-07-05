@@ -62,6 +62,66 @@ def test_chat_endpoint_delegates_to_service_and_preserves_response_schema():
     )
 
 
+def test_chat_endpoint_preserves_backend_tool_trace_fields():
+    expected_payload = {
+        "responses": [{"speaker": "gribbo", "text": "拿走 heavy_iron_key。"}],
+        "journal_events": ["[Boss解决] negotiation -> key_surrendered"],
+        "current_location": "死灵法师的废弃实验室",
+        "environment_objects": {},
+        "party_status": {},
+        "player_inventory": {"heavy_iron_key": 1},
+        "combat_state": {
+            "combat_active": False,
+            "initiative_order": [],
+            "current_turn_index": 0,
+            "turn_resources": {},
+        },
+        "tool_calls": [
+            {
+                "tool_name": "check_target_inventory",
+                "arguments": {"target_id": "gribbo", "item_id": "heavy_iron_key"},
+                "success": True,
+                "source": "backend_tool_executor",
+            }
+        ],
+        "tool_results": [
+            {
+                "tool_name": "transfer_item",
+                "arguments": {
+                    "from_actor_id": "gribbo",
+                    "to_actor_id": "player",
+                    "item_id": "heavy_iron_key",
+                },
+                "success": True,
+                "source": "backend_tool_executor",
+            }
+        ],
+    }
+    original_service = server.game_service
+    mock_service = AsyncMock()
+    mock_service.process_chat_turn.return_value = expected_payload
+    server.game_service = mock_service
+
+    try:
+        client = TestClient(server.app)
+        response = client.post(
+            "/api/chat",
+            json={
+                "user_input": "用日记真相说服 Gribbo 交出 heavy_iron_key。",
+                "session_id": "session-tool-trace-api",
+                "map_id": "necromancer_lab",
+                "target": "gribbo",
+            },
+        )
+    finally:
+        server.game_service = original_service
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["tool_calls"] == expected_payload["tool_calls"]
+    assert body["tool_results"] == expected_payload["tool_results"]
+
+
 def test_chat_endpoint_maps_service_validation_error_to_http_400():
     original_service = server.game_service
     server.game_service = AsyncMock()

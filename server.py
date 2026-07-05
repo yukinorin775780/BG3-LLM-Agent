@@ -94,6 +94,8 @@ class ChatResponse(BaseModel):
     player_inventory: Dict[str, Any]  # 玩家背包
     combat_state: Optional[Dict[str, Any]] = None  # 回合制战斗状态
     latest_roll: Optional[Dict[str, Any]] = None
+    tool_calls: Optional[List[Dict[str, Any]]] = None
+    tool_results: Optional[List[Dict[str, Any]]] = None
     demo_cleared: Optional[bool] = None
 
 
