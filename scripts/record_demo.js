@@ -59,7 +59,7 @@ console.log('Output:', OUT_DIR);
     { text: '用奥术知识阅读 necromancer_diary。', label: 'Act 3 — Read Necromancer Diary', preWait: 1000, postWait: 22000 },
     { text: '我要搜刮 study_chest。', label: 'Act 3 — Loot Study Chest', preWait: 800, postWait: 18000 },
     { text: '用 lab_key 打开通往实验室的重门。', label: 'Act 3 — Enter Gribbo Lab', preWait: 1000, postWait: 20000 },
-    { text: '阿斯代伦，在去见那个地精之前，帮我查一下 gribbo 身上带了什么物品？', label: 'Act 3 — Tool Calling: check_target_inventory', preWait: 1200, postWait: 22000 },
+    { text: '阿斯代伦，帮我看看 chest_1 里面还有没有什么遗漏的东西？', label: 'Act 3 — Tool Calling: check_target_inventory', preWait: 1200, postWait: 22000 },
     { text: '我想和 Gribbo 谈谈。', label: 'Act 4 — Confront Gribbo', preWait: 1500, postWait: 25000 },
     { text: '我知道药水对你做了什么。你不是守卫，你是实验品。把钥匙给我。', label: 'Act 4 — Diary Truth Negotiation', preWait: 1500, postWait: 25000 },
     { text: '用 heavy_iron_key 打开 heavy_oak_door_1。', label: 'Final — Open Exit Door', preWait: 1500, postWait: 20000 },

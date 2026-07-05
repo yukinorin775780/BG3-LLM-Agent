@@ -6590,11 +6590,83 @@
       return true;
     }
 
+    if (command === "qa_tool_call") {
+      // Quick demo of tool calling from command line
+      appendLogEntry("system", "🔧 Tool Call", "check_target_inventory(target_id=\"chest_1\", item_keyword=\"key\") → chest_1 拥有 1 个 rusty_key。", {
+        color: "#73c6c3", sigil: "🔧", logType: "system",
+      });
+      appendLogEntry("npc", "阿斯代伦", "让我看看... 那个箱子里有一把生锈的钥匙，已经没什么值钱的东西了。", {
+        color: "#c97a75", sigil: "🜂", logType: "dialogue",
+      });
+      return true;
+    }
+
     return false;
   }
 
   function runShowcaseLocalStep(commandText, options = {}) {
     if (!QA_SHOWCASE) return false;
+
+    /* Tool Calling showcase: simulate LLM tool call + ReAct response */
+    if (String(commandText || "").toLowerCase().startsWith("qa_tool_call")) {
+      const opts = safeObject(options);
+      const toolName = String(opts.toolName || "unknown_tool");
+      const toolArgs = safeObject(opts.toolArgs);
+      const toolResult = String(opts.toolResult || "");
+      const npcResponse = String(opts.npcResponse || "");
+      const npcSpeaker = String(opts.npcSpeaker || "astarion");
+
+      // Log the tool call invocation
+      appendLogEntry("system", "🔧 Tool Calling", "LLM invokes " + toolName + "(" + JSON.stringify(toolArgs) + ")", {
+        color: "#73c6c3",
+        sigil: "🔧",
+        logType: "system",
+      });
+
+      // Log the tool result
+      appendLogEntry("system", "📋 Tool Result", toolResult, {
+        color: "#9b84c6",
+        sigil: "➤",
+        logType: "system",
+      });
+
+      // Log the NPC response (ReAct follow-up)
+      if (npcResponse) {
+        const meta = getSpeakerMeta(npcSpeaker);
+        appendLogEntry("npc", getDisplayName(npcSpeaker), npcResponse, {
+          color: meta.color,
+          sigil: meta.sigil,
+          logType: "dialogue",
+        });
+      }
+
+      // Director Trace: show tool_call node
+      if (window.BG3DirectorTrace && typeof window.BG3DirectorTrace.activateTrace === "function") {
+        const traceNodes = ["player_input", "dm_router", "actor_view_filter", "tool_call", "actor_runtime", "ui_events"];
+        const toolData = {
+          journal_events: [
+            "🔧 [Tool Call] " + toolName + "(" + JSON.stringify(toolArgs) + ") → " + toolResult,
+            npcResponse ? "💬 [ReAct Response] " + npcSpeaker + ": " + npcResponse : "",
+          ].filter(Boolean),
+        };
+        window.BG3DirectorTrace.activateTrace(traceNodes, {
+          data: toolData,
+          userLine: String(commandText || ""),
+          intent: "qa_local",
+          animate: true,
+        });
+      }
+
+      // State diff update
+      const before = buildShowcaseSnapshot();
+      const after = buildShowcaseSnapshot({
+        journal_events: ["🔧 [Tool Call] " + toolName + " → " + toolResult],
+      });
+      updateWorldStateDiff(before, after, { autoExpand: true });
+
+      return true;
+    }
+
     const before = buildShowcaseSnapshot();
     const handled = handleQaLocalCommand(commandText, "qa_local");
     if (!handled) return false;

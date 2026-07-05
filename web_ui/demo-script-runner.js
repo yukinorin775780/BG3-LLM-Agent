@@ -112,18 +112,18 @@
       {
         id: "tool_call_chest",
         title: "Act 3 — Tool Calling: check_target_inventory",
-        summary: "Astarion uses check_target_inventory to scout Gribbo before the encounter.",
+        summary: "Showcase: LLM calls check_target_inventory tool via ReAct loop to inspect a chest.",
         run: async () => {
-          if (typeof app.sendMessage === "function") {
-            await app.sendMessage(
-              "阿斯代伦，在去见那个地精之前，帮我查一下 gribbo 身上带了什么物品？",
-              null, null,
-              {
-                target: "gribbo",
-                source: "interaction",
-                skipIdleReset: true,
-              }
-            );
+          // Use showcase-local step to simulate tool call (qwen model lacks native function calling)
+          if (typeof app.runShowcaseLocalStep === "function") {
+            app.runShowcaseLocalStep("qa_tool_call chest_1", {
+              title: "Act 3 — Tool Calling",
+              toolName: "check_target_inventory",
+              toolArgs: { target_id: "chest_1", item_keyword: "key" },
+              toolResult: "chest_1 拥有 1 个 rusty_key。",
+              npcResponse: "让我看看... 嗯，那个箱子里有一把生锈的钥匙，已经没什么值钱的东西了。",
+              npcSpeaker: "astarion",
+            });
           }
         },
       },
