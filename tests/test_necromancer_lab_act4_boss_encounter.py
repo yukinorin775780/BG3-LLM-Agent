@@ -13,6 +13,7 @@ from core.graph.nodes.event_drain import event_drain_node
 from core.graph.nodes.mechanics import mechanics_node
 from core.systems import mechanics
 from core.systems.world_init import get_initial_world_state
+from core.tools.act4_mvp import PlannedToolCall, ToolExecutor, get_default_tool_registry
 
 
 def _lab_state() -> dict:
@@ -35,6 +36,47 @@ def _door_obstacle(map_data: dict, door_id: str) -> dict:
         if obstacle.get("entity_id") == door_id:
             return obstacle
     return {}
+
+
+def test_act4_mvp_tool_registry_exposes_required_tools():
+    registry = get_default_tool_registry()
+
+    assert set(registry.names()) == {
+        "check_target_inventory",
+        "query_party_memory",
+        "roll_skill_check",
+        "transfer_item",
+    }
+
+
+def test_act4_mvp_inventory_check_and_transfer_persist_through_event_drain():
+    state = _lab_state()
+    executor = ToolExecutor()
+
+    inventory_check = executor.execute(
+        state,
+        PlannedToolCall(
+            "check_target_inventory",
+            {"target_id": "gribbo", "item_id": "heavy_iron_key"},
+        ),
+        turn_id="test:1",
+    )
+    transfer = executor.execute(
+        state,
+        PlannedToolCall(
+            "transfer_item",
+            {"from_actor_id": "gribbo", "to_actor_id": "player", "item_id": "heavy_iron_key"},
+        ),
+        turn_id="test:1",
+    )
+    drained = event_drain_node({**state, "pending_events": list(transfer.events)})
+
+    assert inventory_check.success is True
+    assert inventory_check.result["has_item"] is True
+    assert transfer.success is True
+    assert drained["player_inventory"]["heavy_iron_key"] == 1
+    assert drained["entities"]["gribbo"]["inventory"].get("heavy_iron_key", 0) == 0
+    assert "[物品转移] gribbo -> player heavy_iron_key" in drained["journal_events"]
 
 
 def test_boss_intro_helper_exposes_truth_without_key_transfer():
@@ -259,6 +301,15 @@ def test_truth_negotiation_success_transfers_key_through_event_drain():
     )
     drained = _drain_after_mechanics(state, result)
 
+    assert [item["tool_name"] for item in result["tool_calls"]] == [
+        "query_party_memory",
+        "check_target_inventory",
+        "roll_skill_check",
+        "transfer_item",
+    ]
+    assert result["tool_calls"][0]["source"] == "backend_tool_executor"
+    assert result["tool_results"][-1]["tool_name"] == "transfer_item"
+    assert result["tool_results"][-1]["success"] is True
     assert drained["flags"]["act4_negotiation_success"] is True
     assert drained["flags"]["act4_heavy_iron_key_obtained"] is True
     assert drained["flags"]["act4_gribbo_spared"] is True

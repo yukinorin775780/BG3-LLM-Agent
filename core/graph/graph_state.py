@@ -86,6 +86,8 @@ class GameState(TypedDict, total=False):
     turn_resources: Dict[str, Dict[str, Any]]
     recent_barks: List[Dict[str, Any]]
     pending_events: List[Dict[str, Any]]
+    tool_calls: List[Dict[str, Any]]
+    tool_results: List[Dict[str, Any]]
     reflection_queue: List[Dict[str, Any]]
     actor_runtime_state: Dict[str, Dict[str, Any]]
     last_actor_decision: Dict[str, Any]

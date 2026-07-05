@@ -622,6 +622,50 @@ def test_api_state_drains_pending_gribbo_truth_key_transfer():
     assert "[物品转移] gribbo -> player heavy_iron_key" in snapshot["game_state"]["journal_events"]
 
 
+def test_process_chat_turn_act4_truth_returns_backend_tool_trace_and_drains_key():
+    state = get_initial_world_state(map_id="necromancer_lab")
+    state["flags"]["act3_gribbo_potion_truth_known"] = True
+    state["flags"]["act3_party_knows_gribbo_truth"] = True
+    state["flags"]["act4_gribbo_confrontation_started"] = True
+    state["flags"]["act4_boss_strategy_discussed"] = True
+    state["pending_events"] = []
+    state["speaker_responses"] = []
+    state["messages"] = []
+    user_input = "我知道药剂对你做了什么。把钥匙给我，我们带你离开。"
+    context = detect_gribbo_boss_resolution_context(state, user_input, {"action_target": "gribbo"})
+    fake_graph = _MutatingMechanicsGraph(state)
+    service = GameService(
+        saver_factory=Mock(return_value=_AsyncContextManager(value=object())),
+        graph_builder=Mock(return_value=fake_graph),
+        initial_state_factory=Mock(),
+    )
+
+    result = asyncio.run(
+        service.process_chat_turn(
+            user_input=user_input,
+            intent="ACTION",
+            session_id="session-act4-tool-trace",
+            map_id="necromancer_lab",
+            target="gribbo",
+            intent_context={
+                "action_actor": "player",
+                "gribbo_boss_resolution_context": context,
+            },
+        )
+    )
+
+    assert [item["tool_name"] for item in result["tool_calls"]] == [
+        "query_party_memory",
+        "check_target_inventory",
+        "roll_skill_check",
+        "transfer_item",
+    ]
+    assert result["tool_results"][-1]["success"] is True
+    assert result["player_inventory"]["heavy_iron_key"] == 1
+    assert result["flags"]["act4_heavy_iron_key_obtained"] is True
+    assert fake_graph._state["entities"]["gribbo"]["inventory"].get("heavy_iron_key", 0) == 0
+
+
 def test_api_state_initial_necromancer_lab_visible_rooms_persists_spawn_room():
     state = {
         "entities": {"player": {"hp": 20}},

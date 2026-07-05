@@ -23,6 +23,7 @@ from core.systems.inventory import get_registry
 from core.systems.maps import get_map_data
 from core.systems.pathfinding import a_star_path, check_line_of_sight
 from core.systems.spells import get_spell_data, resolve_spell_id
+from core.tools.act4_mvp import execute_act4_diary_truth_tool_sequence
 
 logger = logging.getLogger(__name__)
 
@@ -2434,19 +2435,38 @@ def execute_gribbo_boss_resolution_action(state: Any) -> Dict[str, Any]:
         actor_id = "player"
         truth_available = bool(context.get("truth_available", False))
         dc = 10 if truth_available else 17
-        modifier = 2
-        roll = roll_d20(dc=dc, modifier=modifier, roll_type="advantage" if truth_available else "normal")
-        success = bool(roll.get("is_success", False))
+        turn_id = f"act4_truth_negotiation:{turn_index}"
+        tool_bundle = execute_act4_diary_truth_tool_sequence(
+            {
+                **(state if isinstance(state, dict) else {}),
+                "entities": entities,
+                "environment_objects": environment_objects,
+                "player_inventory": player_inventory,
+                "flags": flags,
+                "map_data": map_data,
+            },
+            dc=dc,
+            turn_id=turn_id,
+        )
+        tool_executions = list(tool_bundle.executions)
+        roll_execution = next((item for item in tool_executions if item.tool_name == "roll_skill_check"), None)
+        transfer_execution = next((item for item in tool_executions if item.tool_name == "transfer_item"), None)
+        inventory_execution = next((item for item in tool_executions if item.tool_name == "check_target_inventory"), None)
+        roll_result = dict(roll_execution.result if roll_execution else {})
+        modifier = int(roll_result.get("modifier") or 2)
+        success = bool(roll_execution.success if roll_execution else False)
         if force_success:
             success = True
         if force_failure:
             success = False
+        success = success and bool(inventory_execution.success if inventory_execution else False)
+        success = success and bool(transfer_execution.success if transfer_execution else False)
         pending_events.append(_domain_flag_event(actor_id=actor_id, turn_index=turn_index, key="act4_truth_negotiation_available", value=truth_available))
         if success:
             pending_events.extend(
                 [
                     _domain_negotiation_event(actor_id=actor_id, turn_index=turn_index, target_actor_id="gribbo", reason="act4_truth_negotiation_success", status_set="spared", faction_set="neutralized"),
-                    _domain_item_transfer_event(actor_id=actor_id, turn_index=turn_index, from_entity="gribbo", to_entity="player", item_id="heavy_iron_key", quantity=1, reason="act4_truth_negotiation_key_surrender"),
+                    *tool_bundle.events,
                     _domain_flag_event(actor_id=actor_id, turn_index=turn_index, key="act4_heavy_iron_key_obtained", value=True),
                     _domain_flag_event(actor_id=actor_id, turn_index=turn_index, key="act4_gribbo_spared", value=True),
                     _domain_flag_event(actor_id=actor_id, turn_index=turn_index, key="act4_negotiation_success", value=True),
@@ -2469,7 +2489,24 @@ def execute_gribbo_boss_resolution_action(state: Any) -> Dict[str, Any]:
             "flags": flags,
             "map_data": map_data,
             "pending_events": pending_events,
-            "raw_roll_data": {"intent": "PERSUASION", "actor": actor_id, "target": "gribbo", "dc": dc, "modifier": modifier, "result": {**roll, "is_success": success}},
+            "tool_calls": list(state.get("tool_calls") or []) + tool_bundle.tool_calls if isinstance(state, dict) else tool_bundle.tool_calls,
+            "tool_results": list(state.get("tool_results") or []) + tool_bundle.tool_results if isinstance(state, dict) else tool_bundle.tool_results,
+            "raw_roll_data": {
+                "intent": "PERSUASION",
+                "actor": actor_id,
+                "target": "gribbo",
+                "dc": dc,
+                "modifier": modifier,
+                "result": {
+                    "total": roll_result.get("total"),
+                    "raw_roll": roll_result.get("raw_roll"),
+                    "rolls": roll_result.get("rolls"),
+                    "is_success": success,
+                    "result_type": roll_result.get("result_type"),
+                    "log_str": roll_result.get("log_str"),
+                    "advantage_source": roll_result.get("advantage_source"),
+                },
+            },
         }
 
     if route == "astarion_steal":

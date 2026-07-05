@@ -21,7 +21,7 @@
     ["player_input", "Player Intent", "WASD stays local; narrative actions enter the route."],
     ["dm_router", "DM Router", "Classifies the action, target, and route."],
     ["actor_view_filter", "ActorView", "Filters what this actor is allowed to know."],
-    ["tool_call", "Tool Calling", "LLM invokes a tool (e.g. check_target_inventory) via ReAct loop."],
+    ["tool_call", "Tool Calling", "Backend planner/executor invokes auditable tools."],
     ["actor_runtime", "Actor Runtime", "Runs companion memory, voice, and party coordination."],
     ["domain_event", "Rules / Mechanics", "Resolves traps, locks, items, checks, or combat effects."],
     ["event_drain", "EventDrain", "Commits inventory, flags, memory, affection, and status."],
@@ -268,6 +268,8 @@
       userLine,
       intent,
       safeArr(payload.journal_events).join(" "),
+      JSON.stringify(payload.tool_calls || []),
+      JSON.stringify(payload.tool_results || []),
       JSON.stringify(payload.latest_roll || {}),
       JSON.stringify(payload.combat_state || {}),
       JSON.stringify(payload.game_state || {}),
@@ -299,6 +301,7 @@
     if (types.has("boss_intro") || /\[Boss Encounter\]|act4_gribbo_confrontation_started|act4_boss_room_entered/i.test(blob)) parts.push("boss_intro");
     if (types.has("boss_strategy") || /\[Boss方案\]|boss_strategy/i.test(blob)) parts.push("boss_strategy");
     if (types.has("boss_route") || /\[Boss解决\]|\[偷钥匙失败\]|act4_(?:negotiation_success|astarion_steal_key_success|assault_success|heavy_iron_key_obtained|final_exit_opened)/i.test(blob)) parts.push("boss_route");
+    if (types.has("tool_call") || types.has("tool_result") || /tool_calls|tool_results|backend_tool_executor|query_party_memory|check_target_inventory|roll_skill_check|transfer_item/i.test(blob)) parts.push("backend_tool_trace");
     if (types.has("poison_valve") || /\[毒气泄漏\]|act4_(?:poison_valve_triggered|lab_poison_leak|poison_valve_disabled)|poison_valve|potion_tank/i.test(blob)) parts.push("poison_valve");
     if (/\[秘密书房\]|act3_secret_study|cracked_wall|room_c_secret_study/i.test(blob)) parts.push("secret_study_discovery");
     const aff = blob.match(/affection[^\d+\-]*([+\-]\s*\d+)/i) || blob.match(/好感度?\s*([+\-]\s*\d+)/);
@@ -326,6 +329,7 @@
     if (types.has("boss_intro") || /\[Boss Encounter\]/i.test(blob)) out.push("Boss Intro Card");
     if (types.has("boss_strategy") || /\[Boss方案\]/i.test(blob)) out.push("Boss Strategy Card");
     if (types.has("boss_route") || /\[Boss解决\]|\[偷钥匙失败\]/i.test(blob)) out.push("Boss Route Card");
+    if (types.has("tool_call") || types.has("tool_result") || /tool_calls|tool_results|backend_tool_executor|query_party_memory|check_target_inventory|roll_skill_check|transfer_item/i.test(blob)) out.push("Tool Trace Card");
     if (types.has("poison_valve") || /\[毒气泄漏\]|poison_valve|potion_tank/i.test(blob)) out.push("Poison Valve Card");
     if (/\[秘密书房\]|act3_secret_study|cracked_wall|room_c_secret_study/i.test(blob)) out.push("Secret Study Toast");
     if (types.has("demo_cleared") || /demo_cleared|DEMO CLEARED/i.test(blob)) out.push("Demo Banner");
@@ -354,6 +358,9 @@
     }
     if (hasEventType(payload, events, ["boss_route"]) || /\[Boss解决\]|\[偷钥匙失败\]|act4_(?:negotiation_success|astarion_steal_key_success|assault_success|heavy_iron_key_obtained)/i.test(blob)) {
       return { mode: "NARRATIVE TURN", summary: "Boss route resolved and world state changed." };
+    }
+    if (hasEventType(payload, events, ["tool_call", "tool_result"]) || /tool_calls|tool_results|backend_tool_executor|query_party_memory|check_target_inventory|roll_skill_check|transfer_item/i.test(blob)) {
+      return { mode: "BACKEND TOOL EXECUTION", summary: "Backend tools checked memory, inventory, roll, and item transfer." };
     }
     if (hasEventType(payload, events, ["boss_strategy"]) || /\[Boss方案\]/i.test(blob)) {
       return { mode: "AGENT RESPONSE", summary: "Three companions proposed conflicting plans." };
@@ -417,6 +424,9 @@
     if (explicit === "domain_event") return ["player_input", "dm_router", "actor_view_filter", "actor_runtime", "domain_event"];
     if (explicit === "event_drain") return ["player_input", "dm_router", "actor_view_filter", "actor_runtime", "domain_event", "event_drain"];
     const blob = textBlob(payload, opts.userLine, opts.intent);
+    const earlyTypes = eventTypes(payload, events);
+    const earlyHasToolTrace = earlyTypes.some((type) => ["tool_call", "tool_result"].includes(type))
+      || /tool_calls|tool_results|backend_tool_executor|query_party_memory|check_target_inventory|roll_skill_check|transfer_item/i.test(blob);
     const intentKey = normalizeId(opts.intent || safeObj(gameState.intent_context).fallback_intent || "");
     const isDiaryRead = intentKey === "read" && /necromancer_diary|diary|日记|读日记|阅读日记/i.test(blob);
     const isSecretStudyDiscovery = /\[秘密书房\]|secret_study_discovery|act3_secret_study|cracked_wall|room_c_secret_study/i.test(blob);
@@ -425,7 +435,9 @@
       && /gribbo|格里布|格里波|地精|boss/i.test(blob)
       && /diary|日记|药剂|灵药|死灵|实验|解药|钥匙|真相|gribbo_elixir_truth|diary_negotiation/i.test(blob);
     if (isDiaryRead || isGribboDiaryNegotiation) {
-      return ["player_input", "dm_router", "actor_view_filter", "actor_runtime", "domain_event", "event_drain", "ui_events"];
+      return earlyHasToolTrace
+        ? ["player_input", "dm_router", "actor_view_filter", "actor_runtime", "tool_call", "domain_event", "event_drain", "ui_events"]
+        : ["player_input", "dm_router", "actor_view_filter", "actor_runtime", "domain_event", "event_drain", "ui_events"];
     }
     if (isSecretStudyDiscovery) {
       return ["player_input", "dm_router", "domain_event", "event_drain", "ui_events"];
@@ -440,6 +452,8 @@
       || /\[站队\]|\[抉择\]|gribbo_mercy|gribbo_spared|gribbo_executed|mercy_resolved/i.test(blob);
     const hasBossSignal = types.some((type) => ["boss_intro", "boss_strategy", "boss_route", "poison_valve"].includes(type))
       || /\[Boss Encounter\]|\[Boss方案\]|\[Boss解决\]|\[偷钥匙失败\]|\[毒气泄漏\]|act4_/i.test(blob);
+    const hasToolTrace = types.some((type) => ["tool_call", "tool_result"].includes(type))
+      || /tool_calls|tool_results|backend_tool_executor|query_party_memory|check_target_inventory|roll_skill_check|transfer_item/i.test(blob);
     const needsParty = /gribbo|astarion|dialogue|party|好感|affection|combat|initiative|台词|对话/i.test(blob)
       || types.includes("trap_insight")
       || types.includes("party_stance")
@@ -448,10 +462,12 @@
       || hasTrapSignal
       || hasMemoryEcho
       || hasBossSignal
+      || hasToolTrace
       || types.includes("mercy_resolution")
       || /\[抉择\]|gribbo_spared|gribbo_executed|mercy_resolved/i.test(blob)
       || types.some((type) => ["memory_added", "memory_echo", "item_gained", "affection_delta", "status_changed", "demo_cleared", "negotiation_leverage"].includes(type));
     if (needsParty || needsDomain || hasMemoryEcho || hasMercySignal || hasBossSignal) nodes.push("actor_runtime");
+    if (hasToolTrace) nodes.push("tool_call");
     if (needsDomain) nodes.push("domain_event", "event_drain");
     nodes.push("ui_events");
     return Array.from(new Set(nodes));
@@ -472,6 +488,7 @@
       dm_router: { explanation: "Classified intent, target, fallback, and route.", input: inputSummary, output: /fallback/i.test(blob) ? "fallback selected" : "route selected" },
       actor_view_filter: { explanation: "Applied memory isolation and actor-visible world slice.", input: "world + actor scope", output: /memory|记忆|actor_private/i.test(blob) ? "ActorView private memory" : "visible slice" },
       actor_runtime: { explanation: "Generated companion/NPC response or party coordination.", input: "filtered ActorView", output: /gribbo|astarion|party|dialogue|对话|台词/i.test(blob) ? "Party Coordinator" : "actor runtime" },
+      tool_call: { explanation: "Executed deterministic backend tools and returned auditable results.", input: "tool plan", output: /transfer_item/i.test(blob) ? "memory/inventory/roll/transfer" : "backend tool trace" },
       domain_event: { explanation: "Resolved rules, checks, trap state, item movement, or route result.", input: "runtime decisions", output: domainSummary },
       event_drain: { explanation: "Applied queued state changes to the world snapshot.", input: "pending events", output: /EventDrain|event_drain|pending_events|item|memory|affection|flag/i.test(blob) ? domainSummary : "state committed" },
       ui_events: { explanation: "Projected engine results into HUD, bark, overlay, and diff.", input: "response/ui_events", output: uiSummary },
@@ -537,6 +554,12 @@
     if (types.has("boss_route") || /\[Boss解决\]|\[偷钥匙失败\]|act4_(?:negotiation_success|astarion_steal_key_success|assault_success|heavy_iron_key_obtained|final_exit_opened)/i.test(blob)) {
       details.player_input.signal = "agent_signal";
       details.dm_router.signal = "agent_signal";
+      details.domain_event.signal = "agent_signal";
+      details.event_drain.signal = "agent_signal";
+      details.ui_events.signal = "agent_signal";
+    }
+    if (types.has("tool_call") || types.has("tool_result") || /tool_calls|tool_results|backend_tool_executor|query_party_memory|check_target_inventory|roll_skill_check|transfer_item/i.test(blob)) {
+      details.tool_call.signal = "agent_signal";
       details.domain_event.signal = "agent_signal";
       details.event_drain.signal = "agent_signal";
       details.ui_events.signal = "agent_signal";

@@ -1342,6 +1342,36 @@
     appendAgentSignalCard(card, triggered ? 6600 : 5200);
   }
 
+  function compactJson(value) {
+    try {
+      const text = JSON.stringify(value || {});
+      return text.length > 96 ? text.slice(0, 93) + "..." : text;
+    } catch (_err) {
+      return "";
+    }
+  }
+
+  function renderToolTraceCard(event) {
+    const e = event && typeof event === "object" ? event : {};
+    const isResult = String(e.type || "").toLowerCase() === "tool_result";
+    const success = e.success === true;
+    const title = isResult ? "Backend Tool Result" : "Backend Tool Call";
+    const result = e.result && typeof e.result === "object" ? e.result : {};
+    const status = isResult ? (success ? "success" : "failed") : "executed";
+    const card = buildAgentSignalCard(
+      "tool-trace" + (isResult ? " tool-trace-result" : " tool-trace-call"),
+      title,
+      isResult ? (success ? "✓" : "!") : "T",
+      [
+        { label: "Tool", value: e.toolName || e.tool_name || "backend_tool" },
+        { label: "Args", value: compactJson(e.arguments) },
+        { label: "Result", value: isResult ? compactJson(result) : status },
+        { label: "Source", value: e.source || "backend_tool_executor" },
+      ]
+    );
+    appendAgentSignalCard(card, isResult ? 5600 : 4600, String(e.type || "tool") + ":" + String(e.callId || e.toolName || ""));
+  }
+
   /* ── Toast System ── */
   function showToast(type, content, durationMs, dedupeKey) {
     const host = getToastContainer();
@@ -1488,8 +1518,8 @@
 
       var chip = document.createElement("div");
       chip.className = "companion-chip " + direction;
-      chip.innerHTML = '<span class="companion-chip-name">' + name + '</span>' +
-        '<span class="companion-chip-delta">' + aff + '</span>' +
+      chip.innerHTML = '<span class="companion-chip-name">' + name + '</span> ' +
+        '<span class="companion-chip-delta">' + aff + '</span> ' +
         '<span class="companion-chip-label">' + affLabel + '</span>';
       chip.style.transitionDelay = (i * 120) + "ms";
       host.appendChild(chip);
@@ -1529,9 +1559,9 @@
     var heart = delta > 0 ? "❤️" : "💔";
     var approvalLabel = delta > 0 ? "好感上升" : "好感下降";
     if (Math.abs(delta) >= 15) approvalLabel = delta > 0 ? "极大好感提升" : "极大好感下降";
-    chip.innerHTML = '<span class="companion-chip-icon">' + heart + '</span>' +
-      '<span class="companion-chip-name">' + actorName + '</span>' +
-      '<span class="companion-chip-delta">' + sign + delta + '</span>' +
+    chip.innerHTML = '<span class="companion-chip-icon">' + heart + '</span> ' +
+      '<span class="companion-chip-name">' + actorName + '</span> ' +
+      '<span class="companion-chip-delta">' + sign + delta + '</span> ' +
       '<span class="companion-chip-label">' + approvalLabel + '</span>';
     host.appendChild(chip);
     void chip.offsetWidth;
@@ -1700,6 +1730,8 @@
         case "boss_strategy": renderBossStrategyCard(ev); break;
         case "boss_route": renderBossRouteCard(ev); break;
         case "poison_valve": renderPoisonValveCard(ev); break;
+        case "tool_call": renderToolTraceCard(ev); break;
+        case "tool_result": renderToolTraceCard(ev); break;
         case "companion_guidance": renderCompanionGuidanceCard(ev); break;
         case "diary_interpretation": renderDiaryInterpretationCard(ev); break;
         case "negotiation_leverage": renderNegotiationLeverageCard(ev); break;

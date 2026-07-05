@@ -3431,6 +3431,21 @@ textarea {
     linear-gradient(135deg, rgba(30, 42, 34, 0.96), rgba(13, 14, 12, 0.94));
 }
 
+.agent-signal-card--tool-trace {
+  border-color: rgba(99, 179, 237, 0.72);
+  background:
+    radial-gradient(circle at 100% 0%, rgba(99, 179, 237, 0.18), transparent 34%),
+    linear-gradient(135deg, rgba(19, 42, 58, 0.96), rgba(13, 18, 24, 0.94));
+  box-shadow: 0 16px 38px rgba(0, 0, 0, 0.42), 0 0 24px rgba(99, 179, 237, 0.14);
+}
+
+.agent-signal-card--tool-trace.tool-trace-result {
+  border-color: rgba(116, 207, 160, 0.72);
+  background:
+    radial-gradient(circle at 100% 0%, rgba(116, 207, 160, 0.18), transparent 34%),
+    linear-gradient(135deg, rgba(21, 52, 38, 0.96), rgba(13, 18, 16, 0.94));
+}
+
 .stance-value--mercy {
   color: #d9e7ff !important;
 }

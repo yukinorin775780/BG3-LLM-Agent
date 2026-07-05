@@ -83,9 +83,8 @@ async function bootAppForTest(url = "http://localhost/?qa_test=1") {
     refreshMapOnly: jest.fn(),
     getLocalPartyTokenPositions: jest.fn().mockReturnValue({}),
   };
-  if (typeof window.requestAnimationFrame !== "function") {
-    window.requestAnimationFrame = (cb) => setTimeout(cb, 0);
-  }
+  window.requestAnimationFrame = (cb) => setTimeout(() => cb(Date.now()), 0);
+  window.cancelAnimationFrame = (id) => clearTimeout(id);
 
   loadNewModules();
 
@@ -7393,6 +7392,111 @@ describe("web_ui/app.js UI bindings", () => {
       expect.objectContaining({ type: "boss_route", route: "astarion_steal", result: "gribbo_alerted", failed: true }),
       expect.objectContaining({ type: "boss_route", route: "assault", result: "gribbo_defeated" }),
     ]));
+  });
+
+  test("test_backend_tool_trace_payload_derives_tool_events", async () => {
+    loadNewModules();
+    const events = window.BG3UIEventAdapter.extractUIEvents({
+      tool_calls: [{
+        tool_name: "check_target_inventory",
+        arguments: { target_id: "gribbo", item_id: "heavy_iron_key" },
+        result: { has_item: true, count: 1 },
+        success: true,
+        source: "backend_tool_executor",
+        turn_id: "act4_truth_negotiation:1",
+        call_id: "tool_1",
+      }],
+      tool_results: [{
+        tool_name: "transfer_item",
+        arguments: { from_actor_id: "gribbo", to_actor_id: "player", item_id: "heavy_iron_key" },
+        result: { accepted: true, event_count: 1 },
+        success: true,
+        source: "backend_tool_executor",
+        turn_id: "act4_truth_negotiation:1",
+        call_id: "tool_2",
+      }],
+    });
+
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "tool_call", toolName: "check_target_inventory", source: "backend_tool_executor" }),
+      expect.objectContaining({ type: "tool_result", toolName: "transfer_item", success: true }),
+    ]));
+  });
+
+  test("test_hud_renders_backend_tool_trace_cards", async () => {
+    loadNewModules();
+    jest.useFakeTimers();
+
+    window.BG3HudRenderers.dispatchUIEvents([
+      {
+        type: "tool_call",
+        toolName: "check_target_inventory",
+        arguments: { target_id: "gribbo", item_id: "heavy_iron_key" },
+        result: { has_item: true },
+        success: true,
+        source: "backend_tool_executor",
+        callId: "tool_call_1",
+      },
+      {
+        type: "tool_result",
+        toolName: "transfer_item",
+        arguments: { from_actor_id: "gribbo", to_actor_id: "player", item_id: "heavy_iron_key" },
+        result: { accepted: true, event_count: 1 },
+        success: true,
+        source: "backend_tool_executor",
+        callId: "tool_result_1",
+      },
+    ]);
+
+    const cards = Array.from(document.querySelectorAll(".agent-signal-card--tool-trace"));
+    expect(cards).toHaveLength(2);
+    expect(cards[0].textContent).toContain("Backend Tool Call");
+    expect(cards[0].textContent).toContain("check_target_inventory");
+    expect(cards[1].textContent).toContain("Backend Tool Result");
+    expect(cards[1].textContent).toContain("transfer_item");
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+  });
+
+  test("test_director_trace_backend_tool_trace_activates_tool_call_node", async () => {
+    spyOnFetch().mockResolvedValue(mockResponse({}));
+    await bootAppForTest();
+    const data = {
+      tool_calls: [{
+        tool_name: "query_party_memory",
+        arguments: { memory_key: "act3_gribbo_potion_truth_known" },
+        result: { known: true },
+        success: true,
+        source: "backend_tool_executor",
+      }],
+      tool_results: [{
+        tool_name: "transfer_item",
+        arguments: { from_actor_id: "gribbo", to_actor_id: "player", item_id: "heavy_iron_key" },
+        result: { accepted: true },
+        success: true,
+        source: "backend_tool_executor",
+      }],
+      journal_events: ["[Boss解决] negotiation -> key_surrendered"],
+    };
+    const uiEvents = window.BG3UIEventAdapter.extractUIEvents(data);
+    const nodes = window.BG3DirectorTrace.buildTraceNodes(data, {
+      uiEvents,
+      userLine: "用日记真相说服 Gribbo",
+      intent: "CHAT",
+    });
+    window.BG3DirectorTrace.activateTrace(nodes, {
+      data,
+      uiEvents,
+      userLine: "用日记真相说服 Gribbo",
+      intent: "CHAT",
+      animate: false,
+      autoIdleMs: 999999,
+    });
+    await flushAsync();
+
+    expect(nodes).toContain("tool_call");
+    expect(document.querySelector('[data-node="tool_call"]').classList.contains("is-agent-signal")).toBe(true);
+    expect(document.querySelector('[data-node="tool_call"]').textContent).toContain("memory/inventory/roll/transfer");
   });
 
   test("test_poison_valve_journal_and_flag_derive_ui_event", async () => {

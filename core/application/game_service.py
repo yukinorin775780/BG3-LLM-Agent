@@ -145,6 +145,8 @@ class GameService:
                 graph = self._graph_builder(checkpointer=saver)
                 previous_state = await self._load_checkpoint_state(graph, config)
                 previous_journal_len = len(previous_state.get("journal_events") or [])
+                previous_tool_calls_len = len(previous_state.get("tool_calls") or [])
+                previous_tool_results_len = len(previous_state.get("tool_results") or [])
 
                 if self._requires_state_reinitialization(previous_state, map_id=map_id):
                     previous_state = await self._initialize_world_state(
@@ -153,6 +155,8 @@ class GameService:
                         map_id=map_id,
                     )
                     previous_journal_len = len(previous_state.get("journal_events") or [])
+                    previous_tool_calls_len = len(previous_state.get("tool_calls") or [])
+                    previous_tool_results_len = len(previous_state.get("tool_results") or [])
 
                 previous_state = await self._apply_campaign_intro_if_needed(
                     graph=graph,
@@ -163,6 +167,8 @@ class GameService:
                 # Recapture journal length after intro patch so intro entries
                 # are excluded from the init_sync response.
                 previous_journal_len = len(previous_state.get("journal_events") or [])
+                previous_tool_calls_len = len(previous_state.get("tool_calls") or [])
+                previous_tool_results_len = len(previous_state.get("tool_results") or [])
 
                 previous_state = await self._apply_client_player_position_to_checkpoint(
                     graph=graph,
@@ -183,6 +189,8 @@ class GameService:
                     chat_result = self._build_chat_result(
                         previous_state,
                         previous_journal_len=previous_journal_len,
+                        previous_tool_calls_len=previous_tool_calls_len,
+                        previous_tool_results_len=previous_tool_results_len,
                     )
                     # init_sync is a pure state sync contract: no per-turn narrative delta.
                     chat_result["responses"] = []
@@ -205,6 +213,8 @@ class GameService:
                     return self._build_chat_result(
                         result_state,
                         previous_journal_len=previous_journal_len,
+                        previous_tool_calls_len=previous_tool_calls_len,
+                        previous_tool_results_len=previous_tool_results_len,
                     )
 
                 if normalized_intent_key == "ui_action_loot":
@@ -225,6 +235,8 @@ class GameService:
                     chat_result = self._build_chat_result(
                         result_state,
                         previous_journal_len=previous_journal_len,
+                        previous_tool_calls_len=previous_tool_calls_len,
+                        previous_tool_results_len=previous_tool_results_len,
                     )
                     await self._ingest_turn_memories(
                         session_id=session_id,
@@ -318,6 +330,8 @@ class GameService:
                 chat_result = self._build_chat_result(
                     normalized_result_state,
                     previous_journal_len=previous_journal_len,
+                    previous_tool_calls_len=previous_tool_calls_len,
+                    previous_tool_results_len=previous_tool_results_len,
                 )
                 await self._ingest_turn_memories(
                     session_id=session_id,
@@ -395,6 +409,8 @@ class GameService:
             chat_result = self._build_chat_result(
                 result_state,
                 previous_journal_len=len(result_state.get("journal_events") or []),
+                previous_tool_calls_len=len(result_state.get("tool_calls") or []),
+                previous_tool_results_len=len(result_state.get("tool_results") or []),
             )
             chat_result["responses"] = []
             chat_result["journal_events"] = []
@@ -414,9 +430,13 @@ class GameService:
         )
         journal_events = state.get("journal_events") or []
         previous_journal_len = max(0, len(journal_events) - 8)
+        tool_calls = state.get("tool_calls") if isinstance(state.get("tool_calls"), list) else []
+        tool_results = state.get("tool_results") if isinstance(state.get("tool_results"), list) else []
         result = self._build_chat_result(
             state,
             previous_journal_len=previous_journal_len,
+            previous_tool_calls_len=max(0, len(tool_calls) - 8),
+            previous_tool_results_len=max(0, len(tool_results) - 8),
         )
         result["game_state"] = copy.deepcopy(state)
         result["last_node"] = state.get("last_node") or state.get("current_node")
@@ -982,6 +1002,8 @@ class GameService:
         state: Dict[str, Any],
         *,
         previous_journal_len: int,
+        previous_tool_calls_len: int = 0,
+        previous_tool_results_len: int = 0,
     ) -> ChatTurnResult:
         state = self._state_with_necromancer_lab_visible_rooms(state)
         raw_responses = state.get("speaker_responses") or []
@@ -993,6 +1015,18 @@ class GameService:
         new_journal = (
             current_journal[previous_journal_len:]
             if len(current_journal) > previous_journal_len
+            else []
+        )
+        current_tool_calls = list(state.get("tool_calls") or [])
+        current_tool_results = list(state.get("tool_results") or [])
+        new_tool_calls = (
+            current_tool_calls[previous_tool_calls_len:]
+            if len(current_tool_calls) > previous_tool_calls_len
+            else []
+        )
+        new_tool_results = (
+            current_tool_results[previous_tool_results_len:]
+            if len(current_tool_results) > previous_tool_results_len
             else []
         )
         formatted_responses = self._act4_boss_responses_for_journal(
@@ -1030,6 +1064,10 @@ class GameService:
             visible_rooms = self._normalize_room_ids(map_data.get("visible_rooms"))
             if visible_rooms:
                 payload["visible_rooms"] = visible_rooms
+        if new_tool_calls:
+            payload["tool_calls"] = copy.deepcopy(new_tool_calls)
+        if new_tool_results:
+            payload["tool_results"] = copy.deepcopy(new_tool_results)
         flags = state.get("flags")
         if isinstance(flags, dict) and flags:
             payload["flags"] = copy.deepcopy(flags)

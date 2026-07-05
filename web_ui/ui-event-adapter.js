@@ -152,6 +152,9 @@
       || normalizeId(data._eventSource) === "state_poll";
 
     const events = stateProjectionOnly ? [] : safeArr(data.ui_events).map(normalizeDirectUIEvent);
+    if (!stateProjectionOnly) {
+      appendBackendToolTraceEvents(data, events);
+    }
     const gameState = safeObj(data.game_state || data.gameState || data.state);
     const journal = [
       ...safeArr(data.journal_events),
@@ -262,6 +265,9 @@
         reason: e.reason || "",
       };
     }
+    if (type === "tool_call" || type === "tool_result") {
+      return normalizeBackendToolEvent(e, type);
+    }
     if (type === "companion_guidance" || type === "diary_interpretation" || type === "negotiation_leverage" || type === "memory_echo"
       || type === "party_stance" || type === "mercy_resolution"
       || type === "trap_insight" || type === "trap_disarmed" || type === "trap_triggered"
@@ -269,6 +275,33 @@
       return e;
     }
     return e;
+  }
+
+  function normalizeBackendToolEvent(raw, fallbackType) {
+    const e = safeObj(raw);
+    const toolName = String(e.tool_name || e.toolName || e.name || "").trim();
+    return {
+      type: fallbackType || String(e.type || "tool_call").trim().toLowerCase(),
+      toolName,
+      tool_name: toolName,
+      arguments: safeObj(e.arguments || e.args),
+      result: safeObj(e.result),
+      success: e.success === true,
+      source: String(e.source || "").trim(),
+      turnId: String(e.turn_id || e.turnId || "").trim(),
+      callId: String(e.call_id || e.callId || "").trim(),
+      displayTitle: e.display_title || e.displayTitle || toolName || "Backend Tool",
+    };
+  }
+
+  function appendBackendToolTraceEvents(data, events) {
+    const payload = safeObj(data);
+    safeArr(payload.tool_calls).forEach((item) => {
+      events.push(normalizeBackendToolEvent(item, "tool_call"));
+    });
+    safeArr(payload.tool_results).forEach((item) => {
+      events.push(normalizeBackendToolEvent(item, "tool_result"));
+    });
   }
 
   function shouldInferBaselineStatePollLine(line) {

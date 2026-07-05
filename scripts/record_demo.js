@@ -163,7 +163,7 @@ function generateSubtitles(outPath, durationSec) {
     [18, 42, 'Act 2 — Poison Corridor: Astarion\'s perception check\nreveals a hidden gas trap. Enhanced D20 dice card\nwith glow animation shows check, roll, DC, and result.'],
     [42, 68, 'Fail-Forward: Locked B-D door → failed lockpick\n→ cracked wall reveals Secret Study entrance.'],
     [68, 135, 'Act 3 — Secret Study: Reading the Necromancer\'s Diary\nunlocks information leverage. Memory isolation\nensures each companion remembers differently.'],
-    [135, 162, 'Tool Calling: LLM invokes check_target_inventory\nvia ReAct loop. Director Trace highlights tool_call node.'],
+    [135, 162, 'Tool Calling Showcase: local UI hook simulates check_target_inventory.\nAct4 gameplay emits backend tool trace.'],
     [162, 188, 'Affection Baseline: Companion affection levels\ndisplayed before confronting Gribbo.'],
     [188, 222, 'Gribbo Boss Encounter: Three companions propose\ncompeting strategies driven by personality + affection.\nLLM-driven NPC with scoped ActorView.'],
     [222, 250, 'Affection Changes: Choosing Astarion triggers\ngreen/red delta chips. Diary truth = encounter leverage.\nAstarion ↑ / Shadowheart ↓ / Lae\'zel ↑'],

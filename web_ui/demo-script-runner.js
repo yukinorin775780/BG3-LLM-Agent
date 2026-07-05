@@ -111,13 +111,13 @@
       },
       {
         id: "tool_call_chest",
-        title: "Act 3 — Tool Calling: check_target_inventory",
-        summary: "Showcase: LLM calls check_target_inventory tool via ReAct loop to inspect a chest.",
+        title: "Act 3 — Tool Calling Showcase (local)",
+        summary: "Showcase-local simulation of check_target_inventory for UI trace testing.",
         run: async () => {
           // Use showcase-local step to simulate tool call (qwen model lacks native function calling)
           if (typeof app.runShowcaseLocalStep === "function") {
             app.runShowcaseLocalStep("qa_tool_call chest_1", {
-              title: "Act 3 — Tool Calling",
+              title: "Act 3 — Tool Calling Showcase",
               toolName: "check_target_inventory",
               toolArgs: { target_id: "chest_1", item_keyword: "key" },
               toolResult: "chest_1 拥有 1 个 rusty_key。",

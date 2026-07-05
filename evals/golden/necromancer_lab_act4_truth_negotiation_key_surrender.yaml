@@ -41,6 +41,12 @@ steps:
           game_state.player_inventory.heavy_iron_key: 1
           game_state.entities.gribbo.status: spared
           game_state.entities.gribbo.faction: neutralized
+          game_state.tool_calls.0.tool_name: query_party_memory
+          game_state.tool_calls.1.tool_name: check_target_inventory
+          game_state.tool_calls.2.tool_name: roll_skill_check
+          game_state.tool_calls.3.tool_name: transfer_item
+          game_state.tool_results.3.success: true
+          game_state.tool_results.3.source: backend_tool_executor
         contains:
           game_state.journal_events:
             - "[Boss解决] negotiation -> key_surrendered"

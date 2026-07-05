@@ -141,6 +141,10 @@ def mechanics_node(state: GameState) -> dict:
         out["map_data"] = result["map_data"]
     if "pending_events" in result:
         out["pending_events"] = result["pending_events"]
+    if "tool_calls" in result:
+        out["tool_calls"] = result["tool_calls"]
+    if "tool_results" in result:
+        out["tool_results"] = result["tool_results"]
     if "demo_cleared" in result:
         out["demo_cleared"] = bool(result["demo_cleared"])
     return out

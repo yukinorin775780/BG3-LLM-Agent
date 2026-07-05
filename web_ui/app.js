@@ -3346,7 +3346,8 @@
         normalizeId(key) === "player"
         && normalizeId(previousRecord._projection_source).startsWith("client_")
       ) {
-        const local = normalizeId(previousRecord._projection_source) === "client_backend_move"
+        const previousSource = normalizeId(previousRecord._projection_source);
+        const local = previousSource === "client_backend_move" || isRoomTransitionProjectionSource(previousSource)
           ? normalizeGridPositionCandidate(previousRecord)
           : getLocalMovementPlayerGridPosition();
         if (local) {
@@ -3704,6 +3705,7 @@
 
   function resolveTacticalPlayerCoordinates(player) {
     const source = safeObject(player);
+    const projectionSource = normalizeId(source._projection_source);
     const backendX = Number(source.x);
     const backendY = Number(source.y);
     const map = safeObject(state.fullNormalizedMap);
@@ -3730,6 +3732,10 @@
       && isWithinMapBounds(localCoord, fullMapData)
       && isCoordInsideVisibleRooms(localCoord, state.normalizedMap);
 
+    if (isRoomTransitionProjectionSource(projectionSource) && canUseBackend) {
+      return { x: backendX, y: backendY, source: projectionSource };
+    }
+
     const isRealMapSource = normalizeId(state.mapLoadSource) === "json";
     if (isRealMapSource && canUseLocal) {
       return { x: localX, y: localY, source: "input_local" };
@@ -3749,6 +3755,18 @@
       return { x: backendX, y: backendY, source: "backend" };
     }
     return null;
+  }
+
+  function isRoomTransitionProjectionSource(source) {
+    const key = normalizeId(source);
+    return key === "client_room_transition"
+      || key === "client_secret_study_reveal"
+      || key === "client_secret_study_response"
+      || key === "client_local_secret_study"
+      || key === "client_act3_read_projection"
+      || key === "client_lab_reveal"
+      || key === "client_lab_response"
+      || key === "client_local_boss_lab";
   }
 
   function tacticalFormationMapData(mapData) {
@@ -5216,6 +5234,9 @@
       generation_node: "ui_events",
       generation: "ui_events",
       actor_view: "actor_view_filter",
+      tool_calling: "tool_call",
+      tool_call: "tool_call",
+      tool_result: "tool_call",
       party_coordinator: "actor_runtime",
       party_turn_coordinator: "actor_runtime",
       eventdrain: "event_drain",
@@ -5442,7 +5463,7 @@
     const text = [userLine, intent, extractEventLines(data).join(" ")].join(" ");
     const trace = ["player_input", "dm_router", "actor_view_filter"];
     // Detect tool calling patterns
-    if (/tool_call|check_target_inventory|ReAct|工具调用|🔧/.test(text)) {
+    if (/tool_call|tool_result|tool_calls|tool_results|backend_tool_executor|query_party_memory|check_target_inventory|roll_skill_check|transfer_item|ReAct|工具调用|🔧/.test(text)) {
       trace.push("tool_call");
     }
     if (/检定|掷骰|潜行|攻击|推击|法术|装备|卸下|搜刮|开锁|解除陷阱|短休|长休|移动|交互/.test(text)) {
@@ -6592,7 +6613,7 @@
 
     if (command === "qa_tool_call") {
       // Quick demo of tool calling from command line
-      appendLogEntry("system", "🔧 Tool Call", "check_target_inventory(target_id=\"chest_1\", item_keyword=\"key\") → chest_1 拥有 1 个 rusty_key。", {
+      appendLogEntry("system", "🔧 Tool Call Showcase", "Local UI hook: check_target_inventory(target_id=\"chest_1\", item_keyword=\"key\") → chest_1 拥有 1 个 rusty_key。", {
         color: "#73c6c3", sigil: "🔧", logType: "system",
       });
       appendLogEntry("npc", "阿斯代伦", "让我看看... 那个箱子里有一把生锈的钥匙，已经没什么值钱的东西了。", {
@@ -6645,7 +6666,7 @@
       const npcSpeaker = String(opts.npcSpeaker || "astarion");
 
       // Log the tool call invocation
-      appendLogEntry("system", "🔧 Tool Calling", "LLM invokes " + toolName + "(" + JSON.stringify(toolArgs) + ")", {
+      appendLogEntry("system", "🔧 Tool Calling Showcase", "Local UI hook simulates " + toolName + "(" + JSON.stringify(toolArgs) + ")", {
         color: "#73c6c3",
         sigil: "🔧",
         logType: "system",
@@ -6673,8 +6694,8 @@
         const traceNodes = ["player_input", "dm_router", "actor_view_filter", "tool_call", "actor_runtime", "ui_events"];
         const toolData = {
           journal_events: [
-            "🔧 [Tool Call] " + toolName + "(" + JSON.stringify(toolArgs) + ") → " + toolResult,
-            npcResponse ? "💬 [ReAct Response] " + npcSpeaker + ": " + npcResponse : "",
+            "🔧 [Tool Call Showcase] " + toolName + "(" + JSON.stringify(toolArgs) + ") → " + toolResult,
+            npcResponse ? "💬 [Showcase Response] " + npcSpeaker + ": " + npcResponse : "",
           ].filter(Boolean),
         };
         window.BG3DirectorTrace.activateTrace(traceNodes, {
@@ -6688,7 +6709,7 @@
       // State diff update
       const before = buildShowcaseSnapshot();
       const after = buildShowcaseSnapshot({
-        journal_events: ["🔧 [Tool Call] " + toolName + " → " + toolResult],
+        journal_events: ["🔧 [Tool Call Showcase] " + toolName + " → " + toolResult],
       });
       updateWorldStateDiff(before, after, { autoExpand: true });
 
