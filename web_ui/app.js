@@ -6607,6 +6607,34 @@
   function runShowcaseLocalStep(commandText, options = {}) {
     if (!QA_SHOWCASE) return false;
 
+    /* Affection baseline: show all companion affection values */
+    if (String(commandText || "").toLowerCase().startsWith("qa_affection_baseline")) {
+      if (window.BG3HudRenderers && typeof window.BG3HudRenderers.showAffectionBaseline === "function") {
+        window.BG3HudRenderers.showAffectionBaseline(state.partyStatus, {
+          label: "当前好感度 Affection",
+          clearMs: 6000,
+        });
+      }
+      // Also show in Director Trace State Watcher
+      if (window.BG3DirectorTrace && typeof window.BG3DirectorTrace.showAffectionState === "function") {
+        window.BG3DirectorTrace.showAffectionState(state.partyStatus);
+      }
+      return true;
+    }
+
+    /* Affection delta: show specific affection changes */
+    if (String(commandText || "").toLowerCase().startsWith("qa_affection_delta")) {
+      var opts = safeObject(options);
+      var deltas = safeArray(opts.deltas);
+      if (window.BG3HudRenderers && typeof window.BG3HudRenderers.dispatchUIEvents === "function") {
+        var events = deltas.map(function (d) {
+          return { type: "affection_delta", character: d.character, delta: d.delta, label: d.label };
+        });
+        window.BG3HudRenderers.dispatchUIEvents(events);
+      }
+      return true;
+    }
+
     /* Tool Calling showcase: simulate LLM tool call + ReAct response */
     if (String(commandText || "").toLowerCase().startsWith("qa_tool_call")) {
       const opts = safeObject(options);

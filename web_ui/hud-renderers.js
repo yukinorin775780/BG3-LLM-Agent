@@ -1458,6 +1458,61 @@
     laezel: "莱埃泽尔 Lae'zel",
   };
 
+  /* ── Affection Baseline: show all companion affections at once ── */
+  function showAffectionBaseline(partyStatus, options) {
+    var opts = options && typeof options === "object" ? options : {};
+    var host = getChipContainer();
+    if (!host) return;
+    // Clear existing chips first
+    while (host.firstChild) host.removeChild(host.firstChild);
+
+    var companions = ["astarion", "shadowheart", "laezel"];
+    var data = partyStatus && typeof partyStatus === "object" ? partyStatus : {};
+    var label = opts.label || "当前好感度";
+
+    // Title chip
+    var titleChip = document.createElement("div");
+    titleChip.className = "companion-chip companion-chip--title";
+    titleChip.textContent = "❤️ " + label;
+    titleChip.style.opacity = "1";
+    titleChip.style.transform = "translateY(0)";
+    host.appendChild(titleChip);
+
+    companions.forEach(function (id, i) {
+      var actor = data[id] && typeof data[id] === "object" ? data[id] : {};
+      var aff = Number(actor.affection);
+      if (!Number.isFinite(aff)) return;
+      var name = AFFECTION_LABELS[id] || id;
+      var affLabel = aff >= 60 ? "忠诚" : aff >= 20 ? "友善" : aff > -20 ? "中立" : aff > -60 ? "警惕" : "敌视";
+      var direction = aff >= 0 ? "companion-chip--up" : "companion-chip--down";
+
+      var chip = document.createElement("div");
+      chip.className = "companion-chip " + direction;
+      chip.innerHTML = '<span class="companion-chip-name">' + name + '</span>' +
+        '<span class="companion-chip-delta">' + aff + '</span>' +
+        '<span class="companion-chip-label">' + affLabel + '</span>';
+      chip.style.transitionDelay = (i * 120) + "ms";
+      host.appendChild(chip);
+
+      // Stagger animation
+      window.setTimeout(function () {
+        chip.classList.add("companion-chip--visible");
+      }, i * 140 + 60);
+    });
+
+    // Auto-clear after display time
+    var clearMs = Number(opts.clearMs) || 5000;
+    window.setTimeout(function () {
+      Array.from(host.querySelectorAll(".companion-chip")).forEach(function (c) {
+        c.classList.remove("companion-chip--visible");
+        c.classList.add("companion-chip--exit");
+      });
+      window.setTimeout(function () {
+        while (host.firstChild) host.removeChild(host.firstChild);
+      }, 300);
+    }, clearMs);
+  }
+
   function showAffectionDelta(event) {
     const e = event && typeof event === "object" ? event : {};
     const delta = Number(e.delta) || 0;
@@ -1661,7 +1716,7 @@
   updateCompanionBarkQaState();
 
   window.BG3HudRenderers = Object.freeze({
-    showToast, showDiceCard, showAffectionDelta, showStatusBadge,
+    showToast, showDiceCard, showAffectionDelta, showAffectionBaseline, showStatusBadge,
     showMemoryCard, clearMemoryCards, showItemGainedToast, showLoSBlockedOverlay,
     updateActProgress, showDemoClearedBanner, showTrapDiscovered,
     showTrapTriggered, renderCompanionGuidanceCard, renderDiaryInterpretationCard,

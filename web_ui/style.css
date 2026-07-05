@@ -3216,6 +3216,16 @@ textarea {
   background: rgba(184, 90, 86, 0.2);
 }
 
+.companion-chip--title {
+  border-color: rgba(208, 171, 103, 0.48);
+  color: #f4e0a2;
+  background: rgba(208, 171, 103, 0.12);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-size: 0.68rem;
+}
+
 .companion-chip--visible {
   opacity: 1;
   transform: translateY(0);

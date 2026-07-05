@@ -130,8 +130,12 @@
       {
         id: "gribbo_start",
         title: "Act 3 — Party Turn Coordinator",
-        summary: "Start Gribbo dialogue.",
+        summary: "Show companion affection baseline, then start Gribbo dialogue.",
         run: async () => {
+          // Show affection baseline before the confrontation
+          if (typeof app.runShowcaseLocalStep === "function") {
+            app.runShowcaseLocalStep("qa_affection_baseline", { title: "Act 3 — Affection Baseline" });
+          }
           if (typeof app.sendMessage === "function") {
             await app.sendMessage("我想和 Gribbo 谈谈。", "CHAT", null, {
               target: "gribbo",
@@ -151,6 +155,18 @@
               target: "gribbo",
               source: "dialogue_input",
               skipIdleReset: true,
+            });
+          }
+          // Display affection deltas after the choice
+          if (typeof app.runShowcaseLocalStep === "function") {
+            await wait(800);
+            app.runShowcaseLocalStep("qa_affection_delta", {
+              title: "Act 4 — Affection Changes",
+              deltas: [
+                { character: "astarion", delta: 5, label: "赞同你的选择" },
+                { character: "shadowheart", delta: -3, label: "不赞同嘲笑策略" },
+                { character: "laezel", delta: 2, label: "欣赏强硬态度" },
+              ],
             });
           }
         },
