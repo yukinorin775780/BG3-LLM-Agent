@@ -19,13 +19,15 @@
 
 ---
 
-## 🎬 [▶ Watch the 4-Minute Demo](https://github.com/yukinorin775780/BG3-LLM-Agent/releases/tag/demo-v3-20260704)
+## 🎬 [▶ Watch the 3-Minute Demo](https://github.com/yukinorin775780/BG3-LLM-Agent/releases/tag/demo-v4-20260705)
 
-> 243 seconds · 1920×1080 H.264 · English subtitles (burnt-in) · Full Act 1 → Act 4 playthrough
+> 199 seconds · 1920×1080 H.264 · English subtitles (burnt-in) · Full Act 1 → Act 4 playthrough
 >
-> Acceptance: `demo_cleared=true` · `act4_final_exit_opened=true` · `player_inventory.heavy_iron_key=1`
+> ✨ V4 New: Tool Calling · Enhanced D20 Dice · Affection Baseline & Deltas
 >
-> 📋 [Release notes & recording methodology →](https://github.com/yukinorin775780/BG3-LLM-Agent/releases/tag/demo-v3-20260704)
+> Acceptance: `demo_cleared=true` · All 12 demo steps completed
+>
+> 📋 [Release notes →](https://github.com/yukinorin775780/BG3-LLM-Agent/releases/tag/demo-v4-20260705)
 
 ---
 

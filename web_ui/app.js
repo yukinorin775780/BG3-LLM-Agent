@@ -6787,7 +6787,7 @@
       runShowcaseLocalStep,
       completeShowcaseLocally,
     }, {
-      delayMs: Math.max(800, Math.min(1500, readQaNumber("qa_showcase_step_ms", 1050))),
+      delayMs: Math.max(800, Math.min(30000, readQaNumber("qa_showcase_step_ms", 1050))),
       onStep: (step, index) => {
         setStatus("step " + (index + 1) + ": " + step.id);
         if (runBtn) runBtn.disabled = true;
