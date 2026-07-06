@@ -19,15 +19,15 @@
 
 ---
 
-## 🎬 [▶ Watch the 3-Minute Demo](https://github.com/yukinorin775780/BG3-LLM-Agent/releases/tag/demo-v4-20260705)
+## 🎬 [▶ Watch the 2-Minute Demo](https://github.com/yukinorin775780/BG3-LLM-Agent/releases/tag/demo-v5-20260706)
 
-> 199 seconds · 1920×1080 H.264 · English subtitles (burnt-in) · Full Act 1 → Act 4 playthrough
+> 133 seconds · 1920×1080 H.264 · English subtitles (burnt-in) · Fresh Web UI Act 1 → Final playthrough
 >
-> ✨ V4 New: Tool Calling · Enhanced D20 Dice · Affection Baseline & Deltas
+> ✨ V5 New: real Web UI route · backend tool trace · no showcase/state injection
 >
-> Acceptance: `demo_cleared=true` · All 12 demo steps completed
+> Acceptance: `demo_cleared=true` · `heavy_iron_key=1` · backend tools executed
 >
-> 📋 [Release notes →](https://github.com/yukinorin775780/BG3-LLM-Agent/releases/tag/demo-v4-20260705)
+> 📋 [Release notes →](https://github.com/yukinorin775780/BG3-LLM-Agent/releases/tag/demo-v5-20260706)
 
 ---
 
@@ -344,7 +344,7 @@ http://127.0.0.1:8000/web_ui/?map_id=necromancer_lab&memory_demo=1
 > remember information across browser sessions via ChromaDB-backed MemoryService.
 
 For the current portfolio recording plan and accepted cut, see
-[Demo Release 2026-06-22](docs/demo_release_2026-06-22.md) and
+[Demo Release 2026-07-06](docs/demo_release_2026-07-06.md) and
 [Portfolio Demo Script](docs/portfolio_demo_script.md).
 
 ---
@@ -416,7 +416,7 @@ archive/v1_legacy/     archived prototype code, not the current runtime
 The core vertical slice is now designed to show one dungeon-quality AI encounter.
 The next useful extensions are portfolio-facing rather than infrastructure-heavy:
 
-- upload the accepted `final_demo.mp4` to a GitHub Release or portfolio host ✅ (v2 + v3)
+- upload the accepted `final_demo.mp4` to a GitHub Release or portfolio host ✅ (v5)
 - add a static architecture image derived from the Mermaid graph above
 - add a short voiceover pass using the existing English/Chinese narration scripts
 - add a short dialogue comparison page for memory/no-memory boss outcomes

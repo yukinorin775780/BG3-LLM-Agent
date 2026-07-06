@@ -9,7 +9,7 @@ const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..*/, "");
 const outDir = process.env.BG3_CAPTURE_OUT || `${repoRoot}/artifacts/demo_recording/reaudit_visual_${stamp}`;
 const sessionId = process.env.BG3_CAPTURE_SESSION || `reaudit_visual_${stamp}`;
 const mapId = "necromancer_lab";
-const base = "http://127.0.0.1:8010";
+const base = (process.env.BG3_CAPTURE_BASE || "http://127.0.0.1:8010").replace(/\/+$/, "");
 const url = `${base}/web_ui/?session_id=${sessionId}&map_id=${mapId}&qa_no_idle=1`;
 const DEFAULT_CAPTURE_WIDTH = 1920;
 const DEFAULT_CAPTURE_HEIGHT = 1080;
@@ -18,6 +18,12 @@ const captureWidth = Number(process.env.BG3_CAPTURE_WIDTH || DEFAULT_CAPTURE_WID
 const captureHeight = Number(process.env.BG3_CAPTURE_HEIGHT || DEFAULT_CAPTURE_HEIGHT);
 const deviceScaleFactor = Number(process.env.BG3_DEVICE_SCALE_FACTOR || DEFAULT_DEVICE_SCALE_FACTOR);
 const captureSize = { width: captureWidth, height: captureHeight };
+const rawPacingScale = Number(process.env.BG3_CAPTURE_PACING_SCALE || 2.0);
+const pacingScale = Number.isFinite(rawPacingScale) && rawPacingScale > 0 ? rawPacingScale : 2.0;
+
+function pacedMs(ms) {
+  return Math.max(0, Math.round(Number(ms || 0) * pacingScale));
+}
 
 await fs.mkdir(`${outDir}/screenshots`, { recursive: true });
 await fs.mkdir(`${outDir}/responses`, { recursive: true });
@@ -121,7 +127,7 @@ async function waitForLocalRoomVisible(name, roomId, timeoutMs = 20_000) {
 }
 
 async function waitForUiSettle(extraMs = 900) {
-  await page.waitForTimeout(extraMs);
+  await page.waitForTimeout(pacedMs(extraMs));
 }
 
 async function send(name, text, options = {}) {
@@ -150,14 +156,14 @@ async function send(name, text, options = {}) {
 
 async function focusGame() {
   await page.mouse.click(410, 360);
-  await page.waitForTimeout(100);
+  await page.waitForTimeout(pacedMs(100));
 }
 
 async function press(name, keys, waitMs = 450) {
   await focusGame();
   for (const key of keys) {
     await page.keyboard.press(key);
-    await page.waitForTimeout(waitMs);
+    await page.waitForTimeout(pacedMs(waitMs));
   }
   await waitForUiSettle(350);
   await shot(name);
@@ -174,7 +180,7 @@ async function pressAndWait(name, keys, options = {}) {
   await focusGame();
   for (const key of keys) {
     await page.keyboard.press(key);
-    await page.waitForTimeout(waitMs);
+    await page.waitForTimeout(pacedMs(waitMs));
   }
   await waitForUiSettle(settleMs);
   const latest = expectState
@@ -187,7 +193,7 @@ async function pressAndWait(name, keys, options = {}) {
 
 try {
   await page.goto(url, { waitUntil: "networkidle" });
-  await page.waitForTimeout(1800);
+  await page.waitForTimeout(pacedMs(1800));
   await shot("00_hook_fresh");
   await state("00_hook_fresh");
 
@@ -202,7 +208,7 @@ try {
   let perception = null;
   for (let i = 1; i <= 10; i += 1) {
     await page.keyboard.press("w");
-    await page.waitForTimeout(1400);
+    await page.waitForTimeout(pacedMs(1400));
     const st = await state(`03_after_w_${i}`);
     assert(
       !st.flags?.act2_gas_trap_triggered && !st.flags?.necromancer_lab_poison_trap_triggered,
@@ -288,7 +294,7 @@ try {
     expectState: (st) => flags(st).act4_gribbo_confrontation_started === true
       || flags(st).act4_boss_room_entered === true,
   });
-  await page.waitForTimeout(2600);
+  await page.waitForTimeout(pacedMs(2600));
   await shot("13_boss_strategy_rotation");
   await state("13_boss_strategy_rotation");
 
