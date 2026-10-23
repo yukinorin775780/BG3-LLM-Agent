@@ -1,5 +1,14 @@
 # BG3 LLM Agent — LLM-driven RPG Agent Runtime
 
+## Maintained runtime extractions
+
+The original iteration history remains here. Runtime-focused maintenance continues in
+[Controlled Agent Runtime Workbench](https://github.com/yukinorin775780/controlled-agent-runtime-ai-rd)
+and [Controlled Agent Sim Runtime](https://github.com/yukinorin775780/controlled-agent-sim-runtime).
+These extractions distinguish scripted golden replay from the four-case live LLM benchmark.
+Frontend dependencies are no longer tracked; use `npm ci` to restore them from the lockfile.
+
+
 **LLM-driven NPC behavior and dialogue agents for RPG games.**
 
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue)](https://www.python.org/)

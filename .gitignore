@@ -285,3 +285,6 @@ unity_client/**/*.VC.db
 
 # Personal interview notes
 docs/runtime-knowledge-base/
+
+# Frontend dependencies are installed from package-lock.json.
+node_modules/
